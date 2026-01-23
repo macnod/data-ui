@@ -1,0 +1,29 @@
+environment: dev
+
+namespace: misc
+
+image:
+  # This will be set by the build script
+  tag: "0.0.0"
+
+  pullPolicy: Never
+
+dataui:
+  port: 3021
+  nodePort: 30211
+  memory: 4Gi
+  requests:
+    cpu: 250m
+  limits:
+    cpu: 1000m
+
+swankServer:
+  port: 4106
+  nodePort: 30221
+
+postgres:
+  image: postgres:16.10
+  port: 5441
+  nodePort: 30201
+  storageSize: 100Mi
+  hostPathBase: /home/macnod/common-lisp/data-ui

@@ -1,0 +1,11 @@
+services:
+  pg-data-ui-test:
+    image: postgres:16
+    pull_policy: missing
+    environment:
+      POSTGRES_HOST: "$DB_HOST"
+      POSTGRES_DATABASE: "$DB_NAME"
+      POSTGRES_USER: "$DB_USER"
+      POSTGRES_PASSWORD: "$DB_PASSWORD"
+    ports:
+      - "${DB_PORT}:5432"

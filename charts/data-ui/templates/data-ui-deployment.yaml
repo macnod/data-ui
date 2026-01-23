@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-uid-{{ .Values.environment }}-deployment
+  labels:
+    app: data-uid-{{ .Values.environment }}
+  namespace: {{ .Values.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-uid-{{ .Values.environment }}
+      environment: {{ .Values.environment }}
+  template:
+    metadata:
+      labels:
+        app: data-uid-{{ .Values.environment }}
+        environment: {{ .Values.environment }}
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: data-uid
+          image: macnod/data-uid:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["ros"]
+          args:
+            - "run"
+            - "--"
+            - "--eval"
+            - "(require :data-uid)"
+            - "--eval"
+            - "(in-package :data-uid)"
+            - "--eval"
+            - "(run)"
+          ports:
+            - containerPort: 8080
+            - containerPort: 4005
+          resources:
+            requests:
+              memory: {{ .Values.dataui.memory }}
+              cpu: {{ .Values.dataui.requests.cpu }}
+            limits:
+              memory: {{ .Values.dataui.memory }}
+              cpu: {{ .Values.dataui.limits.cpu }}
+          env:
+            - name: DATAUI_VERSION
+              value: {{ .Values.image.tag | quote }}
+            - name: DATAUI_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: DB_HOST
+              value: postgres-{{ .Values.environment }}-service
+            - name: DB_PORT
+              value: {{ .Values.postgres.port | quote }}
+            - name: DB_NAME
+              value: "dataui"
+            - name: DB_USER
+              value: "dataui"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dataui-{{ .Values.environment }}-secrets
+                  key: postgres-password
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dataui-{{ .Values.environment }}-secrets
+                  key: admin-user-password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: data-uid-{{ .Values.environment }}-secrets
+                  key: jwt-secret
+            - name: LOG_SEVERITY
+              value: debug
+            - name: LOG_SUPPRESS_HEALTH
+              value: "true"
+            - name: WEB_DIRECTORY
+              value: "/app/web"
+          volumeMounts:
+            - mountPath: /app
+              name: data-uid-volume
+      volumes:
+        - name: data-uid-volume
+          hostPath:
+            path: {{ $.Values.postgres.hostPathBase }}/{{ .Values.environment }}
+            type: Directory
