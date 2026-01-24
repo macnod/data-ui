@@ -6,6 +6,7 @@
 (require :jose)
 (require :lass)
 (require :postmodern)
+(require :cl-fad)
 (require :dc-ds)
 (require :dc-time)
 (require :p-log)
@@ -19,6 +20,7 @@
 (defpackage :data-ui-test
   (:use :cl :fiveam :data-ui :p-log)
   (:local-nicknames
+    (:a :rbac)
     (:re :cl-ppcre)
     (:db :postmodern)
     (:ds :dc-ds)
@@ -65,6 +67,10 @@
   (concatenate 'string
     (u:ascii-alpha-num)
     "[-!@#$%^&*()\+={}[\]|:;<>,.?/~`]"))
+
+(defun clear-shared-files ()
+  (cl-fad:delete-directory-and-files *document-root* :if-does-not-exist :ignore)
+  (ensure-directories-exist *document-root*))
 
 (def-suite data-ui-suite :description "FiveAM tests for the data-ui package")
 
@@ -269,6 +275,7 @@ end $$;
 (test make-resource-descriptor
   (let ((reference (list 
                      :resource-name "directory:/"
+                     :resource-id nil
                      :logical-path "/"
                      :physical-path *document-root*
                      :file-name-only nil
@@ -283,14 +290,25 @@ end $$;
     (is (equal reference (make-resource-descriptor "/")))
     (is (equal reference (make-resource-descriptor #P"/")))
     (is (equal reference (make-resource-descriptor root)))
-    (is (equal "/alpha/" (make-resource-descriptor "/alpha" :logical-path)))
+    (is (equal "/alpha/" (make-resource-descriptor "/alpha/" :logical-path)))
     (is (equal "/alpha/"
           (make-resource-descriptor
-            (u:join-paths root "/alpha") :logical-path)))
+            (u:join-paths root "/alpha/") :logical-path)))
     (is (equal "directory:/alpha/"
-          (make-resource-descriptor "/alpha" :resource-name)))
+          (make-resource-descriptor "/alpha/" :resource-name)))
     (is (equal "file:/alpha/a/one/a.txt"
           (make-resource-descriptor "/alpha/a/one/a.txt" :resource-name)))))
+
+;; (test add-directory
+;;   (clear-shared-files)
+;;   (let ((id (add-directory "/bravo/" '("admin")))
+;;          (rd (make-resource-descriptor "/bravo/")))
+;;     (is-true (is-uuid id))
+;;     (is (equal id (getf rd :resource-id)))
+;;     (is-true (getf rd :is-directory))
+;;     (is-false (getf rd :is-file))
+;;     (is-true (getf rd :exists-in-storage))
+;;     (is-true (getf rd :exists-in-database))))
 
 ;;
 ;; Run tests

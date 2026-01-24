@@ -142,9 +142,6 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
   (let ((resource-type (if (re:scan "/" resource-name) :directory :file)))
     (format nil "~(~a~):~a" resource-type resource-name)))
 
-(defun resource-id (name)
-  (a:get-id *rbac* "resources" (resource-name-for name)))
-
 (defun immutable-user-roles (user-name)
   (list "logged-in" "public" (a:exclusive-role-for user-name)))
 
@@ -222,6 +219,21 @@ file name and returns the path to the file with a trailing slash."
 (defun is-directory-p (resource-descriptor)
   (unless (getf resource-descriptor :is-directory) t))
 
+(defun resource-id (resource-name)
+  (let* ((parts (re:split ":" resource-name))
+          (type (car parts))
+          (value (cadr parts))
+          (table (format nil "rt_~a" (u:plural type)))
+          (field (format nil "~a_name" type))
+          (sql (format nil "select id from ~a where ~a = $1" table field)))
+    (pl:pdebug :in "resource-id"
+      :resource-name resource-name
+      :table table
+      :field field
+      :sql sql)
+    (a:with-rbac (*rbac*)
+      (db:query sql value :single))))
+
 (defun make-resource-descriptor (path &optional key)
   (let* ((root *document-root*)
           (drl (length root))
@@ -230,7 +242,11 @@ file name and returns the path to the file with a trailing slash."
                    (or
                      (probe-file path)
                      (probe-file (u:join-paths root path)))))
-          (sprobe (format nil "~a" (or probe (u:join-paths root path))))
+          (sprobe (format nil "~a" (or probe
+                                     (if (u:starts-with (format nil "~a" path) root)
+                                        (format nil "~a" path)
+                                       (format nil "~a"
+                                         (u:join-paths root path))))))
           (spath (if probe
                    sprobe
                    (if (and
@@ -249,11 +265,14 @@ file name and returns the path to the file with a trailing slash."
                            spath
                            (re:regex-replace "/$" spath "")))
           (relative (if is-physical (subseq spath drl) spath))
-          (logical-path (if is-physical (format nil "/~a" relative) spath))
+          (logical-path (if is-physical
+                          (format nil "/~a" relative)
+                          spath))
+          (resource-prefix (if is-directory "directory" "file"))
+          (resource-name (format nil "~a:~a" resource-prefix logical-path))
           (result (list
-                    :resource-name (format nil "~a:~a"
-                                     (if is-directory "directory" "file")
-                                     logical-path)
+                    :resource-name resource-name
+                    :resource-id (when *rbac* (resource-id resource-name))
                     :logical-path logical-path
                     :physical-path physical-path
                     :file-name-only
@@ -270,9 +289,32 @@ file name and returns the path to the file with a trailing slash."
                     :exists-in-storage (if is-directory
                                          (u:directory-exists-p physical-path)
                                          (u:file-exists-p physical-path))
-                    :exists-in-database (when *rbac* (resource-id logical-path))
+                    :exists-in-database (when (and *rbac*
+                                                (resource-id resource-name))
+                                          t)
                     :is-directory is-directory
                     :is-file is-file)))
+    (pl:pdebug :in "make-resource-descriptor"
+      :root root
+      :drl drl
+      :probe probe
+      :sprobe sprobe
+      :spath spath
+      :is-physical is-physical
+      :is-directory is-directory
+      :is-file is-file
+      :physical-path physical-path
+      :relative relative
+      :logical-path logical-path
+      :resource-prefix resource-prefix
+      :resource-name resource-name
+      :resource-id (getf result :resource-id)
+      :file-name-only (getf result :file-name-only)
+      :leaf-directory (getf result :leaf-directory)
+      :logical-path-only (getf result :logical-path-only)
+      :physical-path-only (getf result :physical-path-only)
+      :exists-in-storage (getf result :exists-in-storage)
+      :exists-in-database (getf result :exists-in-database))
     (if key (getf result key) result)))
 
 ;;
@@ -613,8 +655,9 @@ and directories."
       (error "Directory already exists."))
     (unless (getf parent-rd :exists-in-storage)
       (error "Parent directory doesn't exist."))
-    (a:add-resource *rbac* resource-name :roles roles)
-    (ensure-directories-exist path-abs)))
+    (let ((id (a:add-resource *rbac* resource-name :roles roles)))
+      (ensure-directories-exist path-abs)
+      id)))
 
 (defun remove-directory (path user)
   (unless (re:scan "^/" path)
@@ -672,6 +715,11 @@ and directories."
     (pl:make-log-stream "data-ui" *log-file*)))
 
 (defun create-resource-tables (types)
+  (pl:pdebug :in "create-resource-tables"
+    :types (u:plist-keys
+             (mapcar
+               (lambda (s) (format nil "~(~a~)" s))
+               (non-base-types types))))
   (loop for sql in (create-resource-tables-sql types)
     do (a:with-rbac (*rbac*) (a:rbac-query (list sql)))))
 
@@ -693,6 +741,10 @@ and directories."
                      (pl:perror :in "init-database"
                        :status "failed to initialize database"
                        :condition (format nil "~a" condition))))))
+    (pl:pinfo :in "init-database"
+      :status (if success
+                "initialize-database call succeeded"
+                "initialize-database call failed"))
     (when success
       (a:add-permission *rbac* "list"
         :description "List contents of a directory")

@@ -16,6 +16,7 @@
   (:export
     *document-root*
     *rbac*
+    add-directory
     add-to-class
     add-to-url-query
     additional-text
