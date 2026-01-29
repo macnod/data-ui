@@ -20,7 +20,6 @@ else
 fi
 
 export ADMIN_PASSWORD="admin-password-1"
-export DB_CONTAINER="pg-data-ui-repl"
 export DB_DOCKER_COMPOSE="tests/docker-compose-${DB_CONTAINER}.yaml"
 export DB_HOST="127.0.0.1"
 export DB_INIT_TEMPLATE="tests/init-template.sql"
@@ -143,9 +142,9 @@ case "$ACTION" in
         ;;
     *)
         if [[ -z "$ACTION" ]]; then
-            echo "Unknown command $ACTION"
-        else
             echo "Missing command"
+        else
+            echo "Unknown command $ACTION"
         fi
         usage
         exit 1

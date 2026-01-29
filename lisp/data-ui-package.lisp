@@ -16,39 +16,27 @@
   (:export
     *document-root*
     *rbac*
-    add-directory
-    add-to-class
-    add-to-url-query
-    additional-text
-    alist-to-hash-table
+    *resource-types*
+    add-resource
+    base-types
     create-resource-tables
     create-resource-tables-sql
-    exclude
-    exclude-regex
-    exclusive-role-for
-    form-text
-    form-title
-    has
-    has-some
-    html-list
+    descriptor-get
+    enabled-types
+    filter-types
+    immutable-user-roles
     init-database
-    input-checkbox
-    input-checkbox-list
-    input-checkbox-pre
-    input-file
-    input-form
-    input-hidden
-    input-password
-    input-submit-button
-    input-text
-    invert-hex-color
-    issue-jwt
-    join-html
-    label-to-name
+    list-directory
+    list-directory-recursively
     make-resource-descriptor
-    name-to-id
-    readable-time-stamp
-    render-pager
-    upload-form
-    validate-jwt
-    ))
+    name-field
+    non-base-types
+    table-name
+    type-keywords
+    type-strings
+    validate-fs-storage-key
+    validate-resource-descriptor
+    validate-resource-descriptor-key
+    validate-resource-types
+    validate-type-keyword
+    validate-type-string))

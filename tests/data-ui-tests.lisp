@@ -72,9 +72,91 @@
   (cl-fad:delete-directory-and-files *document-root* :if-does-not-exist :ignore)
   (ensure-directories-exist *document-root*))
 
+(defun clear-data ()
+  (loop with resource-names = (u:safe-sort
+                                (u:exclude
+                                  (a:list-resource-names *rbac*)
+                                  "directories:/")
+                                :predicate #'string=)
+    for resource in resource-names
+    for parts = (re:split ":" resource)
+    for type-string = (car parts)
+    for type = (intern (string-upcase type-string) :keyword)
+    for name = (cadr parts)
+    for rd = (make-resource-descriptor type name)
+    for table = (getf rd :resource-table)
+    for field = (getf rd :resource-name-field)
+    for is-file = (u:tree-get rd :fs-storage :is-file)
+    for is-directory = (u:tree-get rd :fs-storage :is-directory)
+    for file = (when is-file
+                 (u:tree-get rd :fs-storage :physical-path))
+    for directory = (when is-directory
+                      (u:tree-get rd :fs-storage :physical-path))
+    for sql = (format nil "delete from ~a where ~a = $1" table field)
+    do (pdebug :in "clear-data" :status "deleting"
+         :type-string type-string
+         :type type
+         :name name
+         :is-file is-file
+         :is-directory is-directory
+         :resource-descriptor (format nil "~a" rd)
+         :resource-table table
+         :resource-name-field field
+         :file file
+         :directory directory
+         :sql sql)
+    when file do
+    (pdebug :in "clear-data" :status "deleting file" :file file)
+    (delete-file file)
+    when directory do
+    (pdebug :in "clear-data" :status "deleting directory"
+      :directory directory)
+    (cl-fad:delete-directory-and-files directory
+      :if-does-not-exist :ignore)
+    finally
+    (let ((users-cleared
+            (loop with users = (u:exclude
+                                 (a:list-user-names *rbac*)
+                                 (a:initial-users))
+              for user in users
+              for id = (a:remove-user *rbac* user)
+              always id))
+           (permissions-cleared
+             (loop with permissions = (u:exclude
+                                        (a:list-permission-names *rbac*)
+                                        (cons "list" (a:initial-permissions)))
+               for permission in permissions
+               for id = (a:remove-permission *rbac* permission)
+               always id))
+           (roles-cleared
+             (loop with roles = (u:exclude
+                                  (a:list-role-names *rbac*)
+                                  (a:initial-roles))
+               for role in roles
+               for id = (a:remove-role *rbac* role)
+               always id))
+           (resources-cleared
+            (loop
+              for resource in resource-names
+              for id = (a:remove-resource *rbac* resource)
+              always id)))
+      (pinfo :in "clear-data"
+        :status "cleared data"
+        :resource-names resource-names
+        :all-users-cleared users-cleared
+        :all-permission-cleared permissions-cleared
+        :all-roles-cleared roles-cleared
+        :all-resources-cleared resources-cleared))))
+
 (def-suite data-ui-suite :description "FiveAM tests for the data-ui package")
 
 (in-suite data-ui-suite)
+
+(test clear-shared-files
+  (clear-shared-files)
+  (is-true (re:scan "\\b0 directories, 0 files$"
+             (u:shell-command-to-string
+               (format nil "tree '~a'" *document-root*)))))
 
 (test current-directory
   (is-true
@@ -107,7 +189,7 @@
   ;; Happy case
     (is (equal '("
 create table if not exists rt_directories (
-    id uuid primary key default uuid_generate_v4(),
+    id uuid primary key references resources(id) on delete cascade,
     created_at timestamp not null default now(),
     updated_at timestamp not null default now(),
     directory_name text not null unique
@@ -130,7 +212,7 @@ end $$;
 "
                   "
 create table if not exists rt_files (
-    id uuid primary key default uuid_generate_v4(),
+    id uuid primary key references resources(id) on delete cascade,
     created_at timestamp not null default now(),
     updated_at timestamp not null default now(),
     file_name text not null unique,
@@ -158,7 +240,7 @@ end $$;
 "
                   "
 create table if not exists rt_settings (
-    id uuid primary key default uuid_generate_v4(),
+    id uuid primary key references resources(id) on delete cascade,
     created_at timestamp not null default now(),
     updated_at timestamp not null default now(),
     user_id uuid not null references users(id) on delete cascade,
@@ -273,42 +355,85 @@ end $$;
     (signals error (create-resource-tables-sql copy))))
 
 (test make-resource-descriptor
-  (let ((reference (list 
-                     :resource-name "directory:/"
-                     :resource-id nil
-                     :logical-path "/"
-                     :physical-path *document-root*
-                     :file-name-only nil
-                     :leaf-directory nil
-                     :logical-path-only "/"
-                     :physical-path-only *document-root*
-                     :exists-in-storage t
-                     :exists-in-database nil
-                     :is-directory t
-                     :is-file nil))
-         (root *document-root*))
-    (is (equal reference (make-resource-descriptor "/")))
-    (is (equal reference (make-resource-descriptor #P"/")))
-    (is (equal reference (make-resource-descriptor root)))
-    (is (equal "/alpha/" (make-resource-descriptor "/alpha/" :logical-path)))
+  (clear-data)
+  (let ((root *document-root*))
+    (let* ((id (a:get-id *rbac* "resources" "directories:/"))
+            (reference (list
+                         :resource-id id
+                         :resource-name "directories:/"
+                         :resource-table "rt_directories"
+                         :resource-name-field "directory_name"
+                         :exists t
+                         :fs-backed t
+                         :fs-storage
+                         (list
+                           :is-directory t
+                           :is-file nil
+                           :logical-path "/"
+                           :physical-path *document-root*
+                           :file-name-only nil
+                           :leaf-directory "/"
+                           :logical-path-only "/"
+                           :physical-path-only *document-root*
+                           :exists t))))
+      (is (equal reference (make-resource-descriptor :directories "/")))
+      (is (equal reference (make-resource-descriptor :directories #P"/")))
+      (is (equal reference (make-resource-descriptor :directories root))))
+    ;; /alpha/
+    (is (equal "/alpha/" (make-resource-descriptor :directories "/alpha/"
+                           :fs-storage :logical-path)))
     (is (equal "/alpha/"
-          (make-resource-descriptor
-            (u:join-paths root "/alpha/") :logical-path)))
-    (is (equal "directory:/alpha/"
-          (make-resource-descriptor "/alpha/" :resource-name)))
-    (is (equal "file:/alpha/a/one/a.txt"
-          (make-resource-descriptor "/alpha/a/one/a.txt" :resource-name)))))
+          (make-resource-descriptor :directories (u:join-paths root "/alpha/")
+            :fs-storage :logical-path)))
+    (is (equal "directories:/alpha/"
+          (make-resource-descriptor :directories "/alpha/" :resource-name)))
+    (is-false (make-resource-descriptor :directories "/alpha/" :resource-id))
+    (is-false (make-resource-descriptor :directories "/alpha/" :exists))
+    (is-true (make-resource-descriptor :directories "/alpha/" :fs-backed))
+    (is-true (make-resource-descriptor :directories "/alpha/"
+               :fs-storage :is-directory))
+    (is-false (make-resource-descriptor :directories "/alpha/"
+                :fs-storage :is-file))
+    (is-false (make-resource-descriptor :directories "/alpha/"
+                :fs-storage :exists))
+    ;; /alpha/bravo/c.txt
+    (let ((rd (make-resource-descriptor :files "/alpha/bravo/c.txt")))
+      (is-false (is-uuid (getf rd :resource-id)))
+      (is (equal "files:/alpha/bravo/c.txt" (getf rd :resource-name)))
+      (is-false (getf rd :exists))
+      (is-true (getf rd :fs-backed))
+      (is-false (u:tree-get rd :fs-storage :is-directory))
+      (is-true (u:tree-get rd :fs-storage :is-file))
+      (is (equal "/alpha/bravo/c.txt"
+            (u:tree-get rd :fs-storage :logical-path)))
+      (is (equal (u:join-paths root "/alpha/bravo/c.txt")
+            (u:tree-get rd :fs-storage :physical-path)))
+      (is (equal "c.txt" (u:tree-get rd :fs-storage :file-name-only)))
+      (is (equal "bravo" (u:tree-get rd :fs-storage :leaf-directory)))
+      (is (equal "/alpha/bravo/"
+            (u:tree-get rd :fs-storage :logical-path-only)))
+      (is (equal (u:join-paths root "/alpha/bravo/")
+            (u:tree-get rd :fs-storage :physical-path-only)))
+      (is-false (u:tree-get rd :fs-storage :exists)))))
 
-;; (test add-directory
-;;   (clear-shared-files)
-;;   (let ((id (add-directory "/bravo/" '("admin")))
-;;          (rd (make-resource-descriptor "/bravo/")))
-;;     (is-true (is-uuid id))
-;;     (is (equal id (getf rd :resource-id)))
-;;     (is-true (getf rd :is-directory))
-;;     (is-false (getf rd :is-file))
-;;     (is-true (getf rd :exists-in-storage))
-;;     (is-true (getf rd :exists-in-database))))
+(test add-directory
+  (clear-data)
+  (let* ((rd-alpha (add-resource :directories "/alpha/" '("admin")))
+          (rd-bravo (make-resource-descriptor :directories "/bravo/"))
+          (id (getf rd-alpha :resource-id)))
+    (is-true (is-uuid id))
+    (is (equal id (getf rd-alpha :resource-id)))
+    (is-true (u:tree-get rd-alpha :fs-storage :is-directory))
+    (is-false (u:tree-get rd-alpha :fs-storage :is-file))
+    (is-true (getf rd-alpha :exists))
+    (is-true (u:tree-get rd-alpha :fs-storage :exists))
+    (is-false (getf rd-bravo :resource-id))
+    (is-true (validate-resource-descriptor
+               (add-resource :directories "/alpha/one/" '("admin"))))
+    (signals error
+      (add-resource :directories "/bravo/one/" '("admin")))
+    (is-true (add-resource :directories "/bravo/" '("admin")))
+    (is-true (add-resource :directories "/bravo/one/" '("admin")))))
 
 ;;
 ;; Run tests
@@ -316,6 +441,7 @@ end $$;
 (if *run-tests*
   (progn
     (format t "Running DATA-UI tests...~%")
+    (clear-shared-files)
     (let ((test-results (run-all-tests)))
       (close-log-stream "tests")
       (unless test-results

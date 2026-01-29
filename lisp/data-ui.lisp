@@ -52,9 +52,6 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 ;; Other
 (defparameter *http-server* nil)
 (defparameter *swank-server* nil)
-(defparameter *root-userid* nil)
-(defparameter *directory-syncing* t)
-(defparameter *resource-types* '(:file :directory))
 (defparameter *all-results-page-size* 10000)
 
 ;; Defaults
@@ -63,23 +60,63 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
   '("create" "read" "update" "delete" "list"))
 
 ;; Resource definitions
-(defparameter *valid-field-keys* '(:name :type :default :required :unique
-                                    :reference))
-(defparameter *valid-field-types* '(:text :integer :float :timestamp))
+(defparameter *valid-type-keys*
+  '(:base
+     :enable
+     :fields
+     :fs-backed))
+(defparameter *valid-field-keys*
+  '(:default
+     :name
+     :reference
+     :required
+     :type
+     :unique))
+(defparameter *valid-field-types*
+  '(:float
+     :integer
+     :text
+     :timestamp))
+(defparameter *valid-descriptor-keys*
+  '(:exists
+     :fs-backed
+     :fs-storage
+     :resource-id
+     :resource-name
+     :resource-name-field
+     :resource-table))
+(defparameter *valid-fs-storage-keys*
+  '(:exists
+     :file-name-only
+     :is-directory
+     :is-file
+     :leaf-directory
+     :logical-path
+     :logical-path-only
+     :physical-path
+     :physical-path-only))
 (defparameter *resource-types*
-  '(:users (:enable t :base t)
-     :directories (:enable t :fields nil)
-     :files (:enable t :fields ((:reference :directories)))
-     :settings (:enable t
-                 :fields
+  ;; Tables where :base is t already exist in the RBAC system, so they won't be
+  ;; created by this system. Tables where :base is nil will be created by this
+  ;; system.
+  '(:users (:enable t :base t :fs-backed nil)
+     :resources (:enable t :base t :fs-backed nil)
+     ;; Because this is not a base type, its table will be named with the rt_
+     ;; prefix: rt_directories. The automatically-created field
+     ;; rt_directories.directory_name will hold strings consisting of the prefix
+     ;; 'directory:' followed by the logical path of the directory, i.e.
+     ;; "directory:/a/b/".  The resources.resource_name field will contain the
+     ;; same value.
+     :directories (:enable t :fs-backed t :fields nil)
+     :files (:enable t :fs-backed t :fields nil)
+     :settings (:enable t :fs-backed nil :fields
+                 ;; The automaticall-created rt_settings.setting_name field will
+                 ;; consist of the prefix 'setting:' followed by the user name
+                 ;; and setting name, separated by a colon, e.g.,
+                 ;; "setting:alice:dark-mode". As usual, the
+                 ;; resources.resource_name field will contain the same value.
                  ((:reference :users)
-                   ;; The system normally creates this field, setting_name,
-                   ;; automatically, but we're defining it here explicitly
-                   ;; because we don't want it to be unique, which is the
-                   ;; default behavior for generated name fields.
-                   (:name "setting_name" :type :text :required t)
                    (:name "setting_value" :type :text :default "NIL")))))
-
 
 ;; Connect to the database
 (defparameter *rbac* nil)
@@ -136,186 +173,200 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 ;; Where Hunchentoot should store temporary files during uploads
 (setf h:*tmp-directory* *temp-directory*)
 
-(defun resource-name-for (resource-name)
-  (unless (re:scan "^/" resource-name)
-    (error "Invalid resource-name '~a'. Must start with /" resource-name))
-  (let ((resource-type (if (re:scan "/" resource-name) :directory :file)))
-    (format nil "~(~a~):~a" resource-type resource-name)))
-
 (defun immutable-user-roles (user-name)
   (list "logged-in" "public" (a:exclusive-role-for user-name)))
 
-(defun user-directory-permissions (user-name permission)
-  ":private: Creates a hash table where the keys are directories to which
-USER-NAME has PERMISSION access"
-  (loop
-    with table = (make-hash-table :test 'equal)
-    with resources = (a:list-user-resource-names *rbac* user-name permission)
-    for resource in resources
-    for permissions = (a:list-user-resource-permission-names
-                        *rbac* user-name resource)
-    do (setf (gethash resource table) permissions)
-    finally (return table)))
+(defun validate-resource-types (&optional (types *resource-types*))
+  "Check that resource types are well-formed."
+  (loop for type-key in (u:plist-keys types)
+    for type-keys = (u:plist-keys (getf types type-key))
+    for fields = (u:tree-get types type-key :fields)
+    unless type-keys do (error "Resource type ~a is not defined." type-key)
+    unless (u:has *valid-type-keys* type-keys)
+    do (error "Invalid resource type keys in type ~(~a~): ~{~(~a~)~^, ~}."
+         type-key
+	       (set-difference type-keys *valid-type-keys* :test 'eql))
+    do (loop for field in fields do
+         (validate-field types type-key field))))
 
-(defun list-user-directories-fs (user-name)
-  (loop
-    with table = (make-hash-table :test 'equal)
-    with dirs-raw = (mapcar
-                      (lambda (d) (format nil "~a" d))
-                      (directory (format nil "~a**/" *document-root*)))
-    with l = (1- (length (u:root-path dirs-raw)))
-    with dirs-clean = (u:safe-sort (mapcar (lambda (dir) (subseq dir l)) dirs-raw))
-    with directory-permissions = (user-directory-permissions user-name "read")
-    for dir in dirs-clean
-    for permissions = (gethash dir directory-permissions)
-    when permissions
-    collect (list :directory dir :permissions permissions)))
+(defun validate-resource-descriptor (descriptor)
+  "Check that RESOURCE-DESCRIPTOR is valid."
+  (let ((missing (set-difference *valid-descriptor-keys*
+                          (u:plist-keys descriptor)
+                          :test 'eql)))
+    (when missing
+      (error "Resource descriptor key~p missing: ~{~(~a~)~^, ~}."
+        (length missing) missing)))
+  (when (getf descriptor :fs-backed)
+    (let ((missing (set-difference *valid-fs-storage-keys*
+                     (u:plist-keys (getf descriptor :fs-storage)))))
+      (when missing
+        (error "Descriptor's fs-storage key~p missing: ~{~(~a~)~^, ~}."
+          (length missing) missing))))
+  t)
 
-(defun clean-path (path)
-  "Returns the path portion of PATH, which must be a string that starts with a
-slash. If PATH points to a directory, then this function adds the trailing slash
-if necessary. Otherwise, if PATH points to a file, this function removes the
-file name and returns the path to the file with a trailing slash."
-  (if (equal path "/")
-    path
-    (let* ((abs-path (u:join-paths *document-root* path))
-            (path-only (if (eql (u:path-type abs-path) :directory)
-                         path
-                         (u:path-only path)))
-            (clean-path (if (equal path-only "/")
-                          "/"
-                          (format nil "/~a/" (string-trim "/" path-only)))))
-      (pl:pdebug :in "clean-path"
-        :path-only path
-        :clean-path clean-path)
-      clean-path)))
+(defun validate-resource-descriptor-key (key)
+  (unless (u:has *valid-descriptor-keys* key)
+    (error "Invalid resource descriptor key: ~a." key)))
 
-(defun absolute-path (path)
-  (u:join-paths *document-root* path))
+(defun validate-fs-storage-key (key)
+  (unless (u:has *valid-fs-storage-keys* key)
+    (error "Invalid fs-storage key: ~a." key)))
 
-(defun check-descriptor (resource-descriptor)
-  (unless (u:plistp resource-descriptor)
-    (error "Resource descriptor is not a plist."))
-  (let* ((keys (u:plist-keys resource-descriptor))
-          (expected '(:resource-name
-                       :logical-path
-                       :physical-path
-                       :file-name-only
-                       :leaf-directory
-                       :logical-path-only
-                       :physical-path-only
-                       :exists-in-storage
-                       :exists-in-database
-                       :is-directory))
-          (missing (set-difference expected keys)))
-    (if missing
-      (error "Resource descriptor is missing keys: ~{~a~^, ~}" missing))))
+(defun descriptor-get (resource-descriptor &rest keys)
+  (validate-resource-descriptor resource-descriptor)
+  (unless (member (length keys) '(1 2))
+    (error "descriptor-get only supports one or two keys."))
+  (validate-resource-descriptor-key (car keys))
+  (validate-fs-storage-key (cadr keys)))
 
-(defun resource-exists-in-storage (resource-descriptor)
-  (if (getf resource-descriptor :is-directory)
-    (u:directory-exists-p (getf resource-descriptor :absolute))
-    (u:file-exists-p (getf resource-descriptor :absolute))))
+(defun type-strings (&optional (types *resource-types*))
+  (mapcar
+    (lambda (k) (format nil "~(~a~)" k))
+    (type-keywords types)))
 
-(defun is-directory-p (resource-descriptor)
-  (unless (getf resource-descriptor :is-directory) t))
+(defun type-keywords (&optional (types *resource-types*))
+  (u:plist-keys types))
+
+(defun table-name (resource-name &key (types *resource-types*))
+  (let* ((type (car (re:split ":" resource-name))))
+    (cond
+      ((member type (type-strings (non-base-types types)) :test 'equal)
+        (format nil "rt_~a" type))
+      ((member type (type-strings (base-types types)) :test 'equal)
+        (format nil "~a" type))
+      (t (error "Unknown resource type '~a' in resource name '~a'."
+           type resource-name)))))
+
+(defun name-field (resource-name &key (types *resource-types*))
+  (let* ((type (car (re:split ":" resource-name))))
+    (unless (u:has (type-strings types) type)
+      (error "Unknown resource type '~a'" type))
+    (format nil "~a_name" (u:singular type))))
 
 (defun resource-id (resource-name)
-  (let* ((parts (re:split ":" resource-name))
-          (type (car parts))
-          (value (cadr parts))
-          (table (format nil "rt_~a" (u:plural type)))
-          (field (format nil "~a_name" type))
-          (sql (format nil "select id from ~a where ~a = $1" table field)))
-    (pl:pdebug :in "resource-id"
-      :resource-name resource-name
-      :table table
-      :field field
-      :sql sql)
-    (a:with-rbac (*rbac*)
-      (db:query sql value :single))))
+  (when *rbac*
+    (a:get-id *rbac* "resources" resource-name)))
 
-(defun make-resource-descriptor (path &optional key)
+(defun probe (fs-backed name-only root)
+  (when fs-backed
+    (if (equal (format nil "~a" name-only) "/")
+      (probe-file root)
+      (or
+        (probe-file name-only)
+        (probe-file (u:join-paths root name-only))))))
+
+(defun sprobe (fs-backed probe name-only root)
+  (when fs-backed
+    (format nil "~a"
+      (or probe
+        (if (u:starts-with (format nil "~a" name-only) root)
+          (format nil "~a" name-only)
+          (format nil "~a" (u:join-paths root name-only)))))))
+
+(defun spath (fs-backed probe sprobe root)
+  (when fs-backed
+    (if probe
+      sprobe
+      (if (and
+            (>= (length sprobe) (length root))
+            (string= root sprobe :end2 (length root)))
+        (u:join-paths root (subseq sprobe (length root)))
+        sprobe))))
+
+(defun make-resource-descriptor (type name-only &rest keys)
+  (unless (member type (u:plist-keys *resource-types*))
+    (error "Unknown resource type: ~a." type))
+  (unless (u:has (cons nil *valid-descriptor-keys*) (car keys))
+    (error "Unknown resource descriptor key: ~a." (car keys)))
+  (unless (u:has (cons nil *valid-fs-storage-keys*) (cdr keys))
+    (error "Unknown fs-storage key: ~a." (cadr keys)))
+  (when (> (length keys) 2)
+    (error "Too many keys provided to make-resource-descriptor."))
   (let* ((root *document-root*)
           (drl (length root))
-          (probe (if (equal (format nil "~a" path) "/")
-                   (probe-file root)
-                   (or
-                     (probe-file path)
-                     (probe-file (u:join-paths root path)))))
-          (sprobe (format nil "~a" (or probe
-                                     (if (u:starts-with (format nil "~a" path) root)
-                                        (format nil "~a" path)
-                                       (format nil "~a"
-                                         (u:join-paths root path))))))
-          (spath (if probe
-                   sprobe
-                   (if (and
-                         (>= (length sprobe) drl)
-                         (string= root sprobe :end2 drl))
-                     (u:join-paths root (subseq sprobe drl))
-                     sprobe)))
-          (is-physical (u:starts-with spath root))
-          (is-directory (if probe
-                          (equal (u:path-type spath) :directory)
-                          (u:ends-with (format nil "~a" path) "/")))
-          (is-file (if probe
-                     (equal (u:path-type spath) :file)
-                     (not (u:ends-with (format nil "~a" path) "/"))))
-          (physical-path (if is-directory
-                           spath
-                           (re:regex-replace "/$" spath "")))
-          (relative (if is-physical (subseq spath drl) spath))
-          (logical-path (if is-physical
-                          (format nil "/~a" relative)
-                          spath))
-          (resource-prefix (if is-directory "directory" "file"))
-          (resource-name (format nil "~a:~a" resource-prefix logical-path))
+          (fs-backed (u:tree-get *resource-types* type :fs-backed))
+          (probe (when fs-backed (probe fs-backed name-only root)))
+          (sprobe (when fs-backed (sprobe fs-backed probe name-only root)))
+          (spath (when fs-backed (spath fs-backed probe sprobe root)))
+          (is-physical (when fs-backed (u:starts-with spath root)))
+          (is-directory (when fs-backed
+                          (if probe
+                            (equal (u:path-type spath) :directory)
+                            (u:ends-with (format nil "~a" name-only) "/"))))
+          (is-file (when fs-backed
+                     (if probe
+                       (equal (u:path-type spath) :file)
+                       (not (u:ends-with (format nil "~a" name-only) "/")))))
+          (physical-path (when fs-backed
+                           (if is-directory
+                             spath
+                             (re:regex-replace "/$" spath ""))))
+          (relative (when fs-backed
+                      (if is-physical (subseq spath drl) spath)))
+          (logical-path (when fs-backed
+                          (if is-physical
+                            (format nil "/~a" relative)
+                            spath)))
+          (resource-prefix (format nil "~(~a~)" type))
+          (resource-name (format nil "~a:~a" resource-prefix
+                           (if fs-backed logical-path name-only)))
+          (resource-id (resource-id resource-name))
+          (resource-table (table-name resource-name))
+          (name-field (name-field resource-name))
           (result (list
+                    :resource-id resource-id
                     :resource-name resource-name
-                    :resource-id (when *rbac* (resource-id resource-name))
-                    :logical-path logical-path
-                    :physical-path physical-path
-                    :file-name-only
-                    (unless is-directory (u:filename-only spath))
-                    :leaf-directory
-                    (if is-directory
-                      (u:leaf-directory-only logical-path)
-                      (u:leaf-directory-only (u:path-only physical-path)))
-                    :logical-path-only
-                    (if is-directory logical-path (u:path-only logical-path))
-                    :physical-path-only (if is-directory
-                                          physical-path
-                                          (u:path-only physical-path))
-                    :exists-in-storage (if is-directory
-                                         (u:directory-exists-p physical-path)
-                                         (u:file-exists-p physical-path))
-                    :exists-in-database (when (and *rbac*
-                                                (resource-id resource-name))
-                                          t)
-                    :is-directory is-directory
-                    :is-file is-file)))
+                    :resource-table resource-table
+                    :resource-name-field name-field
+                    :exists (when (and *rbac* (resource-id resource-name)) t)
+                    :fs-backed fs-backed
+                    :fs-storage
+                    (when fs-backed
+                      (list
+                        :is-directory is-directory
+                        :is-file is-file
+                        :logical-path logical-path
+                        :physical-path physical-path
+                        :file-name-only (unless is-directory
+                                          (u:filename-only spath))
+                        :leaf-directory (if is-directory
+                                          (u:leaf-directory-only logical-path)
+                                          (u:leaf-directory-only
+                                            (u:path-only logical-path)))
+                        :logical-path-only (if is-directory
+                                             logical-path
+                                             (u:path-only logical-path))
+                        :physical-path-only (if is-directory
+                                              physical-path
+                                              (u:path-only physical-path))
+                        :exists (if is-directory
+                                  (u:directory-exists-p physical-path)
+                                  (u:file-exists-p physical-path)))))))
     (pl:pdebug :in "make-resource-descriptor"
+      :rbac-present (when *rbac* t)
       :root root
       :drl drl
       :probe probe
       :sprobe sprobe
       :spath spath
-      :is-physical is-physical
-      :is-directory is-directory
-      :is-file is-file
-      :physical-path physical-path
-      :relative relative
-      :logical-path logical-path
       :resource-prefix resource-prefix
       :resource-name resource-name
       :resource-id (getf result :resource-id)
-      :file-name-only (getf result :file-name-only)
-      :leaf-directory (getf result :leaf-directory)
-      :logical-path-only (getf result :logical-path-only)
-      :physical-path-only (getf result :physical-path-only)
-      :exists-in-storage (getf result :exists-in-storage)
-      :exists-in-database (getf result :exists-in-database))
-    (if key (getf result key) result)))
+      :exists (getf result :exists)
+      :is-physical is-physical
+      :relative relative
+      :fs-backed fs-backed
+      :is-directory is-directory
+      :is-file is-file
+      :logical-path logical-path
+      :physical-path physical-path
+      :file-name-only (u:tree-get result :fs-storage :file-name-only)
+      :leaf-directory (u:tree-get result :fs-storage :leaf-directory)
+      :logical-path-only (u:tree-get result :fs-storage :logical-path-only)
+      :physical-path-only (u:tree-get result :fs-storage :physical-path-only)
+      :exists-in-storage (u:tree-get result :fs-storage :exists-in-storage))
+    (if keys (apply #'u:tree-get (cons result keys)) result)))
 
 ;;
 ;; BEGIN Database initialization
@@ -430,7 +481,7 @@ end $$;
                                   fields))
             (default-base-definitions
               (list
-                "id uuid primary key default uuid_generate_v4()"
+                "id uuid primary key references resources(id) on delete cascade"
                 "created_at timestamp not null default now()"
                 "updated_at timestamp not null default now()"))
             (default-name-definition
@@ -558,21 +609,21 @@ resource from RESOURCES."
       (equal (getf p :physical-path) path))
     resources))
 
-(defun resource-results (resources keys)
-  ":private: Given a list of RESOURCES (resource descriptor plists) and a list
+(defun resource-results (resource-descriptors keys)
+  ":private: Given a list of RESOURCE-DESCRIPTORS (resource descriptor plists) and a list
 of KEYS, returns the results according to KEYS. If KEYS has more than one key,
 the result is a list of lists, where each inner list contains the values for
 the given KEYS for each resource descriptor. If KEYS has a single key, then
 the result is a list of the values for that key for each resource descriptor.
-Finally, if KEYS is nil, the result is simply RESOURCES."
+Finally, if KEYS is nil, the result is simply RESOURCE-DESCRIPTORS."
   (let* ((key-count (length keys)))
     (cond
       ((> key-count 1)
-        (loop for resource in resources collect
+        (loop for resource in resource-descriptors collect
           (loop for key in keys collect (getf resource key))))
       ((= key-count 1)
-        (mapcar (lambda (p) (getf p (car keys))) resources))
-      (t resources))))
+        (mapcar (lambda (p) (getf p (car keys))) resource-descriptors))
+      (t resource-descriptors))))
 
 (defun list-directory-recursively (path &key keys type)
   ":public: Recursively list the contents of the directory given by PATH, which
@@ -591,16 +642,22 @@ that key in each resource descriptor.
 TYPE can be :file or :directory. When given, it filters the result to include
 elements that are of that type only. Otherwise, the result includes both files
 and directories."
-  (let* ((path-rd (make-resource-descriptor path))
-          (path-abs (getf path-rd :physical-path))
+  (let* ((path-rd (make-resource-descriptor :directory path))
+          (path-abs (u:tree-get path-rd :fs-storage :physical-path))
           paths)
     (cl-fad:walk-directory
       path-abs
       (lambda (p) (push p paths))
       :directories t)
     (let* ((resources (exclude-resource-with-physical-path
-                        (mapcar #'make-resource-descriptor paths)
+                        (mapcar
+                          (lambda (p)
+                            (if (u:ends-with (format nil "~a" p) "/")
+                              (make-resource-descriptor :directory p)
+                              (make-resource-descriptor :file p)))
+                          paths)
                         path-abs))
+
             (filtered (filter-by-type resources type))
             (sorted (sort filtered #'string<
                       :key (lambda (d) (getf d :resource-name)))))
@@ -624,10 +681,15 @@ that key in each resource descriptor.
 TYPE can be :file or :directory. When given, it filters the result to include
 elements that are of that type only. Otherwise, the result includes both files
 and directories."
-  (let* ((path-rd (make-resource-descriptor path))
-          (path-abs (getf path-rd :physical-path))
+  (let* ((path-rd (make-resource-descriptor :directory path))
+          (path-abs (u:tree-get path-rd :fs-storage :physical-path))
           (paths (cl-fad:list-directory path-abs))
-          (resources (mapcar #'make-resource-descriptor paths))
+          (resources (mapcar
+                       (lambda (p)
+                         (if (u:ends-with (format nil "~a" p) "/")
+                            (make-resource-descriptor :directory p)
+                            (make-resource-descriptor :file p)))
+                       paths))
           (filtered (filter-by-type resources type))
           (sorted (sort filtered #'string<
                     :key (lambda (d) (getf d :resource-name)))))
@@ -641,67 +703,56 @@ and directories."
 ;; BEGIN Database operations
 ;;
 
-(defun add-directory (path roles)
-  (unless (re:scan "^/" path)
-    (error "Absolute PATH is required."))
-  (unless (re:scan "/$" path)
-    (error "PATH must be a directory (must end with /)."))
-  (let* ((path-rd (make-resource-descriptor path))
-          (path-abs (getf path-rd :physical-path))
-          (parent-abs (u:path-parent path-abs))
-          (parent-rd (make-resource-descriptor parent-abs))
-          (resource-name (getf path-rd :resource-name)))
-    (when (getf path-rd :exists-in-storage)
-      (error "Directory already exists."))
-    (unless (getf parent-rd :exists-in-storage)
-      (error "Parent directory doesn't exist."))
-    (let ((id (a:add-resource *rbac* resource-name :roles roles)))
-      (ensure-directories-exist path-abs)
-      id)))
+(defun validate-type-string (type-string &optional (types *resource-types*))
+  (unless (u:has (type-strings types) type-string)
+    (error "Unknown resource type: ~a." type-string)))
 
-(defun remove-directory (path user)
-  (unless (re:scan "^/" path)
-    (error "Absolute PATH is required."))
-  (unless (re:scan "/$" path)
-    (error "PATH must be a directory and must end with /."))
-  (let* ((path-rd (make-resource-descriptor path)))
-    (unless (getf path-rd :exists-in-storage)
-      (error "PATH ~a doest not exist." path))
-    (let* ((resources (sort
-                        (list-directory-recursively
-                          (getf path-rd :logical-path)
-                          :keys '(:resource-name :physical-path :is-file))
-                        #'string>
-                        :key #'cadr))
-            (no-delete (remove-if
-                         (lambda (r)
-                           (a:user-allowed *rbac* user "delete" (car r)))
-                         resources)))
-      (when no-delete
-        (error "~a ~a ~a ~a ~a ~{~a~^, ~}"
-          "Failed to remove directory" path
-          ", because user" user
-          "lacks delete permissions on these resources: " no-delete))
-      (loop for (resource physical-path is-file) in resources
-        do (a:remove-resource *rbac* resource)
-        if is-file do (uiop:delete-file-if-exists physical-path)
-        else do (uiop:delete-empty-directory physical-path)))))
+(defun validate-type-keyword (type-key)
+  (unless (u:has (u:plist-keys *resource-types*) type-key)
+    (error "Unknown resource type: ~a." type-key)))
 
-(defun add-user (user password &key
-                  (email "no-email")
-                  (roles a:*default-user-roles*)
-                  other-user)
-  (let ((all-roles (if other-user
-                     (u:distinct-values
-                       (append
-                         (a:list-user-role-names *rbac* other-user)
-                         roles))
-                     roles)))
-    (a:add-user *rbac* user email password :roles all-roles)))
-
-(defun remove-user (user)
-  (a:remove-user *rbac* user))
-
+(defun add-resource (type-key name roles &key source-file)
+  (validate-type-keyword type-key)
+  (let ((unknown-roles (set-difference roles
+                         (a:list-role-names *rbac*)
+                         :test 'string=)))
+    (when unknown-roles
+      (error "Unknown role~p: ~{~a~^, ~}."
+        (length unknown-roles) unknown-roles)))
+  (let* ((rd (make-resource-descriptor type-key name))
+          (parent-directory (when (u:tree-get rd :fs-backed)
+                              (u:path-parent
+                                (u:tree-get rd
+                                  :fs-storage :physical-path-only)))))
+    (when (and
+            (u:tree-get rd :fs-backed)
+            (not (u:directory-exists-p parent-directory)))
+        (error "Parent directory does not exist for resource ~a."
+          (getf rd :resource-name)))
+    (when (or (and (u:tree-get rd :fs-storage :exists)
+                (not (getf rd :resource-name "directories:/")))
+            (u:tree-get rd :exists))
+      (error "Resource already exists."))
+    (when (and
+            (equal type-key :file)
+            (or (not source-file) (not (u:file-exists-p source-file))))
+      (error "Source file must be provided and must exist for file resources."))
+    (let ((id (a:add-resource *rbac* (getf rd :resource-name) :roles roles)))
+      (unless id
+        (error "Failed to add resource ~a." (getf rd :resource-name)))
+      (when (u:tree-get rd :fs-backed)
+        (ensure-directories-exist
+          (u:tree-get rd :fs-storage :physical-path))
+        (when (u:tree-get rd :fs-storage :is-file)
+          (u:copy-file source-file
+            (u:tree-get rd :fs-storage :physical-path))))
+      (let* ((table-name (table-name (getf rd :resource-name)))
+              (name-field (keyword-to-name-field type-key))
+              (sql (format nil "insert into ~a (id, ~a) values ($1, $2)"
+                     table-name name-field)))
+        (a:with-rbac (*rbac*)
+          (db:query sql id (getf rd :resource-name))))
+      (make-resource-descriptor type-key name))))
 
 ;;
 ;; END Database operations
@@ -716,12 +767,11 @@ and directories."
 
 (defun create-resource-tables (types)
   (pl:pdebug :in "create-resource-tables"
-    :types (u:plist-keys
-             (mapcar
-               (lambda (s) (format nil "~(~a~)" s))
-               (non-base-types types))))
+    :types (mapcar
+             (lambda (s) (format nil "~(~a~)" s))
+             (u:plist-keys (non-base-types types))))
   (loop for sql in (create-resource-tables-sql types)
-    do (a:with-rbac (*rbac*) (a:rbac-query (list sql)))))
+    do (a:with-rbac (*rbac*) (db:query sql))))
 
 (defun init-database ()
   (pl:pinfo :in "init-database"
@@ -729,6 +779,7 @@ and directories."
     :port *db-port*
     :db-name *db-name*
     :db-user *db-user*)
+  (validate-resource-types)
   (setf *rbac* (make-instance 'a:rbac-pg
                  :db-host *db-host*
                  :db-port *db-port*
@@ -746,10 +797,12 @@ and directories."
                 "initialize-database call succeeded"
                 "initialize-database call failed"))
     (when success
-      (a:add-permission *rbac* "list"
-        :description "List contents of a directory")
-      ;; Add resource tables
-      (create-resource-tables *resource-types*))))
+      (create-resource-tables *resource-types*)
+      (when (not (a:get-id *rbac* "permissions" "list"))
+        (a:add-permission *rbac* "list"
+          :description "List contents of a directory"))
+      (when (not (a:get-id *rbac* "resources" "directory:/"))
+        (add-resource :directories "/" '("public"))))))
 
 ;; (defun start-web-server ()
 ;;   (setf h:*tmp-directory* *temp-directory*)
