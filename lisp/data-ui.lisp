@@ -61,13 +61,17 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 
 ;; Resource definitions
 (defparameter *valid-type-keys*
-  '(:base
+  '(:anti-patterns
+     :base
      :enable
+     :patterns
      :fields
      :fs-backed))
 (defparameter *valid-field-keys*
-  '(:default
+  '(:anti-patterns
+     :default
      :name
+     :patterns
      :reference
      :required
      :type
@@ -98,7 +102,11 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 (defparameter *resource-types*
   ;; Tables where :base is t already exist in the RBAC system, so they won't be
   ;; created by this system. Tables where :base is nil will be created by this
-  ;; system.
+  ;; system. Also, users of data-ui can add resources of types where :base is
+  ;; nil, but not of types where base is t. Resources of base types are managed
+  ;; entirely by the RBAC system, via the RBAC API. Thus, for example, adding a
+  ;; user follows a different code path than adding a file, setting, or
+  ;; directory.
   '(:users (:enable t :base t :fs-backed nil)
      :resources (:enable t :base t :fs-backed nil)
      ;; Because this is not a base type, its table will be named with the rt_
@@ -107,9 +115,16 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
      ;; 'directory:' followed by the logical path of the directory, i.e.
      ;; "directory:/a/b/".  The resources.resource_name field will contain the
      ;; same value.
-     :directories (:enable t :fs-backed t :fields nil)
-     :files (:enable t :fs-backed t :fields nil)
-     :settings (:enable t :fs-backed nil :fields
+     :directories (:enable t :fs-backed t :fields nil
+                    :patterns ("^/[-a-zA-Z0-9_ @./]+/$|^/$")
+                    :anti-patterns ("//" "^[- @]"))
+     :files (:enable t :fs-backed t :fields nil
+              :patterns ("^/[-a-zA-Z0-9_. @/]+$")
+              :anti-patterns ("//" "/$" "^[- @]"))
+     :settings (:enable t :fs-backed nil
+                 :patterns ("^[-a-zA-Z0-9.]+:[-a-zA-Z0-9.]+$")
+                 :anti-patterns ("^[-.]" "[-.]$")
+                 :fields
                  ;; The automaticall-created rt_settings.setting_name field will
                  ;; consist of the prefix 'setting:' followed by the user name
                  ;; and setting name, separated by a colon, e.g.,
@@ -275,42 +290,40 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
         sprobe))))
 
 (defun make-resource-descriptor (type name-only &rest keys)
-  (unless (member type (u:plist-keys *resource-types*))
-    (error "Unknown resource type: ~a." type))
-  (unless (u:has (cons nil *valid-descriptor-keys*) (car keys))
-    (error "Unknown resource descriptor key: ~a." (car keys)))
-  (unless (u:has (cons nil *valid-fs-storage-keys*) (cdr keys))
-    (error "Unknown fs-storage key: ~a." (cadr keys)))
-  (when (> (length keys) 2)
-    (error "Too many keys provided to make-resource-descriptor."))
+  (validate-type-keyword type)
+  (validate-value-pattern type (keyword-to-name-field type)
+    (format nil "~a" name-only))
+  (when keys
+    (validate-resource-descriptor-key (car keys))
+    (when (cadr keys)
+      (validate-fs-storage-key (cadr keys))))
+  (when (> (length keys) 2) (error "Too many keys."))
   (let* ((root *document-root*)
-          (drl (length root))
           (fs-backed (u:tree-get *resource-types* type :fs-backed))
           (probe (when fs-backed (probe fs-backed name-only root)))
           (sprobe (when fs-backed (sprobe fs-backed probe name-only root)))
           (spath (when fs-backed (spath fs-backed probe sprobe root)))
-          (is-physical (when fs-backed (u:starts-with spath root)))
-          (is-directory (when fs-backed
-                          (if probe
-                            (equal (u:path-type spath) :directory)
-                            (u:ends-with (format nil "~a" name-only) "/"))))
-          (is-file (when fs-backed
-                     (if probe
-                       (equal (u:path-type spath) :file)
-                       (not (u:ends-with (format nil "~a" name-only) "/")))))
-          (physical-path (when fs-backed
-                           (if is-directory
-                             spath
-                             (re:regex-replace "/$" spath ""))))
-          (relative (when fs-backed
-                      (if is-physical (subseq spath drl) spath)))
-          (logical-path (when fs-backed
-                          (if is-physical
-                            (format nil "/~a" relative)
-                            spath)))
+          (is-physical (is-physical type name-only
+                         :fs-backed fs-backed :probe probe :spath spath))
+          (is-directory (is-directory type name-only
+                          :fs-backed fs-backed :probe probe))
+          (is-file (is-file type name-only
+                     :fs-backed fs-backed :probe probe))
+          (physical-path (physical-path type name-only
+                           :fs-backed fs-backed :probe probe
+                          :sprobe sprobe :is-directory is-directory))
+          (relative (relative-path type name-only
+                      :fs-backed fs-backed :probe probe :sprobe sprobe
+                      :is-physical is-physical))
+          (logical-path (logical-path type name-only
+                          :fs-backed fs-backed :probe probe :sprobe sprobe
+                          :spath spath :is-physical is-physical
+                          :relative relative))
           (resource-prefix (format nil "~(~a~)" type))
-          (resource-name (format nil "~a:~a" resource-prefix
-                           (if fs-backed logical-path name-only)))
+          (resource-name (resource-name type name-only
+                           :fs-backed fs-backed
+                           :resource-prefix resource-prefix
+                           :logical-path logical-path))
           (resource-id (resource-id resource-name))
           (resource-table (table-name resource-name))
           (name-field (name-field resource-name))
@@ -330,9 +343,9 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                         :physical-path physical-path
                         :file-name-only (unless is-directory
                                           (u:filename-only spath))
-                        :leaf-directory (if is-directory
-                                          (u:leaf-directory-only logical-path)
-                                          (u:leaf-directory-only
+                        :leaf-directory (u:leaf-directory-only
+                                          (if is-directory
+                                            logical-path
                                             (u:path-only logical-path)))
                         :logical-path-only (if is-directory
                                              logical-path
@@ -345,12 +358,6 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                                   (u:file-exists-p physical-path)))))))
     (pl:pdebug :in "make-resource-descriptor"
       :rbac-present (when *rbac* t)
-      :root root
-      :drl drl
-      :probe probe
-      :sprobe sprobe
-      :spath spath
-      :resource-prefix resource-prefix
       :resource-name resource-name
       :resource-id (getf result :resource-id)
       :exists (getf result :exists)
@@ -361,11 +368,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
       :is-file is-file
       :logical-path logical-path
       :physical-path physical-path
-      :file-name-only (u:tree-get result :fs-storage :file-name-only)
-      :leaf-directory (u:tree-get result :fs-storage :leaf-directory)
-      :logical-path-only (u:tree-get result :fs-storage :logical-path-only)
-      :physical-path-only (u:tree-get result :fs-storage :physical-path-only)
-      :exists-in-storage (u:tree-get result :fs-storage :exists-in-storage))
+      :fs-storage-exists (u:tree-get result :fs-storage :exists-in-storage))
     (if keys (apply #'u:tree-get (cons result keys)) result)))
 
 ;;
@@ -430,22 +433,38 @@ end $$;
     and non-base-types = (non-base-types types)
     and defined-types = (enabled-types types)
     and trigger-sql = (updated-at-trigger-sql-template)
-    for type in (u:plist-keys non-base-types)
-    for type-definition = (getf types type)
+    for type-key in (u:plist-keys non-base-types)
+    for type-definition = (getf types type-key)
     for enabled = (getf type-definition :enabled)
     for fields = (getf type-definition :fields)
-    for table = (keyword-to-table-name type base-types)
+    for table = (keyword-to-table-name type-key base-types)
     for updated-at-trigger = (format nil trigger-sql table table table table)
-    for field-definitions = (field-definitions defined-types type fields)
+    for field-definitions = (field-definitions defined-types type-key fields)
     appending
     (list
       (format nil "~%create table if not exists ~a (~%    ~{~a~^,~%    ~}~%)~%"
         table field-definitions)
       updated-at-trigger)))
 
+(defun name-field-present (name-field fields)
+  (some (lambda (f) (equal (getf f :name) name-field)) fields))
+
+(defun base-field-definitions ()
+  (list
+    "id uuid primary key references resources(id) on delete cascade"
+    "created_at timestamp not null default now()"
+    "updated_at timestamp not null default now()"))
+
+(defun default-definitions (name-field fields)
+  (if (name-field-present name-field fields)
+    (base-field-definitions)
+    (cons (format nil "~a text not null unique" name-field)
+      (base-field-definitions))))
+
 (defun field-definitions (defined-types resource-type fields)
   (loop
     with base-types = (base-types defined-types)
+    and name-field = (keyword-to-name-field resource-type)
     for field in fields
     for validation = (validate-field defined-types resource-type field)
     for reference = (getf field :reference)
@@ -474,41 +493,33 @@ end $$;
     collect (if reference reference-row regular-row)
     into definitions
     finally
-    (let* ((name-field (keyword-to-name-field resource-type))
-            (name-field-present (some
-                                  (lambda (f)
-                                    (equal (getf f :name) name-field))
-                                  fields))
-            (default-base-definitions
-              (list
-                "id uuid primary key references resources(id) on delete cascade"
-                "created_at timestamp not null default now()"
-                "updated_at timestamp not null default now()"))
-            (default-name-definition
-              (list
-                (format nil "~a text not null unique" name-field)))
-            (default-definitions
-              (if name-field-present
-                default-base-definitions
-                (append default-base-definitions default-name-definition))))
-      (return
-        (append default-definitions definitions)))))
+    (return (append
+              definitions
+              (default-definitions name-field fields)))))
 
 (defun validate-field (defined-types resource-type field)
   (let ((reference (getf field :reference)))
     (if reference
       (validate-reference-field defined-types resource-type reference field)
-      (validate-regular-field resource-type field))))
+      (validate-regular-field defined-types resource-type field))))
 
-(defun validate-regular-field (resource-type field)
-  (let ((unknown-keys (set-difference (u:plist-keys field) *valid-field-keys*
-                        :test 'eql))
-         (name (getf field :name))
-         (type (getf field :type :text))
-         (default (getf field :default))
-         (required (getf field :required))
-         (unique (getf field :unique))
-         (errors nil))
+(defun validate-regular-field (defined-types resource-type field)
+  (let* ((unknown-keys (set-difference (u:plist-keys field) *valid-field-keys*
+                         :test 'eql))
+          (name-field (keyword-to-name-field resource-type))
+          (name (getf field :name))
+          (is-name-field (equal name name-field))
+          (type (getf field :type :text))
+          (patterns (u:tree-get defined-types resource-type :patterns))
+          (anti-patterns (u:tree-get defined-types resource-type :anti-patterns))
+          (field-patterns (or (getf field :patterns)
+                            (when is-name-field patterns)))
+          (field-anti-patterns (or (getf field :anti-patterns)
+                                 (when is-name-field anti-patterns)))
+          (default (getf field :default))
+          (required (getf field :required))
+          (unique (getf field :unique))
+          (errors nil))
     (unless (and (stringp name) (not (zerop (length name))))
       (push (format nil "All non-reference fields in ~a must have a name."
               resource-type)
@@ -517,6 +528,14 @@ end $$;
       (push (format nil
               "~@(~r~) unknown field key~:p in field ~a.~a: ~{~a~^, ~}."
               (length unknown-keys) resource-type name unknown-keys)
+        errors))
+    (unless (every #'stringp field-patterns)
+      (push (format nil "All patterns in field ~a.~a must be strings."
+              resource-type name)
+        errors))
+    (unless (every #'stringp field-anti-patterns)
+      (push (format nil "All anti-patterns in field ~a.~a must be strings."
+              resource-type name)
         errors))
     (unless (member type *valid-field-types*)
       (push (format nil "Invalid field type '~a' in field ~a.~a."
@@ -711,35 +730,221 @@ and directories."
   (unless (u:has (u:plist-keys *resource-types*) type-key)
     (error "Unknown resource type: ~a." type-key)))
 
-(defun add-resource (type-key name roles &key source-file)
-  (validate-type-keyword type-key)
+(defun validate-value-pattern (type field-name field-value &key
+                                (types *resource-types*))
+  (let* ((svalue (format nil "~a" field-value))
+          (g-patterns (u:tree-get types type :patterns))
+          (g-anti-patterns (u:tree-get types type :anti-patterns))
+          (name-field (keyword-to-name-field type))
+          (base-fields (u:tree-get types type :fields))
+          (fields (if (some
+                        (lambda (f) (equal (getf f :name) name-field))
+                        base-fields)
+                    base-fields
+                    (cons
+                      (list :name name-field :type :text :unique t :required t)
+                      base-fields)))
+          (field (car (remove-if-not
+                        (lambda (f)
+                          (and
+                            (equal (getf f :type) :text)
+                            (equal (getf f :name) field-name)))
+                        fields)))
+          (patterns (when field
+                      (or (getf field :patterns) g-patterns)))
+          (anti-patterns (when field
+                           (or (getf field :anti-patterns) g-anti-patterns))))
+    (pl:pdebug :in "validate-value-pattern"
+      :type type
+      :field-name field-name
+      :field-value svalue
+      :patterns patterns
+      :anti-patterns anti-patterns)
+    (unless (and
+              (every (lambda (p) (re:scan p svalue)) patterns)
+              (not (some (lambda (a) (re:scan a svalue)) anti-patterns)))
+      (error "Field ~a value '~a' does not match required patterns."
+        field-name field-value))))
+
+
+(defun validate-roles (roles)
   (let ((unknown-roles (set-difference roles
                          (a:list-role-names *rbac*)
                          :test 'string=)))
     (when unknown-roles
       (error "Unknown role~p: ~{~a~^, ~}."
-        (length unknown-roles) unknown-roles)))
-  (let* ((rd (make-resource-descriptor type-key name))
-          (parent-directory (when (u:tree-get rd :fs-backed)
-                              (u:path-parent
-                                (u:tree-get rd
-                                  :fs-storage :physical-path-only)))))
+        (length unknown-roles) unknown-roles))))
+
+(defun parent-directory (resource-descriptor)
+  (when (u:tree-get resource-descriptor :fs-backed)
+    (u:path-parent
+      (u:tree-get resource-descriptor
+        :fs-storage :physical-path-only))))
+
+(defun validate-directory-does-not-exist (type-key name source-file)
+  (let* ((resource-descriptor (make-resource-descriptor type-key name)))
     (when (and
-            (u:tree-get rd :fs-backed)
-            (not (u:directory-exists-p parent-directory)))
-        (error "Parent directory does not exist for resource ~a."
-          (getf rd :resource-name)))
-    (when (or (and (u:tree-get rd :fs-storage :exists)
-                (not (getf rd :resource-name "directories:/")))
-            (u:tree-get rd :exists))
+            (u:tree-get resource-descriptor :fs-backed)
+            (not (u:directory-exists-p (parent-directory resource-descriptor))))
+      (error "Parent directory does not exist for resource ~a."
+        (getf resource-descriptor :resource-name)))
+    (when (or (and (u:tree-get resource-descriptor :fs-storage :exists)
+                (not (getf resource-descriptor :resource-name "directories:/")))
+            (u:tree-get resource-descriptor :exists))
       (error "Resource already exists."))
     (when (and
             (equal type-key :file)
             (or (not source-file) (not (u:file-exists-p source-file))))
-      (error "Source file must be provided and must exist for file resources."))
-    (let ((id (a:add-resource *rbac* (getf rd :resource-name) :roles roles)))
-      (unless id
-        (error "Failed to add resource ~a." (getf rd :resource-name)))
+      (error "Existing source file is required for file resources."))))
+
+(defun logical-path (type-key name-only &key
+                      fs-backed probe sprobe spath is-physical relative)
+  (validate-type-keyword type-key)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name-only)
+  (let* ((root *document-root*)
+          (drl (length root))
+          (fs-backed (or fs-backed
+                       (u:tree-get *resource-types* type-key :fs-backed)))
+          (probe (or probe
+                   (when fs-backed (probe fs-backed name-only root))))
+          (sprobe (or sprobe
+                    (when fs-backed (sprobe fs-backed probe name-only root))))
+          (spath (or spath
+                   (when fs-backed (spath fs-backed probe sprobe root))))
+          (is-physical (or is-physical
+                         (when fs-backed (u:starts-with spath root))))
+          (relative (or relative
+                      (when fs-backed
+                        (if is-physical (subseq spath drl) spath)))))
+    (when fs-backed
+      (if is-physical
+        (format nil "/~a" relative)
+        spath))))
+
+(defun relative-path (type-key name-only &key
+                       fs-backed probe sprobe spath is-physical)
+  (validate-type-keyword type-key)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name-only)
+  (let* ((root *document-root*)
+          (drl (length root))
+          (fs-backed (or fs-backed
+                       (u:tree-get *resource-types* type-key :fs-backed)))
+          (probe (or probe
+                   (when fs-backed (probe fs-backed name-only root))))
+          (sprobe (or sprobe
+                    (when fs-backed (sprobe fs-backed probe name-only root))))
+          (spath (or spath
+                   (when fs-backed (spath fs-backed probe sprobe root))))
+          (is-physical (or is-physical
+                         (when fs-backed (u:starts-with spath root)))))
+    (when fs-backed
+      (if is-physical (subseq spath drl) spath))))
+
+(defun physical-path (type-key name-only &key fs-backed probe sprobe spath
+                       is-directory)
+  (validate-type-keyword type-key)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name-only)
+  (let* ((root *document-root*)
+          (fs-backed (or fs-backed
+                       (u:tree-get *resource-types* type-key :fs-backed)))
+          (probe (or probe
+                   (when fs-backed (probe fs-backed name-only root))))
+          (sprobe (or sprobe
+                    (when fs-backed (sprobe fs-backed probe name-only root))))
+          (spath (or spath
+                   (when fs-backed (spath fs-backed probe sprobe root))))
+          (is-directory (or is-directory
+                          (is-directory type-key name-only
+                            :fs-backed fs-backed :probe probe))))
+    (when fs-backed
+      (if is-directory spath (re:regex-replace "/$" spath "")))))
+
+(defun resource-name (type-key name-only &key
+                       fs-backed resource-prefix logical-path)
+  (validate-type-keyword type-key)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name-only)
+  (let ((fs-backed (or fs-backed
+                     (u:tree-get *resource-types* type-key :fs-backed)))
+         (resource-prefix (or resource-prefix
+                            (format nil "~(~a~)" type-key)))
+         (logical-path (or logical-path
+                         (logical-path type-key name-only))))
+    (format nil "~a:~a"
+      resource-prefix
+      (if fs-backed logical-path name-only))))
+
+(defun is-file (type-key name-only &key fs-backed probe)
+  (validate-type-keyword type-key)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name-only)
+  (let* ((fs-backed (or fs-backed
+                      (u:tree-get *resource-types* type-key :fs-backed)))
+         (probe (or probe
+                  (when fs-backed
+                    (probe fs-backed name-only *document-root*)))))
+    (when fs-backed
+      (if probe
+        (equal (u:path-type probe) :file)
+        (not (u:ends-with (format nil "~a" name-only) "/"))))))
+
+(defun is-directory (type-key name-only &key fs-backed probe)
+  (validate-type-keyword type-key)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name-only)
+  (let* ((fs-backed (or fs-backed
+                      (u:tree-get *resource-types* type-key :fs-backed)))
+         (probe (or probe
+                  (when fs-backed
+                    (probe fs-backed name-only *document-root*)))))
+    (when fs-backed
+      (if probe
+        (equal (u:path-type probe) :directory)
+        (u:ends-with (format nil "~a" name-only) "/")))))
+
+(defun is-physical (type-key name-only &key fs-backed probe spath)
+  (validate-type-keyword type-key)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name-only)
+  (let* ((root *document-root*)
+         (fs-backed (or fs-backed
+                      (u:tree-get *resource-types* type-key :fs-backed)))
+         (probe (or probe
+                  (when fs-backed (probe fs-backed name-only root))))
+         (spath (or spath
+                  (when fs-backed (spath fs-backed probe name-only root)))))
+    (when fs-backed
+      (and probe (u:starts-with spath root)))))
+
+(defun named-values (id name other-named-values)
+  (unless (consp id)
+    (error "ID must be a (name . value) pair."))
+  (unless (consp name)
+    (error "NAME must be a (name . value) pair."))
+  (unless (and (listp other-named-values)
+            (every #'consp other-named-values)
+            (every (lambda (nv)
+                     (and (stringp (car nv)) (atom (cdr nv))))
+              other-named-values))
+    (error "OTHER-NAMED-VALUES must be a list of (name . value) pairs."))
+  (let* ((named-values (append (list id name) other-named-values))
+          (names (mapcar 'car named-values))
+          (values (mapcar 'cdr named-values))
+          (place-holders (loop for a from 1 to (length names)
+                           collect (format nil "$~d" a))))
+    (unless (every
+              (lambda (v)
+                (and (consp v) (stringp (car v)) (atom (cdr v))))
+              named-values)
+      (error "ID and NAME must be (name . value) pairs. OTHER-NAMED-VALUES must
+be a list of such pairs."))
+    (list names values place-holders)))
+
+(defun add-resource (type-key name roles &key other-named-values source-file)
+  (validate-type-keyword type-key)
+  (validate-roles roles)
+  (validate-directory-does-not-exist type-key name source-file)
+  (validate-value-pattern type-key (keyword-to-name-field type-key) name)
+  (let* ((id (a:add-resource *rbac* (resource-name type-key name) :roles roles))
+          (rd (when id (make-resource-descriptor type-key name))))
+      (unless rd
+        (error "Failed to add resource ~a." (resource-name type-key name)))
       (when (u:tree-get rd :fs-backed)
         (ensure-directories-exist
           (u:tree-get rd :fs-storage :physical-path))
@@ -748,10 +953,18 @@ and directories."
             (u:tree-get rd :fs-storage :physical-path))))
       (let* ((table-name (table-name (getf rd :resource-name)))
               (name-field (keyword-to-name-field type-key))
-              (sql (format nil "insert into ~a (id, ~a) values ($1, $2)"
-                     table-name name-field)))
+              (named-values (named-values
+                              `("id" . ,(getf rd :resource-id))
+                              `(,name-field . ,(getf rd :resource-name))
+                              other-named-values))
+              (names (first named-values))
+              (values (second named-values))
+              (place-holders (third named-values))
+              (sql (format nil "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
+                     table-name names place-holders))
+              (params (cons sql values)))
         (a:with-rbac (*rbac*)
-          (db:query sql id (getf rd :resource-name))))
+          (a:rbac-query params))
       (make-resource-descriptor type-key name))))
 
 ;;

@@ -170,32 +170,36 @@
 
 (test create-resource-tables-sql
   (let ((reference
-          '(:users (:enable t :base t)
-             :directories (:enable t :fields nil)
-             :files
-             (:enable t
-               :fields ((:name "size" :type :integer)
-                         (:name "type" :type :text)
-                         (:name "description" :type :text
-                           :default "No description")
-                         (:name "hash" :type :text :unique t)
-                         (:name "xgroup" :type :integer :required t)))
-             :settings
-             (:enable t
-               :fields
-               ((:reference :users)
-                 (:name "setting_name" :type :text :required t)
-                 (:name "setting_value" :type :text :default "NIL"))))))
+          '(:users (:enable t :base t :fs-backed nil)
+             :resources (:enable t :base t :fs-backed nil)
+             :directories (:enable t :fs-backed t :fields nil
+                            :patterns ("^/[-a-zA-Z0-9_/]+/$|^/$")
+                            :anti-patterns ("//"))
+             :files (:enable t :fs-backed t
+                      :patterns ("^/[-a-zA-Z0-9_./]+$")
+                      :anti-patterns ("//" "/$")
+                      :fields
+                      ((:name "size" :type :integer)
+                        (:name "type" :type :text :required t)
+                        (:name "xgroup" :type :text :unique t
+                          :default "main")))
+             :settings (:enable t :fs-backed nil
+                         :patterns ("^[-a-zA-Z0-9.]+:[-a-zA-Z0-9.]+$")
+                         :anti-patterns ("^[-.]" "[-.]$")
+                         :fields
+                         ((:reference :users)
+                           (:name "setting_value" :type :text
+                             :default "NIL"))))))
   ;; Happy case
     (is (equal '("
 create table if not exists rt_directories (
+    directory_name text not null unique,
     id uuid primary key references resources(id) on delete cascade,
     created_at timestamp not null default now(),
-    updated_at timestamp not null default now(),
-    directory_name text not null unique
+    updated_at timestamp not null default now()
 )
 "
-                  "
+ "
 do $$
 begin
     if not exists (
@@ -210,20 +214,18 @@ begin
     end if;
 end $$;
 "
-                  "
+ "
 create table if not exists rt_files (
+    size integer,
+    type text not null,
+    xgroup text unique default 'main',
+    file_name text not null unique,
     id uuid primary key references resources(id) on delete cascade,
     created_at timestamp not null default now(),
-    updated_at timestamp not null default now(),
-    file_name text not null unique,
-    size integer,
-    type text,
-    description text default 'No description',
-    hash text unique,
-    xgroup integer not null
+    updated_at timestamp not null default now()
 )
 "
-                  "
+ "
 do $$
 begin
     if not exists (
@@ -238,17 +240,17 @@ begin
     end if;
 end $$;
 "
-                  "
+ "
 create table if not exists rt_settings (
+    user_id uuid not null references users(id) on delete cascade,
+    setting_value text default 'NIL',
+    setting_name text not null unique,
     id uuid primary key references resources(id) on delete cascade,
     created_at timestamp not null default now(),
-    updated_at timestamp not null default now(),
-    user_id uuid not null references users(id) on delete cascade,
-    setting_name text not null,
-    setting_value text default 'NIL'
+    updated_at timestamp not null default now()
 )
 "
-                  "
+ "
 do $$
 begin
     if not exists (
@@ -270,30 +272,34 @@ end $$;
       ;; Change the size field's :name key to :namex, such that there's no
       ;; longer a :name key.
       (u:tree-put :namex copy :files :fields 0 0)
-      (is (equal '(:users (:enable t :base t)
-                    :directories (:enable t :fields nil)
-                    :files
-                    (:enable t
-                      :fields ((:namex "size" :type :integer)
-                                (:name "type" :type :text)
-                                (:name "description" :type :text
-                                  :default "No description")
-                                (:name "hash" :type :text :unique t)
-                                (:name "xgroup" :type :integer :required t)))
-                    :settings
-                    (:enable t
-                      :fields
-                      ((:reference :users)
-                        (:name "setting_name" :type :text :required t)
-                        (:name "setting_value" :type :text :default "NIL"))))
+      (is (equal '(:users (:enable t :base t :fs-backed nil)
+                    :resources (:enable t :base t :fs-backed nil)
+                    :directories (:enable t :fs-backed t :fields nil
+                                   :patterns ("^/[-a-zA-Z0-9_/]+/$|^/$")
+                                   :anti-patterns ("//"))
+                    :files (:enable t :fs-backed t
+                             :patterns ("^/[-a-zA-Z0-9_./]+$")
+                             :anti-patterns ("//" "/$")
+                             :fields
+                             ((:namex "size" :type :integer)
+                               (:name "type" :type :text :required t)
+                               (:name "xgroup" :type :text :unique t
+                                 :default "main")))
+                    :settings (:enable t :fs-backed nil
+                                :patterns ("^[-a-zA-Z0-9.]+:[-a-zA-Z0-9.]+$")
+                                :anti-patterns ("^[-.]" "[-.]$")
+                                :fields
+                                ((:reference :users)
+                                  (:name "setting_value" :type :text
+                                    :default "NIL"))))
             copy))
       (is (equal 6 (length (create-resource-tables-sql reference))))
       (signals error (create-resource-tables-sql copy)))
 
-    ;; If a field can't have both :unique t and :required t
+    ;; If a field can't have both :required t and a value for :default
     (let ((copy (u:deep-copy reference)))
       (u:tree-put '(:name "xgroup" :type :integer :required t :default 1)
-        copy :files :fields 4)
+        copy :files :fields 2)
       (signals error (create-resource-tables-sql copy)))
 
     ;; If a field has a default, that default has to be of the same type as the
@@ -314,13 +320,13 @@ end $$;
     ;; :unique must be t or nil
     (let ((copy (u:deep-copy reference)))
       ;; Change the value of the :unique attribute to 1 (instead of t)
-      (u:tree-put 1 copy :files :fields 3 :unique)
+      (u:tree-put 1 copy :files :fields 2 :unique)
       (signals error (create-resource-tables-sql copy)))
 
     ;; :required must be t or nil
     (let ((copy (u:deep-copy reference)))
       ;; Change the value of the :required attribute to 1 (instead of t)
-      (u:tree-put 1 copy :files :fields 4 :required)
+      (u:tree-put 1 copy :files :fields 1 :required)
       (signals error (create-resource-tables-sql copy)))
 
     ;; Set :required to nil
@@ -329,12 +335,8 @@ end $$;
                          (remove-if-not
                            (lambda (s) (re:scan "create table .+ rt_files" s))
                            (create-resource-tables-sql copy)))))
-      (u:tree-put nil copy :files :fields 4 :required)
-      (u:tree-put nil copy :files :fields 3 :unique)
-      (is-true (re:scan "xgroup integer not null" files-sql))
-      (is-false (re:scan "xgroup integer\\n" files-sql))
-      (is-true (re:scan "hash text unique" files-sql))
-      (is-false  (re:scan "hash text,\\n" files-sql)))))
+      (is-true (re:scan "xgroup text unique default 'main'" files-sql))
+      (is-false (re:scan "xgroup text\\n" files-sql)))))
 
 (test create-resource-tables-sql-with-reference
   (let* ((reference '(:directories (:enable t :fields nil)
@@ -349,7 +351,7 @@ end $$;
     (is (equal
           (format nil "~a ~a"
             "directory_id uuid not null references rt_directories(id)"
-            "on delete cascade")
+            "on delete cascade,")
           (when reference-field-sql (u:trim reference-field-sql))))
     (u:tree-put :folders copy :files :fields 0 :reference)
     (signals error (create-resource-tables-sql copy))))
@@ -434,6 +436,11 @@ end $$;
       (add-resource :directories "/bravo/one/" '("admin")))
     (is-true (add-resource :directories "/bravo/" '("admin")))
     (is-true (add-resource :directories "/bravo/one/" '("admin")))))
+
+;; (test add-file
+;;   (clear-data)
+;;   (let* ((rd-a ((add-resource :directories "/alpha/" '("admin")))))
+;;     (add-resource :file "/alpha/a.txt"
 
 ;;
 ;; Run tests
