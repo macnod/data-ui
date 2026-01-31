@@ -43,23 +43,6 @@
 
 (init-database)
 
-;; What data-ui starts with
-;; (defparameter *base-users* (list-user-names *rbac*))
-;; (defparameter *base-roles* (list-role-names *rbac*))
-;; (defparameter *base-permissions* (list-permission-names *rbac*))
-
-;; (defun clear-database ()
-;;   (loop for user in (u:exclude (list-user-names *rbac*) *base-users*)
-;;     do (remove-user *rbac* user))
-;;   (loop for permission in (u:exclude (list-permission-names *rbac*)
-;;                             *base-permissions*)
-;;     do (remove-permission *rbac* permission))
-;;   (loop for role in (u:exclude (list-role-names *rbac*) *base-roles*)
-;;     do (remove-role *rbac* role))
-;;   (loop for resource in (list-resource-names *rbac*)
-;;     do (remove-resource *rbac* resource))
-;;   t)
-
 (defun is-uuid (s)
   (when (re:scan uuid-regex s) t))
 
@@ -72,12 +55,58 @@
   (cl-fad:delete-directory-and-files *document-root* :if-does-not-exist :ignore)
   (ensure-directories-exist *document-root*))
 
+(defun clear-users ()
+  (loop with users = (u:exclude
+                       (a:list-user-names *rbac*)
+                       (a:initial-users))
+    for user in users
+    for id = (a:remove-user *rbac* user)
+    always id))
+
+(defun clear-permissions ()
+  (loop with permissions = (u:exclude
+                             (a:list-permission-names *rbac*)
+                             (cons "list" (a:initial-permissions)))
+    for permission in permissions
+    for id = (a:remove-permission *rbac* permission)
+    always id))
+
+(defun clear-roles ()
+  (loop with roles = (u:exclude
+                       (a:list-role-names *rbac*)
+                       (a:initial-roles))
+    for role in roles
+    for id = (a:remove-role *rbac* role)
+    always id))
+
+(defun resource-names ()
+  (u:safe-sort
+    (u:exclude (a:list-resource-names *rbac*) "directories:/")
+    :predicate #'string=))
+
+(defun clear-resources ()
+  (loop
+    for resource in (resource-names)
+    for id = (a:remove-resource *rbac* resource)
+    always id))
+
+(defun input-file (&optional file)
+  (u:join-paths *package-root* "tests" "input-files" (if file file "/")))
+
+(defun reset-input-files ()
+  (let ((input-files (input-file)))
+    (when (u:directory-exists-p input-files)
+      (cl-fad:delete-directory-and-files input-files
+        :if-does-not-exist :ignore))
+    (ensure-directories-exist input-files)
+    (loop for a from 1 to 5
+      for file = (format nil "file-~d.txt" a)
+      for content = (format nil "File ~d content" a)
+      do (u:spew content (u:join-paths input-files file)))))
+
 (defun clear-data ()
-  (loop with resource-names = (u:safe-sort
-                                (u:exclude
-                                  (a:list-resource-names *rbac*)
-                                  "directories:/")
-                                :predicate #'string=)
+  (reset-input-files)
+  (loop with resource-names = (resource-names)
     for resource in resource-names
     for parts = (re:split ":" resource)
     for type-string = (car parts)
@@ -90,8 +119,10 @@
     for is-directory = (u:tree-get rd :fs-storage :is-directory)
     for file = (when is-file
                  (u:tree-get rd :fs-storage :physical-path))
+    for file-exists = (when file (u:file-exists-p file))
     for directory = (when is-directory
                       (u:tree-get rd :fs-storage :physical-path))
+    for directory-exists = (when directory (u:directory-exists-p directory))
     for sql = (format nil "delete from ~a where ~a = $1" table field)
     do (pdebug :in "clear-data" :status "deleting"
          :type-string type-string
@@ -105,48 +136,30 @@
          :file file
          :directory directory
          :sql sql)
-    when file do
+    when file-exists do
     (pdebug :in "clear-data" :status "deleting file" :file file)
     (delete-file file)
-    when directory do
+    when directory-exists do
     (pdebug :in "clear-data" :status "deleting directory"
       :directory directory)
     (cl-fad:delete-directory-and-files directory
       :if-does-not-exist :ignore)
     finally
-    (let ((users-cleared
-            (loop with users = (u:exclude
-                                 (a:list-user-names *rbac*)
-                                 (a:initial-users))
-              for user in users
-              for id = (a:remove-user *rbac* user)
-              always id))
-           (permissions-cleared
-             (loop with permissions = (u:exclude
-                                        (a:list-permission-names *rbac*)
-                                        (cons "list" (a:initial-permissions)))
-               for permission in permissions
-               for id = (a:remove-permission *rbac* permission)
-               always id))
-           (roles-cleared
-             (loop with roles = (u:exclude
-                                  (a:list-role-names *rbac*)
-                                  (a:initial-roles))
-               for role in roles
-               for id = (a:remove-role *rbac* role)
-               always id))
-           (resources-cleared
-            (loop
-              for resource in resource-names
-              for id = (a:remove-resource *rbac* resource)
-              always id)))
+    (let ((users-cleared (clear-users))
+           (permissions-cleared (clear-permissions))
+           (roles-cleared (clear-roles))
+           (resources-cleared (clear-resources)))
       (pinfo :in "clear-data"
         :status "cleared data"
         :resource-names resource-names
         :all-users-cleared users-cleared
         :all-permission-cleared permissions-cleared
         :all-roles-cleared roles-cleared
-        :all-resources-cleared resources-cleared))))
+        :all-resources-cleared resources-cleared))
+    ;; In case a test terminates uncleanly and the system doesn't have
+    ;; the opportunity to delete all files associated with resources
+    ;; and rt entries.
+    (clear-shared-files)))
 
 (def-suite data-ui-suite :description "FiveAM tests for the data-ui package")
 
@@ -173,11 +186,11 @@
           '(:users (:enable t :base t :fs-backed nil)
              :resources (:enable t :base t :fs-backed nil)
              :directories (:enable t :fs-backed t :fields nil
-                            :patterns ("^/[-a-zA-Z0-9_/]+/$|^/$")
-                            :anti-patterns ("//"))
+                            :patterns ("^/[-a-zA-Z0-9_ @./]+/$|^/$")
+                            :anti-patterns ("//" "^[- @]"))
              :files (:enable t :fs-backed t
-                      :patterns ("^/[-a-zA-Z0-9_./]+$")
-                      :anti-patterns ("//" "/$")
+                      :patterns ("^/[-a-zA-Z0-9_. @/]+$")
+                      :anti-patterns ("//" "/$" "^[- @]")
                       :fields
                       ((:name "size" :type :integer)
                         (:name "type" :type :text :required t)
@@ -272,27 +285,8 @@ end $$;
       ;; Change the size field's :name key to :namex, such that there's no
       ;; longer a :name key.
       (u:tree-put :namex copy :files :fields 0 0)
-      (is (equal '(:users (:enable t :base t :fs-backed nil)
-                    :resources (:enable t :base t :fs-backed nil)
-                    :directories (:enable t :fs-backed t :fields nil
-                                   :patterns ("^/[-a-zA-Z0-9_/]+/$|^/$")
-                                   :anti-patterns ("//"))
-                    :files (:enable t :fs-backed t
-                             :patterns ("^/[-a-zA-Z0-9_./]+$")
-                             :anti-patterns ("//" "/$")
-                             :fields
-                             ((:namex "size" :type :integer)
-                               (:name "type" :type :text :required t)
-                               (:name "xgroup" :type :text :unique t
-                                 :default "main")))
-                    :settings (:enable t :fs-backed nil
-                                :patterns ("^[-a-zA-Z0-9.]+:[-a-zA-Z0-9.]+$")
-                                :anti-patterns ("^[-.]" "[-.]$")
-                                :fields
-                                ((:reference :users)
-                                  (:name "setting_value" :type :text
-                                    :default "NIL"))))
-            copy))
+      (is (equal :name (u:tree-get reference :files :fields 0 0)))
+      (is (equal :namex (u:tree-get copy :files :fields 0 0)))
       (is (equal 6 (length (create-resource-tables-sql reference))))
       (signals error (create-resource-tables-sql copy)))
 
@@ -365,6 +359,9 @@ end $$;
                          :resource-name "directories:/"
                          :resource-table "rt_directories"
                          :resource-name-field "directory_name"
+                         :resource-exists t
+                         :rt-entry-exists t
+                         :fs-entry-exists t
                          :exists t
                          :fs-backed t
                          :fs-storage
@@ -390,7 +387,8 @@ end $$;
     (is (equal "directories:/alpha/"
           (make-resource-descriptor :directories "/alpha/" :resource-name)))
     (is-false (make-resource-descriptor :directories "/alpha/" :resource-id))
-    (is-false (make-resource-descriptor :directories "/alpha/" :exists))
+    (is-false (make-resource-descriptor :directories "/alpha/"
+                :resource-exists))
     (is-true (make-resource-descriptor :directories "/alpha/" :fs-backed))
     (is-true (make-resource-descriptor :directories "/alpha/"
                :fs-storage :is-directory))
@@ -402,7 +400,7 @@ end $$;
     (let ((rd (make-resource-descriptor :files "/alpha/bravo/c.txt")))
       (is-false (is-uuid (getf rd :resource-id)))
       (is (equal "files:/alpha/bravo/c.txt" (getf rd :resource-name)))
-      (is-false (getf rd :exists))
+      (is-false (getf rd :resource-exists))
       (is-true (getf rd :fs-backed))
       (is-false (u:tree-get rd :fs-storage :is-directory))
       (is-true (u:tree-get rd :fs-storage :is-file))
@@ -420,27 +418,41 @@ end $$;
 
 (test add-directory
   (clear-data)
-  (let* ((rd-alpha (add-resource :directories "/alpha/" '("admin")))
+  (let* ((rd-alpha (add-resource :directories "/alpha/"))
           (rd-bravo (make-resource-descriptor :directories "/bravo/"))
           (id (getf rd-alpha :resource-id)))
     (is-true (is-uuid id))
     (is (equal id (getf rd-alpha :resource-id)))
     (is-true (u:tree-get rd-alpha :fs-storage :is-directory))
     (is-false (u:tree-get rd-alpha :fs-storage :is-file))
-    (is-true (getf rd-alpha :exists))
+    (is-true (getf rd-alpha :resource-exists))
     (is-true (u:tree-get rd-alpha :fs-storage :exists))
     (is-false (getf rd-bravo :resource-id))
     (is-true (validate-resource-descriptor
-               (add-resource :directories "/alpha/one/" '("admin"))))
-    (signals error
-      (add-resource :directories "/bravo/one/" '("admin")))
-    (is-true (add-resource :directories "/bravo/" '("admin")))
-    (is-true (add-resource :directories "/bravo/one/" '("admin")))))
+               (add-resource :directories "/alpha/one/")))
+    (signals error (add-resource :directories "/bravo/one/"))
+    (is-true (add-resource :directories "/bravo/"))
+    (is-true (add-resource :directories "/bravo/one/"))))
 
-;; (test add-file
-;;   (clear-data)
-;;   (let* ((rd-a ((add-resource :directories "/alpha/" '("admin")))))
-;;     (add-resource :file "/alpha/a.txt"
+(test add-file
+  (clear-data)
+  (add-resource :directories "/alpha/")
+  (let* ((file-1 "/alpha/file-1.txt")
+          (file-2 "/bravo/file-2.txt")
+          (resource-name-1 (format nil "files:~a" file-1))
+          (rd-file (add-resource :files file-1
+                    :source-file (input-file (u:filename-only file-1)))))
+    (is-true (is-uuid (getf rd-file :resource-id)))
+    (is (equal resource-name-1 (getf rd-file :resource-name)))
+    (is-true (u:tree-get rd-file :fs-backed))
+    (is-true (u:tree-get rd-file :fs-storage :is-file))
+    (is-false (u:tree-get rd-file :fs-storage :is-directory))
+    (signals error (add-resource :files file-2
+                     :source-file (input-file (u:filename-only file-2))))
+    (add-resource :directories "/bravo/")
+    (is-true (validate-resource-descriptor
+               (add-resource :files file-2
+                 :source-file (input-file (u:filename-only file-2)))))))
 
 ;;
 ;; Run tests

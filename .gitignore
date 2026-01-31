@@ -31,3 +31,5 @@ prod/shared-files/*
 prod/kube/rendered-manifests.yaml
 dev/kube/rendered-manifests.yaml
 *.log
+/tests/input-files/
+/tests/shared-files/

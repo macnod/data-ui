@@ -84,11 +84,14 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 (defparameter *valid-descriptor-keys*
   '(:exists
      :fs-backed
+     :fs-entry-exists
      :fs-storage
+     :resource-exists
      :resource-id
      :resource-name
      :resource-name-field
-     :resource-table))
+     :resource-table
+     :rt-entry-exists))
 (defparameter *valid-fs-storage-keys*
   '(:exists
      :file-name-only
@@ -263,6 +266,37 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
   (when *rbac*
     (a:get-id *rbac* "resources" resource-name)))
 
+(defun resource-exists (type-key name &optional (types *resource-types*))
+  (when *rbac*
+    (let* ((resource-name (resource-name type-key name))
+            (table (table-name resource-name))
+            (field (name-field resource-name))
+            (fs-backed (u:tree-get types type-key :fs-backed))
+            (physical-path (when fs-backed
+                             (format nil "~a"
+                               (or
+                                 (probe-file name)
+                                 (probe-file
+                                   (u:join-paths *document-root* name))))))
+            (sql (format nil "select 1 from ~a where ~a = $1" table field)))
+      (pl:pdebug :in "resource-exists"
+        :type type-key
+        :name name
+        :resource-name resource-name
+        :table table
+        :field field
+        :fs-backed fs-backed
+        :physical-path physical-path)
+      (and
+        (resource-id resource-name)
+        (a:with-rbac (*rbac*) (db:query sql name :single))
+        (or
+          (not fs-backed)
+          (and physical-path
+            (if (u:ends-with name "/")
+              (u:directory-exists-p physical-path)
+              (u:file-exists-p physical-path))))))))
+
 (defun probe (fs-backed name-only root)
   (when fs-backed
     (if (equal (format nil "~a" name-only) "/")
@@ -327,12 +361,30 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
           (resource-id (resource-id resource-name))
           (resource-table (table-name resource-name))
           (name-field (name-field resource-name))
+          (resource-exists (when (and *rbac* (resource-id resource-name)) t))
+          (rt-entry-query (format nil "select 1 from ~a where ~a = $1"
+                            resource-table name-field))
+          (rt-entry-exists (when (and
+                                   '*rbac*
+                                   (a:with-rbac (*rbac*)
+                                     (db:query rt-entry-query resource-name
+                                       :single)))
+                             t))
+          (fs-entry-exists (if fs-backed
+                             (if is-directory
+                               (u:directory-exists-p physical-path)
+                               (u:file-exists-p physical-path))
+                             t))
+          (exists (and resource-exists rt-entry-exists fs-entry-exists))
           (result (list
                     :resource-id resource-id
                     :resource-name resource-name
                     :resource-table resource-table
                     :resource-name-field name-field
-                    :exists (when (and *rbac* (resource-id resource-name)) t)
+                    :resource-exists resource-exists
+                    :rt-entry-exists rt-entry-exists
+                    :fs-entry-exists fs-entry-exists
+                    :exists exists
                     :fs-backed fs-backed
                     :fs-storage
                     (when fs-backed
@@ -353,22 +405,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                         :physical-path-only (if is-directory
                                               physical-path
                                               (u:path-only physical-path))
-                        :exists (if is-directory
-                                  (u:directory-exists-p physical-path)
-                                  (u:file-exists-p physical-path)))))))
-    (pl:pdebug :in "make-resource-descriptor"
-      :rbac-present (when *rbac* t)
-      :resource-name resource-name
-      :resource-id (getf result :resource-id)
-      :exists (getf result :exists)
-      :is-physical is-physical
-      :relative relative
-      :fs-backed fs-backed
-      :is-directory is-directory
-      :is-file is-file
-      :logical-path logical-path
-      :physical-path physical-path
-      :fs-storage-exists (u:tree-get result :fs-storage :exists-in-storage))
+                        :exists fs-entry-exists)))))
     (if keys (apply #'u:tree-get (cons result keys)) result)))
 
 ;;
@@ -781,21 +818,47 @@ and directories."
       (u:tree-get resource-descriptor
         :fs-storage :physical-path-only))))
 
-(defun validate-directory-does-not-exist (type-key name source-file)
-  (let* ((resource-descriptor (make-resource-descriptor type-key name)))
+(defun validate-directory-structure (type-key name)
+  (let* ((rd (make-resource-descriptor type-key name))
+          (is-root (equal (getf rd :resource-name) "directories:/"))
+          (fs-backed (getf rd :fs-backed))
+          (is-directory (u:tree-get rd :fs-storage :is-directory))
+          (parent-dir (when fs-backed
+                        (if (u:tree-get rd :fs-storage :is-directory)
+                            (parent-directory rd)
+                            (u:tree-get rd :fs-storage :physical-path-only))))
+          (exists (and fs-backed
+                    (getf rd :fs-backend)
+                    (u:tree-get rd :resource-exists)
+                    (u:tree-get rd :rt-entry-exists)
+                    (u:tree-get rd :fs-storage :exists))))
+    (pl:pdebug :in "validate-directory-structure"
+      :type-key type-key
+      :name name
+      :fs-backed fs-backed
+      :is-directory is-directory
+      :is-root is-root
+      :parent-dir parent-dir
+      :exists exists)
     (when (and
-            (u:tree-get resource-descriptor :fs-backed)
-            (not (u:directory-exists-p (parent-directory resource-descriptor))))
-      (error "Parent directory does not exist for resource ~a."
-        (getf resource-descriptor :resource-name)))
-    (when (or (and (u:tree-get resource-descriptor :fs-storage :exists)
-                (not (getf resource-descriptor :resource-name "directories:/")))
-            (u:tree-get resource-descriptor :exists))
-      (error "Resource already exists."))
-    (when (and
-            (equal type-key :file)
-            (or (not source-file) (not (u:file-exists-p source-file))))
-      (error "Existing source file is required for file resources."))))
+            fs-backed
+            (not is-root)
+            (not (u:directory-exists-p parent-dir)))
+      (error "Parent directory ~a does not exist for resource ~a."
+        parent-dir (u:tree-get rd :resource-name)))
+    (when (and fs-backed exists)
+      (error "Resource ~a already exists at ~a."
+        (getf rd :resource-name)
+        (u:tree-get rd :fs-storage :physical-path)))))
+
+(defun validate-source-file (type-key name-only source-file)
+  (let* ((rd (make-resource-descriptor type-key name-only))
+          (is-file (u:tree-get rd :fs-storage :is-file)))
+    (when (equal type-key :files)
+      (unless source-file
+        (error "Source file is required for file resources."))
+      (unless (and is-file (u:file-exists-p source-file))
+        (error "Source file '~a' does not exist." source-file)))))
 
 (defun logical-path (type-key name-only &key
                       fs-backed probe sprobe spath is-physical relative)
@@ -936,35 +999,48 @@ and directories."
 be a list of such pairs."))
     (list names values place-holders)))
 
-(defun add-resource (type-key name roles &key other-named-values source-file)
+(defun add-resource (type-key name &key
+                      (roles '("admin")) other-named-values source-file)
   (validate-type-keyword type-key)
   (validate-roles roles)
-  (validate-directory-does-not-exist type-key name source-file)
+  (validate-directory-structure type-key name)
+  (validate-source-file type-key name source-file)
   (validate-value-pattern type-key (keyword-to-name-field type-key) name)
+  (when (equal type-key :files)
+    (unless source-file
+      (error "SOURCE-FILE required for resources of type :files.")))
   (let* ((id (a:add-resource *rbac* (resource-name type-key name) :roles roles))
           (rd (when id (make-resource-descriptor type-key name))))
-      (unless rd
-        (error "Failed to add resource ~a." (resource-name type-key name)))
-      (when (u:tree-get rd :fs-backed)
-        (ensure-directories-exist
+    (unless rd
+      (error "Failed to add resource ~a." (resource-name type-key name)))
+    (pl:pdebug :in "add-resource" :status "added resource"
+      :id id
+      :resource-id (getf rd :resource-id)
+      :resource-name (getf rd :resource-name)
+      :fs-backed (getf rd :fs-backed))
+    (when (u:tree-get rd :fs-backed)
+      (ensure-directories-exist
+        (u:tree-get rd :fs-storage :physical-path-only))
+      (pl:pdebug :in "add-resource" :status "directory ensured"
+        :physical-path (u:tree-get rd :fs-storage :physical-path-only))
+      (when (u:tree-get rd :fs-storage :is-file)
+        (u:copy-file source-file
           (u:tree-get rd :fs-storage :physical-path))
-        (when (u:tree-get rd :fs-storage :is-file)
-          (u:copy-file source-file
-            (u:tree-get rd :fs-storage :physical-path))))
-      (let* ((table-name (table-name (getf rd :resource-name)))
-              (name-field (keyword-to-name-field type-key))
-              (named-values (named-values
-                              `("id" . ,(getf rd :resource-id))
-                              `(,name-field . ,(getf rd :resource-name))
-                              other-named-values))
-              (names (first named-values))
-              (values (second named-values))
-              (place-holders (third named-values))
-              (sql (format nil "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
-                     table-name names place-holders))
-              (params (cons sql values)))
-        (a:with-rbac (*rbac*)
-          (a:rbac-query params))
+        (pl:pdebug :in "add-resource" :status "file copied")))
+    (let* ((table-name (table-name (getf rd :resource-name)))
+            (name-field (keyword-to-name-field type-key))
+            (named-values (named-values
+                            `("id" . ,(getf rd :resource-id))
+                            `(,name-field . ,(getf rd :resource-name))
+                            other-named-values))
+            (names (first named-values))
+            (values (second named-values))
+            (place-holders (third named-values))
+            (sql (format nil "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
+                   table-name names place-holders))
+            (params (cons sql values)))
+      (a:with-rbac (*rbac*)
+        (a:rbac-query params))
       (make-resource-descriptor type-key name))))
 
 ;;
@@ -1010,12 +1086,13 @@ be a list of such pairs."))
                 "initialize-database call succeeded"
                 "initialize-database call failed"))
     (when success
-      (create-resource-tables *resource-types*)
+      (create-resource-tables *resource-types*))
       (when (not (a:get-id *rbac* "permissions" "list"))
         (a:add-permission *rbac* "list"
           :description "List contents of a directory"))
       (when (not (a:get-id *rbac* "resources" "directory:/"))
-        (add-resource :directories "/" '("public"))))))
+        (pl:pdebug :in "init-database" :status "adding root directory resource")
+        (add-resource :directories "/" :roles '("public")))))
 
 ;; (defun start-web-server ()
 ;;   (setf h:*tmp-directory* *temp-directory*)
