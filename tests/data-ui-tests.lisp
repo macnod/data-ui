@@ -439,6 +439,7 @@ end $$;
   (add-resource :directories "/alpha/")
   (let* ((file-1 "/alpha/file-1.txt")
           (file-2 "/bravo/file-2.txt")
+          (file-3 "/bravo/ file-3.txt")
           (resource-name-1 (format nil "files:~a" file-1))
           (rd-file (add-resource :files file-1
                     :source-file (input-file (u:filename-only file-1)))))
@@ -452,7 +453,9 @@ end $$;
     (add-resource :directories "/bravo/")
     (is-true (validate-resource-descriptor
                (add-resource :files file-2
-                 :source-file (input-file (u:filename-only file-2)))))))
+                 :source-file (input-file (u:filename-only file-2)))))
+    (signals error (add-resource :files file-3
+                     :source-file (input-file (u:filename-only file-3))))))
 
 ;;
 ;; Run tests

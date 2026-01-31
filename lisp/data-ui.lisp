@@ -120,10 +120,10 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
      ;; same value.
      :directories (:enable t :fs-backed t :fields nil
                     :patterns ("^/[-a-zA-Z0-9_ @./]+/$|^/$")
-                    :anti-patterns ("//" "^[- @]"))
+                    :anti-patterns ("//" "/[- @]| /"))
      :files (:enable t :fs-backed t :fields nil
               :patterns ("^/[-a-zA-Z0-9_. @/]+$")
-              :anti-patterns ("//" "/$" "^[- @]"))
+              :anti-patterns ("//" "/$" "/[- @]| /"))
      :settings (:enable t :fs-backed nil
                  :patterns ("^[-a-zA-Z0-9.]+:[-a-zA-Z0-9.]+$")
                  :anti-patterns ("^[-.]" "[-.]$")
