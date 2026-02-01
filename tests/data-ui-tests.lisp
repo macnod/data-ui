@@ -432,14 +432,28 @@ end $$;
                (add-resource :directories "/alpha/one/")))
     (signals error (add-resource :directories "/bravo/one/"))
     (is-true (add-resource :directories "/bravo/"))
-    (is-true (add-resource :directories "/bravo/one/"))))
+    (is-true (add-resource :directories "/bravo/one/"))
+    ;; Fail pattern matches for directories
+    (signals error (add-resource :directories "/bravo/ two/"))
+    (signals error (add-resource :directories "/bravo//two/"))
+    (signals error (add-resource :directories " /bravo/two"))
+    (signals error (add-resource :directories "/bravo/ two/"))
+    (signals error (add-resource :directories "//bravo/two/"))
+    (signals error (add-resource :directories "/bravo/two//"))
+    (signals error (add-resource :directories "/bravo/two /"))))
 
 (test add-file
   (clear-data)
   (add-resource :directories "/alpha/")
   (let* ((file-1 "/alpha/file-1.txt")
           (file-2 "/bravo/file-2.txt")
+          ;; The following fail pattern matches for files
           (file-3 "/bravo/ file-3.txt")
+          (file-4 " /bravo/file-4.txt")
+          (file-5 "/bravo/file-5.txt ")
+          (file-6 "/bravo//file-6.txt")
+          (file-7 "//bravo/file-7.txt")
+          (file-8 "/bravo/file-8.txt/")
           (resource-name-1 (format nil "files:~a" file-1))
           (rd-file (add-resource :files file-1
                     :source-file (input-file (u:filename-only file-1)))))
@@ -455,7 +469,17 @@ end $$;
                (add-resource :files file-2
                  :source-file (input-file (u:filename-only file-2)))))
     (signals error (add-resource :files file-3
-                     :source-file (input-file (u:filename-only file-3))))))
+                     :source-file (input-file (u:filename-only file-3))))
+    (signals error (add-resource :files file-4
+                     :source-file (input-file (u:filename-only file-4))))
+    (signals error (add-resource :files file-5
+                     :source-file (input-file (u:filename-only file-5))))
+    (signals error (add-resource :files file-6
+                     :source-file (input-file (u:filename-only file-6))))
+    (signals error (add-resource :files file-7
+                     :source-file (input-file (u:filename-only file-7))))
+    (signals error (add-resource :files file-8
+                     :source-file (input-file (u:filename-only file-8))))))
 
 ;;
 ;; Run tests
