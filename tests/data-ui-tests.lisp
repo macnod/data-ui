@@ -39,6 +39,15 @@
 (defparameter uuid-regex "^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
 (defparameter *package-root* (asdf:system-relative-pathname :data-ui #P""))
 
+;; Improved error checking
+(defmacro error-matches (expr regex failure-text)
+  `(handler-case
+      (progn
+        ,expr
+        (fail ,failure-text))
+     (error (e)
+       (is (re:scan ,regex (format nil "~a" e))))))
+
 (when *log-file* (make-log-stream "tests" *log-file* :append nil))
 
 (init-database)
@@ -111,7 +120,9 @@
     for parts = (re:split ":" resource)
     for type-string = (car parts)
     for type = (intern (string-upcase type-string) :keyword)
-    for name = (cadr parts)
+    for name = (if (data-ui::references-user type)
+                 (cadr (re:split "/" parts))
+                 (cadr parts))
     for rd = (make-resource-descriptor type name)
     for table = (getf rd :resource-table)
     for field = (getf rd :resource-name-field)
@@ -288,13 +299,19 @@ end $$;
       (is (equal :name (u:tree-get reference :files :fields 0 0)))
       (is (equal :namex (u:tree-get copy :files :fields 0 0)))
       (is (equal 6 (length (create-resource-tables-sql reference))))
-      (signals error (create-resource-tables-sql copy)))
+      (error-matches
+        (create-resource-tables-sql copy)
+        "must have a name"
+        "create-resource-tables-sql should have failed; missing :name field"))
 
     ;; If a field can't have both :required t and a value for :default
     (let ((copy (u:deep-copy reference)))
       (u:tree-put '(:name "xgroup" :type :integer :required t :default 1)
         copy :files :fields 2)
-      (signals error (create-resource-tables-sql copy)))
+      (error-matches
+        (create-resource-tables-sql copy)
+        "is required and has a default"
+        "create-resource-should have failed; required and default"))
 
     ;; If a field has a default, that default has to be of the same type as the
     ;; field. (If a field type is not specified, the the field's type is assumed
@@ -302,26 +319,38 @@ end $$;
     (let ((copy (u:deep-copy reference)))
       ;; Change the default attribute of the description field to an integer
       (u:tree-put 1 copy :files :fields 2 :default)
-      (signals error (create-resource-tables-sql copy)))
+      (error-matches
+        (create-resource-tables-sql copy)
+        "Invalid type"
+        "create-resource-tables-sql should have failed: bad type for default"))
 
     ;; If a field includes an unknown attribute, that is an error
     (let ((copy (u:deep-copy reference)))
       ;; Change the :type key of the size field to :typex, which is an unknown
       ;; attribute.
       (u:tree-put :typex copy :files :fields 0 2)
-      (signals error (create-resource-tables-sql copy)))
+      (error-matches
+        (create-resource-tables-sql copy)
+        "unknown field key"
+        "create-resource-tables-sql should have failed: unknown attribute"))
 
     ;; :unique must be t or nil
     (let ((copy (u:deep-copy reference)))
       ;; Change the value of the :unique attribute to 1 (instead of t)
       (u:tree-put 1 copy :files :fields 2 :unique)
-      (signals error (create-resource-tables-sql copy)))
+      (error-matches
+        (create-resource-tables-sql copy)
+        "invalid value for :unique"
+        "create-resource-tables-sql should have failed: bad value for :unique"))
 
     ;; :required must be t or nil
     (let ((copy (u:deep-copy reference)))
       ;; Change the value of the :required attribute to 1 (instead of t)
       (u:tree-put 1 copy :files :fields 1 :required)
-      (signals error (create-resource-tables-sql copy)))
+      (error-matches
+        (create-resource-tables-sql copy)
+        "invalid value for :required"
+        "create-resource-tables-sql should have failed: bad value for :required"))
 
     ;; Set :required to nil
     (let* ((copy (u:deep-copy reference))
@@ -348,7 +377,10 @@ end $$;
             "on delete cascade,")
           (when reference-field-sql (u:trim reference-field-sql))))
     (u:tree-put :folders copy :files :fields 0 :reference)
-    (signals error (create-resource-tables-sql copy))))
+    (error-matches
+      (create-resource-tables-sql copy)
+      "Resource not among defined types"
+      "create-resource-tables-sql should have failed: :folders not defined")))
 
 (test make-resource-descriptor
   (clear-data)
@@ -380,22 +412,25 @@ end $$;
       (is (equal reference (make-resource-descriptor :directories root))))
     ;; /alpha/
     (is (equal "/alpha/" (make-resource-descriptor :directories "/alpha/"
-                           :fs-storage :logical-path)))
+                           :keys '(:fs-storage :logical-path))))
     (is (equal "/alpha/"
           (make-resource-descriptor :directories (u:join-paths root "/alpha/")
-            :fs-storage :logical-path)))
+            :keys '(:fs-storage :logical-path))))
     (is (equal "directories:/alpha/"
-          (make-resource-descriptor :directories "/alpha/" :resource-name)))
-    (is-false (make-resource-descriptor :directories "/alpha/" :resource-id))
+          (make-resource-descriptor :directories "/alpha/"
+            :keys '(:resource-name))))
     (is-false (make-resource-descriptor :directories "/alpha/"
-                :resource-exists))
-    (is-true (make-resource-descriptor :directories "/alpha/" :fs-backed))
+                :keys '(:resource-id)))
+    (is-false (make-resource-descriptor :directories "/alpha/"
+                :keys '(:resource-exists)))
     (is-true (make-resource-descriptor :directories "/alpha/"
-               :fs-storage :is-directory))
+               :keys '(:fs-backed)))
+    (is-true (make-resource-descriptor :directories "/alpha/"
+               :keys '(:fs-storage :is-directory)))
     (is-false (make-resource-descriptor :directories "/alpha/"
-                :fs-storage :is-file))
+                :keys '(:fs-storage :is-file)))
     (is-false (make-resource-descriptor :directories "/alpha/"
-                :fs-storage :exists))
+                :keys '(:fs-storage :exists)))
     ;; /alpha/bravo/c.txt
     (let ((rd (make-resource-descriptor :files "/alpha/bravo/c.txt")))
       (is-false (is-uuid (getf rd :resource-id)))
@@ -430,17 +465,45 @@ end $$;
     (is-false (getf rd-bravo :resource-id))
     (is-true (validate-resource-descriptor
                (add-resource :directories "/alpha/one/")))
-    (signals error (add-resource :directories "/bravo/one/"))
+    (error-matches
+      (add-resource :directories "/bravo/one/")
+      "Parent directory does not exist"
+      "add-resource should have failed as parent folder doesn't exist")
+    (error-matches
+      (add-resource :directories "/alpha/")
+      "already exists"
+      "add-resource should have failed. /alpha/ already exists.")
     (is-true (add-resource :directories "/bravo/"))
     (is-true (add-resource :directories "/bravo/one/"))
     ;; Fail pattern matches for directories
-    (signals error (add-resource :directories "/bravo/ two/"))
-    (signals error (add-resource :directories "/bravo//two/"))
-    (signals error (add-resource :directories " /bravo/two"))
-    (signals error (add-resource :directories "/bravo/ two/"))
-    (signals error (add-resource :directories "//bravo/two/"))
-    (signals error (add-resource :directories "/bravo/two//"))
-    (signals error (add-resource :directories "/bravo/two /"))))
+    (error-matches
+      (add-resource :directories "/bravo/ two/")
+      "matches anti-pattern"
+      "File '/bravo/ two/' should have failed an anti-pattern check")
+    (error-matches
+      (add-resource :directories "/bravo//two/")
+      "matches anti-pattern"
+      "File '/bravo//two/' should have failed on anti-pattern check")
+    (error-matches
+      (add-resource :directories " /bravo/two")
+      "does not match pattern"
+      "File ' /bravo/two' should have failed on pattern check")
+    (error-matches
+      (add-resource :directories "/bravo/ two/")
+      "matches anti-pattern"
+      "File '/bravo/ two/' should have failed on anti-pattern check")
+    (error-matches
+      (add-resource :directories "//bravo/two/")
+      ""
+      "File '//bravo/two/' should have failed on anti-pattern check")
+    (error-matches
+      (add-resource :directories "/bravo/two//")
+      "matches anti-pattern"
+      "File '/bravo/two//' should have failed on anti-pattern check")
+    (error-matches
+      (add-resource :directories "/bravo/two /")
+      "matches anti-pattern"
+      "File '/bravo/two /' should have failed on anti-pattern check")))
 
 (test add-file
   (clear-data)
@@ -448,12 +511,13 @@ end $$;
   (let* ((file-1 "/alpha/file-1.txt")
           (file-2 "/bravo/file-2.txt")
           ;; The following fail pattern matches for files
-          (file-3 "/bravo/ file-3.txt")
-          (file-4 " /bravo/file-4.txt")
-          (file-5 "/bravo/file-5.txt ")
-          (file-6 "/bravo//file-6.txt")
-          (file-7 "//bravo/file-7.txt")
-          (file-8 "/bravo/file-8.txt/")
+          (file-3 "/bravo/ file-3.txt") ;; file name starts with space
+          (file-4 " /bravo/file-4.txt") ;; file's path starts with space
+          (file-5 "/bravo/file-5.txt ") ;; file's path ends with space
+          (file-6 "/bravo//file-6.txt") ;; file's path has '//'
+          (file-7 "//bravo/file-7.txt") ;; file's path starts with '//'
+          (file-8 "/bravo/file-8.txt/") ;; file name ends with '/'
+          (file-9 "/bravo/file-9.txt")  ;; source file does not exist
           (resource-name-1 (format nil "files:~a" file-1))
           (rd-file (add-resource :files file-1
                     :source-file (input-file (u:filename-only file-1)))))
@@ -462,24 +526,68 @@ end $$;
     (is-true (u:tree-get rd-file :fs-backed))
     (is-true (u:tree-get rd-file :fs-storage :is-file))
     (is-false (u:tree-get rd-file :fs-storage :is-directory))
-    (signals error (add-resource :files file-2
-                     :source-file (input-file (u:filename-only file-2))))
+    (error-matches
+      (add-resource :files file-2
+        :source-file (input-file (u:filename-only file-2)))
+      "Parent directory does not exist"
+      "add-resource should have failed as parent folder doesn't exist")
     (add-resource :directories "/bravo/")
     (is-true (validate-resource-descriptor
                (add-resource :files file-2
                  :source-file (input-file (u:filename-only file-2)))))
-    (signals error (add-resource :files file-3
-                     :source-file (input-file (u:filename-only file-3))))
-    (signals error (add-resource :files file-4
-                     :source-file (input-file (u:filename-only file-4))))
-    (signals error (add-resource :files file-5
-                     :source-file (input-file (u:filename-only file-5))))
-    (signals error (add-resource :files file-6
-                     :source-file (input-file (u:filename-only file-6))))
-    (signals error (add-resource :files file-7
-                     :source-file (input-file (u:filename-only file-7))))
-    (signals error (add-resource :files file-8
-                     :source-file (input-file (u:filename-only file-8))))))
+    (error-matches
+      (add-resource :files file-3
+        :source-file (input-file (u:filename-only file-3)))
+      "matches anti-pattern"
+      "File '/bravo/ file-3.txt' should have failed an anti-pattern check")
+    (error-matches
+      (add-resource :files file-4
+        :source-file (input-file (u:filename-only file-4)))
+      "does not match pattern"
+      "File ' /bravo/file-4.txt' should have failed a pattern check")
+    (error-matches
+      (add-resource :files file-5
+        :source-file (input-file (u:filename-only file-5)))
+      "matches anti-pattern"
+      "File '/bravo/file-5.txt ' should have failed an anti-pattern check")
+    (error-matches
+      (add-resource :files file-6
+        :source-file (input-file (u:filename-only file-6)))
+      "matches anti-pattern"
+      "File '/bravo//file-6.txt' should have failed an anti-pattern check")
+    (error-matches
+      (add-resource :files file-7
+        :source-file (input-file (u:filename-only file-7)))
+      "matches anti-pattern"
+      "File '//bravo/file-7.txt' should have failed an anti-pattern check")
+    (error-matches
+      (add-resource :files file-8
+        :source-file (input-file (u:filename-only file-8)))
+      "matches anti-pattern"
+      "File '/bravo/file-8.txt/' should have failed an anti-pattern check")
+    (error-matches
+      (add-resource :files file-9
+        :source-file (input-file (u:filename-only file-9)))
+      "does not exist"
+      "File '/bravo/file-9.txt' should have failed; it doesn't exist.")
+    (error-matches
+      (add-resource :files file-1
+        :source-file (input-file (u:filename-only file-1)))
+      "already exists"
+      "add-resource should have failed. /alpha/file-1.txt already exists.")))
+
+(test add-setting
+  (clear-data)
+  (let ((rd (add-resource :settings "dark-mode" :references '(:users "admin"))))
+    (is-false (u:tree-get rd :fs-backed))
+    (is-false (u:tree-get rd :fs-storage))
+    (is-true (is-uuid (u:tree-get rd :resource-id)))
+    (is (equal "settings:admin/dark-mode" (u:tree-get rd :resource-name)))
+    (is-true (u:tree-get rd :rt-entry-exists))
+    (is-false (u:tree-get rd :fs-entry-exists))
+    (is-true (u:tree-get rd :exists))
+    (is (equal "rt_settings" (u:tree-get rd :resource-table)))
+    (is (equal "setting_name" (u:tree-get rd :resource-name-field)))))
 
 ;;
 ;; Run tests
