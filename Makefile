@@ -45,6 +45,9 @@ test-ci:
 repl:
 	tests/run repl
 
+psql:
+	tests/run psql
+
 stop:
 	tests/run stop
 
