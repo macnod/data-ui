@@ -130,8 +130,8 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                  :fields
                  ;; The automaticall-created rt_settings.setting_name field will
                  ;; consist of the prefix 'setting:' followed by the user name
-                 ;; and setting name, separated by a colon, e.g.,
-                 ;; "setting:alice:dark-mode". As usual, the
+                 ;; and setting name, separated by a /, e.g.,
+                 ;; "setting:alice/dark-mode". As usual, the
                  ;; resources.resource_name field will contain the same value.
                  ((:reference :users)
                    (:name "setting_value" :type :text :default "NIL")))))
@@ -650,57 +650,73 @@ resource from RESOURCES."
     resources))
 
 (defun resource-results (resource-descriptors keys)
-  ":private: Given a list of RESOURCE-DESCRIPTORS (resource descriptor plists) and a list
-of KEYS, returns the results according to KEYS. If KEYS has more than one key,
-the result is a list of lists, where each inner list contains the values for
-the given KEYS for each resource descriptor. If KEYS has a single key, then
-the result is a list of the values for that key for each resource descriptor.
-Finally, if KEYS is nil, the result is simply RESOURCE-DESCRIPTORS."
+  ":private: Given a list of RESOURCE-DESCRIPTORS (resource descriptor plists)
+and a list of KEYS, returns the results according to KEYS. If KEYS has more than
+one key, the result is a list of lists, where each inner list contains the
+values for the given KEYS for each resource descriptor. If KEYS has a single
+key, then the result is a list of the values for that key for each resource
+descriptor.  Finally, if KEYS is nil, the result is simply RESOURCE-DESCRIPTORS.
+A KEY consists of a list of one or two keys: the first key is a resource
+descriptor key and the second key (required only if the first key is
+:FS-STORAGE) is an :FS-STORAGE key."
   (let* ((key-count (length keys)))
     (cond
       ((> key-count 1)
         (loop for resource in resource-descriptors collect
-          (loop for key in keys collect (getf resource key))))
+          (loop for key-set in keys
+            for key-list = (if (listp key-set) key-set (list key-set))
+            for params = (cons resource key-list)
+            collect (apply #'u:tree-get params))))
       ((= key-count 1)
-        (mapcar (lambda (p) (getf p (car keys))) resource-descriptors))
+        (loop with key-set = (car keys)
+          for resource in resource-descriptors
+          for params = (cons resource key-set)
+          collect (apply #'u:tree-get params)))
       (t resource-descriptors))))
 
-(defun list-directory-recursively (path &key keys type)
+(defun list-directory-recursively (path &key keys type exclude-path)
   ":public: Recursively list the contents of the directory given by PATH, which
 can be a string or a PATHNAME. The result, by default, consists of a list of
 resource descriptors of all the files and directories that exist at any level
-below PATH, sorted by resource name. A resource descriptor consists of a plist
-that describes the resource.
+below PATH, sorted by descending length of logical path. This allows the caller
+to delete all directories and files in the list in the proper order, such that a
+directory is always empty when it's deleted. A resource descriptor consists of a
+plist that describes the resource.
 
-The KEYS value, always a list, when provided, causes the result to consist of a
-list of lists instead of a list of resource descriptors. Each inner list
-contains the values associated with the given KEYS for each resource descriptor,
-in the same order as the associated keys provided in KEYS. If KEYS consists of a
-single key, then the result consists of a list of the values associated with
-that key in each resource descriptor.
+The KEYS value, causes the result to consist of a list of lists instead of a
+list of resource descriptors. Each inner list contains the values associated
+with the given KEYS for each resource descriptor, in the same order as the
+associated keys provided in KEYS. If KEYS consists of a single key, then the
+result consists of a list of the values associated with that key in each
+resource descriptor. A KEY consists of a list of one or two keys: the first key
+is a resource descriptor key and the second key (required only if the first key is
+:FS-STORAGE) is an :FS-STORAGE key.
 
 TYPE can be :file or :directory. When given, it filters the result to include
 elements that are of that type only. Otherwise, the result includes both files
 and directories."
-  (let* ((path-rd (make-resource-descriptor :directory path))
+  (let* ((path-rd (make-resource-descriptor :directories path))
           (path-abs (u:tree-get path-rd :fs-storage :physical-path))
           paths)
     (cl-fad:walk-directory
       path-abs
       (lambda (p) (push p paths))
       :directories t)
-    (let* ((resources (exclude-resource-with-physical-path
-                        (mapcar
-                          (lambda (p)
-                            (if (u:ends-with (format nil "~a" p) "/")
-                              (make-resource-descriptor :directory p)
-                              (make-resource-descriptor :file p)))
-                          paths)
-                        path-abs))
-
+    (let* ((all-resources (mapcar
+                            (lambda (p)
+                              (if (u:ends-with (format nil "~a" p) "/")
+                                (make-resource-descriptor :directories p)
+                                (make-resource-descriptor :files p)))
+                            paths))
+            (resources (if exclude-path
+                         (exclude-resource-with-physical-path
+                           all-resources path-abs)
+                         all-resources))
             (filtered (filter-by-type resources type))
-            (sorted (sort filtered #'string<
-                      :key (lambda (d) (getf d :resource-name)))))
+            (sorted (sort filtered #'>
+                      :key (lambda (d)
+                             (length
+                               (u:tree-get d :fs-storage :logical-path))))))
       (resource-results sorted keys))))
 
 (defun list-directory (path &key keys type)
@@ -1089,6 +1105,46 @@ be a list of such pairs."))
         (a:rbac-query params))
       (make-resource-descriptor type-key name :references references))))
 
+(defun delete-directory-recursively (path)
+  (loop for descriptor in (list-directory-recursively path)
+    for resource-name = (u:tree-get descriptor :resource-name)
+    for is-file = (u:tree-get descriptor :fs-storage :is-file)
+    for physical-path = (u:tree-get descriptor
+                          :fs-storage :physical-path)
+    ;; This should automatically cascade delete any entries in rt tables
+    do (a:remove-resource *rbac* resource-name)
+    ;; Now, delete the file or directory from the filesystem
+    when is-file do (delete-file physical-path)
+    else do (cl-fad:delete-directory-and-files
+              physical-path
+              :if-does-not-exist :ignore)))
+
+(defun delete-resource (resource-descriptor)
+  (when (u:tree-get resource-descriptor :exists)
+    (when (u:tree-get resource-descriptor :fs-backed)
+      (let* ((id (u:tree-get resource-descriptor :resource-id))
+              (resource-name (u:tree-get resource-descriptor
+                               :resource-name))
+              (physical-path (u:tree-get resource-descriptor
+                               :fs-storage :physical-path))
+              (is-directory (u:tree-get resource-descriptor
+                              :fs-storage :is-directory))
+              (table-name (u:tree-get resource-descriptor :resource-table))
+              (sql (format nil "delete from ~a where id = $1" table-name)))
+        (pl:pdebug :in "delete-resource" :status "deleting resource"
+          :id id :resource-name resource-name :physical-path physical-path
+          :is-directory is-directory :table-name table-name :sql sql)
+        ;; Remove any associated files or directories
+        (if is-directory
+          (delete-directory-recursively physical-path)
+          (delete-file physical-path))
+        ;; Remove the resource from RBAC's resource table
+        (a:remove-resource *rbac* resource-name)
+        ;; Remove the resource from its resource type table
+        (a:with-rbac (*rbac*) (db:query sql id))
+        (pl:pdebug :in "delete-resource" :status "deleted resource"
+          :resource-name resource-name)))))
+
 ;;
 ;; END Database operations
 
@@ -1136,7 +1192,7 @@ be a list of such pairs."))
       (when (not (a:get-id *rbac* "permissions" "list"))
         (a:add-permission *rbac* "list"
           :description "List contents of a directory"))
-      (when (not (a:get-id *rbac* "resources" "directory:/"))
+      (when (not (a:get-id *rbac* "resources" (resource-name :directories "/")))
         (pl:pdebug :in "init-database" :status "adding root directory resource")
         (add-resource :directories "/" :roles '("public")))))
 
