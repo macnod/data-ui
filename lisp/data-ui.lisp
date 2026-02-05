@@ -1111,9 +1111,7 @@ be a list of such pairs."))
     for is-file = (u:tree-get descriptor :fs-storage :is-file)
     for physical-path = (u:tree-get descriptor
                           :fs-storage :physical-path)
-    ;; This should automatically cascade delete any entries in rt tables
     do (a:remove-resource *rbac* resource-name)
-    ;; Now, delete the file or directory from the filesystem
     when is-file do (delete-file physical-path)
     else do (cl-fad:delete-directory-and-files
               physical-path
@@ -1121,28 +1119,22 @@ be a list of such pairs."))
 
 (defun delete-resource (resource-descriptor)
   (when (u:tree-get resource-descriptor :exists)
-    (when (u:tree-get resource-descriptor :fs-backed)
-      (let* ((id (u:tree-get resource-descriptor :resource-id))
-              (resource-name (u:tree-get resource-descriptor
-                               :resource-name))
-              (physical-path (u:tree-get resource-descriptor
-                               :fs-storage :physical-path))
-              (is-directory (u:tree-get resource-descriptor
-                              :fs-storage :is-directory)))
-        (pl:pdebug :in "delete-resource" :status "deleting resource"
-          :id id :resource-name resource-name :physical-path physical-path
-          :is-directory is-directory)
-        ;; Remove any associated files or directories
-        (if is-directory
-          (delete-directory-recursively physical-path)
-          (progn
-            (delete-file physical-path)
-            ;; Remove the resource from RBAC's resource table. This should
-            ;; automatically remove the associated record in one of the rt
-            ;; tables, which defined with `on delete cascade`.
-            (a:remove-resource *rbac* resource-name)))
-        (pl:pdebug :in "delete-resource" :status "deleted resource"
-          :resource-name resource-name)))))
+    (let* ((resource-name (u:tree-get resource-descriptor
+                            :resource-name))
+            (physical-path (u:tree-get resource-descriptor
+                             :fs-storage :physical-path))
+            (is-directory (u:tree-get resource-descriptor
+                            :fs-storage :is-directory))
+            (is-file (u:tree-get resource-descriptor
+                       :fs-storage :is-file)))
+      (cond
+        (is-directory (delete-directory-recursively physical-path))
+        (is-file
+          (delete-file physical-path)
+          (a:remove-resource *rbac* resource-name))
+        (t (a:remove-resource *rbac* resource-name)))
+      (pl:pdebug :in "delete-resource" :status "deleted resource"
+        :resource-name resource-name))))
 
 ;;
 ;; END Database operations

@@ -643,16 +643,26 @@ end $$;
             '("/alpha/four/a/b/c/a.txt")
             (set-difference names-1 names-2 :test #'string=))))))
 
-(test delete-directory
-  (create-bogus-fs-backed-resources *bogus-fs-backed*)
+(test delete-empty-directory
+  (clear-data)
   (add-resource :directories "/charlie/")
   (is-true (is-uuid (a:get-id *rbac* "resources" "directories:/charlie/")))
   (is-true (make-resource-descriptor :directories "/charlie/" :keys '(:exists)))
   (delete-resource
     (make-resource-descriptor :directories "/charlie/")))
 
+(test delete-directory-with-children
+  (create-bogus-fs-backed-resources)
+  (let ((names (resource-names-no-type)))
+    (delete-resource (make-resource-descriptor :directories "/alpha/"))
+    (is (equal
+          (remove-if
+            (lambda (s) (u:starts-with s "/alpha/"))
+            names)
+          (resource-names-no-type)))))
+
 (test delete-filesystem-tree
-  (create-bogus-fs-backed-resources *bogus-fs-backed*)
+  (create-bogus-fs-backed-resources)
   (loop
     with resource-names = (sort (resource-names-no-type) #'> :key #'length)
     initially (pdebug :in "test-delete-resource" :status "deleting resources"
@@ -666,6 +676,14 @@ end $$;
     do (delete-resource rd))
   (is-false (resource-names))
   (is-false (list-directory-recursively "/" :exclude-path t)))
+
+(test delete-non-fs-resource
+  (clear-data)
+  (let ((rd-1 (add-resource :settings "dark-mode" :references '(:users "admin"))))
+    (is-true (u:tree-get rd-1 :exists))
+    (delete-resource rd-1)
+    (let ((rd-2 (make-resource-descriptor :settings "dark-mode" :references '(:users "admin"))))
+      (is-false (u:tree-get rd-2 :exists)))))
 
 
 ;;
