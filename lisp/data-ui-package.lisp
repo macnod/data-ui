@@ -21,6 +21,7 @@
     base-types
     create-resource-tables
     create-resource-tables-sql
+    delete-resource
     descriptor-get
     enabled-types
     filter-types

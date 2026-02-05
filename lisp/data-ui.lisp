@@ -337,10 +337,10 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
           (probe (when fs-backed (probe fs-backed name-only root)))
           (sprobe (when fs-backed (sprobe fs-backed probe name-only root)))
           (spath (when fs-backed (spath fs-backed probe sprobe root)))
-          (is-directory (is-directory type name-only))
-          (is-file (is-file type name-only))
-          (physical-path (physical-path type name-only))
-          (logical-path (logical-path type name-only))
+          (is-directory (when fs-backed (is-directory type name-only)))
+          (is-file (when fs-backed (is-file type name-only)))
+          (physical-path (when fs-backed (physical-path type name-only)))
+          (logical-path (when fs-backed (logical-path type name-only)))
           (resource-name (resource-name type name-only :references references))
           (resource-id (resource-id resource-name))
           (resource-table (table-name resource-name))
@@ -646,7 +646,7 @@ Because a resouce's physical path is unique, this function removes at most one
 resource from RESOURCES."
   (remove-if
     (lambda (p)
-      (equal (getf p :physical-path) path))
+      (equal (u:tree-get p :fs-storage :physical-path) path))
     resources))
 
 (defun resource-results (resource-descriptors keys)
@@ -1128,20 +1128,19 @@ be a list of such pairs."))
               (physical-path (u:tree-get resource-descriptor
                                :fs-storage :physical-path))
               (is-directory (u:tree-get resource-descriptor
-                              :fs-storage :is-directory))
-              (table-name (u:tree-get resource-descriptor :resource-table))
-              (sql (format nil "delete from ~a where id = $1" table-name)))
+                              :fs-storage :is-directory)))
         (pl:pdebug :in "delete-resource" :status "deleting resource"
           :id id :resource-name resource-name :physical-path physical-path
-          :is-directory is-directory :table-name table-name :sql sql)
+          :is-directory is-directory)
         ;; Remove any associated files or directories
         (if is-directory
           (delete-directory-recursively physical-path)
-          (delete-file physical-path))
-        ;; Remove the resource from RBAC's resource table
-        (a:remove-resource *rbac* resource-name)
-        ;; Remove the resource from its resource type table
-        (a:with-rbac (*rbac*) (db:query sql id))
+          (progn
+            (delete-file physical-path)
+            ;; Remove the resource from RBAC's resource table. This should
+            ;; automatically remove the associated record in one of the rt
+            ;; tables, which defined with `on delete cascade`.
+            (a:remove-resource *rbac* resource-name)))
         (pl:pdebug :in "delete-resource" :status "deleted resource"
           :resource-name resource-name)))))
 
@@ -1171,6 +1170,7 @@ be a list of such pairs."))
     :db-name *db-name*
     :db-user *db-user*)
   (validate-resource-types)
+  (setf a:*default-page-size* 10000)
   (setf *rbac* (make-instance 'a:rbac-pg
                  :db-host *db-host*
                  :db-port *db-port*

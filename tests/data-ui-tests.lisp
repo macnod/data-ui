@@ -38,6 +38,20 @@
 ;; Other
 (defparameter uuid-regex "^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$")
 (defparameter *package-root* (asdf:system-relative-pathname :data-ui #P""))
+(defparameter *bogus-fs-backed*
+  '("/alpha/one/a.txt"
+     "/alpha/one/b.txt"
+     "/alpha/one/c.txt"
+     "/alpha/two/a.txt"
+     "/alpha/two/e.txt"
+     "/alpha/three/a.txt"
+     "/alpha/three/f.txt"
+     "/alpha/four/a/b/c/a.txt"
+     "/alpha/four/a/b/c/g.txt"
+     "/alpha/a.txt"
+     "/alpha/h.txt"
+     "/bravo/a.txt"
+     "/bravo/i.txt"))
 
 ;; Improved error checking
 (defmacro error-matches (expr regex failure-text)
@@ -91,16 +105,41 @@
 (defun resource-names ()
   (u:safe-sort
     (u:exclude (a:list-resource-names *rbac*) "directories:/")
-    :predicate #'string=))
+    :predicate #'string<))
+
+(defun resource-names-no-type ()
+  (u:safe-sort
+    (mapcar
+      (lambda (s) (cadr (re:split ":" s)))
+      (resource-names))
+    :predicate #'string<))
 
 (defun clear-resources ()
   (loop
     for resource in (resource-names)
     for id = (a:remove-resource *rbac* resource)
+    for log = (pdebug :in "clear-resources" :status "deleted resource"
+                :resource-name resource)
     always id))
 
 (defun input-file (&optional file)
   (u:join-paths *package-root* "tests" "input-files" (if file file "/")))
+
+(defun paths-from-file-list (files)
+  (loop for file in files
+    for check-file = (when (u:ends-with file "/")
+                       (error "FILES parameter contains a directory"))
+    for file-dir-parts = (remove-if
+                           (lambda (s) (zerop (length s)))
+                           (butlast (re:split "/" file)))
+    for directories = (loop for part in file-dir-parts
+                        for dir = part then (u:join-paths dir part)
+                        collect (format nil "/~a/" dir))
+    append directories into all-paths
+    finally (return
+              (u:safe-sort
+                (append files (u:distinct-values all-paths))
+                :predicate #'string<))))
 
 (defun reset-input-files ()
   (let ((input-files (input-file)))
@@ -114,63 +153,36 @@
       do (u:spew content (u:join-paths input-files file)))))
 
 (defun clear-data ()
-  (reset-input-files)
-  (loop with resource-names = (resource-names)
-    for resource in resource-names
-    for parts = (re:split ":" resource)
-    for type-string = (car parts)
-    for type = (intern (string-upcase type-string) :keyword)
-    for name = (if (data-ui::references-user type)
-                 (cadr (re:split "/" parts))
-                 (cadr parts))
-    for rd = (make-resource-descriptor type name)
-    for table = (getf rd :resource-table)
-    for field = (getf rd :resource-name-field)
-    for is-file = (u:tree-get rd :fs-storage :is-file)
-    for is-directory = (u:tree-get rd :fs-storage :is-directory)
-    for file = (when is-file
-                 (u:tree-get rd :fs-storage :physical-path))
-    for file-exists = (when file (u:file-exists-p file))
-    for directory = (when is-directory
-                      (u:tree-get rd :fs-storage :physical-path))
-    for directory-exists = (when directory (u:directory-exists-p directory))
-    for sql = (format nil "delete from ~a where ~a = $1" table field)
-    do (pdebug :in "clear-data" :status "deleting"
-         :type-string type-string
-         :type type
-         :name name
-         :is-file is-file
-         :is-directory is-directory
-         :resource-descriptor (format nil "~a" rd)
-         :resource-table table
-         :resource-name-field field
-         :file file
-         :directory directory
-         :sql sql)
-    when file-exists do
-    (pdebug :in "clear-data" :status "deleting file" :file file)
-    (delete-file file)
-    when directory-exists do
-    (pdebug :in "clear-data" :status "deleting directory"
-      :directory directory)
-    (cl-fad:delete-directory-and-files directory
+  (clear-users)
+  (clear-permissions)
+  (clear-roles)
+  (clear-resources)
+  (clear-shared-files)
+  (reset-input-files))
+
+(defun create-bogus-fs-backed-resources (&optional (paths *bogus-fs-backed*))
+  (loop
+    initially
+    (clear-data)
+    (cl-fad:delete-directory-and-files (input-file) :if-does-not-exist :ignore)
+    (ensure-directories-exist (input-file))
+    (cl-fad:delete-directory-and-files *document-root*
       :if-does-not-exist :ignore)
-    finally
-    (let ((users-cleared (clear-users))
-           (permissions-cleared (clear-permissions))
-           (roles-cleared (clear-roles))
-           (resources-cleared (clear-resources)))
-      (pinfo :in "clear-data"
-        :status "cleared data"
-        :resource-names resource-names
-        :all-users-cleared users-cleared
-        :all-permission-cleared permissions-cleared
-        :all-roles-cleared roles-cleared
-        :all-resources-cleared resources-cleared))
-    ;; In case a test terminates uncleanly and the system doesn't have
-    ;; the opportunity to delete all files associated with resources
-    ;; and rt entries.
-    (clear-shared-files)))
+    (ensure-directories-exist *document-root*)
+    with paths-with-directories = (paths-from-file-list paths)
+    with sorted = (sort paths-with-directories #'< :key #'length)
+    for path in sorted
+    for log = (pdebug :in "create-bogus-fs-backed-resources"
+                :status "creating resource"
+                :path path)
+    for is-directory = (u:ends-with path "/")
+    if is-directory do (add-resource :directories path)
+    else do
+    (ensure-directories-exist (u:path-only (input-file path)))
+    (u:spew
+      (format nil "bogus file content for file ~a~%" path)
+      (input-file path))
+    (add-resource :files path :source-file (input-file path))))
 
 (def-suite data-ui-suite :description "FiveAM tests for the data-ui package")
 
@@ -588,6 +600,73 @@ end $$;
     (is-true (u:tree-get rd :exists))
     (is (equal "rt_settings" (u:tree-get rd :resource-table)))
     (is (equal "setting_name" (u:tree-get rd :resource-name-field)))))
+
+(test fs-backed
+  (create-bogus-fs-backed-resources *bogus-fs-backed*)
+  (is-true
+    (loop
+      for path in (paths-from-file-list *bogus-fs-backed*)
+      for rd = (make-resource-descriptor
+                 (if (u:ends-with path "/") :directories :files)
+                 path)
+      always (u:tree-get rd :exists))))
+
+(test clear-all-data
+  (create-bogus-fs-backed-resources *bogus-fs-backed*)
+  (is (equal
+        (paths-from-file-list *bogus-fs-backed*)
+        (resource-names-no-type)))
+  (is-false (set-difference
+              (paths-from-file-list *bogus-fs-backed*)
+              (resource-names-no-type)
+              :test #'string=))
+  (is-false (set-difference
+              (resource-names-no-type)
+              (paths-from-file-list *bogus-fs-backed*)
+              :test #'string=))
+  (clear-data)
+  (is-false (resource-names)))
+
+(test delete-file
+  (create-bogus-fs-backed-resources *bogus-fs-backed*)
+  (let ((names-1 (sort (resource-names-no-type) #'> :key #'length)))
+    (let ((rd (make-resource-descriptor :files "/alpha/four/a/b/c/a.txt")))
+      (is-true (u:tree-get rd :exists))
+      (is (equal "files:/alpha/four/a/b/c/a.txt" (getf rd :resource-name)))
+      (delete-resource rd))
+    (let ((rd (make-resource-descriptor :files "/alpha/four/a/b/c/a.txt")))
+      (is-false (u:tree-get rd :exists)))
+    (let ((rd (make-resource-descriptor :directories "/alpha/four/a/b/c/")))
+      (is-true (u:tree-get rd :exists)))
+    (let ((names-2 (sort (resource-names-no-type) #'> :key #'length)))
+      (is (equal
+            '("/alpha/four/a/b/c/a.txt")
+            (set-difference names-1 names-2 :test #'string=))))))
+
+(test delete-directory
+  (create-bogus-fs-backed-resources *bogus-fs-backed*)
+  (add-resource :directories "/charlie/")
+  (is-true (is-uuid (a:get-id *rbac* "resources" "directories:/charlie/")))
+  (is-true (make-resource-descriptor :directories "/charlie/" :keys '(:exists)))
+  (delete-resource
+    (make-resource-descriptor :directories "/charlie/")))
+
+(test delete-filesystem-tree
+  (create-bogus-fs-backed-resources *bogus-fs-backed*)
+  (loop
+    with resource-names = (sort (resource-names-no-type) #'> :key #'length)
+    initially (pdebug :in "test-delete-resource" :status "deleting resources"
+                :resources resource-names)
+    for name in resource-names
+    for type = (if (u:ends-with name "/") :directories :files)
+    for rd = (make-resource-descriptor type name)
+    do (pdebug :in "test-delete-resource" :status "deleting resource"
+         :resource-name name)
+    when (u:tree-get rd :exists)
+    do (delete-resource rd))
+  (is-false (resource-names))
+  (is-false (list-directory-recursively "/" :exclude-path t)))
+
 
 ;;
 ;; Run tests
