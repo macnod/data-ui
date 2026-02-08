@@ -418,7 +418,8 @@ end $$;
                            :leaf-directory "/"
                            :logical-path-only "/"
                            :physical-path-only *document-root*
-                           :exists t))))
+                           :exists t)
+                         :rt-data nil)))
       (is (equal reference (make-resource-descriptor :directories "/")))
       (is (equal reference (make-resource-descriptor :directories #P"/")))
       (is (equal reference (make-resource-descriptor :directories root))))
@@ -590,7 +591,9 @@ end $$;
 
 (test add-setting
   (clear-data)
-  (let ((rd (add-resource :settings "dark-mode" :references '(:users "admin"))))
+  (let ((rd (add-resource :settings "dark-mode"
+              :references '(:users "admin")
+              :named-values '(("setting_value" . "T")))))
     (is-false (u:tree-get rd :fs-backed))
     (is-false (u:tree-get rd :fs-storage))
     (is-true (is-uuid (u:tree-get rd :resource-id)))
@@ -599,7 +602,22 @@ end $$;
     (is-false (u:tree-get rd :fs-entry-exists))
     (is-true (u:tree-get rd :exists))
     (is (equal "rt_settings" (u:tree-get rd :resource-table)))
-    (is (equal "setting_name" (u:tree-get rd :resource-name-field)))))
+    (is (equal "setting_name" (u:tree-get rd :resource-name-field)))
+    (is (equal "T" (u:tree-get rd :rt-data :setting-value))))
+  (let ((rd (make-resource-descriptor :settings "dark-mode"
+              :references '(:users "admin"))))
+    (is (equal "T" (u:tree-get rd :rt-data :setting-value)))))
+
+(test add-global-setting
+  (clear-data)
+  (let ((rd (add-resource :global-settings "schema"
+              :named-values `(("global_setting_value" .
+                                ,(data-ui::serialize '(+ 2 2)))))))
+    (is (equal "(+ 2 2)"
+          (u:tree-get rd :rt-data :global-setting-value))))
+  (let ((rd (make-resource-descriptor :global-settings "schema")))
+    (is (equal "(+ 2 2)"
+          (u:tree-get rd :rt-data :global-setting-value)))))
 
 (test fs-backed
   (create-bogus-fs-backed-resources *bogus-fs-backed*)
@@ -684,6 +702,8 @@ end $$;
     (delete-resource rd-1)
     (let ((rd-2 (make-resource-descriptor :settings "dark-mode" :references '(:users "admin"))))
       (is-false (u:tree-get rd-2 :exists)))))
+
+
 
 
 ;;

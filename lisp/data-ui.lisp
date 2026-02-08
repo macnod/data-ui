@@ -91,6 +91,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
      :resource-name
      :resource-name-field
      :resource-table
+     :rt-data
      :rt-entry-exists))
 (defparameter *valid-fs-storage-keys*
   '(:exists
@@ -124,13 +125,20 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
      :files (:enable t :fs-backed t :fields nil
               :patterns ("^/[-a-zA-Z0-9_. @/]+$")
               :anti-patterns ("//" "/$" "/[- @]| /" " $"))
+     :global-settings (:enable t :fs-backed nil
+                        :patterns ("^[a-zA-Z][-a-zA-Z0-9]*$")
+                        :anti-patterns ("[-]$")
+                        :fields
+                        ((:name "global_setting_value"
+                           :type :text
+                           :default "NIL")))
      :settings (:enable t :fs-backed nil
                  :patterns ("^[a-zA-Z][-a-zA-Z0-9]*$")
                  :anti-patterns ("[-]$")
                  :fields
-                 ;; The automaticall-created rt_settings.setting_name field will
-                 ;; consist of the prefix 'setting:' followed by the user name
-                 ;; and setting name, separated by a /, e.g.,
+                 ;; The automatically-created rt_settings.setting_name field
+                 ;; will consist of the prefix 'setting:' followed by the user
+                 ;; name and setting name, separated by a /, e.g.,
                  ;; "setting:alice/dark-mode". As usual, the
                  ;; resources.resource_name field will contain the same value.
                  ((:reference :users)
@@ -191,6 +199,13 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 ;; Where Hunchentoot should store temporary files during uploads
 (setf h:*tmp-directory* *temp-directory*)
 
+(defun serialize (value)
+  (format nil "~s" value))
+
+(defun deserialize (serialized)
+  (let ((cl:*read-eval* nil))
+    (read-from-string serialized)))
+
 (defun immutable-user-roles (user-name)
   (list "logged-in" "public" (a:exclusive-role-for user-name)))
 
@@ -239,28 +254,41 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
   (validate-fs-storage-key (cadr keys)))
 
 (defun type-strings (&optional (types *resource-types*))
-  (mapcar
-    (lambda (k) (format nil "~(~a~)" k))
-    (type-keywords types)))
+  (mapcar #'to-sql-identifier (type-keywords types)))
+
+(defun type-string (resource-name &optional (types *resource-types*))
+  (let ((prefix (car (re:split ":" resource-name))))
+    (when (or (not prefix) (zerop (length prefix)))
+      (error "Resource name '~a' is missing the type prefix." resource-name))
+    (let ((type-string (re:regex-replace-all "-" prefix "_")))
+      (unless (u:has (type-strings types) type-string)
+        (error "Resource type prefix in '~a', '~a', is not known. Known types: ~{~a~^, ~}."
+          resource-name type-string types))
+      type-string)))
 
 (defun type-keywords (&optional (types *resource-types*))
   (u:plist-keys types))
 
-(defun table-name (resource-name &key (types *resource-types*))
-  (let* ((type (car (re:split ":" resource-name))))
+(defun table-name (resource-name)
+  (let* ((type (type-string resource-name)))
     (cond
-      ((member type (type-strings (non-base-types types)) :test 'equal)
-        (format nil "rt_~a" type))
-      ((member type (type-strings (base-types types)) :test 'equal)
+      ((member type
+         (type-strings (non-base-types *resource-types*))
+         :test 'equal)
+        (keyword-to-table-name type))
+      ((member type
+         (type-strings (base-types *resource-types*))
+         :test 'equal)
         (format nil "~a" type))
       (t (error "Unknown resource type '~a' in resource name '~a'."
            type resource-name)))))
 
-(defun name-field (resource-name &key (types *resource-types*))
-  (let* ((type (car (re:split ":" resource-name))))
-    (unless (u:has (type-strings types) type)
-      (error "Unknown resource type '~a'" type))
-    (format nil "~a_name" (u:singular type))))
+;; (defun name-field (resource-name &key (types *resource-types*))
+;;   (let* ((prefix (car (re:split ":" resource-name)))
+;;           (type (re:regex-replace-all "-" prefix "_")))
+;;     (unless (u:has (type-strings types) type)
+;;       (error "Unknown resource type '~a'" type))
+;;     (format nil "~a_name" (u:singular type))))
 
 (defun resource-id (resource-name)
   (when *rbac*
@@ -270,7 +298,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
   (when *rbac*
     (let* ((resource-name (resource-name type-key name))
             (table (table-name resource-name))
-            (field (name-field resource-name))
+            (field (keyword-to-name-field type-key))
             (fs-backed (u:tree-get types type-key :fs-backed))
             (physical-path (when fs-backed
                              (format nil "~a"
@@ -344,7 +372,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
           (resource-name (resource-name type name-only :references references))
           (resource-id (resource-id resource-name))
           (resource-table (table-name resource-name))
-          (name-field (name-field resource-name))
+          (name-field (keyword-to-name-field type))
           (resource-exists (when (and *rbac* (resource-id resource-name)) t))
           (rt-entry-query (format nil "select 1 from ~a where ~a = $1"
                             resource-table name-field))
@@ -358,6 +386,13 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                              (if is-directory
                                (u:directory-exists-p physical-path)
                                (u:file-exists-p physical-path))))
+          (fields (resource-data-fields type))
+          (data-query (when fields
+                        (format nil "select ~{~a~^, ~} from ~a where ~a = $1"
+                          fields resource-table name-field)))
+          (data (when fields
+                  (a:with-rbac (*rbac*)
+                    (db:query data-query resource-name :plist))))
           (exists (and resource-exists rt-entry-exists
                     (or (not fs-backed) fs-entry-exists)))
           (result (list
@@ -389,19 +424,24 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                         :physical-path-only (if is-directory
                                               physical-path
                                               (u:path-only physical-path))
-                        :exists fs-entry-exists)))))
+                        :exists fs-entry-exists))
+                    :rt-data data)))
     (if keys (apply #'u:tree-get (cons result keys)) result)))
 
 ;;
 ;; BEGIN Database initialization
 ;;
 
-(defun to-sql-identifier (keyword &key (format-string "~a") singular)
+(defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
   (let ((s (format nil "~(~a~)" keyword)))
     (format nil format-string
       (re:regex-replace-all
         "-"
-        (if singular (u:singular s) s)
+        (case form
+          (:as-is s)
+          (:singular (u:singular s))
+          (:plural (u:plural s))
+          (otherwise (error "Unsupported value for FORM: ~a" form)))
         "_"))))
 
 (defun keyword-to-table-name (keyword)
@@ -411,10 +451,10 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     (to-sql-identifier keyword :format-string format-string)))
 
 (defun keyword-to-table-reference (keyword)
-  (to-sql-identifier keyword :format-string "~a_id" :singular t))
+  (to-sql-identifier keyword :format-string "~a_id" :form :singular))
 
 (defun keyword-to-name-field (keyword)
-  (to-sql-identifier keyword :format-string "~a_name" :singular t))
+  (to-sql-identifier keyword :format-string "~a_name" :form :singular))
 
 (defun updated-at-trigger-sql-template ()
   "
@@ -491,7 +531,7 @@ end $$;
     for reference = (getf field :reference)
     for name = (getf field :name)
     for type-key = (getf field :type :text)
-    for type = (format nil "~(~a~)" type-key)
+    for type = (to-sql-identifier type-key)
     for unique = (when (getf field :unique) "unique")
     for default-value = (getf field :default)
     for default = (when default-value
@@ -688,9 +728,9 @@ list of resource descriptors. Each inner list contains the values associated
 with the given KEYS for each resource descriptor, in the same order as the
 associated keys provided in KEYS. If KEYS consists of a single key, then the
 result consists of a list of the values associated with that key in each
-resource descriptor. A KEY consists of a list of one or two keys: the first key
-is a resource descriptor key and the second key (required only if the first key is
-:FS-STORAGE) is an :FS-STORAGE key.
+resource descriptor. Each KEY consists of a list of one or two keys: the first
+key is a resource descriptor key and the second key (required only if the first
+key is :FS-STORAGE) is an :FS-STORAGE key.
 
 TYPE can be :file or :directory. When given, it filters the result to include
 elements that are of that type only. Otherwise, the result includes both files
@@ -759,8 +799,8 @@ and directories."
 ;; BEGIN Database operations
 ;;
 
-(defun validate-type-string (type-string &optional (types *resource-types*))
-  (unless (u:has (type-strings types) type-string)
+(defun validate-type-string (type-string)
+  (unless (u:has (type-strings) type-string)
     (error "Unknown resource type: ~a." type-string)))
 
 (defun validate-type-keyword (type-key)
@@ -796,11 +836,13 @@ and directories."
       (let ((limit (1+ (length references)))
              (refs-in-value (re:split "/" (cadr parts))))
         (when (< (length refs-in-value) limit)
-          (error "Value '~a' is missing reference parts." field-value))
+          (error "Value '~a' is missing reference~p: ~{~a~^, ~}"
+            field-value (length references) references))
         (when (some
                 (lambda (r) (zerop (length r)))
                 refs-in-value)
-          (error "Value '~a' has empty reference parts." field-value))
+          (error "Value '~a' has empty reference~p: ~{~a~^, ~}"
+            field-value (length references) references))
         (car
           (last
             (re:split
@@ -1002,6 +1044,17 @@ and directories."
     (validate-value-pattern type-key (keyword-to-name-field type-key) full-name)
     full-name))
 
+(defun resource-data-fields (type-key &optional (types *resource-types*))
+  (let* ((all-fields (u:tree-get types type-key :fields))
+          (name-field (keyword-to-name-field type-key))
+          (data-fields (remove-if
+                         (lambda (f)
+                           (or
+                             (equal (car f) :reference)
+                             (equal (getf f :name) name-field)))
+                         all-fields)))
+    (mapcar (lambda (f) (getf f :name)) data-fields)))
+
 (defun is-file (type-key name-only)
   (validate-type-keyword type-key)
   (let ((fs-backed (u:tree-get *resource-types* type-key :fs-backed)))
@@ -1022,18 +1075,18 @@ and directories."
     (when fs-backed
       (u:starts-with spath root))))
 
-(defun named-values (id name other-named-values)
+(defun named-values (id name named-values)
   (unless (consp id)
     (error "ID must be a (name . value) pair."))
   (unless (consp name)
     (error "NAME must be a (name . value) pair."))
-  (unless (and (listp other-named-values)
-            (every #'consp other-named-values)
+  (unless (and (listp named-values)
+            (every #'consp named-values)
             (every (lambda (nv)
                      (and (stringp (car nv)) (atom (cdr nv))))
-              other-named-values))
-    (error "OTHER-NAMED-VALUES must be a list of (name . value) pairs."))
-  (let* ((named-values (append (list id name) other-named-values))
+              named-values))
+    (error "NAMED-VALUES must be a list of (name . value) pairs."))
+  (let* ((named-values (append (list id name) named-values))
           (names (mapcar 'car named-values))
           (values (mapcar 'cdr named-values))
           (place-holders (loop for a from 1 to (length names)
@@ -1042,7 +1095,7 @@ and directories."
               (lambda (v)
                 (and (consp v) (stringp (car v)) (atom (cdr v))))
               named-values)
-      (error "ID and NAME must be (name . value) pairs. OTHER-NAMED-VALUES must
+      (error "ID and NAME must be (name . value) pairs. NAMED-VALUES must
 be a list of such pairs."))
     (list names values place-holders)))
 
@@ -1050,10 +1103,22 @@ be a list of such pairs."))
   (let* ((fields (u:tree-get types type-key :fields)))
     (some (lambda (f) (equal (getf f :reference) :users)) fields)))
 
+;; (defun named-values-alist (type-key named-values-plist)
+;;   (unless (u:plistp named-values-plist)
+;;     (error "NAMED-VALUES-PLIST is not a plist: ~a"
+;;       named-value-plist))
+;;   (unless (getf *resource-types* type-key)
+;;     (error "Uknown TYPE-KEY '~a'."))
+;;   (loop with fields = (resource-data-fields type-kye)
+;;     for key in named-values by #'cddr
+;;     for value in named-values by #'cddr
+;;     unless (u:has fields key)
+;;     do (error "~a doesn't have a data field ~a" type-key key)
+
 (defun add-resource (type-key name &key
                       (roles '("admin"))
                       references
-                      other-named-values
+                      named-values
                       source-file)
   (validate-type-keyword type-key)
   (validate-roles roles)
@@ -1074,7 +1139,7 @@ be a list of such pairs."))
       :resource-id (getf rd :resource-id)
       :resource-name (getf rd :resource-name)
       :fs-backed (getf rd :fs-backed)
-      :other-named-values other-named-values
+      :named-values named-values
       :source-fie source-file
       :roles roles)
     (when (u:tree-get rd :fs-backed)
@@ -1091,7 +1156,7 @@ be a list of such pairs."))
             (named-values (named-values
                             `("id" . ,(getf rd :resource-id))
                             `(,name-field . ,(getf rd :resource-name))
-                            (append other-named-values
+                            (append named-values
                               (referenced-name-values references))))
             (names (first named-values))
             (values (second named-values))
@@ -1149,19 +1214,17 @@ be a list of such pairs."))
 
 (defun create-resource-tables (types)
   (pl:pdebug :in "create-resource-tables"
-    :types (mapcar
-             (lambda (s) (format nil "~(~a~)" s))
-             (u:plist-keys (non-base-types types))))
+    :types (mapcar #'to-sql-identifier (u:plist-keys (non-base-types types))))
   (loop for sql in (create-resource-tables-sql types)
     do (a:with-rbac (*rbac*) (db:query sql))))
 
-(defun init-database ()
+(defun init-database (&optional (resource-types *resource-types*))
   (pl:pinfo :in "init-database"
     :host *db-host*
     :port *db-port*
     :db-name *db-name*
     :db-user *db-user*)
-  (validate-resource-types)
+  (validate-resource-types resource-types)
   (setf a:*default-page-size* 10000)
   (setf *rbac* (make-instance 'a:rbac-pg
                  :db-host *db-host*
@@ -1180,13 +1243,13 @@ be a list of such pairs."))
                 "initialize-database call succeeded"
                 "initialize-database call failed"))
     (when success
-      (create-resource-tables *resource-types*))
+      (create-resource-tables resource-types)
       (when (not (a:get-id *rbac* "permissions" "list"))
         (a:add-permission *rbac* "list"
           :description "List contents of a directory"))
       (when (not (a:get-id *rbac* "resources" (resource-name :directories "/")))
         (pl:pdebug :in "init-database" :status "adding root directory resource")
-        (add-resource :directories "/" :roles '("public")))))
+        (add-resource :directories "/" :roles '("public"))))))
 
 ;; (defun start-web-server ()
 ;;   (setf h:*tmp-directory* *temp-directory*)
