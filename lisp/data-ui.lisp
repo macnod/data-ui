@@ -40,7 +40,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 ;; Logs
 (defparameter *log-file* (or (u:getenv "LOG_FILE") *standard-output*))
 (defparameter *log-severity-threshold*
-  (intern (string-upcase (or (u:getenv "LOG_SEVERITY") "DEBUG")) :keyword))
+  (u:make-keyword (or (u:getenv "LOG_SEVERITY") "DEBUG")))
 (defparameter *log-suppress-health*
   (u:getenv "LOG_SUPPRESS_HEALTH" :type :boolean :default t))
 
@@ -129,7 +129,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                         :patterns ("^[a-zA-Z][-a-zA-Z0-9]*$")
                         :anti-patterns ("[-]$")
                         :fields
-                        ((:name "global_setting_value"
+                        ((:name :value
                            :type :text
                            :default "NIL")))
      :settings (:enable t :fs-backed nil
@@ -142,7 +142,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                  ;; "setting:alice/dark-mode". As usual, the
                  ;; resources.resource_name field will contain the same value.
                  ((:reference :users)
-                   (:name "setting_value" :type :text :default "NIL")))))
+                   (:name :value :type :text :default "NIL")))))
 
 ;; Connect to the database
 (defparameter *rbac* nil)
@@ -220,7 +220,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
          type-key
 	       (set-difference type-keys *valid-type-keys* :test 'eql))
     do (loop for field in fields do
-         (validate-field types type-key field))))
+         (validate-field type-key field types))))
 
 (defun validate-resource-descriptor (descriptor)
   "Check that RESOURCE-DESCRIPTOR is valid."
@@ -298,7 +298,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
   (when *rbac*
     (let* ((resource-name (resource-name type-key name))
             (table (table-name resource-name))
-            (field (keyword-to-name-field type-key))
+            (field (type-key-name-field type-key))
             (fs-backed (u:tree-get types type-key :fs-backed))
             (physical-path (when fs-backed
                              (format nil "~a"
@@ -351,9 +351,10 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
         (u:join-paths root (subseq sprobe (length root)))
         sprobe))))
 
-(defun make-resource-descriptor (type name-only &key references keys)
-  (validate-type-keyword type)
-  (validate-value-pattern type (keyword-to-name-field type)
+(defun make-resource-descriptor (type name-only &key
+                                  references keys (types *resource-types*))
+  (validate-type-keyword type types)
+  (validate-value-pattern type (type-key-name-field type)
     (resource-name type name-only :references references))
   (when keys
     (validate-resource-descriptor-key (car keys))
@@ -372,7 +373,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
           (resource-name (resource-name type name-only :references references))
           (resource-id (resource-id resource-name))
           (resource-table (table-name resource-name))
-          (name-field (keyword-to-name-field type))
+          (name-field (type-key-name-field type))
           (resource-exists (when (and *rbac* (resource-id resource-name)) t))
           (rt-entry-query (format nil "select 1 from ~a where ~a = $1"
                             resource-table name-field))
@@ -453,7 +454,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 (defun keyword-to-table-reference (keyword)
   (to-sql-identifier keyword :format-string "~a_id" :form :singular))
 
-(defun keyword-to-name-field (keyword)
+(defun type-key-name-field (keyword)
   (to-sql-identifier keyword :format-string "~a_name" :form :singular))
 
 (defun updated-at-trigger-sql-template ()
@@ -488,11 +489,10 @@ end $$;
 (defun enabled-types (types)
   (filter-types types (lambda (v) (getf v :enable))))
 
-(defun create-resource-tables-sql (types)
+(defun create-resource-tables-sql (&optional (types *resource-types*))
   (loop
     with base-types = (base-types types)
     and non-base-types = (non-base-types types)
-    and defined-types = (enabled-types types)
     and trigger-sql = (updated-at-trigger-sql-template)
     for type-key in (u:plist-keys non-base-types)
     for type-definition = (getf types type-key)
@@ -500,15 +500,33 @@ end $$;
     for fields = (getf type-definition :fields)
     for table = (keyword-to-table-name type-key)
     for updated-at-trigger = (format nil trigger-sql table table table table)
-    for field-definitions = (field-definitions defined-types type-key fields)
+    for field-definitions = (field-definitions
+                              type-key
+                              (enabled-types types))
     appending
     (list
       (format nil "~%create table if not exists ~a (~%    ~{~a~^,~%    ~}~%)~%"
         table field-definitions)
       updated-at-trigger)))
 
-(defun name-field-present (name-field fields)
-  (some (lambda (f) (equal (getf f :name) name-field)) fields))
+(defun field-present (type-key field-name &optional (types *resource-types*))
+  (some (lambda (f)
+          (equal (field-name type-key f) field-name))
+    (u:tree-get types type-key :fields)))
+
+(defun field-name (type-key field)
+  (let* ((reference (getf field :reference))
+          (prefix (u:singular
+                    (format nil "~(~a~)"
+                      (if reference reference type-key))))
+          (name-key (getf field :name))
+          (name (if reference
+                  "id"
+                  (when name-key
+                    (u:singular
+                      (format nil "~(~a~)" name-key))))))
+    (when name
+      (re:regex-replace-all "-" (format nil "~a_~a" prefix name) "_"))))
 
 (defun base-field-definitions ()
   (list
@@ -516,27 +534,28 @@ end $$;
     "created_at timestamp not null default now()"
     "updated_at timestamp not null default now()"))
 
-(defun default-definitions (name-field fields)
-  (if (name-field-present name-field fields)
+(defun default-definitions (type-key name-field
+                             &optional (types *resource-types*))
+  (if (field-present type-key name-field types)
     (base-field-definitions)
     (cons (format nil "~a text not null unique" name-field)
       (base-field-definitions))))
 
-(defun field-definitions (defined-types resource-type fields)
+(defun field-definitions (type-key &optional (types *resource-types*))
   (loop
-    with base-types = (base-types defined-types)
-    and name-field = (keyword-to-name-field resource-type)
-    for field in fields
-    for validation = (validate-field defined-types resource-type field)
+    with base-types = (base-types types)
+    and name-field = (type-key-name-field type-key)
+    for field in (u:tree-get types type-key :fields)
+    for validation = (validate-field type-key field types)
     for reference = (getf field :reference)
-    for name = (getf field :name)
-    for type-key = (getf field :type :text)
-    for type = (to-sql-identifier type-key)
+    for name = (field-name type-key field)
+    for field-type-key = (getf field :type :text)
+    for type = (to-sql-identifier field-type-key)
     for unique = (when (getf field :unique) "unique")
     for default-value = (getf field :default)
     for default = (when default-value
                     (format nil "default ~a"
-                      (if (eql type-key :text)
+                      (if (eql field-type-key :text)
                         (format nil "'~a'" default-value)
                         default-value)))
     for required-value = (getf field :required)
@@ -556,23 +575,23 @@ end $$;
     finally
     (return (append
               definitions
-              (default-definitions name-field fields)))))
+              (default-definitions type-key name-field types)))))
 
-(defun validate-field (defined-types resource-type field)
+(defun validate-field (type-key field &optional (types *resource-types*))
   (let ((reference (getf field :reference)))
     (if reference
-      (validate-reference-field defined-types resource-type reference field)
-      (validate-regular-field defined-types resource-type field))))
+      (list :reference (validate-reference-field type-key field))
+      (list :regular (validate-regular-field type-key field types)))))
 
-(defun validate-regular-field (defined-types resource-type field)
+(defun validate-regular-field (type-key field &optional (types *resource-types*))
   (let* ((unknown-keys (set-difference (u:plist-keys field) *valid-field-keys*
                          :test 'eql))
-          (name-field (keyword-to-name-field resource-type))
-          (name (getf field :name))
+          (name-field (type-key-name-field type-key))
+          (name (field-name type-key field))
           (is-name-field (equal name name-field))
           (type (getf field :type :text))
-          (patterns (u:tree-get defined-types resource-type :patterns))
-          (anti-patterns (u:tree-get defined-types resource-type :anti-patterns))
+          (patterns (u:tree-get types type-key :patterns))
+          (anti-patterns (u:tree-get types type-key :anti-patterns))
           (field-patterns (or (getf field :patterns)
                             (when is-name-field patterns)))
           (field-anti-patterns (or (getf field :anti-patterns)
@@ -581,45 +600,48 @@ end $$;
           (required (getf field :required))
           (unique (getf field :unique))
           (errors nil))
+    (unless field (error "Field is empty or doesn't exist."))
+    (unless (u:plistp field) (error "Field is not a plist."))
     (unless (and (stringp name) (not (zerop (length name))))
       (push (format nil "All non-reference fields in ~a must have a name."
-              resource-type)
+              type-key)
         errors))
     (when unknown-keys
       (push (format nil
               "~@(~r~) unknown field key~:p in field ~a.~a: ~{~a~^, ~}."
-              (length unknown-keys) resource-type name unknown-keys)
+              (length unknown-keys) type-key name unknown-keys)
         errors))
     (unless (every #'stringp field-patterns)
       (push (format nil "All patterns in field ~a.~a must be strings."
-              resource-type name)
+              type-key name)
         errors))
     (unless (every #'stringp field-anti-patterns)
       (push (format nil "All anti-patterns in field ~a.~a must be strings."
-              resource-type name)
+              type-key name)
         errors))
     (unless (member type *valid-field-types*)
       (push (format nil "Invalid field type '~a' in field ~a.~a."
-              type resource-type name)
+              type type-key name)
         errors))
     (when (and default required)
       (push (format nil "Field ~a.~a is required and has a default."
-              resource-type name)
+              type-key name)
         errors))
     (unless (member required '(t nil))
       (push (format nil
               "Field ~a.~a has an invalid value for :required: ~a."
-              resource-type name required)
+              type-key name required)
         errors))
     (unless (member unique '(t nil))
       (push (format nil "Field ~a.~a has an invalid value for :unique: ~a."
-              resource-type name unique)
+              type-key name unique)
         errors))
     (unless (validate-field-default-type field)
       (push (format nil "Invalid type for default value in field ~a.~a."
-              resource-type name)
+              type-key name)
         errors))
-    (when errors (error "~{~a~^ ~}" errors))))
+    (when errors (error "~{~a~^ ~}" errors))
+    name))
 
 (defun validate-field-default-type (field)
   (let ((type (getf field :type :text))
@@ -638,17 +660,21 @@ end $$;
         t)
       (t nil))))
 
-(defun validate-reference-field (defined-types resource-type reference field)
-  (let (errors)
-    (unless (member reference defined-types)
-      (push (format nil "Resource not among defined types: ~a." reference)
+(defun validate-reference-field (type-key field
+                                  &optional (types *resource-types*))
+  (let ((reference (getf field :reference))
+         errors)
+    (unless (member reference types)
+      (push (format nil "Referenced resource ~a not among defined types."
+              reference)
         errors))
     (unless (= (length (u:plist-keys field)) 1)
       (push (format nil
               "Reference field in ~a cannot have other field keys"
-              resource-type)
+              type-key)
         errors))
-    (when errors (error "~{~a~^ ~}" errors))))
+    (when errors (error "~{~a~^ ~}" errors))
+    (field-name type-key field)))
 
 ;;
 ;; END Database initialization
@@ -803,20 +829,34 @@ and directories."
   (unless (u:has (type-strings) type-string)
     (error "Unknown resource type: ~a." type-string)))
 
-(defun validate-type-keyword (type-key)
-  (unless (u:has (u:plist-keys *resource-types*) type-key)
+(defun validate-type-keyword (type-key &optional (types *resource-types*))
+  (unless (u:has (u:plist-keys types) type-key)
     (error "Unknown resource type: ~a." type-key)))
 
-(defun name-and-base-fields (type)
-  (let* ((name-field (keyword-to-name-field type))
-          (base-fields (u:tree-get *resource-types* type :fields)))
-    (if (some
-          (lambda (f) (equal (getf f :name) name-field))
-          base-fields)
-      base-fields
-      (cons
-        (list :name name-field :type :text :unique t :required t)
-        base-fields))))
+(defun name-and-base-fields (type-key &optional (types *resource-types*))
+  (validate-type-keyword type-key types)
+  (let* ((fields (u:tree-get types type-key :fields)))
+    (unless (some (lambda (f) (equal (getf f :name) :name)) fields)
+      (push
+        (list :name :name :type :text :unique t :required t)
+        fields))
+    (loop for field in fields
+      for name = (if (getf field :reference)
+                   (u:make-keyword
+                     (format nil "~a_id"
+                       (u:singular (format nil "~a" (second field)))))
+                   (getf field :name))
+      do (setf (getf field :name) name)
+      collect field)))
+
+(defun all-fields (type-key &optional (types *resource-types*))
+  (validate-type-keyword type-key types)
+  (let* ((fields (name-and-base-fields type-key)))
+    (unless (some (lambda (f) (equal (getf f :id) :id)) fields)
+      (push
+        (list :name :id :type :text :unique t :required t)
+        fields))
+    fields))
 
 (defun select-text-field (type field-name)
   (let* ((fields (name-and-base-fields type)))
@@ -853,25 +893,25 @@ and directories."
           (error "Value '~a' has empty value part." field-value))
         value))))
 
-(defun validate-value-pattern (type field-name field-value &key
+(defun validate-value-pattern (type-key field-name field-value &key
                                 (types *resource-types*))
-  (let* ((g-patterns (u:tree-get types type :patterns))
-          (g-anti-patterns (u:tree-get types type :anti-patterns))
-          (field (select-text-field type field-name))
-          (svalue (strip-prefix-and-references field-value))
+  (let* ((g-patterns (u:tree-get types type-key :patterns))
+          (g-anti-patterns (u:tree-get types type-key :anti-patterns))
+          (field (select-text-field type-key field-name))
+          (svalue (if (equal field-name :name)
+                    (strip-prefix-and-references field-value)
+                    field-value))
           (patterns (when field
                       (or (getf field :patterns) g-patterns)))
           (anti-patterns (when field
                            (or (getf field :anti-patterns) g-anti-patterns))))
     (pl:pdebug :in "validate-value-pattern"
-      :type type
+      :type type-key
       :field-name field-name
       :field-value svalue
       :svalue svalue
       :patterns patterns
       :anti-patterns anti-patterns)
-    (unless (re:scan ".+:.+" (format nil "~a" field-value))
-      (error "Field value '~a' missing type prefix." field-value))
     (let* ((unmatched-patterns
              (remove-if
                (lambda (p) (re:scan p svalue))
@@ -981,7 +1021,7 @@ and directories."
       (loop
         for key in type-ref-keys
         for table = (keyword-to-table-name key)
-        for field = (keyword-to-name-field key)
+        for field = (type-key-name-field key)
         for name = (getf references key)
         for sql = (format nil "select 1 from ~a where ~a = $1" table field)
         for exists = (when *rbac*
@@ -989,16 +1029,6 @@ and directories."
                          (db:query sql name :single)))
         unless exists do (error "Table ~a has no entry with ~a = ~a."
                            table field name)))))
-
-(defun referenced-name-values (references)
-  (loop for key in references by #'cddr
-    for name in (cdr references) by #'cddr
-    for table = (keyword-to-table-name key)
-    for name-field = (keyword-to-name-field key)
-    for id-field = (keyword-to-table-reference key)
-    for sql = (format nil "select id from ~a where ~a = $1" table name-field)
-    for id-value = (a:with-rbac (*rbac*) (db:query sql name :single))
-    collect (cons id-field id-value)))
 
 (defun logical-path (type-key name-only)
   (validate-type-keyword type-key)
@@ -1041,19 +1071,29 @@ and directories."
                   (ref-values (format nil "~{~a~^/~}/~a" ref-values name-only))
                   (t name-only)))
           (full-name (format nil "~a:~a" resource-prefix name)))
-    (validate-value-pattern type-key (keyword-to-name-field type-key) full-name)
+    (validate-value-pattern type-key (type-key-name-field type-key) full-name)
     full-name))
 
 (defun resource-data-fields (type-key &optional (types *resource-types*))
   (let* ((all-fields (u:tree-get types type-key :fields))
-          (name-field (keyword-to-name-field type-key))
+          (name-field (type-key-name-field type-key))
           (data-fields (remove-if
                          (lambda (f)
                            (or
-                             (equal (car f) :reference)
+                             (getf f :reference)
                              (equal (getf f :name) name-field)))
                          all-fields)))
-    (mapcar (lambda (f) (getf f :name)) data-fields)))
+    (loop for field in data-fields
+      for name = (getf field :name)
+      for prefix = (u:singular (format nil "~(~a~)" type-key))
+      for name-string = (format nil "~(~a~)" name)
+      for field-name = (re:regex-replace-all
+                         "-"
+                         (if (equal name :id)
+                           name-string
+                           (format nil "~a_~a" prefix name-string))
+                          "_")
+      collect field-name)))
 
 (defun is-file (type-key name-only)
   (validate-type-keyword type-key)
@@ -1075,55 +1115,54 @@ and directories."
     (when fs-backed
       (u:starts-with spath root))))
 
-(defun named-values (id name named-values)
-  (unless (consp id)
-    (error "ID must be a (name . value) pair."))
-  (unless (consp name)
-    (error "NAME must be a (name . value) pair."))
-  (unless (and (listp named-values)
-            (every #'consp named-values)
-            (every (lambda (nv)
-                     (and (stringp (car nv)) (atom (cdr nv))))
-              named-values))
-    (error "NAMED-VALUES must be a list of (name . value) pairs."))
-  (let* ((named-values (append (list id name) named-values))
-          (names (mapcar 'car named-values))
-          (values (mapcar 'cdr named-values))
-          (place-holders (loop for a from 1 to (length names)
-                           collect (format nil "$~d" a))))
-    (unless (every
-              (lambda (v)
-                (and (consp v) (stringp (car v)) (atom (cdr v))))
-              named-values)
-      (error "ID and NAME must be (name . value) pairs. NAMED-VALUES must
-be a list of such pairs."))
-    (list names values place-holders)))
+(defun referenced-name-values (references)
+  (loop for key in references by #'cddr
+    for name in (cdr references) by #'cddr
+    for table = (keyword-to-table-name key)
+    for name-field = (type-key-name-field key)
+    for sql = (format nil "select id from ~a where ~a = $1" table name-field)
+    for id-value = (a:with-rbac (*rbac*) (db:query sql name :single))
+    for reference-key = (u:make-keyword (format nil "~a_id" (u:singular table)))
+    append (list reference-key id-value)))
+
+(defun named-values-field-names (type-key named-values
+                                  &optional (types *resource-types*))
+  (validate-type-keyword type-key types)
+  (loop
+    for name in named-values by #'cddr
+    for prefix = (u:singular (format nil "~(~a~)" type-key))
+    for name-string = (format nil "~(~a~)" name)
+    for field-name-raw = (if (or
+                               (equal name :id)
+                               (u:ends-with name-string "-id"))
+                           name-string
+                           (format nil "~a_~a" prefix name-string))
+    for field-name = (re:regex-replace-all "-" field-name-raw "_")
+    collect field-name))
+
+(defun named-values-field-values (named-values)
+  (loop for value in (cdr named-values) by #'cddr
+    collect value))
+
+(defun named-values-placeholders (named-values)
+  (loop for key in named-values by #'cddr
+    for index = 1 then (1+ index)
+    collect (format nil "$~d" index)))
 
 (defun references-user (type-key &optional (types *resource-types*))
   (let* ((fields (u:tree-get types type-key :fields)))
     (some (lambda (f) (equal (getf f :reference) :users)) fields)))
 
-;; (defun named-values-alist (type-key named-values-plist)
-;;   (unless (u:plistp named-values-plist)
-;;     (error "NAMED-VALUES-PLIST is not a plist: ~a"
-;;       named-value-plist))
-;;   (unless (getf *resource-types* type-key)
-;;     (error "Uknown TYPE-KEY '~a'."))
-;;   (loop with fields = (resource-data-fields type-kye)
-;;     for key in named-values by #'cddr
-;;     for value in named-values by #'cddr
-;;     unless (u:has fields key)
-;;     do (error "~a doesn't have a data field ~a" type-key key)
-
 (defun add-resource (type-key name &key
                       (roles '("admin"))
                       references
                       named-values
-                      source-file)
-  (validate-type-keyword type-key)
+                      source-file
+                      (types *resource-types*))
+  (validate-type-keyword type-key types)
   (validate-roles roles)
-  (validate-value-pattern type-key (keyword-to-name-field type-key)
-    (resource-name type-key name :references references))
+  (validate-value-pattern type-key
+    :name (resource-name type-key name :references references))
   (validate-directory-structure type-key name references)
   (validate-source-file type-key name source-file references)
   (validate-references-exist type-key references)
@@ -1133,7 +1172,8 @@ be a list of such pairs."))
           (rd (when id (make-resource-descriptor type-key name
                          :references references))))
     (unless rd
-      (error "Failed to add resource ~a." (resource-name type-key name)))
+      (error "Failed to add resource ~a."
+        (resource-name type-key name :references references)))
     (pl:pdebug :in "add-resource" :status "added resource"
       :id id
       :resource-id (getf rd :resource-id)
@@ -1151,23 +1191,19 @@ be a list of such pairs."))
         (u:copy-file source-file
           (u:tree-get rd :fs-storage :physical-path))
         (pl:pdebug :in "add-resource" :status "file copied")))
-    (let* ((table-name (table-name (getf rd :resource-name)))
-            (name-field (keyword-to-name-field type-key))
-            (named-values (named-values
-                            `("id" . ,(getf rd :resource-id))
-                            `(,name-field . ,(getf rd :resource-name))
-                            (append named-values
-                              (referenced-name-values references))))
-            (names (first named-values))
-            (values (second named-values))
-            (place-holders (third named-values))
+    (let* ((table-name (getf rd :resource-table))
+            (named-ids (referenced-name-values references))
+            (all-named (append named-values named-ids
+                         (list :id id :name (getf rd :resource-name))))
+            (field-names (named-values-field-names type-key all-named))
+            (field-values (named-values-field-values all-named))
+            (placeholders (named-values-placeholders all-named))
             (sql (format nil "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
-                   table-name names place-holders))
-            (params (cons sql values)))
+                   table-name field-names placeholders))
+            (params (cons sql field-values)))
       (pl:pdebug :in "add-resource" :status "inserting record"
-        :sql sql :params values)
-      (a:with-rbac (*rbac*)
-        (a:rbac-query params))
+        :sql sql :params field-values)
+      (a:with-rbac (*rbac*) (a:rbac-query params))
       (make-resource-descriptor type-key name :references references))))
 
 (defun delete-directory-recursively (path)

@@ -215,17 +215,16 @@
                       :patterns ("^/[-a-zA-Z0-9_. @/]+$")
                       :anti-patterns ("//" "/$" "^[- @]")
                       :fields
-                      ((:name "size" :type :integer)
-                        (:name "type" :type :text :required t)
-                        (:name "xgroup" :type :text :unique t
+                      ((:name :size :type :integer)
+                        (:name :type :type :text :required t)
+                        (:name :xgroup :type :text :unique t
                           :default "main")))
              :settings (:enable t :fs-backed nil
                          :patterns ("^[-a-zA-Z0-9.]+:[-a-zA-Z0-9.]+$")
                          :anti-patterns ("^[-.]" "[-.]$")
                          :fields
                          ((:reference :users)
-                           (:name "setting_value" :type :text
-                             :default "NIL"))))))
+                           (:name :value :type :text :default "NIL"))))))
   ;; Happy case
     (is (equal '("
 create table if not exists rt_directories (
@@ -252,9 +251,9 @@ end $$;
 "
  "
 create table if not exists rt_files (
-    size integer,
-    type text not null,
-    xgroup text unique default 'main',
+    file_size integer,
+    file_type text not null,
+    file_xgroup text unique default 'main',
     file_name text not null unique,
     id uuid primary key references resources(id) on delete cascade,
     created_at timestamp not null default now(),
@@ -391,7 +390,7 @@ end $$;
     (u:tree-put :folders copy :files :fields 0 :reference)
     (error-matches
       (create-resource-tables-sql copy)
-      "Resource not among defined types"
+      "Referenced resource FOLDERS not among defined types."
       "create-resource-tables-sql should have failed: :folders not defined")))
 
 (test make-resource-descriptor
@@ -593,7 +592,7 @@ end $$;
   (clear-data)
   (let ((rd (add-resource :settings "dark-mode"
               :references '(:users "admin")
-              :named-values '(("setting_value" . "T")))))
+              :named-values '(:value "T"))))
     (is-false (u:tree-get rd :fs-backed))
     (is-false (u:tree-get rd :fs-storage))
     (is-true (is-uuid (u:tree-get rd :resource-id)))
@@ -611,8 +610,7 @@ end $$;
 (test add-global-setting
   (clear-data)
   (let ((rd (add-resource :global-settings "schema"
-              :named-values `(("global_setting_value" .
-                                ,(data-ui::serialize '(+ 2 2)))))))
+              :named-values `(:value ,(data-ui::serialize '(+ 2 2))))))
     (is (equal "(+ 2 2)"
           (u:tree-get rd :rt-data :global-setting-value))))
   (let ((rd (make-resource-descriptor :global-settings "schema")))
