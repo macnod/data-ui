@@ -3,6 +3,7 @@
   (:local-nicknames
     (:a :rbac)
     (:u :dc-eclectic)
+    (:dt :dc-time)
     (:pl :p-log)
     (:dt :dc-time)
     (:ds :dc-ds)

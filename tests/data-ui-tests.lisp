@@ -701,9 +701,6 @@ end $$;
     (let ((rd-2 (make-resource-descriptor :settings "dark-mode" :references '(:users "admin"))))
       (is-false (u:tree-get rd-2 :exists)))))
 
-
-
-
 ;;
 ;; Run tests
 ;;
