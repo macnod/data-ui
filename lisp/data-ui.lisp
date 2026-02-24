@@ -59,28 +59,37 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 (defparameter *default-directory-permissions*
   '("create" "read" "update" "delete" "list"))
 
-;; Resource definitions
-(defparameter *valid-type-keys*
-  '(:anti-patterns
-     :base
-     :enable
-     :patterns
-     :fields
-     :fs-backed))
-(defparameter *valid-field-keys*
-  '(:anti-patterns
-     :default
-     :name
-     :patterns
-     :reference
-     :required
-     :type
-     :unique))
 (defparameter *valid-field-types*
-  '(:float
+  '(:boolean
+     :float
      :integer
      :text
      :timestamp))
+
+(defparameter *valid-field-input-types*
+  '(:checkbox
+     :file
+     :hidden   ;; no input is provided for this field; value is fixed
+     :label    ;; shown as a label in place of the field's name
+     :line
+     :list-box
+     :options
+     :text
+     :type-field))
+
+(defparameter *valid-resource-types* '(:base :fields :fs-backed))
+
+(defparameter *valid-field-keys*
+  '(:default
+     :input-type
+     :label
+     :reference
+     :required
+     :type
+     :unique
+     :validation
+     :validation-tests))
+
 (defparameter *valid-descriptor-keys*
   '(:exists
      :fs-backed
@@ -93,6 +102,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
      :resource-table
      :rt-data
      :rt-entry-exists))
+
 (defparameter *valid-fs-storage-keys*
   '(:exists
      :file-name-only
@@ -103,53 +113,81 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
      :logical-path-only
      :physical-path
      :physical-path-only))
+
 (defparameter *resource-types*
-  ;; Tables where :base is t already exist in the RBAC system, so they won't be
-  ;; created by this system. Tables where :base is nil will be created by this
-  ;; system. Also, users of data-ui can add resources of types where :base is
-  ;; nil, but not of types where base is t. Resources of base types are managed
-  ;; entirely by the RBAC system, via the RBAC API. Thus, for example, adding a
-  ;; user follows a different code path than adding a file, setting, or
-  ;; directory.
-  '(:users (:enable t :base t :fs-backed nil)
-     :resources (:enable t :base t :fs-backed nil)
-     ;; Because this is not a base type, its table will be named with the rt_
-     ;; prefix: rt_directories. The automatically-created field
-     ;; rt_directories.directory_name will hold strings consisting of the prefix
-     ;; 'directory:' followed by the logical path of the directory, i.e.
-     ;; "directory:/a/b/".  The resources.resource_name field will contain the
-     ;; same value.
-     :directories (:enable t :fs-backed t :fields nil
-                    :patterns ("^/[-a-zA-Z0-9_ @./]+/$|^/$")
-                    :anti-patterns ("//" "/[- @]| /" " $"))
-     :files (:enable t :fs-backed t :fields nil
-              :patterns ("^/[-a-zA-Z0-9_. @/]+$")
-              :anti-patterns ("//" "/$" "/[- @]| /" " $"))
-     :global-settings (:enable t :fs-backed nil
-                        :patterns ("^[a-zA-Z][-a-zA-Z0-9]*$")
-                        :anti-patterns ("[-]$")
-                        :fields
-                        ((:name :value
-                           :type :text
-                           :default "NIL")))
-     :settings (:enable t :fs-backed nil
-                 :patterns ("^[a-zA-Z][-a-zA-Z0-9]*$")
-                 :anti-patterns ("[-]$")
-                 :fields
-                 ;; The automatically-created rt_settings.setting_name field
-                 ;; will consist of the prefix 'setting:' followed by the user
-                 ;; name and setting name, separated by a /, e.g.,
-                 ;; "setting:alice/dark-mode". As usual, the
-                 ;; resources.resource_name field will contain the same value.
-                 ((:reference :users)
-                   (:name :value :type :text :default "NIL")))))
+  '(:users (:base t)
+     :resources (:base t)
+
+     :directories
+     (:fs-backed t
+       :fields
+       (:path
+         (:type :text
+           :ui (:input-type :line :label "Directory")
+           :required t
+           :unique t
+           :validation
+           (and
+             (re:scan "^/[-a-zA-Z0-9_ @./]+/$|^/$" it)
+             (not (re:scan "//|/[- @]| /| $|^[^a-zA-Z0-9_.]" it)))
+           :validation-tests
+           (:pass ("/" "/one/" "/one/two/" "/one/two/three")
+             :fail ("//" "/one//two" "/ one/two/" "/one/two"
+                     "/one /two/" "/one/ two/")))))
+
+     :files
+     (:fs-backed t
+       :fields
+       (:path
+         (:type :text
+           :ui (:input-type :file :label "File")
+           :input-type :file
+           :label "File Name"
+           :required :t
+           :unique :t
+           :validation
+           (and
+             (re:scan "^/[-a-zA-Z0-9_. @/]+$" it)
+             (not (re:scan "//|/$|/[- @]| /| $|^[^a-zA-Z0-9_.]" it)))
+           :validation-tests
+           (:pass ("/one.txt" "/one/1.txt" "/one/two/three.txt")
+             (:fail ("//" "/one/" "one/" "/one/1.txt " "one.txt"
+                      "one/one.txt" "/one/two/tree.txt "))))))
+
+     :global-settings
+     (:fields
+       (:name (:type :text
+                :ui (:input-type :label)
+                :validation
+                (and
+                  (re:scan "^[a-zA-Z][-a-zA-Z0-9]*$" it)
+                  (not (re:scan "-$" it)))
+                :validation-tests
+                (:pass ("a" "abc" "dark-mode" "abc-123")
+                  :fail ("-abc" "0-abc" "abc-" "dark_mode")))
+         :type (:type :text :input-type :hidden :default ":text")
+         :value (:type :text :input-type :type-field)))
+
+     :settings
+     (:fields
+       (:name (:type :text
+                :ui (:input-type :label)
+                :validation
+                (and
+                  (re:scan "^[a-zA-Z][-a-zA-Z0-9]*$" it)
+                  (not (re:scan "-$)" it)))
+                :validation-tests
+                (:pass ("a" "abc" "dark-mode" "abc-123")
+                  :fail ("-abc" "0-abc" "abc-" "dark_mode")))
+         :reference (:resource-type :users)
+         :type (:type :text :input-type :hidden :default ":text")
+         :value (:type :text :input-type :type-field)))))
 
 ;; Connect to the database
 (defparameter *rbac* nil)
 
 ;;
-;; BEGIN Custom Hunchentoot acceptor
-;; For plog logging
+;; Custom Hunchentoot acceptor, for plog logging
 ;;
 (defclass fs-acceptor (h:easy-acceptor)
   ())
@@ -167,6 +205,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     (unless (and health-log *log-suppress-health*)
       (pl:plog log-severity
         (list
+          :in "h:acceptor-log-access"
           :type "access"
           :client (h:real-remote-addr)
           :hop (h:remote-addr*)
@@ -191,9 +230,10 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                          (t :debug)))
           (message (apply #'format
                      (append nil format-string) format-arguments)))
-    (pl:plog log-severity (list :text message))))
+    (pl:plog log-severity
+      (list :in "h:acceptor-log-message" :log-message message))))
 ;;
-;; END Custom Hunchentoot acceptor
+;; End custom Hunchentoot acceptor
 ;;
 
 ;; Where Hunchentoot should store temporary files during uploads
