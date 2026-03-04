@@ -1,28 +1,35 @@
-(require :rbac)
-(require :dc-eclectic)
-(require :dc-time)
-(require :p-log)
-(require :dc-ds)
-(require :cl-ppcre)
-(require :postmodern)
-
-(defpackage :create-sql
-  (:use :cl)
-  (:local-nicknames
-    (:a :rbac)
-    (:u :dc-eclectic)
-    (:dt :dc-time)
-    (:pl :p-log)
-    (:ds :dc-ds)
-    (:re :ppcre)
-    (:db :postmodern)))
-
-(in-package :create-sql)
+(in-package :data-ui)
 
 (defparameter *timestamp-regex*
   "^\\d{4}-[01][0-9]-[0-3][0-9][T ][0-2][[0-9]:[0-5][0-9]:[0-5][0-9]$")
 
-(defparameter *resource-types*
+(defparameter *default-fields*
+  '(:id (:target :resources
+          :type :uuid
+          :input-type :none
+          :primary-key t
+          :required t
+          :cascade t)
+     :created-at (:type :timestamp
+                   :input-type :none
+                   :required t
+                   :default :now)
+     :updated-at (:type :timestamp
+                   :input-type :none
+                   :required t
+                   :default :now)))
+
+(defparameter *file-name-validation*
+  '(and
+     (re:scan "^/[-a-zA-Z0-9_ @./]+/$|^/$" it)
+     (not (re:scan "//|/[- @]| /| $|^[^a-zA-Z0-9_.]" it))))
+
+(defparameter *file-name-validation-tests*
+  '(:pass ("/" "/one/" "/one/two/" "/one/two/three")
+     :fail ("//" "/one//two" "/ one/two/" "/one/two"
+             "/one /two/" "/one/ two/"))
+
+(defparameter *type-spec-example*
   '(:users (:base t)
      :resources (:base t)
 
@@ -30,7 +37,7 @@
      (:fs-backed t
        :fields
        (:path
-         (:type :text
+         (:type :directory-name
            :ui (:input-type :line :label "Directory")
            :required t
            :unique t
@@ -47,7 +54,7 @@
      (:fs-backed t
        :fields
        (:path
-         (:type :text
+         (:type :file-name
            :ui (:input-type :file :label "File")
            :input-type :file
            :label "File Name"
@@ -91,7 +98,7 @@
          :input-type nil
          :reference (:target :users :lookup-field :name)))))
 
-(defparameter *parsed-resource-types* nil)
+(defparameter *resource-types* nil)
 
 (defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
   (let ((s (format nil "~(~a~)" keyword)))
@@ -111,7 +118,7 @@
     for flag = (funcall predicate type-definition)
     when flag append (list type type-definition)))
 
-(defun base-types (&optional (types *resource-types*))
+(defun base-types (types)
   (filter-types types (lambda (v) (getf v :base))))
 
 (defun non-base-types (types)
@@ -132,7 +139,7 @@
   (let ((table-name (to-sql-identifier type-key :form :singular)))
     (if (or
           (getf field-definition :target)
-          (equal field-key :input-type))
+          (member field-key '(:input-type :created-at :updated-at)))
       (to-sql-identifier field-key)
       (format nil "~a_~a" table-name (to-sql-identifier field-key)))))
 
@@ -181,23 +188,19 @@ end $$;
     (:float (if (numberp value)
               value
               (error "Invalid float value '~a'" value)))
-    (:timestamp (if (and
-                      (stringp value)
-                      (re:scan *timestamp-regex* value))
-                  (if quote (format nil "'~a'" value) value)
-                  (error "Invalid timestamp string '~a'" value)))
+    (:timestamp (cond
+                  ((and
+                     (stringp value)
+                     (re:scan *timestamp-regex* value))
+                    (if quote (format nil "'~a'" value) value))
+                  ((equal value :now) "now()")
+                  (t (error "Invalid timestamp string '~a'" value))))
     (:text (if (stringp value)
              (if quote (format nil "'~a'" value) value)
              (if (null value)
                (if quote "''" "")
                (if quote (format nil "'~a'" value) value))))
     (otherwise (error "Unknown TYPE-KEY '~a'" type-key))))
-
-(defun default-definitions ()
-  (list
-    "id uuid primary key references resources(id) on delete cascade"
-    "created_at timestamp not null default now()"
-    "updated_at timestamp not null default now()"))
 
 (defun field-definitions (type-key types)
   (loop
@@ -212,27 +215,28 @@ end $$;
     for type = (sql-type field-type-key)
     for unique = (when (and (not reference) (getf field-def :unique))
                    "unique")
-    for default-value = (unless reference
+    for default-value = (when (and (not reference)
+                                (getf field-def :default))
                           (value-sql
                             (getf field-def :default) field-type-key :quote t))
     for default = (when default-value (format nil "default ~a" default-value))
-    for required = (when (or reference (getf field-def :required)) "not null")
+    for required = (when (and
+                           (or reference (getf field-def :required))
+                           (not (getf field-def :primary-key)))
+                     "not null")
     for cascade = (when reference "on delete cascade")
+    for primary = (when (getf field-def :primary-key) "primary key")
     for column = (format nil "~{~a~^ ~}"
                    (remove-if-not
                      #'identity
-                     (list name type unique default required reference cascade)))
-    collect column into columns
-    finally (return (append (default-definitions) columns))))
+                     (list name type primary unique required default reference
+                       cascade)))
+    collect column))
 
 (defun parse-type-fields (type-key types)
   (loop
     with fields = (append
-                    '(:id (:target :resources
-                            :type :uuid
-                            :primary-key t
-                            :required t
-                            :cascade t))
+                    *default-fields*
                     (u:tree-get types type-key :fields))
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
@@ -283,7 +287,25 @@ end $$;
     for field-def in (u:plist-values (u:tree-get parsed-types type-key :fields))
     collect (getf field-def :column-name)))
 
-(defun create-resource-tables-sql (parsed-types)
+(defun set-resource-types (types-spec)
+  ":public: Parses TYPES-SPEC to produce a representation of the application
+model. Returns a plist with the model's types and associated SQL table names."
+  (setf *resource-types* (parse-types types-spec))
+  (loop for type-key in (u:plist-keys *resource-types*)
+    appending
+    (list type-key (u:tree-get *resource-types* type-key :table-name))))
+
+(defun get-resource-types ()
+  ":public: Returns the current application model. The return value is NIL
+if SET-RESOURCE-TYPE has not yet been called."
+  *resource-types*)
+
+(defun create-resource-tables-sql (&optional
+                                    (parsed-types *resource-types*))
+  ":public: Returns the SQL for the application model. The SQL consists of
+table creation statements for the model's non-base resource types. Tables
+already exist for the base resource types, so this function does not create
+them."
   (loop
     with new-types = (non-base-types parsed-types)
     for type-key in (u:plist-keys new-types)
@@ -292,25 +314,3 @@ end $$;
     appending (list
                 (resource-table-sql table field-definitions)
                 (updated-at-trigger-sql table))))
-
-(defun create-insert-sql (type-key data-plist types)
-  (loop
-    for field-key in (u:plist-keys (u:tree-get types type-key :fields))
-    for field-spec = (u:tree-get types type-key :fields field-key)
-    for field-name = (field-name type-key field-key types)
-    for required = (getf field-spec :required)
-    for field-value = (if required
-                        (getf data-plist field-key)
-                        (or
-                          (getf field-spec :default)
-                          (getf data-plist field-key)))
-    for placeholder = 1 then (1+ placeholder)
-    collect field-name into field-names
-    collect field-value into field-values
-    collect (format nil "$~d" placeholder) into placeholders
-    finally
-    (return
-      (cons
-        (format nil "insert into ~a (~{~a~^, ~}) values(~{~a~^, ~})"
-          (table-name type-key types) field-names placeholders)
-        field-values))))
