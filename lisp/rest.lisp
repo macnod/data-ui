@@ -1,9 +1,18 @@
 (in-package :data-ui)
 
+;; HTTP and Swank servers
+(defparameter *http-port* (u:getenv "HTTP_PORT" :default 8080 :type :integer))
+(defparameter *document-root*
+  (let* ((dir (u:getenv "DOCUMENT_ROOT"
+               :default "/app/shared-files/"))
+          (normalized (probe-file dir)))
+    (format nil "~a" normalized)))
+(defparameter *temp-directory* (u:getenv "FS_TEMP_DIRECTORY"
+                                 :default "/app/temp-files/"))
 (defparameter *web-directory* (u:getenv "WEB_DIRECTORY" :default "/app/web"))
 (defparameter *favicon* (u:join-paths *web-directory* "favicon.ico"))
-(defparameter *http-port* (u:getenv "HTTP_PORT" :default 8080 :type :integer))
 (defparameter *http-server* nil)
+
 
 ;;
 ;; BEGIN Custom Hunchentoot acceptor

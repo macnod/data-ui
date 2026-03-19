@@ -4,6 +4,9 @@
   :licence "MIT License"
   :depends-on (:cl-ppcre
                 :postmodern
+                :cl-fad
+                :fiveam
+                :swank
                 :dc-ds
                 :dc-time
                 :p-log
@@ -20,7 +23,15 @@
   :serial t
   :components ((:module "lisp"
                  :components ((:file "data-ui-package")
-                               (:file "model")))))
+                               (:file "database")
+                               (:file "data-ui")
+                               (:file "workbench")))
+                (:module "tests"
+                  :components ((:file "data-ui-tests")))))
+
+                               ;; (:file "model")
+                               ;; (:file "data-ui")
+                               ;; (:file "rest")
 
                                ;; (:file "utils")
                                ;; (:file "css")

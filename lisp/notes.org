@@ -1,0 +1,98 @@
+* SQL
+** Select user 1
+#+begin_src lisp
+  (defparameter *sql* "
+    SELECT
+      u.user_name,
+      COALESCE(ARRAY_AGG(distinct r.role_name), ARRAY[]::text[]) AS roles,
+      COALESCE(ARRAY_AGG(distinct p.permission_name), ARRAY[]::text[]) AS permissions
+    FROM users u
+      LEFT JOIN role_users ru ON u.id = ru.user_id
+      LEFT JOIN roles r ON ru.role_id = r.id
+      LEFT JOIN role_permissions rp on rp.role_id = r.id
+      LEFT JOIN permissions p on rp.permission_id = p.id
+    WHERE u.user_name = $1
+    GROUP BY u.id, u.user_name;
+  ")
+
+  (a:with-rbac (*rbac*) (db:query *sql* "admin" :row))
+
+  ;; => ("admin"
+  ;;      #("admin" "logged-in" "public")
+  ;;      #("create" "delete" "read" "update"))
+#+end_src
+** Select user 2
+#+begin_src lisp
+  (defparameter *sql* "
+  SELECT
+    u.user_name,
+    res.resource_name,
+    ARRAY_AGG(DISTINCT p.permission_name) AS permissions
+  FROM users u
+    JOIN role_users ru ON u.id = ru.user_id
+    JOIN roles r ON ru.role_id = r.id
+    JOIN resource_roles rr ON r.id = rr.role_id
+    JOIN resources res ON rr.resource_id = res.id
+    JOIN role_permissions rp ON r.id = rp.role_id
+    JOIN permissions p ON rp.permission_id = p.id
+  WHERE u.user_name = $1
+  GROUP BY u.id, u.user_name, res.resource_name;
+  ")
+
+  (a:with-rbac (*rbac*) (db:query *sql* "admin" :row))
+
+  ;; => ("admin"
+  ;;      #("admin" "logged-in" "public")
+  ;;      #("create" "delete" "read" "update"))
+#+end_src
+** Select user 3
+#+begin_src lisp
+  (defparameter *sql* "
+  SELECT
+    u.user_name,
+    e.resource_name,
+    p.permission_name
+  FROM users u
+    JOIN role_users ru ON u.id = ru.user_id
+    JOIN roles r ON ru.role_id = r.id
+    JOIN resource_roles rr ON r.id = rr.role_id
+    JOIN resources e ON rr.resource_id = e.id
+    JOIN role_permissions rp ON r.id = rp.role_id
+    JOIN permissions p ON rp.permission_id = p.id
+  WHERE u.user_name = $1
+  ")
+
+  (a:with-rbac (*rbac*) (db:query *sql* "admin"))
+
+  ;; => ("admin"
+  ;;      #("admin" "logged-in" "public")
+  ;;      #("create" "delete" "read" "update"))
+#+end_src
+** List of plists
+#+begin_src lisp
+((:USER-NAME "macnod" :RESOURCE-NAME "thing-1" :PERMISSION-NAME "read")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-1" :PERMISSION-NAME "update")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-1" :PERMISSION-NAME "read")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-1" :PERMISSION-NAME "delete")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-1" :PERMISSION-NAME "create")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-2" :PERMISSION-NAME "update")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-2" :PERMISSION-NAME "read")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-2" :PERMISSION-NAME "delete")
+ (:USER-NAME "macnod" :RESOURCE-NAME "thing-2" :PERMISSION-NAME "create"))
+#+end_src
+
+#+begin_src lisp
+  (:users
+    (:user-name "macnod"
+      :resources ((:resource-name "thing-1"
+                    :permissions ((:permission-name "read")
+                                   (:permission-name "update")
+                                   (:permission-name "read")
+                                   (:permission-name "delete")
+                                   (:permission-name "create")))
+                   (:resource-name "thing-2"
+                     :permissions ((:permission-name "update")
+                                    (:permission-name "read")
+                                    (:permission-name "delete")
+                                    (:permission-name "create"))))))
+#+end_src

@@ -2,7 +2,7 @@
 -- schema
 --
 
-\c data_ui
+\c dataui
 
 create extension if not exists "uuid-ossp";
 
@@ -84,6 +84,7 @@ create table resource_roles (
     role_id uuid not null references roles(id) on delete cascade,
     unique(resource_id, role_id)
 );
+
 
 
 --

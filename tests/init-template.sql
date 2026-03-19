@@ -86,6 +86,7 @@ create table resource_roles (
 );
 
 
+
 --
 -- Triggers for updated_at column
 --

@@ -21,37 +21,89 @@
 
 (defparameter *file-name-validation*
   '(and
+     (re:scan "^/[-a-zA-Z0-9_. @/]+$" it)
+     (not (re:scan "//|/$|/[- @]| /| $|^[^a-zA-Z0-9_.]" it))))
+
+(defparameter *file-name-tests*
+  '(:pass ("/one.txt" "/one/1.txt" "/one/two/three.txt")
+     (:fail ("//" "/one/" "one/" "/one/1.txt " "one.txt"
+              "one/one.txt" "/one/two/tree.txt "))))
+
+(defparameter *directory-name-validation*
+  '(and
      (re:scan "^/[-a-zA-Z0-9_ @./]+/$|^/$" it)
      (not (re:scan "//|/[- @]| /| $|^[^a-zA-Z0-9_.]" it))))
 
-(defparameter *file-name-validation-tests*
-  '(:pass ("/" "/one/" "/one/two/" "/one/two/three")
+(defparameter *directory-name-tests*
+  '(:pass ("/" "/one/" "/one/two/" "/one/two/three/")
      :fail ("//" "/one//two" "/ one/two/" "/one/two"
-             "/one /two/" "/one/ two/"))
+             "/one /two/" "/one/ two/" "/one/two/three")))
+
+(defparameter *base-types*
+  `(:users
+     (:base t
+       :fields (:name (:type text
+                        :ui (:input-type :line :label "Username")
+                        :required t
+                        :unique t)))
+
+     :resources
+     (:base t
+       :fields (:name (:type text
+                        :ui (:input-type :line :label "Resource")
+                        :required t
+                        :unique t)
+                 :references))
+
+     :permissions
+     (:base t
+       :fields (:name (:type text
+                        :ui (:input-type :line :label "Permission")
+                        :required t
+                        :unique t)))
+
+     :roles
+     (:base t
+       :fields (:name (:type text
+                        :ui (:input-type :line :label "Roles")
+                        :required t
+                        :unique t)))
+
+     :role-permissions
+     (:base t
+       :fields (:reference (:target :roles :lookup-field :name)
+                 :reference (:target :permissions :lookup-field :name)))
+
+     :resource-roles
+     (:base t
+       :fields (:reference (:target :resources :lookup-field :name)
+                 :reference (:target :roles :lookup-field :name)))
+
+     :role-users
+     (:base t
+       :fields (:reference (:target :roles :lookup-field :name)
+                 :reference (:target :users :lookup-field :name)))))
+
 
 (defparameter *type-spec-example*
-  '(:users (:base t)
-     :resources (:base t)
+  `(:directories (:fs-backed t :path-kind :directory)
+     :files (:fs-backed t :path-kind :file)
 
      :directories
      (:fs-backed t
+       :path-kind :directory
        :fields
        (:path
          (:type :directory-name
            :ui (:input-type :line :label "Directory")
            :required t
            :unique t
-           :validation
-           (and
-             (re:scan "^/[-a-zA-Z0-9_ @./]+/$|^/$" it)
-             (not (re:scan "//|/[- @]| /| $|^[^a-zA-Z0-9_.]" it)))
-           :validation-tests
-           (:pass ("/" "/one/" "/one/two/" "/one/two/three")
-             :fail ("//" "/one//two" "/ one/two/" "/one/two"
-                     "/one /two/" "/one/ two/")))))
+           :validation ,*directory-name-validation*
+           :validation-tests ,*directory-name-tests*)))
 
      :files
      (:fs-backed t
+       :path-kind :file
        :fields
        (:path
          (:type :file-name
@@ -60,14 +112,8 @@
            :label "File Name"
            :required :t
            :unique :t
-           :validation
-           (and
-             (re:scan "^/[-a-zA-Z0-9_. @/]+$" it)
-             (not (re:scan "//|/$|/[- @]| /| $|^[^a-zA-Z0-9_.]" it)))
-           :validation-tests
-           (:pass ("/one.txt" "/one/1.txt" "/one/two/three.txt")
-             (:fail ("//" "/one/" "one/" "/one/1.txt " "one.txt"
-                      "one/one.txt" "/one/two/tree.txt "))))))
+           :validation ,*file-name-validation*
+           :validation-tests ,*file-name-tests*)))
 
      :global-settings
      (:fields
@@ -96,7 +142,14 @@
                   :fail ("-abc" "0-abc" "abc-" "dark_mode")))
          :value (:type :text :input-type :input-type-field :required t)
          :input-type nil
-         :reference (:target :users :lookup-field :name)))))
+         :reference (:target :users :lookup-field :name)))
+
+     :message
+     (:fields
+       (:title (:type :text :required t
+                 :ui (:input-type :line))
+         :content (:type :text :required t
+                    :ui (:input-type :text))))))
 
 (defparameter *resource-types* nil)
 
@@ -279,8 +332,9 @@ end $$;
 
 (defun parse-types (types)
   (loop
-    for type-key in (u:plist-keys types)
-    appending (list type-key (parse-type-def type-key types))))
+    with all-types = (u:plist-keys (append *base-types* types))
+    for type-key in (u:plist-keys all-types)
+    appending (list type-key (parse-type-def type-key all-types))))
 
 (defun column-names (parsed-types type-key)
   (loop
