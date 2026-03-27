@@ -23,6 +23,7 @@ function usage {
     echo "         test file at $TEST_FILE, but doesn't run the tests. You"
     echo "         can connect to the REPL with the a client like Slime at"
     echo "         the reported Swank port."
+    echo "psql     Connect to the PostgreSQL database for the REPL."
     echo "tests    Runs all the tests and reports success or failure."
     echo "docs     Generates the REAME file."
     echo "stop     Stops the database container and removes it. This is"
@@ -72,6 +73,12 @@ function initialize_database {
     echo "Initializing database"
     psql -h $DB_HOST -p $DB_PORT -d $DB_NAME -U $DB_USER \
          -f "$DB_INIT_SQL"
+}
+
+function start_psql {
+    echo
+    echo "Connecting to database $DB_NAME at $BD_PORT"
+    psql -h $DB_HOST -p $DB_PORT -d $DB_NAME -U $DB_USER
 }
 
 function start_repl {
@@ -160,6 +167,10 @@ case "$ACTION" in
         initialize_database_quietly
         start_repl
         stop_database_quietly
+        ;;
+    psql)
+        export_repl_environment
+        start_psql
         ;;
     tests)
         export_test_environment

@@ -18,7 +18,8 @@
      (:table t :base t
        ;; TODO: :create, :update, and :delete should use RBAC functions
        :create :auto :update :auto :delete :auto
-       :views (:main (:users :role-users :roles))
+       :views (:main (:tables (:users :role-users :roles)
+                       :filter :id))
        :deletable t
        :fields (:name (:type :text
                         :source (:first (:view :main :column :user-name))
@@ -40,18 +41,18 @@
                                     (:view :main :column :role-name))
                           :checked (:list (:view :main :column :role-name))
                           :unchecked (:list (:table :roles :column :role-name))
-                          :joiner :role-users))
-       :rows-form (:fields (:name t :email t :roles t))
-       :update-form (:render-mode :form
-                      :fields (:name t :email t :password t :roles t))
-       :add-form (:render-mode :form
-                   :fields (:name t :email t :password t)))
+                          :ids-table :roles
+                          :join-table :role-users))
+       :list-form (:fields (:name t :email t :roles t))
+       :update-form (:fields (:name t :email t :password (:required nil)
+                               :roles t))
+       :add-form (:fields (:name t :email t :password t)))
 
      :resources
      (:table t :base t
        ;; TODO: :create, :update, and :delete should use RBAC functions
        :create :auto :update :auto :delete :auto
-       :views (:main (:resources :resource-roles :roles))
+       :views (:main (:tables (:resources :resource-roles :roles)))
        :deletable t
        :fields (:name (:type :text
                         :ui (:label "Resource" :input-type :line)
@@ -62,8 +63,9 @@
                           :source (:list (:view :main :column :role-name))
                           :checked (:list (:view :main :column :role-name))
                           :unchecked (:list (:table :roles :column :role-name))
-                          :joiner :role-users))
-       :rows-form (:fields (:name t :roles t))
+                          :ids-table :roles
+                          :join-table :resource-roles))
+       :list-form (:fields (:name t :roles t))
        :update-form (:fields (:name t :roles t))
        :add-form (:fields (:name t :roles t)))
 
@@ -75,7 +77,7 @@
                         :ui (:label "Permission" :input-type :line)
                         :source (:column :self)
                         :column t :not-null t :unique t))
-       :rows-form (:fields (:name t))
+       :list-form (:fields (:name t))
        :update-form (:fields (:name t))
        :add-form (:fields (:name t)))
 
@@ -83,7 +85,7 @@
      (:table t :base t
        ;; TODO: :create, :update, and :delete should use RBAC functions
        :create :auto :update :auto :delete :auto
-       :views (:main (:roles :role-permissions :permissions))
+       :views (:main (:tables (:roles :role-permissions :permissions)))
        :fields (:name (:type :text
                         :ui (:label "Role" :input-type :line)
                         :source (:first (:view :main :column :role-name))
@@ -93,8 +95,9 @@
                                 :source (:list (:view :main :column :permission-name))
                                 :checked (:list (:view :main :column :permission-name))
                                 :unchecked (:list (:table :permissions :column :permission-name))
-                                :joiner :role-permissions))
-       :rows-form (:fields (:name t :permissions t))
+                                :ids-table :permissions
+                                :join-table :role-permissions))
+       :list-form (:fields (:name t :permissions t))
        :update-form (:fields (:name t :permissions t))
        :add-form (:fields (:name t :permissions t)))
 
@@ -110,7 +113,6 @@
 
      :role-users
      (:table t :base t :is-joiner t
-       :create :auto :update :auto :delete :auto
        :fields (:reference (:target :roles)
                  :reference (:target :users)))))
 
@@ -118,7 +120,7 @@
   `(:todos
      (:table t
        :create :auto :update :auto :delete :auto
-       :views (:main (:todos :todo-tags :tags))
+       :views (:main (:tables (:todos :todo-tags :tags)))
        :fields (:name (:type :text
                         :ui (:label "To Do" :input-type :line)
                         :source (:first (:view :main :column :todo-name))
@@ -130,12 +132,12 @@
                          :unchecked (:list (:table :tags :column :tag-name))
                          :ids-table :tags
                          :join-table :todo-tags))
-       :rows-form (:fields (:name t))
+       :list-form (:fields (:name t))
        :update-form (:fields (:name t :tags t))
        :add-form (:fields (:name t :tags t)))
 
      :todo-tags
-     (:table t
+     (:table t :is-joiner t
        :fields (:reference (:target :todos)
                  :reference (:target :tags)))
 
@@ -145,18 +147,16 @@
        :fields (:name (:type text
                         :ui (:label "Tag" :input-type :line)
                         :column t :not-null t :unique t))
-       :rows-form (:fields (:name t))
+       :list-form (:fields (:name t))
        :update-form (:fields (:name t))
        :add-form (:fields (:name t)))))
 
 
-
 (defparameter *compiled-model* nil)
 
-(defun mapcar-key (key list-of-plists)
-  (mapcar
-    (lambda (plist) (getf plist key))
-    list-of-plists))
+(defun placeholders (fields &key (start-at 1))
+  (loop for a from start-at to (1- (+ start-at (length fields)))
+    collect (format nil "$~d" a)))
 
 (defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
   (let ((s (format nil "~(~a~)" keyword)))
@@ -235,18 +235,108 @@ end $$;
                  (u:plist-values fields))))
     :trigger (updated-at-trigger-sql table)))
 
+(defun columns (fields &rest keys)
+  "Returns the field key and SQL column name for fields that have non-NIL
+values for all KEYS."
+  (loop
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (every (lambda (k) (getf field-def k)) keys)
+    collect (cons field-key (getf field-def :name-sql))))
+
+(defun fk-columns (model type-key)
+  (loop with fields = (u:tree-get model type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for joiner = (getf field-def :join-table)
+    when joiner
+    append (columns (u:tree-get model joiner :fields) :target)))
+
+(defun insert-keys (model type-key &key for-update)
+  (loop
+    with fields = (u:tree-get model type-key :fields)
+    and base = (u:tree-get model type-key :base)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (getf field-def :join-table)
+    collect field-key into keys
+    finally (return
+              (if (or base for-update)
+                (cons :main keys)
+                (append '(:resource :main) keys)))))
+
+(defun insert-sql (model type-key)
+  (loop
+    with fields = (u:tree-get model type-key :fields)
+    with insert-keys = (insert-keys model type-key)
+    with res-columns = (list
+                         (cons
+                           :name
+                           (u:tree-get model :resources :fields :name :name-sql)))
+    with main-columns = (cons '(:id . "id") (columns fields :column :ui))
+    with fk-columns = (fk-columns model type-key)
+    with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
+    for key in insert-keys
+    for table-key = (case key
+                      (:resource :resources)
+                      (:main type-key)
+                      (otherwise (u:tree-get fields key :join-table)))
+    for table-name = (table-name table-key (u:tree-get model table-key :base))
+    for table-cols = (case key
+                       (:resource res-columns)
+                       (:main (if (u:tree-get model table-key :base)
+                                (cdr main-columns)
+                                main-columns))
+                       (otherwise fk-columns))
+    append (list key (cons
+                       (format nil sql
+                         table-name
+                         (mapcar #'cdr table-cols)
+                         (placeholders table-cols))
+                       (mapcar #'car table-cols)))))
+
+(defun zip (list-1 list-2)
+  (loop
+    for a in list-1
+    for b in list-2
+    collect a
+    collect b))
+
+(defun update-sql (model type-key)
+  (loop
+    with fields = (u:tree-get model type-key :fields)
+    with update-keys = (insert-keys model type-key :for-update t)
+    with columns = (columns fields :column :ui)
+    with fk-columns = (fk-columns model type-key)
+    with sql = "update ~a set ~{~a = ~a~^, ~} where id = $~d"
+    for key in update-keys
+    for table-key = (case key (:main type-key) (otherwise key))
+    for table-name = (table-name table-key (u:tree-get model table-key :base))
+    for table-cols = (case key (:main columns) (otherwise fk-columns))
+    append
+    (list key (cons
+                (format nil sql
+                  table-name
+                  (zip (mapcar #'cdr table-cols) (placeholders table-cols))
+                  (1+ (length table-cols)))
+                (append (mapcar #'car table-cols) '(:id))))))
+
+
 (defun view-sql (view model)
   "Converts a view like '(:users :user-roles :roles) into an SQL query string
 that joins tables."
   (loop
+    with filter = (or (u:tree-get view :filter) :id)
+    and first-table-key = (car (getf view :tables))
+    with filter-def = (u:tree-get model first-table-key :fields filter)
     for first = t then nil
-    for prev-table-key in view
+    for prev-table-key in (getf view :tables)
     for prev-table-name = (table-name
                             prev-table-key
                             (u:tree-get model prev-table-key :base))
     for first-table-name = prev-table-name then first-table-name
     for prev-is-joiner = (u:tree-get model prev-table-key :is-joiner)
-    for table-key in (cdr view)
+    for table-key in (cdr (getf view :tables))
     for table-name = (table-name table-key (u:tree-get model table-key :base))
     for is-joiner = (u:tree-get model table-key :is-joiner)
     for prev-table-ref = (if prev-is-joiner
@@ -267,8 +357,10 @@ that joins tables."
                 table-ref)
     unless (equal first-table-name table-name)
     collect sql into sql-lines
-    finally (return (format nil "~%select * from ~a~%~{  ~a~%~}"
-                      first-table-name sql-lines))))
+    finally (return (format nil "~%select * from ~a~%~{  ~a~%~}where ~a = $1~%"
+                      first-table-name
+                      sql-lines
+                      (column-name first-table-key filter filter-def)))))
 
 (defun views-sql (views model)
   (loop
@@ -276,39 +368,12 @@ that joins tables."
     for view-def in (cdr views) by #'cddr
     append (list view-key (view-sql view-def model))))
 
-(defun insert-sql (model type-key)
-  (let* ((fields (u:tree-get model type-key :fields))
-          (joiner-fields (remove-if-not
-                           (lambda (field-key)
-                             (u:tree-get model type-key
-                               :fields field-key :ids-table))
-                           (u:plist-keys fields)))
-          (insert-count (1+ (length joiner-fields))))
-    (loop for a from 1 to insert-count
-      for insert-name = :main then (pop joiner-fields)
-      for insert = (if (equal insert-name :main)
-                     (format
-                       nil
-                       "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
-                       (table-name type-key (u:tree-get model type-key :base))
-                       (mapcar
-                         (lambda (field) (getf field :name-sql))
-                         fields)
-                       (loop for index from 1 to (length fields)
-                         collect (format nil "$~d" index)))
-                     (format
-                       nil
-                       "insert into ~a (~{~a~^, ~}) values ($1, $2)"
-                       (u:tree-get model type-key :fields insert-name :ids-table)
-                       (loop
-                         with ids-table = (u:tree-get model type-key :fields insert-name :ids-table)
-                         with fields = (u:tree-get model ids-table :fields)
-                         for field-key in fields by #'cddr
-                         for field-def in (cdr fields) by #'cddr
-                         when (getf field-def :target)
-                         collect (column-name ids-table field-key field-def))))
-      append (list insert-name insert))))
-
+(defun delete-sql (model type-key)
+  (let* ((base (u:tree-get model type-key :base))
+          (table-name (table-name type-key base)))
+    (if base
+      (list (format nil "delete from ~a where id = $1" table-name) :id)
+      (list "delete from resources where id = $1" :id))))
 
 (defun field-type (field-def)
   (if (getf field-def :target)
@@ -355,9 +420,9 @@ that joins tables."
              (t (error "Invalid UUID value '~a'" value))))
     (otherwise (error "Unknown FIELD-TYPE-KEY '~a'" field-type-key))))
 
-(defun compile-field (model type-key field-key field-def)
+(defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
-    with name-sql = (column-name type-key field-key field-def)
+    with name-sql = (column-name type-key new-field-key field-def)
     and type-sql = (sql-type
                      (if (getf field-def :target)
                        :uuid
@@ -370,7 +435,7 @@ that joins tables."
                      "not null"
                      (when (getf field-def :not-null) "not null"))
     with references = (when (getf field-def :target)
-                        (format nil "references ~a(id)"
+                        (format nil "references ~a(id) on delete cascade"
                           (table-name
                             type-key
                             (u:tree-get model type-key :base))))
@@ -402,9 +467,10 @@ that joins tables."
                        :column column
                        :not-null (if (getf field-def :target)
                                    t
-                                   (getf field-def :not-null))))
+                                   (getf field-def :not-null))
+                       :reference (when (equal old-field-key :reference) t)))
     with attrs = '(:checked :unchecked :ui :unique
-                    :primary-key :fs-backed :joiner :target)
+                    :primary-key :fs-backed :target :ids-table :join-table)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
@@ -415,17 +481,20 @@ that joins tables."
                      :source (:first (:view :main :column :id))
                      :column t
                      :primary-key t
+                     :update nil
                      :default :generate-uuid)
                    :created-at
                    (:type :timestamp
                      :source (:first (:view :main :column :created-at))
                      :column t
+                     :update nil
                      :not-null t
                      :default :now)
                    :updated-at
                    (:type :timestamp
                      :source (:first (:view :main :column :updated-at))
                      :column t
+                     :update nil
                      :not-null t
                      :default :now))))
     (if keys-only
@@ -439,15 +508,16 @@ that joins tables."
 
 (defun compile-fields (type-key model)
   (loop with fields = (add-default-fields type-key model)
-    for field-key in fields by #'cddr
+    for old-field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
-    for new-field-key = (if (equal field-key :reference)
+    for new-field-key = (if (equal old-field-key :reference)
                           (u:make-keyword
                             (table-reference (getf field-def :target)))
-                          field-key)
+                          old-field-key)
     appending (list
                 new-field-key
-                (compile-field model type-key new-field-key field-def))))
+                (compile-field model type-key
+                  old-field-key new-field-key field-def))))
 
 (defun compile-type-def (type-key model)
   (let* ((type-def (getf model type-key))
@@ -458,15 +528,18 @@ that joins tables."
                    (u:deep-copy (getf type-def :views))
                    (if (getf type-def :is-joiner)
                      nil
-                     `(:main (,type-key))))))
+                     `(:main (:tables (,type-key)))))))
     (list
       :table (getf type-def :table)
       :base base
+      :is-joiner (getf type-def :is-joiner)
+      :insert-sql nil
       :views views
       :deletable (getf type-def :deletable)
       :fs-backed (getf type-def :fs-backed)
       :table-name table-name
-      :views-sql (views-sql views model)
+      :views-sql (unless (getf type-def :is-joiner)
+                   (views-sql views model))
       :create-table-sql (create-table-sql table-name fields)
       :fields fields)))
 
@@ -476,7 +549,19 @@ that joins tables."
     for type-key in (u:plist-keys full-model)
     for type-def in (u:plist-values full-model)
     for compiled-def = (compile-type-def type-key full-model)
-    appending (list type-key compiled-def)))
+    appending (list type-key compiled-def) into compiled-model
+    finally
+    (return
+      (loop
+        for type-key in compiled-model by #'cddr
+        for type-def = (getf compiled-model type-key)
+        for fields = (u:tree-get compiled-model type-key :fields)
+        unless (getf type-def :is-joiner)
+        do (setf
+             (getf type-def :insert-sql) (insert-sql compiled-model type-key)
+             (getf type-def :update-sql) (update-sql compiled-model type-key)
+             (getf type-def :delete-sql) (delete-sql compiled-model type-key))
+        appending (list type-key type-def)))))
 
 (defun set-model (model)
   (loop
@@ -498,5 +583,27 @@ that joins tables."
          (db:query table)
          (db:query trigger))))
 
-(defun insert-item (type-key kv-pairs)
-  (let ((m *compiled-model*))
+(defun be-list-internal (type-key &key schema-only keys column)
+  (let* ((m *compiled-model*)
+          (sql (u:tree-get m type-key :views-sql :main))
+          (full-sql (if schema-only (format nil "~a limit 1" sql) sql))
+          (result (a:with-rbac (*rbac*)
+                    (a:rbac-query (list full-sql)))))
+    (if schema-only
+      (u:plist-keys (car result))
+      (cond
+        (column (u:distinct-values
+                  (mapcar (lambda (row) (getf row column)) result)))
+        (keys (loop for row in result
+                collect (loop for key in keys
+                          append (list key (getf row key)))))
+        (t result)))))
+
+(defun model-views-for (type-key)
+  (list
+    :views (u:tree-get *compiled-model* type-key :views)
+    :views-sql (u:tree-get *compiled-model* type-key :views-sql)))
+
+;; (defun be-list (type-key &key form filter-value)
+;;   (let* ((m *compiled-model*)
+;;           (sql (u:tree-get m type-key :views-sql
