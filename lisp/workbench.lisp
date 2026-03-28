@@ -357,16 +357,35 @@ that joins tables."
                 table-ref)
     unless (equal first-table-name table-name)
     collect sql into sql-lines
-    finally (return (format nil "~%select * from ~a~%~{  ~a~%~}where ~a = $1~%"
+    finally
+    (return
+      (format nil "~%select * from ~a~%~{  ~a~%~}where ~a = $1~%"
                       first-table-name
                       sql-lines
-                      (column-name first-table-key filter filter-def)))))
+                      (format nil "~a.~a"
+                        first-table-name
+                        (column-name first-table-key filter filter-def))))))
+
+(defun keyword-matches (keyword regex)
+  (re:scan (format nil "(?i)~a" regex) (format nil "~s" keyword)))
 
 (defun views-sql (views model)
   (loop
     for view-key in views by #'cddr
     for view-def in (cdr views) by #'cddr
-    append (list view-key (view-sql view-def model))))
+    for is-list = (re:scan "list" (format nil "~(~a~)" view-key))
+    for list-view-key = (u:make-keyword (format nil "~a-list" view-key))
+    append (list
+             view-key
+             (list
+               :sql (view-sql view-def model)
+               :filter (getf view-def :filter))
+             list-view-key
+             (list
+               :sql (re:regex-replace
+                      "where .+"
+                      (view-sql view-def model) "")
+               :filter nil))))
 
 (defun delete-sql (model type-key)
   (let* ((base (u:tree-get model type-key :base))
@@ -599,11 +618,22 @@ that joins tables."
                           append (list key (getf row key)))))
         (t result)))))
 
+(defun model-for (type-key)
+  (getf *compiled-model* type-key))
+
 (defun model-views-for (type-key)
   (list
     :views (u:tree-get *compiled-model* type-key :views)
     :views-sql (u:tree-get *compiled-model* type-key :views-sql)))
 
-;; (defun be-list (type-key &key form filter-value)
-;;   (let* ((m *compiled-model*)
-;;           (sql (u:tree-get m type-key :views-sql
+(defun be-list (type-key &key (view-key :main) form filters)
+  (declare (ignore form))
+  (let* ((m *compiled-model*)
+          (k type-key)
+          (sql (u:tree-get m k :views-sql view-key :sql))
+          (expected-filters (u:tree-get m k :views view-key :filter))
+          (filter-values (loop for k in expected-filters
+                           for v = (getf filters k)
+                           when v collect v)))
+    (a:with-rbac (*rbac*)
+      (a:rbac-query (list sql filter-values)))))
