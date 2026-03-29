@@ -1,6 +1,0 @@
-* Marketing
-** Product Name
-- Data UI
-- ModelToApp
-- ModelK8s
-- Model2Ship
