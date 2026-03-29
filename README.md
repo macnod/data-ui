@@ -125,7 +125,7 @@ React (or any frontend) can fetch the schema once and render forms/lists automat
 
 The active implementation lives in `lisp/workbench.lisp`. Ignore all other files.
 
-Expected MVP availability date: December 2026.
+Target MVP date: December 2026.
 
 
 ## Goals & Vision
