@@ -1,25 +1,10 @@
-
-# Table of Contents
-
-1.  [Data-UI](#org6f4920d)
-    1.  [Core Philosophy](#orge80e2be)
-    2.  [Example Model (`*model*` in `lisp/workbench.lisp`)](#orgf52417d)
-    3.  [How It Works](#orgd25554c)
-    4.  [Key Model Features](#org002269a)
-    5.  [API Approach](#org2dd0f14)
-    6.  [Current Status (March 2026)](#org8dce837)
-    7.  [Goals & Vision](#orgdf4003a)
-    8.  [Related Repositories](#orgc23daa8)
-    9.  [License](#org2d56417)
-
-
-<a id="org6f4920d"></a>
-
 # Data-UI
 
-**Describe your data model once. Get a complete, deployable RBAC-backed application. All in a half hour.**
+**Describe your data model once. Get a complete RBAC-backed application.**
 
-Data-UI is a Common Lisp system that takes a simple nested plist model and compiles it into a full production-ready data application with full-fledged React UI:
+If you aim to develop solid, dependable, performant, maintainable, database-backed, ready-to-deploy applications that include full support for Role-Based Access Control (RBAC), and you want a deterministic development process (no countless iterations with an AI only to have to fix the difficult problems yourself in the end), then Data-UI is your friend.
+
+Data-UI is a Common Lisp system that takes a simple nested plist model and compiles it into a full production-ready data application:
 
 -   PostgreSQL tables (with defaults, constraints, triggers)
 -   Smart joined views for lists and forms
@@ -31,10 +16,8 @@ Data-UI is a Common Lisp system that takes a simple nested plist model and compi
 -   Complete React frontend
 -   Kubernetes manifests for deployment
 
-No manual migrations. No per-type boilerplate. Change the model, call `(set-model *model*)`, and everything updates deterministically.
+No manual migrations. No per-type boilerplate. Change the model, call `(set-model *model*)`, and everything updates deterministically. Data-UI aims to let you write the model, compile it into an application, and deploy the application in a half hour.
 
-
-<a id="orge80e2be"></a>
 
 ## Core Philosophy
 
@@ -48,8 +31,6 @@ You describe your entities, relations, and UI behavior in one place. Then, Data-
 
 Generic endpoints like `/api/list?type=todos` and `/api/schema/todos/add-form` work for **any** type — including the built-in RBAC tables themselves.
 
-
-<a id="orgf52417d"></a>
 
 ## Example Model (`*model*` in `lisp/workbench.lisp`)
 
@@ -101,8 +82,6 @@ This single definition aims to give you:
 The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and all join tables) is automatically included from `*base-model*`.
 
 
-<a id="orgd25554c"></a>
-
 ## How It Works
 
 -   `set-model` — Compiles the model, enriches it, generates all SQL/views, and stores the result in `*compiled-model*`.
@@ -111,8 +90,6 @@ The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and all 
 -   **RBAC** — Every operation is gated by `user-allowed` from the rbac library. RBAC tables are treated exactly like your own types, so you can manage users, roles, permissions, and resource access through the same UI/API.
 -   **Validation** — Per-field lambdas or common validator keywords (with support for lists). Pre-compiled into machine code during `set-model`. Separate `be-validate` (full form) and `be-validate-field` (real-time single field) functions.
 
-
-<a id="org002269a"></a>
 
 ## Key Model Features
 
@@ -126,8 +103,6 @@ The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and all 
 -   Non-base tables get an `rt_` prefix to avoid name collisions with RBAC tables
 
 
-<a id="org2dd0f14"></a>
-
 ## API Approach
 
 All endpoints stay **generic** — no per-type handler generation needed:
@@ -138,8 +113,6 @@ All endpoints stay **generic** — no per-type handler generation needed:
 
 React (or any frontend) can fetch the schema once and render forms/lists automatically.
 
-
-<a id="org8dce837"></a>
 
 ## Current Status (March 2026)
 
@@ -152,8 +125,8 @@ React (or any frontend) can fetch the schema once and render forms/lists automat
 
 The active implementation lives in `lisp/workbench.lisp`. Ignore all other files.
 
+Expected MVP availability date: December 2026.
 
-<a id="orgdf4003a"></a>
 
 ## Goals & Vision
 
@@ -164,14 +137,10 @@ The active implementation lives in `lisp/workbench.lisp`. Ignore all other files
 -   Business model: Sell custom apps to clients, offer hosting & support, and make the system available to others
 
 
-<a id="orgc23daa8"></a>
-
 ## Related Repositories
 
 -   [macnod/rbac](https://github.com/macnod/rbac) — Mature RBAC library with users, roles, permissions, resources, and comprehensive query functions.
 
-
-<a id="org2d56417"></a>
 
 ## License
 
