@@ -13,27 +13,52 @@
         "[0-9a-fA-F]{4}"
         "[0-9a-fA-F]{12}"))))
 
+(defun general-type (type)
+  (case type
+    (:text :text)
+    (:password :text)
+    (:integer :number)
+    (:floating :number)
+    (:list :list)))
+
+(defun validation-error-string (type-key field-key message)
+  (let ((type (u:singular (format nil "~(~a~)" type-key)))
+         (field (format nil "~(~a~)" field-key)))
+    (format nil "~a ~a ~a" type field message)))
+
+(defun v-required (type-key field-key value)
+  (unless
+    (case (general-type (u:tree-get *compiled-model*
+                          type-key :fields field-key :type))
+      (:text (and (not (null value)) (not (equal value ""))))
+      (:number (not (null value)))
+      (:list (not (zerop (length value)))))
+    (validation-error-string type-key field-key "is required.")))
+
+(defparameter *validation-map*
+  (list
+    :required #'v-required))
+
 (defparameter *base-model*
 `(:users
      (:table t :base t
        ;; TODO: :create, :update, and :delete should use RBAC functions
        :create :auto :update :auto :delete :auto
-       :views (:main (:tables (:users :role-users :roles)
-                       :filter :id))
+       :views (:main (:tables (:users :role-users :roles)))
        :deletable t
        :fields (:name (:type :text
                         :source (:first (:view :main :column :user-name))
-                        :ui (:label "Username" :input-type :line
-                              :required t)
+                        :ui (:label "Username" :input-type :line)
+                        :validations (:required)
                         :column t :not-null t :unique t)
                  :password (:type :password
-                             :ui (:label "Password" :input-type :password
-                                   :required t)
+                             :ui (:label "Password" :input-type :password)
+                             :validations (:required)
                              :column t :not-null t)
                  :email (:type :text
                           :source (:first (:view :main :column :email))
-                          :ui (:label "Email" :input-type :line
-                                :required t)
+                          :ui (:label "Email" :input-type :line)
+                          :validations (:required)
                           :column t :not-null t)
                  :roles (:type :list
                           :ui (:label "Roles" :input-type :checkbox-list)
@@ -43,10 +68,9 @@
                           :unchecked (:list (:table :roles :column :role-name))
                           :ids-table :roles
                           :join-table :role-users))
-       :list-form (:fields (:name t :email t :roles t))
-       :update-form (:fields (:name t :email t :password (:required nil)
-                               :roles t))
-       :add-form (:fields (:name t :email t :password t)))
+       :list-form (:fields (:name :email :roles))
+       :update-form (:fields t)
+       :add-form (:fields t))
 
      :resources
      (:table t :base t
@@ -57,17 +81,19 @@
        :fields (:name (:type :text
                         :ui (:label "Resource" :input-type :line)
                         :source (:first (:view :main :column :resource-name))
+                        :validations (:required)
                         :column t :not-null t :unique t)
                  :roles (:type :list
                           :ui (:label "Roles" :input-type :checkbox-list)
                           :source (:list (:view :main :column :role-name))
                           :checked (:list (:view :main :column :role-name))
                           :unchecked (:list (:table :roles :column :role-name))
+                          :validations (:required)
                           :ids-table :roles
                           :join-table :resource-roles))
-       :list-form (:fields (:name t :roles t))
-       :update-form (:fields (:name t :roles t))
-       :add-form (:fields (:name t :roles t)))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))
 
      :permissions
      (:table t :base t
@@ -77,9 +103,9 @@
                         :ui (:label "Permission" :input-type :line)
                         :source (:column :self)
                         :column t :not-null t :unique t))
-       :list-form (:fields (:name t))
-       :update-form (:fields (:name t))
-       :add-form (:fields (:name t)))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))
 
      :roles
      (:table t :base t
@@ -97,9 +123,9 @@
                                 :unchecked (:list (:table :permissions :column :permission-name))
                                 :ids-table :permissions
                                 :join-table :role-permissions))
-       :list-form (:fields (:name t :permissions t))
-       :update-form (:fields (:name t :permissions t))
-       :add-form (:fields (:name t :permissions t)))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))
 
      :role-permissions
      (:table t :base t :is-joiner t
@@ -132,9 +158,9 @@
                          :unchecked (:list (:table :tags :column :tag-name))
                          :ids-table :tags
                          :join-table :todo-tags))
-       :list-form (:fields (:name t))
-       :update-form (:fields (:name t :tags t))
-       :add-form (:fields (:name t :tags t)))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))
 
      :todo-tags
      (:table t :is-joiner t
@@ -147,9 +173,9 @@
        :fields (:name (:type text
                         :ui (:label "Tag" :input-type :line)
                         :column t :not-null t :unique t))
-       :list-form (:fields (:name t))
-       :update-form (:fields (:name t))
-       :add-form (:fields (:name t)))))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))))
 
 
 (defparameter *compiled-model* nil)
@@ -321,6 +347,55 @@ values for all KEYS."
                   (1+ (length table-cols)))
                 (append (mapcar #'car table-cols) '(:id))))))
 
+(defun column-reference (model type-key field-key)
+  (when (equal type-key :users)
+    (format t "column reference type-key=~s; field-key=~s~%"
+      type-key field-key))
+  (when (u:tree-get model type-key :fields field-key :column)
+    (let* ((type-def (u:tree-get *compiled-model* type-key))
+            (base (u:tree-get type-def :base))
+            (field-def (u:tree-get type-def :fields field-key))
+            (table-name (table-name type-key base))
+            (column-name (column-name type-key field-key field-def))
+            (default-column (member field-key (default-fields t)))
+            (table-column (when default-column
+                            (list table-name column-name)))
+            (alias (if default-column
+                     (list (u:singular table-name) column-name)
+                     (list column-name)))
+            (result (list
+                      :reference (format nil "~{~a~^.~}" table-column)
+                      :alias (format nil "~{~a~^_~}" alias)
+                      :alias-key (u:make-keyword (format nil "~{~a~^_~}" alias)))))
+      (when (equal type-key :users)
+        (format t "column reference result=~s~%" result))
+      result)))
+
+(defun column-references (type-key)
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for
+
+
+(defun table-columns (type-key)
+  (loop
+    with base = (u:tree-get *compiled-model* type-key :base)
+    and fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for table-name = (table-name type-key base)
+    for column-name = (column-name type-key field-key field-def)
+    for default-column = (member field-key (default-fields t))
+    for table-column = (when default-column
+                         (list table-name column-name))
+    for column-alias = (if default-column
+                         (list (u:singular table-name) column-name)
+                         (list column-name))
+    when (getf field-def :column)
+    collect
+    (format nil "~{~a~^.~} ~{~a~^_~}" table-column column-alias)
+    into columns
+    finally (return (format nil "~{~a~^, ~}" columns))))
 
 (defun view-sql (view model)
   "Converts a view like '(:users :user-roles :roles) into an SQL query string
@@ -357,35 +432,16 @@ that joins tables."
                 table-ref)
     unless (equal first-table-name table-name)
     collect sql into sql-lines
+    unless is-joiner collect table-key into table-keys
     finally
     (return
-      (format nil "~%select * from ~a~%~{  ~a~%~}where ~a = $1~%"
-                      first-table-name
-                      sql-lines
-                      (format nil "~a.~a"
-                        first-table-name
-                        (column-name first-table-key filter filter-def))))))
+      (format nil "~%select ~{~a~^, ~} from ~a~%~{  ~a~%~}"
+        (mapcar #'table-columns (cons first-table-key table-keys))
+        first-table-name
+        sql-lines))))
 
 (defun keyword-matches (keyword regex)
   (re:scan (format nil "(?i)~a" regex) (format nil "~s" keyword)))
-
-(defun views-sql (views model)
-  (loop
-    for view-key in views by #'cddr
-    for view-def in (cdr views) by #'cddr
-    for is-list = (re:scan "list" (format nil "~(~a~)" view-key))
-    for list-view-key = (u:make-keyword (format nil "~a-list" view-key))
-    append (list
-             view-key
-             (list
-               :sql (view-sql view-def model)
-               :filter (getf view-def :filter))
-             list-view-key
-             (list
-               :sql (re:regex-replace
-                      "where .+"
-                      (view-sql view-def model) "")
-               :filter nil))))
 
 (defun delete-sql (model type-key)
   (let* ((base (u:tree-get model type-key :base))
@@ -543,11 +599,32 @@ that joins tables."
           (base (getf type-def :base))
           (fields (compile-fields type-key model))
           (table-name (table-name type-key base))
-          (views (if (getf type-def :views)
-                   (u:deep-copy (getf type-def :views))
-                   (if (getf type-def :is-joiner)
-                     nil
-                     `(:main (:tables (,type-key)))))))
+          (views (unless (getf type-def :is-joiner)
+                   (loop with src = (if (getf type-def :views)
+                                      (u:deep-copy (getf type-def :views))
+                                      (if (getf type-def :is-joiner)
+                                        nil
+                                        `(:main (:tables (,type-key)))))
+                     for view-key in src by #'cddr
+                     for view-def in (cdr src) by #'cddr
+                     do
+                     (when (equal type-key :users)
+                       (format t "view-key=~s; view-def=~s~%" view-key view-def))
+                     (u:tree-put (view-sql view-def model) view-def :sql)
+                     (loop for table-key in (u:tree-get view-def :tables)
+                       do (loop with fields = (u:tree-get model table-key :fields)
+                            for field-key in fields by #'cddr
+                            for field-def in (cdr fields) by #'cddr
+                            for reference = (column-reference
+                                              model table-key field-key)
+                            when (getf field-def :column) do
+                            (u:tree-put
+                              (getf reference :alias-key) view-def view-key
+                              :columns table-key field-key :key)
+                            (u:tree-put
+                              (getf reference :alias) view-def view-key
+                              :columns table-key field-key :alias)))
+                     appending (list view-key view-def)))))
     (list
       :table (getf type-def :table)
       :base base
@@ -557,8 +634,6 @@ that joins tables."
       :deletable (getf type-def :deletable)
       :fs-backed (getf type-def :fs-backed)
       :table-name table-name
-      :views-sql (unless (getf type-def :is-joiner)
-                   (views-sql views model))
       :create-table-sql (create-table-sql table-name fields)
       :fields fields)))
 
@@ -623,17 +698,26 @@ that joins tables."
 
 (defun model-views-for (type-key)
   (list
-    :views (u:tree-get *compiled-model* type-key :views)
-    :views-sql (u:tree-get *compiled-model* type-key :views-sql)))
+    :views (u:tree-get *compiled-model* type-key :views)))
 
-(defun be-list (type-key &key (view-key :main) form filters)
-  (declare (ignore form))
-  (let* ((m *compiled-model*)
-          (k type-key)
-          (sql (u:tree-get m k :views-sql view-key :sql))
-          (expected-filters (u:tree-get m k :views view-key :filter))
-          (filter-values (loop for k in expected-filters
-                           for v = (getf filters k)
-                           when v collect v)))
-    (a:with-rbac (*rbac*)
-      (a:rbac-query (list sql filter-values)))))
+(defun form-field-keys (type-key form)
+  (let ((fields (u:tree-get *compiled-model* type-key form :fields)))
+    (if (or (not fields) (equal fields t))
+      (u:plist-keys (u:tree-get *compiled-model* type-key :fields))
+      fields)))
+
+;; (defun where-sql (select-sql type-key form filters)
+;;   (loop with field-keys = (form-field-keys type-key form)
+;;     for field in filters by #'cddr
+;;     for value in (cdr filters) by #'cddr
+;;     for
+;;     when (member field field-keys)
+
+
+;; (defun be-list (type-key &key form filters)
+;;   (let* ((m *compiled-model*)
+;;           (k type-key)
+;;           (select (u:tree-get m k :views-sql view-key :sql))
+;;           (sql (where-sql select filters field-keys)))
+;;     (a:with-rbac (*rbac*)
+;;       (db:query sql :plists))))
