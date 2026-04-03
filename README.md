@@ -268,9 +268,10 @@ Target MVP date: December 2026.
 
 Data-UI is and will remain fully open source under the MIT license. The core (model compiler, SQL generation, RBAC integration, CRUD layer, etc.) is free for anyone to use, self-host, or modify.
 
-At first, we plan to use Data-UI for our own projects and client work.
+Initially we will focus on building custom applications for clients while dogfooding the tool on our own projects.
 
-After the MVP, to sustain development and offer more value, we plan to provide:
+After the MVP, to fund continued development and provide additional value to users, we plan to provide:
+
 - A user-friendly YAML + visual modeling frontend (for developers who prefer not to write Lisp models)
 - Managed hosting (one-click deploy, updates, backups, scaling)
 - Professional support, SLAs, and custom development services for clients
