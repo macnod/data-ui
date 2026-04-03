@@ -259,10 +259,24 @@ Target MVP date: December 2026.
 
 - Build simple multi-table applications extremely quickly
 - Make RBAC complexity completely invisible to the developer
-- Achieve deterministic, reproducible deploys (target: under 30 minutes from model change to live app)
+- Achieve deterministic, reproducible deploys (target: under 30 minutes from nothing to live app)
 - Support future YAML/JSON model input and AI-assisted model generation
 - Business model: Sell custom apps to clients, offer hosting & support, and make the system available to others
 
+## Business & Monetization
+
+Data-UI is and will remain fully open source under the MIT license. The core (model compiler, SQL generation, RBAC integration, CRUD layer, etc.) is free for anyone to use, self-host, or modify.
+
+At first, we plan to use Data-UI for our own projects and client work.
+
+After the MVP, to sustain development and offer more value, we plan to provide:
+- A user-friendly YAML + visual modeling frontend (for developers who prefer not to write Lisp models)
+- Managed hosting (one-click deploy, updates, backups, scaling)
+- Professional support, SLAs, and custom development services for clients
+
+If you're building internal tools or client apps and want help, feel free to reach out.
+
+Contributions and feedback are very welcome — this is still early stage!
 
 ## Related Repositories
 
