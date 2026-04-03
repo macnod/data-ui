@@ -15,6 +15,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 - [API Approach](#api-approach)
 - [Current Status (March 2026)](#current-status-march-2026)
 - [Goals & Vision](#goals--vision)
+- [Business & Monetization](#business--monetization)
 - [Related Repositories](#related-repositories)
 - [License](#license)
 
