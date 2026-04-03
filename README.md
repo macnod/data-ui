@@ -2,6 +2,21 @@
 
 **Describe your data model once. Get a complete RBAC-backed application.**
 
+# Table of Contents
+
+- [Overview](#overview)
+- [Core Philosophy](#core-philosophy)
+- [Example Model](#example-model)
+- [Example Compilation Results](#example-compilation-results)
+- [How It Works](#how-it-works)
+- [Key Model Features](#key-model-features)
+- [API Approach](#api-approach)
+- [Current Status (March 2026)](#current-status-march-2026)
+- [Goals & Vision](#goals--vision)
+- [Related Repositories](#related-repositories)
+- [License](#license)
+
+# Overview
 If you aim to develop solid, dependable, performant, maintainable, database-backed, ready-to-deploy applications that include full support for Role-Based Access Control (RBAC), and you want a deterministic development process (no countless iterations with an AI only to have to fix the difficult problems yourself in the end), then Data-UI is your friend.
 
 Data-UI is a Common Lisp system that takes a simple nested plist model and compiles it into a full production-ready data application:
@@ -32,7 +47,9 @@ You describe your entities, relations, and UI behavior in one place. Then, Data-
 Generic endpoints like `/api/list?type=todos` and `/api/schema/todos/add-form` work for **any** type — including the built-in RBAC tables themselves.
 
 
-## Example Model (`*model*` in `lisp/workbench.lisp`)
+## Example Model
+
+This example is from what's assigned to the `*model*` variable in `lisp/workbench.lisp`.
 
     (defparameter *model*
       `(:todos
