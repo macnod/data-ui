@@ -2,6 +2,8 @@
 
 **Describe your data model once. Get a complete RBAC-backed application.**
 
+Repo at: https://github.com/macnod/data-ui
+
 # Table of Contents
 
 - [Overview](#overview)
