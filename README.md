@@ -4,7 +4,7 @@
 
 Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
-# Table of Contents
+## Table of Contents
 
 - [Overview](#overview)
 - [Core Philosophy](#core-philosophy)
