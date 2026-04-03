@@ -231,7 +231,7 @@ React (or any frontend) can fetch the schema once and render forms/lists automat
 -   Validation architecture finalized (pre-compiled lambdas + common validators)
 -   Primary focus now: Solidifying the `be-*` CRUD functions
 
-The active implementation lives in [lisp/workbench.lisp](https://github.com/macnod/data-ui/lisp/workbench.lisp). Ignore all other files for now.
+The active implementation lives in [lisp/workbench.lisp](https://github.com/macnod/data-ui/blob/master/lisp/workbench.lisp). Ignore all other files for now.
 
 Target MVP date: December 2026.
 
