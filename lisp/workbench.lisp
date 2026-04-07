@@ -50,7 +50,7 @@
                 :roles (:tables (:roles)))
        :deletable t
        :fields (:name (:type :text
-                        :source (:view :main :column :user-name :agg :first)
+                        :source (:view :main :column :name :agg :first)
                         :ui (:label "Username" :input-type :line)
                         :validations (:required)
                         :column t :not-null t :unique t)
@@ -154,12 +154,12 @@
                 :tags (:tables (:tags)))
        :fields (:name (:type :text
                         :ui (:label "To Do" :input-type :line)
-                        :source (:view :main :column :todo-name :agg :first)
+                        :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
                  :tags (:type :list
                          :ui (:label "Tags" :input-type :checkbox-list)
-                         :source-sel (:list (:view :main :column :tag-name))
-                         :source-all (:list (:table :tags :column :tag-name))
+                         :source-sel (:view :main :table :tags :column :name :agg :list)
+                         :source-all (:view :tags :table :tags :column :name :agg :list)
                          :ids-table :tags
                          :join-table :todo-tags))
        :list-form (:fields t)
@@ -222,9 +222,9 @@
     (format nil "~(~a_id~)" (u:singular (format nil "~a" keyword)))))
 
 (defun column-name (model type-key field-key field-def)
-  (when (getf field-def :column)
+  (when (or (getf field-def :column) (getf field-def :target))
     (let* ((table-name (table-name type-key (u:tree-get model type-key :base)))
-            (singular-table-name (u:singular table-name))
+            (singular-table-name (re:regex-replace "^rt_" (u:singular table-name) ""))
             (force-sql-name (getf field-def :force-sql-name))
             (target (getf field-def :target))
             (field-name (to-sql-identifier field-key)))
@@ -235,18 +235,16 @@
         (t (format nil "~a_~a" singular-table-name field-name))))))
 
 (defun column-alias (model type-key field-key field-def)
-  (when (getf field-def :column)
-    (let* ((table-name (table-name type-key (u:tree-get model type-key :base)))
-            (singular-table-name (u:singular table-name))
-            (force-sql-name (getf field-def :force-sql-name))
-            (target (getf field-def :target))
-            (field-name (to-sql-identifier field-key)))
-      (cond
-        (target (to-sql-identifier field-key))
-        (force-sql-name (format nil "~a_~a" singular-table-name force-sql-name))
-        ((member field-key (default-fields t)) (format nil "~a_~a" singular-table-name field-name))
-        (t (format nil "~a_~a" singular-table-name field-name))))))
-
+  (let* ((table-name (table-name type-key (u:tree-get model type-key :base)))
+          (singular-table-name (u:singular table-name))
+          (force-sql-name (getf field-def :force-sql-name))
+          (target (getf field-def :target))
+          (field-name (to-sql-identifier field-key)))
+    (cond
+      (target (to-sql-identifier field-key))
+      (force-sql-name (format nil "~a_~a" singular-table-name force-sql-name))
+      ((member field-key (default-fields t)) (format nil "~a_~a" singular-table-name field-name))
+      (t (format nil "~a_~a" singular-table-name field-name)))))
 
 (defun updated-at-trigger-sql (table)
   (format nil
@@ -287,7 +285,7 @@ values for all KEYS."
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
     when (every (lambda (k) (getf field-def k)) keys)
-    collect (cons field-key (getf field-def :force-sql-name))))
+    collect (cons field-key (getf field-def :name-sql))))
 
 (defun fk-columns (model type-key)
   (loop with fields = (u:tree-get model type-key :fields)
@@ -317,10 +315,11 @@ values for all KEYS."
     with res-columns = (list
                          (cons
                            :name
-                           (u:tree-get model :resources :fields :name :force-sql-name)))
+                           (u:tree-get model :resources :fields :name :name-sql)))
     with main-columns = (cons '(:id . "id") (columns fields :column :ui))
     with fk-columns = (fk-columns model type-key)
     with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
+    initially (format t "fk-columns for ~s: ~s~%" type-key fk-columns)
     for key in insert-keys
     for table-key = (case key
                       (:resource :resources)
@@ -366,23 +365,17 @@ values for all KEYS."
                   (1+ (length table-cols)))
                 (append (mapcar #'car table-cols) '(:id))))))
 
-(defun column-reference (model type-key field-key)
-  (when (u:tree-get model type-key :fields field-key :column)
-    (let* ((type-def (u:tree-get model type-key))
-            (base (u:tree-get type-def :base))
-            (field-def (u:tree-get type-def :fields field-key))
-            (table-name (table-name type-key base))
-            (column-name (column-name model type-key field-key field-def))
-            (default-column (member field-key (default-fields t)))
-            (table-column (when default-column
-                            (list table-name column-name)))
-            (alias (if default-column
-                     (list (u:singular table-name) column-name)
-                     (list column-name))))
-      (list
-        :reference (format nil "~{~a~^.~}" table-column)
-        :alias (format nil "~{~a~^_~}" alias)
-        :alias-key (u:make-keyword (format nil "~{~a~^_~}" alias))))))
+(defun table-column (model type-key field-key)
+  (let* ((type-def (u:tree-get model type-key))
+          (base (u:tree-get type-def :base))
+          (field-def (u:tree-get type-def :fields field-key))
+          (table-name (table-name type-key base))
+          (column-name (column-name model type-key field-key field-def))
+          (column-list (list table-name column-name))
+          (column-string (format nil "~{~a~^.~}" column-list))
+          (alias-list (list table-name column-name))
+          (alias-string (format nil "~{~a~^_~}" alias-list)))
+    (values column-string alias-string)))
 
 (defun table-columns (model type-key)
   (loop
@@ -390,19 +383,17 @@ values for all KEYS."
     and fields = (u:tree-get model type-key :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
-    for table-name = (table-name type-key base)
-    for column-name = (column-name model type-key field-key field-def)
-    for default-column = (member field-key (default-fields t))
-    for force-sql-name = (getf field-def :force-sql-name)
-    for table-column = (when (or default-column force-sql-name)
-                         (list table-name column-name))
-    for column-alias = (if (or default-column force-sql-name)
-                         (list (u:singular table-name) column-name)
-                         (list column-name))
+    for (column alias) = (multiple-value-bind (c a)
+                           (table-column model type-key field-key)
+                           (list c a))
     when (getf field-def :column)
-    collect (format nil "~{~a~^.~}" table-column) into columns
-    and collect (format nil "~{~a~^_~}" column-alias) into aliases
-    finally (return (values columns aliases))))
+    collect (list
+              :table type-key
+              :field-key field-key
+              :alias alias
+              :alias-key (u:make-keyword alias)
+              :column column
+              :column-key (u:make-keyword column))))
 
 (defun max-string-width (strings)
   (loop for s in strings
@@ -412,9 +403,9 @@ values for all KEYS."
 
 (defun formatted-table-columns (model type-keys)
   (loop for type-key in type-keys
-    for (cc aa) = (multiple-value-bind (c a)
-                    (table-columns model type-key)
-                    (list c a))
+    for table-columns = (table-columns model type-key)
+    for cc = (mapcar (lambda (c) (getf c :column)) table-columns)
+    for aa = (mapcar (lambda (c) (getf c :alias)) table-columns)
     append cc into columns
     append aa into aliases
     finally (let* ((width (max-string-width columns))
@@ -539,15 +530,14 @@ that joins tables."
     (or
       (getf field-def :source)
       (when (getf field-def :column)
-        `(:first (:view :main :column ,name-key))))))
+        `(:view :main :column ,name-key :agg :first)))))
 
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
     with force-sql-name = (getf field-def :force-sql-name)
-    with sql-name = (or
+    with name-sql = (or
                       force-sql-name
                       (column-name model type-key new-field-key field-def))
-    with sql-alias = (column-alias model type-key new-field-key field-def)
     and type-sql = (sql-type
                      type-key
                      new-field-key
@@ -572,17 +562,17 @@ that joins tables."
                         (getf field-def :type)
                         :quote t)))
     with sql-parts = (remove-if-not #'identity
-                       (list sql-name type-sql primary-key not-null
+                       (list name-sql type-sql primary-key not-null
                          references unique default))
-    with new-def = (let ((name-key (u:make-keyword sql-name)))
+    with new-def = (let ((name-key (u:make-keyword name-sql)))
                      (list
                        :force-sql-name force-sql-name
-                       :sql-name sql-name
-                       :sql-alias sql-alias
+                       :name-sql name-sql
                        :type-sql type-sql
                        :create-sql (format nil "~{~a~^ ~}" sql-parts)
-                       :alias-key (u:make-keyword sql-alias)
                        :source (field-source field-def name-key)
+                       :source-sel (getf field-def :source-sel)
+                       :source-all (getf field-def :source-all)
                        :type (if (getf field-def :target)
                                :uuid
                                (getf field-def :type))
@@ -597,24 +587,74 @@ that joins tables."
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
 
+(defun compile-field-stage-2 (model type-key field-def)
+  (cond
+    ((u:tree-get field-def :source :view)
+      (let* ((table-key (or (u:tree-get field-def :source :table) type-key))
+              (column-key (u:tree-get field-def :source :column))
+              (view-key (u:tree-get field-def :source :view))
+              (alias (u:tree-get model type-key :views view-key :columns table-key column-key)))
+        ;; (when (and (equal table-key :todos) (equal column-key :name))
+        ;;   (format t "type-key=~s; table-key=~s; column-key=~s; view-key=~s; alias=~s~%"
+        ;;     type-key table-key column-key view-key alias)
+        ;;   (format t "views=~s~%" (u:tree-get model type-key :views)))
+        (add-to-plist
+          field-def
+          (list
+            :source (add-to-plist
+                      (u:tree-get field-def :source)
+                      (list :alias-key (u:make-keyword alias)))))))
+    ((and
+       (u:tree-get field-def :source-sel :view)
+       (u:tree-get field-def :source-all :view))
+      (let* ((sel-table-key (u:tree-get field-def :source-sel :table))
+              (all-table-key (u:tree-get field-def :source-all :table))
+              (sel-column-key (u:tree-get field-def :source-sel :column))
+              (all-column-key (u:tree-get field-def :source-all :column))
+              (sel-view-key (u:tree-get field-def :source-sel :view))
+              (all-view-key (u:tree-get field-def :source-all :view))
+              (sel-alias (u:tree-get model type-key :views sel-view-key
+                           :columns sel-table-key sel-column-key))
+              (all-alias (u:tree-get model type-key :views all-view-key
+                           :columns all-table-key all-column-key)))
+        (add-to-plist
+          field-def
+          (list
+            :source-sel (add-to-plist
+                          (u:tree-get field-def :source-sel)
+                          (list :alias-key (u:make-keyword sel-alias)))
+            :source-all (add-to-plist
+                          (u:tree-get field-def :source-all)
+                          (list :alias-key (u:make-keyword all-alias)))))))
+    (t (copy-seq field-def))))
+
+(defun compile-fields-stage-2 (model type-key)
+  (loop with fields = (u:tree-get model type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    appending
+    (list
+      field-key
+      (compile-field-stage-2 model type-key field-def))))
+
 (defun default-fields (&optional keys-only)
   (let ((fields '(:id
                    (:type :uuid
-                     :source (:first (:view :main :column :id))
+                     :source (:view :main :column :id :agg :first)
                      :column t
                      :primary-key t
                      :update nil
                      :default :generate-uuid)
                    :created-at
                    (:type :timestamp
-                     :source (:first (:view :main :column :created-at))
+                     :source (:view :main :column :created-at :agg :first)
                      :column t
                      :update nil
                      :not-null t
                      :default :now)
                    :updated-at
                    (:type :timestamp
-                     :source (:first (:view :main :column :updated-at))
+                     :source (:view :main :column :updated-at :agg :first)
                      :column t
                      :update nil
                      :not-null t
@@ -643,29 +683,22 @@ that joins tables."
 
 (defun view-columns (model view-def)
   (loop for table-key in (u:tree-get view-def :tables)
-    unless (u:tree-get model table-key :is-joiner) append
+    unless (u:tree-get model table-key :is-joiner)
+    append
     (list table-key
-      (loop with fields = (u:tree-get model table-key :fields)
-        for field-key in fields by #'cddr
-        for field-def in (cdr fields) by #'cddr
-        for reference = (column-reference
-                          model table-key field-key)
-        when (getf field-def :column)
-        append (list
-                 (getf reference :alias-key)
-                 (getf reference :alias))))))
+      (loop for column in (table-columns model table-key)
+        append (list (getf column :field-key) (getf column :alias-key))))))
 
 (defun enrich-views (model type-key)
   (loop
     with type-def = (getf model type-key)
-    with views = (getf type-def :views)
-    with src = (if views
-                 (u:deep-copy views)
-                 (if (getf type-def :is-joiner)
-                   nil
-                   `(:main (:tables (,type-key)))))
-    for view-key in src by #'cddr
-    for view-def in (cdr src) by #'cddr
+    with views = (let ((v (getf type-def :views))
+                        (j (getf type-def :is-joiner)))
+                   (if v
+                     (u:deep-copy v)
+                     (if j nil `(:main (:tables (,type-key))))))
+    for view-key in views by #'cddr
+    for view-def in (cdr views) by #'cddr
     for view-def-new = (list
                          :tables (getf view-def :tables)
                          :sql (view-sql model view-def)
@@ -728,8 +761,20 @@ that joins tables."
                       :create-table-sql create-table-sql))
     appending (list type-key (add-to-plist type-def new-def))))
 
+(defun stage-3 (model)
+  (loop
+    for type-key in model by #'cddr
+    for type-def in (cdr model) by #'cddr
+    for fields = (compile-fields-stage-2 model type-key)
+    for new-def = (add-to-plist type-def (list :fields fields))
+    appending (list type-key new-def)))
+
 (defun compile-model (model)
-  (stage-2 (stage-1 model)))
+  (let* ((model-1 (stage-1 model))
+          (model-2 (stage-2 model-1))
+          (model-3 (stage-3 model-2)))
+    ;; (format t "model-2 views=~s~%" (u:tree-get model-2 :todos :views))
+    model-3))
 
 (defun set-model (model)
   (loop
@@ -803,7 +848,7 @@ that joins tables."
       fields)))
 
 (defun model-field-names-for (type-key &key
-                               (keys '(:sql-name :sql-alias :alias-key)))
+                               (keys '(:name-sql :alias-key)))
   (loop with fields = (u:tree-get *compiled-model* type-key :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
