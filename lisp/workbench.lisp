@@ -295,7 +295,7 @@ values for all KEYS."
     when joiner
     append (columns (u:tree-get model joiner :fields) :target)))
 
-(defun insert-keys (model type-key &key for-update)
+(defun insert-keys (model type-key)
   (loop
     with fields = (u:tree-get model type-key :fields)
     and base = (u:tree-get model type-key :base)
@@ -304,7 +304,7 @@ values for all KEYS."
     when (getf field-def :join-table)
     collect field-key into keys
     finally (return
-              (if (or base for-update)
+              (if base
                 (cons :main keys)
                 (append '(:resource :main) keys)))))
 
@@ -319,7 +319,6 @@ values for all KEYS."
     with main-columns = (cons '(:id . "id") (columns fields :column :ui))
     with fk-columns = (fk-columns model type-key)
     with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
-    initially (format t "fk-columns for ~s: ~s~%" type-key fk-columns)
     for key in insert-keys
     for table-key = (case key
                       (:resource :resources)
@@ -339,31 +338,69 @@ values for all KEYS."
                          (placeholders table-cols))
                        (mapcar #'car table-cols)))))
 
-(defun zip (list-1 list-2)
+(defun insert-key (key)
+  (u:make-keyword (format nil "~a-insert" key)))
+
+(defun delete-key (key)
+  (u:make-keyword (format nil "~a-delete" key)))
+
+(defun original-key (key)
+  (u:make-keyword
+    (re:regex-replace "-(insert|delete)$" (format nil "~(~a~)" key) "")))
+
+(defun update-keys (model type-key)
   (loop
-    for a in list-1
-    for b in list-2
-    collect a
-    collect b))
+    with fields = (u:tree-get model type-key :fields)
+    and base = (u:tree-get model type-key :base)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for join-table = (getf field-def :join-table)
+    when join-table
+    collect (cons :delete join-table) into keys
+    and collect (cons :insert join-table) into keys
+    finally (return (cons (cons :main type-key) keys))))
 
 (defun update-sql (model type-key)
   (loop
     with fields = (u:tree-get model type-key :fields)
-    with update-keys = (insert-keys model type-key :for-update t)
+    with update-keys = (update-keys model type-key)
     with columns = (columns fields :column :ui)
     with fk-columns = (fk-columns model type-key)
-    with sql = "update ~a set ~{~a = ~a~^, ~} where id = $~d"
-    for key in update-keys
-    for table-key = (case key (:main type-key) (otherwise key))
-    for table-name = (table-name table-key (u:tree-get model table-key :base))
+    with main-sql = "update ~a set ~{~a = ~a~^, ~} where id = $~d"
+    with delete-sql = "delete from ~a where ~{~a = ~a~^ and ~}"
+    with insert-sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
+    for key-table in update-keys
+    for key = (car key-table)
+    for table = (cdr key-table)
+    for table-name = (table-name table (u:tree-get model table :base))
     for table-cols = (case key (:main columns) (otherwise fk-columns))
+    for sql = (case key
+                (:main main-sql)
+                (:insert insert-sql)
+                (:delete delete-sql))
     append
-    (list key (cons
-                (format nil sql
-                  table-name
-                  (zip (mapcar #'cdr table-cols) (placeholders table-cols))
-                  (1+ (length table-cols)))
-                (append (mapcar #'car table-cols) '(:id))))))
+    (list key (case key
+                (:main
+                  (cons
+                    (format nil sql
+                      table-name
+                      (u:zip (mapcar #'cdr table-cols) (placeholders table-cols))
+                      (1+ (length table-cols)))
+                    (append (mapcar #'car table-cols) '(:id))))
+                (:delete
+                  (cons
+                    (format nil sql
+                      table-name
+                      (u:zip (mapcar #'cdr table-cols) (placeholders table-cols))
+                      (mapcar #'car table-cols))
+                    (mapcar #'car table-cols)))
+                (:insert
+                  (cons
+                    (format nil sql
+                      table-name
+                      (mapcar #'cdr table-cols)
+                      (placeholders table-cols))
+                    (mapcar #'car table-cols)))))))
 
 (defun table-column (model type-key field-key)
   (let* ((type-def (u:tree-get model type-key))
@@ -594,10 +631,6 @@ that joins tables."
               (column-key (u:tree-get field-def :source :column))
               (view-key (u:tree-get field-def :source :view))
               (alias (u:tree-get model type-key :views view-key :columns table-key column-key)))
-        ;; (when (and (equal table-key :todos) (equal column-key :name))
-        ;;   (format t "type-key=~s; table-key=~s; column-key=~s; view-key=~s; alias=~s~%"
-        ;;     type-key table-key column-key view-key alias)
-        ;;   (format t "views=~s~%" (u:tree-get model type-key :views)))
         (add-to-plist
           field-def
           (list
@@ -773,7 +806,6 @@ that joins tables."
   (let* ((model-1 (stage-1 model))
           (model-2 (stage-2 model-1))
           (model-3 (stage-3 model-2)))
-    ;; (format t "model-2 views=~s~%" (u:tree-get model-2 :todos :views))
     model-3))
 
 (defun set-model (model)
