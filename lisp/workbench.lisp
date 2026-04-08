@@ -104,7 +104,7 @@
        :deletable t
        :fields (:name (:type :text
                         :ui (:label "Permission" :input-type :line)
-                        :source (:view :main :column :permission-name :agg :first)
+                        :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
@@ -278,14 +278,27 @@ end $$;
                  (u:plist-values fields))))
     :trigger (updated-at-trigger-sql table)))
 
-(defun columns (fields &rest keys)
-  "Returns the field key and SQL column name for fields that have non-NIL
-values for all KEYS."
+(defun filtered-fields (fields keys)
+  "Returns field key and definition for fields that have non-NIL values for all
+KEYS."
   (loop
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
     when (every (lambda (k) (getf field-def k)) keys)
-    collect (cons field-key (getf field-def :name-sql))))
+    append (list field-key field-def)))
+
+(defun fields-attribute (fields have-keys &optional attribute)
+  "Returns a list of cons pairs of field key and the value of ATTRIBUTE for
+fields that have non-NIL values for all HAVE-KEYS."
+  (loop with some-fields = (filtered-fields fields have-keys)
+    for field-key in some-fields by #'cddr
+    for field-def in (cdr some-fields) by #'cddr
+    collect
+    (cons
+      field-key
+      (if attribute
+        (getf field-def attribute)
+        field-def))))
 
 (defun fk-columns (model type-key)
   (loop with fields = (u:tree-get model type-key :fields)
@@ -293,7 +306,8 @@ values for all KEYS."
     for field-def in (cdr fields) by #'cddr
     for joiner = (getf field-def :join-table)
     when joiner
-    append (columns (u:tree-get model joiner :fields) :target)))
+    append (fields-attribute
+             (u:tree-get model joiner :fields) '(:target) :name-sql)))
 
 (defun insert-keys (model type-key)
   (loop
@@ -316,7 +330,8 @@ values for all KEYS."
                          (cons
                            :name
                            (u:tree-get model :resources :fields :name :name-sql)))
-    with main-columns = (cons '(:id . "id") (columns fields :column :ui))
+    with main-columns = (cons '(:id . "id")
+                          (fields-attribute fields '(:column :ui) :name-sql))
     with fk-columns = (fk-columns model type-key)
     with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
     for key in insert-keys
@@ -364,7 +379,7 @@ values for all KEYS."
   (loop
     with fields = (u:tree-get model type-key :fields)
     with update-keys = (update-keys model type-key)
-    with columns = (columns fields :column :ui)
+    with columns = (fields-attribute fields '(:column :ui) :name-sql)
     with fk-columns = (fk-columns model type-key)
     with main-sql = "update ~a set ~{~a = ~a~^, ~} where id = $~d"
     with delete-sql = "delete from ~a where ~{~a = ~a~^ and ~}"
@@ -829,21 +844,25 @@ that joins tables."
          (db:query table)
          (db:query trigger))))
 
-(defun be-list-internal (type-key &key schema-only keys column)
+(defun be-list-internal (type-key)
   (let* ((m *compiled-model*)
-          (sql (u:tree-get m type-key :views-sql :main))
-          (full-sql (if schema-only (format nil "~a limit 1" sql) sql))
-          (result (a:with-rbac (*rbac*)
-                    (a:rbac-query (list full-sql)))))
-    (if schema-only
-      (u:plist-keys (car result))
-      (cond
-        (column (u:distinct-values
-                  (mapcar (lambda (row) (getf row column)) result)))
-        (keys (loop for row in result
-                collect (loop for key in keys
-                          append (list key (getf row key)))))
-        (t result)))))
+          (view-sql (u:tree-get m type-key :views :main :sql))
+          (view-result (a:with-rbac (*rbac*) (db:query view-sql :plists)))
+          (field-keys (u:plist-keys (u:tree-get m type-key :fields)))
+          (source-keys (loop for field-key in field-keys
+                         append
+                         (list
+                           field-key
+                           (u:tree-get m type-key :fields field-key :source :alias-key)))))
+          ;; (source-agg (loop for field-key in field-keys
+          ;;               append
+          ;;               (list
+          ;;                 field-key
+          ;;                 (u:tree-get m type-key :fields field-key :source :agg)))))
+    (loop for key in source-keys by #'cddr
+      for alias-key in (cdr source-keys) by #'cddr
+      collect (list key (loop for row in view-result
+                          collect (getf row alias-key))))))
 
 (defun model-for (type-key)
   (getf *compiled-model* type-key))
