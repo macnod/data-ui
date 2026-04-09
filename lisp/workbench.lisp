@@ -67,8 +67,8 @@
                           :column t :not-null t)
                  :roles (:type :list
                           :ui (:label "Roles" :input-type :checkbox-list)
-                          :source-sel (:view :main :column :role-name :agg :list)
-                          :source-all (:view :roles :column :role-name :agg :list)
+                          :source (:view :main :table :roles :column :name :agg :list)
+                          :source-all (:view :roles :table :roles :column :name :agg :list)
                           :ids-table :roles
                           :join-table :role-users))
        :list-form (:fields (:name :email :roles))
@@ -89,8 +89,8 @@
                         :column t :not-null t :unique t)
                  :roles (:type :list
                           :ui (:label "Roles" :input-type :checkbox-list)
-                          :source-sel (:view :main :column :role-name :agg :list)
-                          :source-all (:view :roles :column :role-name :agg :list)
+                          :source (:view :main :table :roles :column :name :agg :list)
+                          :source-all (:view :roles :table :roles :column :name :agg :list)
                           :validations (:required)
                           :ids-table :roles
                           :join-table :resource-roles))
@@ -118,13 +118,18 @@
                 :permissions (:tables (:permissions)))
        :fields (:name (:type :text
                         :ui (:label "Role" :input-type :line)
-                        :source (:view :main :column :role-name :agg :first)
+                        :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
                  :permissions (:type :list
                                 :ui (:label "Permissions" :input-type :checkbox-list)
-                                :source (:view :main :column :permission-name :agg :list)
-                                :source-sel (:view :main :column :permission-name :agg :list)
-                                :source-all (:view :permissions :column :permission-name :agg :list)
+                                :source (:view :main
+                                          :table :permissions
+                                          :column :name
+                                          :agg :list)
+                                :source-all (:view :permissions
+                                              :table :permissions
+                                              :column :name
+                                              :agg :list)
                                 :ids-table :permissions
                                 :join-table :role-permissions))
        :list-form (:fields t)
@@ -158,7 +163,7 @@
                         :column t :not-null t :unique t)
                  :tags (:type :list
                          :ui (:label "Tags" :input-type :checkbox-list)
-                         :source-sel (:view :main :table :tags :column :name :agg :list)
+                         :source (:view :main :table :tags :column :name :agg :list)
                          :source-all (:view :tags :table :tags :column :name :agg :list)
                          :ids-table :tags
                          :join-table :todo-tags))
@@ -844,25 +849,59 @@ that joins tables."
          (db:query table)
          (db:query trigger))))
 
+(defun aggregate-values (agg values)
+  (case agg
+    (:first (car values))
+    (:list values)
+    (:distinct (u:distinct-values values))))
+  ;; (list
+  ;;   :values values
+  ;;   :agg-function agg
+  ;;   :aggregate (case agg
+  ;;                (:first (car values))
+  ;;                (:list values)
+  ;;                (:distinct (u:distinct-values values)))))
+
+(defun view-result-values (view-result distinct-ids field-keys
+                            source-keys source-agg id-key)
+  (loop for id in distinct-ids
+    collect
+    (append (list :id id)
+      (loop for key in (cdr field-keys)
+        for alias in (cdr source-keys)
+        for agg in (cdr source-agg)
+        appending
+        (list key
+          (let ((values (loop for row in view-result
+                          when (equal (getf row id-key) id)
+                          collect (getf row alias))))
+            (aggregate-values agg values)))))))
+
 (defun be-list-internal (type-key)
   (let* ((m *compiled-model*)
           (view-sql (u:tree-get m type-key :views :main :sql))
           (view-result (a:with-rbac (*rbac*) (db:query view-sql :plists)))
           (field-keys (u:plist-keys (u:tree-get m type-key :fields)))
           (source-keys (loop for field-key in field-keys
-                         append
-                         (list
-                           field-key
-                           (u:tree-get m type-key :fields field-key :source :alias-key)))))
-          ;; (source-agg (loop for field-key in field-keys
-          ;;               append
-          ;;               (list
-          ;;                 field-key
-          ;;                 (u:tree-get m type-key :fields field-key :source :agg)))))
-    (loop for key in source-keys by #'cddr
-      for alias-key in (cdr source-keys) by #'cddr
-      collect (list key (loop for row in view-result
-                          collect (getf row alias-key))))))
+                         collect
+                         (u:tree-get m type-key :fields field-key :source :alias-key)))
+          (id-key (car source-keys))
+          (distinct-ids (u:distinct-values
+                          (mapcar (lambda (r) (getf r id-key)) view-result)))
+          (source-agg (loop for field-key in field-keys
+                        collect
+                        (u:tree-get m type-key :fields field-key :source :agg))))
+    (view-result-values
+      view-result distinct-ids field-keys
+      source-keys source-agg id-key)))
+    ;; (list
+    ;;   :distinct-ids distinct-ids
+    ;;   :view view-result
+    ;;   :source-keys source-keys
+    ;;   :source-agg source-agg
+    ;;   :result (view-result-values
+    ;;             view-result distinct-ids field-keys
+    ;;             source-keys source-agg id-key))))
 
 (defun model-for (type-key)
   (getf *compiled-model* type-key))
