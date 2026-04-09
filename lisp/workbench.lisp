@@ -849,8 +849,8 @@ that joins tables."
          (db:query table)
          (db:query trigger))))
 
-(defun aggregate-values (agg values)
-  (case agg
+(defun aggregate-values (aggregation values)
+  (case aggregation
     (:first (car values))
     (:list values)
     (:distinct (u:distinct-values values))))
