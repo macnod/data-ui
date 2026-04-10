@@ -5,6 +5,7 @@
   :depends-on (:cl-ppcre
                 :postmodern
                 :cl-fad
+                :yason
                 :fiveam
                 :swank
                 :dc-ds
@@ -25,7 +26,8 @@
                  :components ((:file "data-ui-package")
                                (:file "database")
                                (:file "data-ui")
-                               (:file "workbench")))
+                               (:file "workbench")
+                               (:file "plist-to-json")))
                 (:module "tests"
                   :components ((:file "data-ui-tests")))))
 

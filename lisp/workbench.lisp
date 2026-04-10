@@ -650,13 +650,16 @@ that joins tables."
       (let* ((table-key (or (u:tree-get field-def :source :table) type-key))
               (column-key (u:tree-get field-def :source :column))
               (view-key (u:tree-get field-def :source :view))
-              (alias (u:tree-get model type-key :views view-key :columns table-key column-key)))
+              (alias (u:tree-get model type-key :views view-key :aliases table-key column-key))
+              (column (u:tree-get model type-key :views view-key :columns table-key column-key)))
         (add-to-plist
           field-def
           (list
             :source (add-to-plist
                       (u:tree-get field-def :source)
-                      (list :alias-key (u:make-keyword alias)))))))
+                      (list
+                        :alias-key (u:make-keyword alias)
+                        :column-name column))))))
     ((and
        (u:tree-get field-def :source-sel :view)
        (u:tree-get field-def :source-all :view))
@@ -667,9 +670,9 @@ that joins tables."
               (sel-view-key (u:tree-get field-def :source-sel :view))
               (all-view-key (u:tree-get field-def :source-all :view))
               (sel-alias (u:tree-get model type-key :views sel-view-key
-                           :columns sel-table-key sel-column-key))
+                           :aliases sel-table-key sel-column-key))
               (all-alias (u:tree-get model type-key :views all-view-key
-                           :columns all-table-key all-column-key)))
+                           :aliases all-table-key all-column-key)))
         (add-to-plist
           field-def
           (list
@@ -734,13 +737,21 @@ that joins tables."
       new-field-key
       (compile-field model type-key old-field-key new-field-key field-def))))
 
-(defun view-columns (model view-def)
+(defun view-aliases (model view-def)
   (loop for table-key in (u:tree-get view-def :tables)
     unless (u:tree-get model table-key :is-joiner)
     append
     (list table-key
       (loop for column in (table-columns model table-key)
         append (list (getf column :field-key) (getf column :alias-key))))))
+
+(defun view-columns (model view-def)
+  (loop for table-key in (u:tree-get view-def :tables)
+    unless (u:tree-get model table-key :is-joiner)
+    append
+    (list table-key
+      (loop for column in (table-columns model table-key)
+        append (list (getf column :field-key) (getf column :column))))))
 
 (defun enrich-views (model type-key)
   (loop
@@ -755,6 +766,7 @@ that joins tables."
     for view-def-new = (list
                          :tables (getf view-def :tables)
                          :sql (view-sql model view-def)
+                         :aliases (view-aliases model view-def)
                          :columns (view-columns model view-def))
     appending (list view-key view-def-new)))
 
@@ -921,7 +933,7 @@ that joins tables."
       for alias = (to-sql-identifier
                     (u:tree-get *compiled-model*
                       table-key :fields field-key
-                      :source :alias-key))
+                      :source :column-name))
       for op = (operator-sql op-key)
       collect (format nil "~a ~a $~d" alias op index)
       into conditions
@@ -930,12 +942,11 @@ that joins tables."
         (format nil "~a where~%  ~{~a~^~%  and ~}~%" sql conditions)))
     sql))
 
-
 (defun be-get-internal (type-key id)
   (let* ((m *compiled-model*)
           (sql (u:tree-get m type-key :views :main :sql))
           (where (add-where-clause sql (list (list :roles :id :eq id))))
-          (view-result (a:with-rbac (*rbac*) (db:query where :plists)))
+          (view-result (a:with-rbac (*rbac*) (db:query where id :plists)))
           (field-keys (u:plist-keys (u:tree-get m type-key :fields)))
           (source-keys (loop for field-key in field-keys
                          collect
@@ -948,8 +959,9 @@ that joins tables."
           (source-agg (loop for field-key in field-keys
                         collect
                         (u:tree-get m type-key :fields field-key :source :agg))))
-    (view-result-values
-      view-result distinct-ids field-keys source-keys source-agg id-key)))
+    (car
+      (view-result-values
+        view-result distinct-ids field-keys source-keys source-agg id-key))))
 
 (defun model-for (type-key)
   (getf *compiled-model* type-key))
