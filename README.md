@@ -254,9 +254,6 @@ React (or any frontend) can fetch the schema once and render forms/lists automat
 
 The active implementation lives in [lisp/workbench.lisp](https://github.com/macnod/data-ui/blob/master/lisp/workbench.lisp). Ignore all other files for now.
 
-Target MVP date: December 2026.
-
-
 ## Goals & Vision
 
 - Build simple multi-table applications extremely quickly
@@ -270,6 +267,8 @@ Target MVP date: December 2026.
 Data-UI is and will remain fully open source under the MIT license. The core (model compiler, SQL generation, RBAC integration, CRUD layer, etc.) is free for anyone to use, self-host, or modify.
 
 Initially we will focus on building custom applications for clients while dogfooding the tool on our own projects.
+
+MVP target: December 2026. Goal is a minimal but production-capable system that delivers a complete RBAC-protected application (with database, React frontend, and Kubernetes deployment) from a small model in under 30 minutes.
 
 After the MVP, to fund continued development and provide additional value to users, we plan to provide:
 

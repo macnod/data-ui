@@ -861,108 +861,6 @@ that joins tables."
          (db:query table)
          (db:query trigger))))
 
-(defun aggregate-values (aggregation values)
-  (case aggregation
-    (:first (car values))
-    (:list values)
-    (:distinct (u:distinct-values values))))
-
-(defun field-values-for-id (view-result id-key id-value alias-key aggregation)
-  (loop for row in view-result
-    when (equal (getf row id-key) id-value)
-    collect (getf row alias-key) into values
-    finally (return (aggregate-values aggregation values))))
-
-(defun view-result-values (view-result distinct-ids field-keys
-                            source-keys source-agg id-key)
-  (loop for id in distinct-ids
-    collect
-    (append (list :id id)
-      (loop for key in (cdr field-keys)
-        for alias in (cdr source-keys)
-        for agg in (cdr source-agg)
-        appending
-        (list
-          key
-          (field-values-for-id view-result id-key id alias agg))))))
-
-(defun be-list-internal (type-key)
-  (let* ((m *compiled-model*)
-          (view-sql (u:tree-get m type-key :views :main :sql))
-          (view-result (a:with-rbac (*rbac*) (db:query view-sql :plists)))
-          (field-keys (u:plist-keys (u:tree-get m type-key :fields)))
-          (source-keys (loop for field-key in field-keys
-                         collect
-                         (u:tree-get m type-key
-                           :fields field-key
-                           :source :alias-key)))
-          (id-key (car source-keys))
-          (distinct-ids (u:distinct-values
-                          (mapcar (lambda (r) (getf r id-key)) view-result)))
-          (source-agg (loop for field-key in field-keys
-                        collect
-                        (u:tree-get m type-key :fields field-key :source :agg))))
-    (view-result-values
-      view-result distinct-ids field-keys
-      source-keys source-agg id-key)))
-
-(defun operator-sql (operator-key)
-  (case operator-key
-    (:eq "=")
-    (:not-eq "!=")
-    (:gt ">")
-    (:lt "<")
-    (:gte ">=")
-    (:lte "<=")
-    (:like "like")
-    (:ilike "ilike")
-    (otherwise (error "Unsupported operator ~a" operator-key))))
-
-(defun next-param-index (sql)
-  (loop with matches = (re:all-matches-as-strings "\\$\\d+" sql)
-    for match in matches
-    for index = (parse-integer (subseq match 1))
-    for max = index then (if (> index max) index max)
-    finally (return (1+ (or max 0)))))
-
-(defun add-where-clause (sql filters)
-  (if filters
-    (loop
-      for index = (next-param-index sql) then (1+ index)
-      for (table-key field-key op-key value) in filters
-      for alias = (to-sql-identifier
-                    (u:tree-get *compiled-model*
-                      table-key :fields field-key
-                      :source :column-name))
-      for op = (operator-sql op-key)
-      collect (format nil "~a ~a $~d" alias op index)
-      into conditions
-      finally
-      (return
-        (format nil "~a where~%  ~{~a~^~%  and ~}~%" sql conditions)))
-    sql))
-
-(defun be-get-internal (type-key id)
-  (let* ((m *compiled-model*)
-          (sql (u:tree-get m type-key :views :main :sql))
-          (where (add-where-clause sql (list (list :roles :id :eq id))))
-          (view-result (a:with-rbac (*rbac*) (db:query where id :plists)))
-          (field-keys (u:plist-keys (u:tree-get m type-key :fields)))
-          (source-keys (loop for field-key in field-keys
-                         collect
-                         (u:tree-get m type-key
-                           :fields field-key
-                           :source :alias-key)))
-          (id-key (car source-keys))
-          (distinct-ids (u:distinct-values
-                          (mapcar (lambda (r) (getf r id-key)) view-result)))
-          (source-agg (loop for field-key in field-keys
-                        collect
-                        (u:tree-get m type-key :fields field-key :source :agg))))
-    (car
-      (view-result-values
-        view-result distinct-ids field-keys source-keys source-agg id-key))))
-
 (defun model-for (type-key)
   (getf *compiled-model* type-key))
 
@@ -990,12 +888,6 @@ that joins tables."
 
 (defun model-view-sql-for (type-key &key (view-key :main))
   (u:tree-get *compiled-model* type-key :views view-key :sql))
-
-(defun model-form-field-keys (type-key form)
-  (let ((fields (u:tree-get *compiled-model* type-key form :fields)))
-    (if (or (not fields) (equal fields t))
-      (u:plist-keys (u:tree-get *compiled-model* type-key :fields))
-      fields)))
 
 (defun model-field-names-for (type-key &key
                                (keys '(:name-sql :alias-key)))

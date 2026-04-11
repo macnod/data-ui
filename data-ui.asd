@@ -27,7 +27,8 @@
                                (:file "database")
                                (:file "data-ui")
                                (:file "workbench")
-                               (:file "plist-to-json")))
+                               (:file "plist-json")
+                               (:file "backend")))
                 (:module "tests"
                   :components ((:file "data-ui-tests")))))
 
