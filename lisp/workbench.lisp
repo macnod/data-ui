@@ -181,6 +181,7 @@
        :create :auto :update :auto :delete :auto
        :fields (:name (:type :text
                         :ui (:label "Tag" :input-type :line)
+                        :source (:view :main :table :tags :column :name :agg :first)
                         :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
@@ -338,7 +339,7 @@ fields that have non-NIL values for all HAVE-KEYS."
     with main-columns = (cons '(:id . "id")
                           (fields-attribute fields '(:column :ui) :name-sql))
     with fk-columns = (fk-columns model type-key)
-    with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
+    with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~}) returning id"
     for key in insert-keys
     for table-key = (case key
                       (:resource :resources)

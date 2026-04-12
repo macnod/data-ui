@@ -116,6 +116,25 @@ the :ID field key."
       (u:plist-keys (u:tree-get *compiled-model* type-key :fields))
       (cons :id field-keys))))
 
+(defun resource-id-keys (type-key)
+  (list :id
+    (u:make-keyword
+      (format nil "~a-id"
+        (u:singular (format nil "~(~a~)" type-key))))))
+
+(defun plist-select (plist keys)
+  ":private: Returns selected key/value pairs in PLIST, where a pair is selected
+if the key is among KEYS."
+  (loop for key in keys
+    append (list key (getf plist key))))
+
+(defun plist-exclude (plist keys)
+  ":private: Returns key/value pairs in PLIST, excluding pairs where the key is
+among KEYS."
+  (loop for key in plist by #'cddr
+    unless (member key keys)
+    append (list key (getf plist key))))
+
 ;;
 ;; END Internal helper functions
 ;;
@@ -169,6 +188,50 @@ ID. This is perfect for rendering the data in the front end as a form."
           (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
           (field-keys (form-field-keys type-key form)))
     (view-result-values type-key field-keys view-result)))
+
+(defun be-insert (type-key data)
+  ":public: Inserts a record of type TYPE-KEY with the given DATA. DATA is a
+plist where the keys are field keys and the values are the values to be
+inserted. This function returns the ID of the newly inserted record, or a
+list of errors if the insert fails. The following example inserts a user with
+the name \"john\" and the role \"admin\":
+
+    `(be-insert :users '(:name \"john\" :roles (\"admin\")))`
+"
+  (let* ((m *compiled-model*)
+          (insert (u:tree-get m type-key :insert-sql))
+          ;; RBAC resource insert
+          (resource-qt (getf insert :resource))
+          (resource-sql (car resource-qt))
+          (resource-name (format nil "~(~a~):~a"
+                           type-key
+                           (getf data (cadr resource-qt))))
+          (resource-query (list resource-sql resource-name))
+          (uuid (a:with-rbac (*rbac*)
+                  (a:rbac-query resource-query :single)))
+          ;; Main resource insert
+          (main-qt (getf insert :main))
+          (main-sql (car main-qt))
+          (main-query (cons main-sql
+                        (cons uuid
+                          (loop for k in (cdr main-qt)
+                            unless (equal k :id)
+                            collect (getf data k))))))
+    (a:with-rbac (*rbac*)
+      (a:rbac-query main-query :single))
+    ;; Join table inserts
+    (loop for key in (plist-exclude
+                       (u:plist-keys insert) '(:resource :main))
+      for qt = (getf insert key)
+      for sql = (car qt)
+      for names = (getf data key)
+      for value-ids = (loop for name in names
+                        collect (be-id key `((:name :eq ,name))))
+      do (loop for value-id in value-ids
+           for query = (cons sql (list uuid value-id))
+           do (a:with-rbac (*rbac*) (a:rbac-query query))))
+    uuid))
+
 
 ;;
 ;; END Public backend functions
