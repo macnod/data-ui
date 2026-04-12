@@ -198,8 +198,7 @@ the name \"john\" and the role \"admin\":
 
     `(be-insert :users '(:name \"john\" :roles (\"admin\")))`
 "
-  (let* ((m *compiled-model*)
-          (insert (u:tree-get m type-key :insert-sql))
+  (let* ((insert (u:tree-get *compiled-model* type-key :insert-sql))
           ;; RBAC resource insert
           (resource-qt (getf insert :resource))
           (resource-sql (car resource-qt))
