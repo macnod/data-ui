@@ -26,9 +26,10 @@
                  :components ((:file "data-ui-package")
                                (:file "database")
                                (:file "data-ui")
-                               (:file "workbench")
+                               (:file "predicates")
                                (:file "plist-json")
-                               (:file "backend")))
+                               (:file "backend")
+                               (:file "workbench")))
                 (:module "tests"
                   :components ((:file "data-ui-tests")))))
 

@@ -4,6 +4,10 @@
 ;; BEGIN Internal helper functions
 ;;
 
+(defun placeholders (fields &key (start-at 1))
+  (loop for a from start-at to (1- (+ start-at (length fields)))
+    collect (format nil "$~d" a)))
+
 (defun aggregate-values (aggregation values)
   ":private: Performs AGGREGATION on the VALUES list."
   (case aggregation
@@ -29,10 +33,7 @@ the aggregation function on the retrieved values."
   (loop
     with alias-keys = (alias-keys type-key field-keys)
     with id-key = (car alias-keys)
-    with distinct-ids = (u:distinct-values
-                          (mapcar
-                            (lambda (r) (getf r id-key))
-                            view-result))
+    with distinct-ids = (view-result-ids type-key field-keys view-result)
     with aggregations = (aggregations type-key field-keys)
     for id in distinct-ids
     collect
@@ -45,18 +46,14 @@ the aggregation function on the retrieved values."
           key
           (field-values-for-id view-result id-key id alias aggregation))))))
 
-(defun operator-sql (operator-key)
-  ":private:"
-  (case operator-key
-    (:eq "=")
-    (:not-eq "!=")
-    (:gt ">")
-    (:lt "<")
-    (:gte ">=")
-    (:lte "<=")
-    (:like "like")
-    (:ilike "ilike")
-    (otherwise (error "Unsupported operator ~a" operator-key))))
+(defun view-result-ids (type-key field-keys view-result)
+  ":private: "
+  (let* ((alias-keys (alias-keys type-key field-keys))
+          (id-key (car alias-keys)))
+    (u:distinct-values
+      (mapcar
+        (lambda (r) (getf r id-key))
+        view-result))))
 
 (defun next-param-index (sql)
   ":private: Finds the largest placeholder in SQL and returns an integer that
@@ -85,9 +82,20 @@ for the placeholders."
       finally
       (return
         (cons
-          (format nil "~a where~%  ~{~a~^~%  and ~}~%" sql conditions)
+          (format nil "~a~%where~%  ~{~a~^~%  and ~}~%" sql conditions)
           (mapcar #'cadddr filters))))
     (list sql)))
+
+(defun add-ids-clause (type-key sql ids)
+  ":private: Returns SQL for fetching the records that match the IDs in
+VIEW-RESULT."
+  (let ((id-column (u:tree-get *compiled-model* type-key :views :main :columns
+                     type-key :id)))
+    (cons
+      (format nil "~a~%where ~a in (~%  ~{~a~^,~%  ~}~%)"
+        sql id-column (placeholders ids))
+      ids)))
+
 
 (defun alias-keys (type-key field-keys)
   ":private: Returns a list of the view-result aliases for FIELD-KEYS in
@@ -140,28 +148,157 @@ among KEYS."
 ;;
 
 ;;
+;; BEGIN Error checking functions
+;;
+
+(defun eformat (s &rest params)
+  ":private: Formats S with PARAMS, just like the FORMAT function would. But, it
+first replaces any single newline in S with a spaces. This allows paragraphs to
+be formatted as long lines, but retains paragraph breaks when there is more than
+one consecutive newline. This is useful for formatting error messages, which
+would otherwise turn into long lines in the code."
+  (let ((ss (re:regex-replace-all "([^\\n])\\n([^\\n])" s (format nil "\\1 \\2"))))
+    (u:trim (apply #'format (append (list nil ss) params)))))
+
+(define-condition validation-error (simple-error error)
+  ((context :initarg :context :reader context))
+  (:report (lambda (c s)
+             (apply #'format s
+               (simple-condition-format-control c)
+               (simple-condition-format-arguments c)))))
+
+(defun signal-validation-error (format-control &rest format-arguments)
+  (error 'validation-error
+    :format-control format-control
+    :format-arguments format-arguments
+    :context 'validatioN))
+
+(defun valid-value-type (type-key field-key value)
+  ":private: Returns T if VALUE is of the correct type for FIELD-KEY in TYPE-KEY
+in the model. Otherwise, returns NIL."
+  (unless (value-type-p type-key field-key value)
+    (signal-validation-error
+      "Invalid value type for field ~s ~s. Expected type ~s, but got value ~s."
+      type-key
+      field-key
+      (u:tree-get *compiled-model* type-key :fields field-key :type)
+      value)))
+
+(defun valid-filter (filter &key required)
+  ":private: Returns NIL if FILTER is a list of the form (TYPE-KEY FIELD-KEY
+OPERATOR-KEY VALUE), with TYPE-KEY being a valid type key in the model,
+FIELD-KEY being a valid field key for the type, OPERATOR-KEY being a valid
+operator key, and VALUE being of the correct type for the field. Otherwise,
+raises a VALIDATION-ERROR condition with a message describing the problem with
+FILTER."
+  (when (and required (not filter))
+    (signal-validation-error "Filter cannot be NIL."))
+  (unless (listp filter)
+    (signal-validation-error "Filter ~s is not a list." filter))
+  (unless (= (length filter) 4)
+    (signal-validation-error "Filter ~s does not have 4 elements." filter))
+  (destructuring-bind (type-key field-key op-key value) filter
+    (unless (type-key-p type-key)
+      (signal-validation-error "Invalid type key ~s." type-key))
+    (unless (field-key-p type-key field-key)
+      (signal-validation-error "Invalid field key ~s for type ~s."
+        field-key type-key))
+    (unless (operator-key-p op-key)
+      (signal-validation-error "Invalid operator key ~s." op-key))
+    (unless (field-type-key-p
+              (u:tree-get *compiled-model* type-key :fields field-key :type))
+      (signal-validation-error "Invalid field type key for field ~s ~s ~s."
+        type-key field-key type-key))
+    (unless (value-type-p type-key field-key value)
+      (signal-validation-error
+        (eformat "
+Invalid value type for field ~s ~s.
+Expected a value of type ~s, but got value ~s."
+          type-key field-key)
+        (u:tree-get *compiled-model* type-key :fields
+          field-key :type)
+        value))))
+
+(defun valid-filters (filters &key required)
+  ":private: Checks that FILTERS is valid."
+  (when (and required (null filters))
+    (signal-validation-error "FILTERS cannot be NIL."))
+  (loop for filter in filters
+    do (valid-filter filter :required t)))
+
+(defun valid-type-key (type-key)
+  ":private: Checks that TYPE-KEY is a valid type key in the model."
+  (unless (type-key-p type-key)
+    (signal-validation-error "Invalid type key ~a" type-key)))
+
+(defun valid-field-key (type-key field-key)
+  ":private: Checks that FIELD-KEY is a valid field key for TYPE-KEY in the
+model."
+  (unless (field-key-p type-key field-key)
+    (signal-validation-error "Invalid field key ~a ~a." type-key field-key)))
+
+(defun valid-data (type-key data)
+  ":private: Checks that DATA is valid for TYPE-KEY. DATA is a plist where the
+keys are field keys and the values are the values to be inserted or updated.
+This function checks that each field key is valid for TYPE-KEY and that each
+value is of the correct type for its field key."
+  (if (type-key-p type-key)
+    (loop
+      for field-key in data by #'cddr
+      for value in (cdr data) by #'cddr
+      for e1 = (valid-field-key type-key field-key)
+      for e2 = (valid-value-type type-key field-key value)
+      when e1 collect e1 into errors
+      when e2 collect e2 into errors
+      finally (when errors
+                (signal-validation-error
+                  "Invalid data for type ~a. Errors: ~{~a~^ ~}."
+                  type-key errors))
+    (signal-validation-error "Invalid type key ~s." type-key))))
+
+;;
+;; END Error checking functions
+;;
+
+;;
 ;; BEGIN Public backend functions
 ;;
 
-(defun be-id (type-key filters)
-  ":public: Returns the ID of the resource of type TYPE-KEY that matches FILTERS. FILTERS
-is a list of filters, where each filter contains a type key (not necessarily
-TYPE-KEY), a field key, an operator, and a value. All filters must match in
-order for a record to be selected. Matching more than one record is an error.
-(Use bMatching no records returns NIL. This function returns a string representing
-the ID of the matched record.
+(defun be-id (type-key filters &key uuid-lookup)
+  ":public: Returns the ID of the resource of type TYPE-KEY that matches
+FILTERS. FILTERS is a list of filters, where each filter contains a type
+key (not necessarily TYPE-KEY), a field key, an operator, and a value. All
+filters must match in order for a record to be selected. Matching more than one
+record is an error.
 
-The following example assumes that there is only one user with the \"admin\"
-role:
+Alternatiively, FILTERS may be a string instead of a list, and in that case,
+FILTERS must be the UUID of the record. If FILTERS is a string, then this
+function simply returns FILTERS, without performing any database query.
+
+Matching no records returns NIL.
+
+This function returns a string representing the ID of the matched record,
+NIL if no records match, or an error if more than one record matches. An
+error consists of a list of error messages, where each message is a string.
+
+The following example returns the ID of the user with the role \"admin\":
     `(be-id :users '((:roles :name :eq \"admin\")))`
 
-Users have distinct user names, thus the following will never return a
-\"More than one match\" error:
+If there are multiple users with the role \"admin\", then the above example
+returns an error.
+
+Users have distinct user names, thus the following will never return an
+error:
     `(be-id :users '((:users :name :eq \"guest\")))`
 "
+  (valid-type-key type-key)
+  (valid-filters filters :required t)
   (let* ((m *compiled-model*)
           (sql (u:tree-get m type-key :views :main :sql))
-          (where (add-where-clause sql filters))
+          (efilters (if (uuid-p filters)
+                      `((,type-key :id :eq ,filters))
+                      filters))
+          (where (add-where-clause sql efilters))
           (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
           (field-keys '(:id))
           (result (view-result-values type-key field-keys view-result)))
@@ -181,15 +318,31 @@ ID. This is perfect for rendering the data in the front end as a form."
     (car
       (view-result-values type-key field-keys view-result))))
 
+;; This function relies on a single query when there are no filters and on 2
+;; queries where there are filters. This is necessary with the current approach
+;; because the first query returns N rows, then the code collapses those rows
+;; into some number <= N. The orginal result contains multiple rows for some
+;; given ID when the ID is associated with multiple items in another table (one
+;; row for each association). The code that collapses the results reduces the
+;; number of rows to the number of distinct IDs in the result, converting the
+;; associated values into lists for the field that holds the associations.  This
+;; is bad, because the second query does something like `where id in (...)`.
+;; Eventually we'll need to fix this so that the collapsing occurs in the
+;; database, with something like `array_agg(...) group by id` in the SQL.
 (defun be-list (type-key &key (form :list-form) filters)
   (let* ((m *compiled-model*)
           (sql (u:tree-get m type-key :views :main :sql))
           (where (add-where-clause sql filters))
           (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
           (field-keys (form-field-keys type-key form)))
-    (view-result-values type-key field-keys view-result)))
+    (if (filters-require-join-p type-key filters)
+      (let* ((ids (view-result-ids type-key field-keys view-result))
+              (ids-query (add-ids-clause type-key sql ids))
+              (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
+        (view-result-values type-key field-keys view-result))
+      (view-result-values type-key field-keys view-result))))
 
-(defun be-insert (type-key data)
+(defun be-insert (type-key data &key roles)
   ":public: Inserts a record of type TYPE-KEY with the given DATA. DATA is a
 plist where the keys are field keys and the values are the values to be
 inserted. This function returns the ID of the newly inserted record, or a
@@ -200,14 +353,20 @@ the name \"john\" and the role \"admin\":
 "
   (let* ((insert (u:tree-get *compiled-model* type-key :insert-sql))
           ;; RBAC resource insert
+          ;;
+          ;; We'll ignore the insert that the model provides and, instead, we'll
+          ;; just use an RBAC method to do the insert. This is because the RBAC
+          ;; system does some extra work when inserting resources, such as
+          ;; including default roles for the resource, and we want to make sure
+          ;; that work gets done. The method will return the UUID of the newly
+          ;; inserted resource, which we can then use for the main resource
+          ;; insert and the join table inserts.
           (resource-qt (getf insert :resource))
-          (resource-sql (car resource-qt))
           (resource-name (format nil "~(~a~):~a"
                            type-key
                            (getf data (cadr resource-qt))))
-          (resource-query (list resource-sql resource-name))
-          (uuid (a:with-rbac (*rbac*)
-                  (a:rbac-query resource-query :single)))
+          (uuid (a:add-resource *rbac* resource-name :roles roles))
+
           ;; Main resource insert
           (main-qt (getf insert :main))
           (main-sql (car main-qt))
@@ -231,6 +390,39 @@ the name \"john\" and the role \"admin\":
            do (a:with-rbac (*rbac*) (a:rbac-query query))))
     uuid))
 
+;; NOTE: Not yet working. Needs to be able to handle updates to join tables.
+(defun be-update (type-key filters data)
+  ":public: Updates the record of type TYPE-KEY that matches FILTERS with the
+given DATA.
+
+FILTERS is a list of filters, where each filter contains a type key (not
+necessarily TYPE-KEY), a field key, an operator, and a value. All filters must
+match in order for a record to be selected. Matching more than one record is an
+error. Alternatively, FILTERS may be string instead of a list, and in that case,
+FILTER must be the UUID of the record to be updated.
+
+DATA is a plist where the keys are field keys and the values are the new values
+for those fields.
+
+This function returns the ID of the updated record, or a list of errors if the
+update fails.
+"
+  (valid-type-key type-key)
+  (valid-filters filters :required t)
+  (valid-data type-key data)
+  (let* ((id (if (stringp filters)
+               filters
+               (if (member :id (u:plist-keys data))
+                 (getf data :id)
+                 (be-id type-key filters))))
+          (main-qt (u:tree-get *compiled-model* type-key :update-sql :main))
+          (main-sql (car main-qt))
+          (main-data (unless (member :id (u:plist-keys data))
+                       (append (list :id id) data)))
+          (main-query (cons main-sql
+                        (loop for k in (cdr main-qt)
+                          collect (getf main-data k)))))
+    main-query))
 
 ;;
 ;; END Public backend functions

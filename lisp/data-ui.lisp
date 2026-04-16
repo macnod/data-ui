@@ -23,6 +23,21 @@
 (defparameter *default-directory-permissions*
   '("create" "read" "update" "delete" "list"))
 
+;; Model
+(defparameter *compiled-model* nil)
+(defparameter *field-types* nil)
+(defparameter *timestamp-regex*
+  "^\\d{4}-[01][0-9]-[0-3][0-9][T ][0-2][[0-9]:[0-5][0-9]:[0-5][0-9]$")
+(defparameter *uuid-regex*
+  (ppcre:create-scanner
+    (format nil "^~{~a~^-~}$"
+      (list
+        "[0-9a-fA-F]{8}"
+        "[0-9a-fA-F]{4}"
+        "[0-9a-fA-F]{4}"
+        "[0-9a-fA-F]{4}"
+        "[0-9a-fA-F]{12}"))))
+
 (defun delete-directory-recursively (path)
   (loop for descriptor in (list-directory-recursively path)
     for resource-name = (u:tree-get descriptor :resource-name)

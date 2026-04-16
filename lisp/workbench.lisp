@@ -1,27 +1,12 @@
 (in-package :data-ui)
 
-(defparameter *compiled-model* nil)
+(defun general-type (field-type-key)
+  (u:tree-get *field-types* field-type-key :general))
 
-(defparameter *timestamp-regex*
-  "^\\d{4}-[01][0-9]-[0-3][0-9][T ][0-2][[0-9]:[0-5][0-9]:[0-5][0-9]$")
-
-(defparameter *uuid-regex*
-  (ppcre:create-scanner
-    (format nil "^~{~a~^-~}$"
-      (list
-        "[0-9a-fA-F]{8}"
-        "[0-9a-fA-F]{4}"
-        "[0-9a-fA-F]{4}"
-        "[0-9a-fA-F]{4}"
-        "[0-9a-fA-F]{12}"))))
-
-(defun general-type (type)
-  (case type
-    (:text :text)
-    (:password :text)
-    (:integer :number)
-    (:floating :number)
-    (:list :list)))
+(defun sql-type (type-key field-key field-type-key)
+  (or (u:tree-get *field-types* field-type-key :sql)
+    (error "Unsupported field type key ~s for field ~s ~s."
+      field-type-key type-key field-key)))
 
 (defun validation-error-string (type-key field-key message)
   (let ((type (u:singular (format nil "~(~a~)" type-key)))
@@ -84,7 +69,7 @@
        :deletable t
        :fields (:name (:type :text
                         :ui (:label "Resource" :input-type :line)
-                        :source (:view :main :column :resource-name :agg :first)
+                        :source (:view :main :column :name :agg :first)
                         :validations (:required)
                         :column t :not-null t :unique t)
                  :roles (:type :list
@@ -151,6 +136,9 @@
        :fields (:reference (:target :roles)
                  :reference (:target :users)))))
 
+;; TODO: Ensure tables are created in the right order. The :todo-tags table
+;;       references the :todos and :tags tables, so those tables should
+;;       already exist before the :todo-tags table is created.
 (defparameter *model*
   `(:todos
      (:table t
@@ -171,11 +159,6 @@
        :update-form (:fields t)
        :add-form (:fields t))
 
-     :todo-tags
-     (:table t :is-joiner t
-       :fields (:reference (:target :todos)
-                 :reference (:target :tags)))
-
      :tags
      (:table t
        :create :auto :update :auto :delete :auto
@@ -185,16 +168,17 @@
                         :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
-       :add-form (:fields t))))
+       :add-form (:fields t))
+
+     :todo-tags
+     (:table t :is-joiner t
+       :fields (:reference (:target :todos)
+                 :reference (:target :tags)))))
 
 (defun base-model-types (&optional keys-only)
   (if keys-only
     (u:plist-keys *base-model*)
     *base-model*))
-
-(defun placeholders (fields &key (start-at 1))
-  (loop for a from start-at to (1- (+ start-at (length fields)))
-    collect (format nil "$~d" a)))
 
 (defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
   (let ((s (format nil "~(~a~)" keyword)))
@@ -237,7 +221,8 @@
       (cond
         (target (to-sql-identifier field-key))
         (force-sql-name force-sql-name)
-        ((member field-key (default-fields t)) (to-sql-identifier field-key))
+        ((member field-key (default-fields :keys-only t))
+          (to-sql-identifier field-key))
         (t (format nil "~a_~a" singular-table-name field-name))))))
 
 (defun column-alias (model type-key field-key field-def)
@@ -249,7 +234,8 @@
     (cond
       (target (to-sql-identifier field-key))
       (force-sql-name (format nil "~a_~a" singular-table-name force-sql-name))
-      ((member field-key (default-fields t)) (format nil "~a_~a" singular-table-name field-name))
+      ((member field-key (default-fields :keys-only t))
+        (format nil "~a_~a" singular-table-name field-name))
       (t (format nil "~a_~a" singular-table-name field-name)))))
 
 (defun updated-at-trigger-sql (table)
@@ -534,18 +520,6 @@ that joins tables."
     :uuid
     (or (getf field-def :type) :text)))
 
-(defun sql-type (type-key field-key field-type-key)
-  (case field-type-key
-    (:integer "integer")
-    (:real "real")
-    (:uuid "uuid")
-    (:timestamp "timestamp")
-    (:list nil)
-    ((:text :password) "text")
-    (otherwise
-      (error "Unsupported data type ~s for field ~s in resource type ~s"
-        field-type-key field-key type-key))))
-
 (defun value-sql (value field-type-key &key quote)
   (case field-type-key
     (:boolean (case value
@@ -584,11 +558,10 @@ that joins tables."
     (otherwise (error "Unknown FIELD-TYPE-KEY '~a'" field-type-key))))
 
 (defun field-source (field-def name-key)
-  (unless (getf field-def :target)
-    (or
-      (getf field-def :source)
-      (when (getf field-def :column)
-        `(:view :main :column ,name-key :agg :first)))))
+  (or
+    (getf field-def :source)
+    (when (getf field-def :column)
+      `(:view :main :column ,name-key :agg :first))))
 
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
@@ -607,11 +580,12 @@ that joins tables."
     and not-null = (if (getf field-def :target)
                      "not null"
                      (when (getf field-def :not-null) "not null"))
-    with references = (when (getf field-def :target)
+    with target = (getf field-def :target)
+    with references = (when target
                         (format nil "references ~a(id) on delete cascade"
                           (table-name
-                            type-key
-                            (u:tree-get model type-key :base))))
+                            target
+                            (u:tree-get model target :base))))
     and unique = (when (getf field-def :unique) "unique")
     and default = (when (getf field-def :default)
                     (format nil "default ~a"
@@ -645,7 +619,7 @@ that joins tables."
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
 
-(defun compile-field-stage-2 (model type-key field-def)
+(defun compile-field-stage-2 (model type-key field-key field-def)
   (cond
     ((u:tree-get field-def :source :view)
       (let* ((table-key (or (u:tree-get field-def :source :table) type-key))
@@ -653,6 +627,18 @@ that joins tables."
               (view-key (u:tree-get field-def :source :view))
               (alias (u:tree-get model type-key :views view-key :aliases table-key column-key))
               (column (u:tree-get model type-key :views view-key :columns table-key column-key)))
+        (when (and
+                (equal type-key :resources)
+                (equal (getf field-def :name-sql) "resource_name"))
+          (format t "~{~a=~s~^; ~}"
+            (list
+              "type-key" type-key
+              "field-key" field-key
+              "table-key" table-key
+              "view-key" view-key
+              "column-key" column-key
+              "alias" alias
+              "column" column)))
         (add-to-plist
           field-def
           (list
@@ -692,29 +678,38 @@ that joins tables."
     appending
     (list
       field-key
-      (compile-field-stage-2 model type-key field-def))))
+      (compile-field-stage-2 model type-key field-key field-def))))
 
-(defun default-fields (&optional keys-only)
-  (let ((fields '(:id
-                   (:type :uuid
-                     :source (:view :main :column :id :agg :first)
-                     :column t
-                     :primary-key t
-                     :update nil
-                     :default :generate-uuid)
-                   :created-at
-                   (:type :timestamp
-                     :source (:view :main :column :created-at :agg :first)
-                     :column t
-                     :update nil
-                     :not-null t
-                     :default :now)
-                   :updated-at
-                   (:type :timestamp
-                     :source (:view :main :column :updated-at :agg :first)
-                     :column t
-                     :update nil
-                     :not-null t
+(defun default-fields (&key model type-key keys-only)
+  (let* ((target-resources (when
+                             (or
+                               (not model)
+                               (not type-key)
+                               keys-only
+                               (and
+                                 (not (u:tree-get model type-key :base))
+                                 (not (u:tree-get model type-key :is-joiner))))
+                             t))
+          (fields `(:id
+                     (:type :uuid
+                       :source (:view :main :column :id :agg :first)
+                       :column t
+                       :primary-key t
+                       :update nil
+                       :target ,(when target-resources :resources))
+                     :created-at
+                     (:type :timestamp
+                       :source (:view :main :column :created-at :agg :first)
+                       :column t
+                       :update nil
+                       :not-null t
+                       :default :now)
+                     :updated-at
+                     (:type :timestamp
+                       :source (:view :main :column :updated-at :agg :first)
+                       :column t
+                       :update nil
+                       :not-null t
                      :default :now))))
     (if keys-only
       (u:plist-keys fields)
@@ -722,7 +717,7 @@ that joins tables."
 
 (defun add-default-fields (type-key model)
   (append
-    (default-fields)
+    (default-fields :model model :type-key type-key)
     (u:deep-copy (u:tree-get model type-key :fields))))
 
 (defun compile-fields (type-key model)
@@ -912,47 +907,3 @@ that joins tables."
     for field-def in (cdr fields) by #'cddr
     for attr-value = (getf field-def attribute)
     append (list field-key attr-value)))
-
-;; (defun where-sql (select-sql type-key form filters)
-;;   (loop with field-keys = (form-field-keys type-key form)
-;;     for field in filters by #'cddr
-;;     for value in (cdr filters) by #'cddr
-;;     for
-;;     when (member field field-keys)
-
-;; (defun view-data (type-key form filters)
-;;   (let* ((type-def (u:tree-get *compiled-model* type-key))
-;;           (field-keys (if (equal (u:tree-get type-def :list-form :fields) t)
-;;                         (u:plist-keys (u:tree-get type-def :fields))
-;;                         (u:tree-get type-def :list-form :fields)))
-;;           (view-keys (loop for field-key in field-keys
-;;                        collect (u:tree-get type-def :fields field-key :source :view)
-;;                        into keys
-;;                        finally (return (u:distinct-values keys))))
-;;           (view-sql (loop for view-key in view-keys
-;;                       for sql = (u:tree-get type-def :views view-key :sql)
-;;                       for where = (append-where sql type-key view-keys filters)
-;;                       for params = (loop
-;;                                      for filter-key in filters by #'cddr
-;;                                      for filter-value in (cdr filters) by #'cddr
-;;                                      when (member filter-keys
-;;                       appending (list view-key view-sql)))
-
-
-
-;; (defun be-list (type-key &key form filters)
-;;   (let* ((type-def (u:tree-get *compiled-model* type-key))
-;;           (field-keys (if (equal (u:tree-get type-def :list-form :fields) t)
-;;                         (u:plist-keys (u:tree-get type-def :fields))
-;;                         (u:tree-get type-def :list-form :fields)))
-;;           (view-keys (loop for field-key in field-keys
-;;                        collect (u:tree-get type-def :fields field-key :source :view)
-;;                        into keys
-;;                        finally (return (u:distinct-values keys)))))
-;;     (loop for
-
-
-;;            (select (u:tree-get m k :views
-;;           (sql (where-sql select filters field-keys)))
-;;     (a:with-rbac (*rbac*)
-;;       (db:query sql :plists))))
