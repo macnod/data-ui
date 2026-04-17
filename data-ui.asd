@@ -29,7 +29,7 @@
                                (:file "predicates")
                                (:file "plist-json")
                                (:file "backend")
-                               (:file "workbench")))
+                               (:file "model")))
                 (:module "tests"
                   :components ((:file "data-ui-tests")))))
 

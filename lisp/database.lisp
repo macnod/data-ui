@@ -69,3 +69,7 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     (unless (equal user-name *guest-user*)
       (push *logged-in-role* roles))
     (u:safe-sort roles)))
+
+;; dcdebug: Debug-only. Remove at some point.
+(defun query (sql)
+  (a:with-rbac (*rbac*) (db:query sql)))

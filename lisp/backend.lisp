@@ -143,8 +143,124 @@ among KEYS."
     unless (member key keys)
     append (list key (getf plist key))))
 
+(defun local-fields (type-key &key exclude)
+  ":private: Returns a list of TYPE-KEY field keys, excluding default fields such
+as :id, :created-at, and :updated-at, and excluding any fields that aren't an
+actual column in the associated table, such as fields that have a non-nil
+:JOIN-TABLE value."
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    unless (or
+             (getf field-def :join-table)
+             (getf field-def :base-field)
+             (member field-key exclude))
+    collect field-key))
+
+(defun resource-name (type-key data)
+  ":private: Returns a resource name for DATA, a row of TYPE-KEY. This name is
+composed of the type-key, the value associated with the first key in DATA, and a
+short (8 chars) hash of the concatenated, colon-separated values in DATA. We
+want resource names to be unique, and some types, such as user-settings might
+have the same :NAME and require the additional :USER value to to be unique."
+  (loop
+    for field in (local-fields type-key)
+    for name-part = (format nil "~(~a~)" (getf data field))
+    collect name-part into name-parts
+    finally (return (format nil "~(~a~):~a:~a"
+                      type-key
+                      (car name-parts)
+                      (u:hash-string
+                        (format nil "~{~(~a~^:~)~}" name-parts)
+                        :size 8)))))
+
+(defun insert-main-query (type-key insert uuid data)
+  ":private: Returns a list consisting of and SQL string with placeholders
+and parameters for those placeholders. INSERT is the value associated with
+the :INSERT-SQL key of a type in *compiled-resources*. DATA is a plist
+where the keys represent FIELDS and the values represent the values to be
+inserted."
+  (valid-insert insert)
+  (valid-uuid uuid)
+  (valid-data type-key data)
+  (let* ((main-qt (getf insert :main))
+          (main-sql (car main-qt)))
+    (cons main-sql
+      (cons uuid
+        (loop for k in (cdr main-qt)
+          unless (equal k :id)
+          collect (getf data k))))))
+
+(defun id-from-filters (filters)
+  ":private: Returns an ID if FILTERS includes a filter with a field key of :ID
+and an operator key of :EQ. Otherwise, returns NIL."
+  (loop for (table-key field-key op-key value) in filters
+         when (and (equal field-key :id) (equal op-key :eq))
+         do (return value)))
+
+(defun id-from-filters-and-data (type-key filters &optional data)
+  ":private: Returns the ID of the record of type TYPE-KEY. If FILETRS is a
+string, then this function returns FILTERS as the ID. Otherwise, if DATA
+contains an :ID key, then this function returns the value associated with
+that key. Otherwise, this function looks for a filter in FILTERS that has
+a field key of :ID and an operator key of :EQ. If such a filter exists,
+then this function returns the value associated with that filter. Otherwise,
+this functon looks up the ID in the database using FILTERS and returns the
+looked-up result. If the function fails to find an ID using any of the
+above methods, it returns NIL."
+  (let* ((data-id (and data (getf data :id)))
+          (filters-id (unless data-id
+                        (if (stringp filters)
+                          filters
+                          (id-from-filters filters))))
+         (lookup-id (unless (or data-id filters-id)
+                      (and filters (be-id type-key filters)))))
+    (or data-id filters-id lookup-id)))
+
 ;;
 ;; END Internal helper functions
+;;
+
+;;
+;; BEGIN Database helper functions
+;;
+
+(defun update-roles (type-key data roles)
+  ":private: Updates the RBAC roles for the resource of type TYPE-KEY with ID.
+ROLES is a list of role names. ID is a UUID string. This function returns NIL if
+the update is successful, or an error if the update fails."
+  ;; Compute the existing roles for the resource
+  (let* ((roles (if (member "admin" roles) roles (cons "admin" roles)))
+          (resource-name (resource-name type-key data))
+          (existing-roles (a:list-resource-role-names *rbac* resource-name))
+          (to-add (set-difference roles existing-roles :test 'equal))
+          (to-remove (set-difference existing-roles roles :test 'equal)))
+    ;; Add new roles
+    (loop for role in to-add
+      do (a:add-resource-role *rbac* resource-name role))
+    ;; Remove old roles
+    (loop for role in to-remove
+      do (a:remove-resource-role *rbac* resource-name role))))
+
+(defun list-ids (type-key field-key values)
+  ":private: Returns a list of IDs of records of type TYPE-KEY where FIELD-KEY
+has a value in VALUES."
+  (valid-type-key type-key)
+  (valid-field-key type-key field-key)
+  (valid-values-list values)
+  (when values
+    (let* ((m *compiled-model*)
+            (table (u:tree-get m type-key :table-name))
+            (id-col "id")
+            (val-col (u:tree-get m type-key :fields field-key :name-sql))
+            (sql (format nil "select ~a from ~a where ~a in (~{~a~^,~})"
+                   id-col table val-col (placeholders values)))
+            (query (cons sql values)))
+      (a:with-rbac (*rbac*) (a:rbac-query query :column)))))
+
+
+;;
+;; END Internal database helper functions
 ;;
 
 ;;
@@ -214,10 +330,9 @@ FILTER."
         (eformat "
 Invalid value type for field ~s ~s.
 Expected a value of type ~s, but got value ~s."
-          type-key field-key)
-        (u:tree-get *compiled-model* type-key :fields
-          field-key :type)
-        value))))
+          type-key field-key
+          (u:tree-get *compiled-model* type-key :fields field-key :type)
+          value)))))
 
 (defun valid-filters (filters &key required)
   ":private: Checks that FILTERS is valid."
@@ -246,15 +361,48 @@ value is of the correct type for its field key."
     (loop
       for field-key in data by #'cddr
       for value in (cdr data) by #'cddr
-      for e1 = (valid-field-key type-key field-key)
-      for e2 = (valid-value-type type-key field-key value)
-      when e1 collect e1 into errors
-      when e2 collect e2 into errors
-      finally (when errors
-                (signal-validation-error
-                  "Invalid data for type ~a. Errors: ~{~a~^ ~}."
-                  type-key errors))
-    (signal-validation-error "Invalid type key ~s." type-key))))
+      for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
+      do
+      (cond
+        ((getf field-def :join-table)
+          (valid-values-list value))
+        ((not (getf field-def :base))
+          (valid-value-type type-key field-key value))
+        ((equal field-key :id)
+          (valid-uuid value))
+        (t (signal-validation-error
+             "Invalid field key ~s for type ~s." field-key type-key))))))
+
+(defun valid-uuid (uuid)
+  (unless (and (stringp uuid) (re:scan *uuid-regex* uuid))
+    (signal-validation-error "Ivalid UUID ~s")))
+
+(defun valid-insert (insert)
+  (unless (and (u:plistp insert) (getf insert :main))
+    (signal-validation-error "Invalid insert ~s" insert)))
+
+(defun valid-roles (roles)
+  (when roles
+    (loop for role in roles
+      unless (a:valid-role-p *rbac* role)
+      do (signal-validation-error "Invalid role name ~s." role))))
+
+(defun valid-existing-roles (roles)
+  (valid-roles roles)
+  (loop with existing-roles = (a:list-role-names *rbac*)
+    for role in roles
+    when (not (member role existing-roles :test 'equal))
+    do (signal-validation-error "Role ~s does not exist." role)))
+
+(defun valid-values-list (values)
+  (unless (listp values)
+    (signal-validation-error "Expected a list of values, but got ~s." values))
+  (unless (every #'atom values)
+    (signal-validation-error "Expected a list of atomic values, but got ~s."
+      values)))
+
+(defun id-key (type-key)
+  (u:make-keyword (format nil "~a-id" (u:singular (format nil "~a" type-key)))))
 
 ;;
 ;; END Error checking functions
@@ -264,7 +412,7 @@ value is of the correct type for its field key."
 ;; BEGIN Public backend functions
 ;;
 
-(defun be-id (type-key filters &key uuid-lookup)
+(defun be-id (type-key filters)
   ":public: Returns the ID of the resource of type TYPE-KEY that matches
 FILTERS. FILTERS is a list of filters, where each filter contains a type
 key (not necessarily TYPE-KEY), a field key, an operator, and a value. All
@@ -292,7 +440,9 @@ error:
     `(be-id :users '((:users :name :eq \"guest\")))`
 "
   (valid-type-key type-key)
-  (valid-filters filters :required t)
+  (if (stringp filters)
+    (valid-uuid filters)
+    (valid-filters filters :required t))
   (let* ((m *compiled-model*)
           (sql (u:tree-get m type-key :views :main :sql))
           (efilters (if (uuid-p filters)
@@ -306,6 +456,11 @@ error:
       ((zerop (length result)) nil)
       ((> (length result) 1) (error "More than one match."))
       (t (getf (car result) :id)))))
+
+(defun be-value-id (type-key field-key value)
+  ":public: Returns the ID of the record of type TYPE-KEY where FIELD-KEY has
+the value VALUE."
+  (be-id type-key `((,type-key ,field-key :eq ,value))))
 
 (defun be-item (type-key id &key (form :update-form))
   ":public: Returns the data associated with the TYPE-KEY record with the given
@@ -342,56 +497,48 @@ ID. This is perfect for rendering the data in the front end as a form."
         (view-result-values type-key field-keys view-result))
       (view-result-values type-key field-keys view-result))))
 
+;; TODO: Transaction!
 (defun be-insert (type-key data &key roles)
   ":public: Inserts a record of type TYPE-KEY with the given DATA. DATA is a
 plist where the keys are field keys and the values are the values to be
-inserted. This function returns the ID of the newly inserted record, or a
-list of errors if the insert fails. The following example inserts a user with
-the name \"john\" and the role \"admin\":
+inserted. This function returns the ID of the newly inserted record, or an error
+if the insert fails. The following example inserts a user with the name \"john\"
+and the role \"admin\":
 
     `(be-insert :users '(:name \"john\" :roles (\"admin\")))`
 "
+  (valid-type-key type-key)
+  (valid-data type-key data)
+  (valid-existing-roles roles)
   (let* ((insert (u:tree-get *compiled-model* type-key :insert-sql))
-          ;; RBAC resource insert
-          ;;
-          ;; We'll ignore the insert that the model provides and, instead, we'll
-          ;; just use an RBAC method to do the insert. This is because the RBAC
-          ;; system does some extra work when inserting resources, such as
-          ;; including default roles for the resource, and we want to make sure
-          ;; that work gets done. The method will return the UUID of the newly
-          ;; inserted resource, which we can then use for the main resource
-          ;; insert and the join table inserts.
-          (resource-qt (getf insert :resource))
-          (resource-name (format nil "~(~a~):~a"
-                           type-key
-                           (getf data (cadr resource-qt))))
-          (uuid (a:add-resource *rbac* resource-name :roles roles))
-
-          ;; Main resource insert
-          (main-qt (getf insert :main))
-          (main-sql (car main-qt))
-          (main-query (cons main-sql
-                        (cons uuid
-                          (loop for k in (cdr main-qt)
-                            unless (equal k :id)
-                            collect (getf data k))))))
+          ;; Insert RBAC resource row
+          (resource-name (resource-name type-key data))
+          (uuid (a:add-resource *rbac* resource-name :roles roles)))
+    ;; Insert TYPE-KEY row
     (a:with-rbac (*rbac*)
-      (a:rbac-query main-query :single))
-    ;; Join table inserts
-    (loop for key in (plist-exclude
-                       (u:plist-keys insert) '(:resource :main))
+      (a:rbac-query (insert-main-query type-key insert uuid data)))
+    ;; Insert rows in join tables
+    (loop with keys = (remove-if
+                        (lambda (k) (member k '(:resource :main)))
+                        (u:plist-keys insert))
+      for key in keys
       for qt = (getf insert key)
       for sql = (car qt)
       for names = (getf data key)
+      ;; TODO: Use list-ids function instead of be-id
       for value-ids = (loop for name in names
-                        collect (be-id key `((:name :eq ,name))))
+                        collect (be-id key `((,key :name :eq ,name))))
       do (loop for value-id in value-ids
            for query = (cons sql (list uuid value-id))
            do (a:with-rbac (*rbac*) (a:rbac-query query))))
+    ;; Roles update
+    (when roles (update-roles type-key data roles))
     uuid))
 
-;; NOTE: Not yet working. Needs to be able to handle updates to join tables.
-(defun be-update (type-key filters data)
+;; TODO:
+;;   - Transaction
+;;   - Don't update if there are no changes
+(defun be-update (type-key filters data &key roles)
   ":public: Updates the record of type TYPE-KEY that matches FILTERS with the
 given DATA.
 
@@ -408,21 +555,59 @@ This function returns the ID of the updated record, or a list of errors if the
 update fails.
 "
   (valid-type-key type-key)
-  (valid-filters filters :required t)
+  (if (stringp filters)
+    (valid-uuid filters)
+    (valid-filters filters :required t))
   (valid-data type-key data)
-  (let* ((id (if (stringp filters)
-               filters
-               (if (member :id (u:plist-keys data))
-                 (getf data :id)
-                 (be-id type-key filters))))
-          (main-qt (u:tree-get *compiled-model* type-key :update-sql :main))
-          (main-sql (car main-qt))
-          (main-data (unless (member :id (u:plist-keys data))
-                       (append (list :id id) data)))
-          (main-query (cons main-sql
-                        (loop for k in (cdr main-qt)
-                          collect (getf main-data k)))))
-    main-query))
+  (valid-existing-roles roles)
+  (let* ((m *compiled-model*)
+          (update (u:tree-get m type-key :update-sql))
+          (sql (car (getf update :main)))
+          (uuid (id-from-filters-and-data type-key filters data))
+          (record (be-item type-key uuid))
+          (local-fields (local-fields type-key))
+          (values (loop for k in local-fields
+                    collect (or (getf data k) (getf record k))))
+          (update-query (append (cons sql values) (list uuid))))
+    ;; Update TYPE-KEY row
+    (a:with-rbac (*rbac*) (a:rbac-query update-query))
+    ;; Update join tables
+    (loop
+      with keys = (remove-if (lambda (k) (equal k :main)) (u:plist-keys update))
+      for key in keys
+      for column = (u:tree-get m type-key :fields key :source :column)
+      for existing-values = (getf record key)
+      for new-values = (or (getf data key) existing-values)
+      for to-add = (set-difference new-values existing-values :test 'equal)
+      for to-delete = (set-difference existing-values new-values :test 'equal)
+      for q-delete = (u:tree-get update key :delete)
+      for q-delete-sql = (car q-delete)
+      for q-delete-keys = (cdr q-delete)
+      for q-delete-key-1 = (id-key type-key)
+      for q-delete-key-2 = (id-key key)
+      for q-insert = (u:tree-get update key :insert)
+      for q-insert-sql = (car q-insert)
+      for q-insert-keys = (cdr q-insert)
+      for q-insert-key-1 = (id-key type-key)
+      for q-insert-key-2 = (id-key key)
+      do
+      ;; Delete
+      (loop for id in (list-ids key column to-delete)
+        for q-delete-values = (loop for k in q-delete-keys
+                                when (equal k q-delete-key-1) collect uuid
+                                when (equal k q-delete-key-2) collect id)
+        for q-delete-query = (cons q-delete-sql q-delete-values)
+        do (a:with-rbac (*rbac*) (a:rbac-query q-delete-query)))
+      ;; Insert
+      (loop for id in (list-ids key column to-add)
+        for q-insert-values = (loop for k in q-insert-keys
+                                when (equal k q-insert-key-1) collect uuid
+                                when (equal k q-insert-key-2) collect id)
+        for q-insert-query = (cons q-insert-sql q-insert-values)
+        do (a:with-rbac (*rbac*) (a:rbac-query q-insert-query))))
+    ;; Update roles
+    (when roles (update-roles type-key data roles))
+    uuid))
 
 ;;
 ;; END Public backend functions
