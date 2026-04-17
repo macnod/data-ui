@@ -4,14 +4,17 @@
   ":private:"
   (case operator-key
     (:eq "=")
-    (:not-eq "!=")
+    (:ne "!=")
     (:gt ">")
     (:lt "<")
     (:gte ">=")
     (:lte "<=")
     (:like "like")
     (:ilike "ilike")
+    (:not-like "not like")
+    (:not-ilike "not ilike")
     (:in "in")
+    (:not-in "not in")
     (otherwise (error "Unsupported operator ~a" operator-key))))
 
 (defun uuid-p (s)
@@ -38,7 +41,7 @@ table in the model. Otherwise, returns NIL."
     t))
 
 (defun field-type-key-p (field-type-key)
-  ":private: Returns T if FIELD-TYPE-KEY is a keyword and a valid type ke for a
+  ":private: Returns T if FIELD-TYPE-KEY is a keyword and a valid type key for a
 field."
   (when (and (keywordp field-type-key)
           (u:tree-get *field-types* field-type-key))

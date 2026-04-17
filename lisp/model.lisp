@@ -621,7 +621,7 @@ that joins tables."
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
 
-(defun compile-field-stage-2 (model type-key field-key field-def)
+(defun compile-field-stage-2 (model type-key field-def)
   (cond
     ((u:tree-get field-def :source :view)
       (let* ((table-key (or (u:tree-get field-def :source :table) type-key))
@@ -629,18 +629,6 @@ that joins tables."
               (view-key (u:tree-get field-def :source :view))
               (alias (u:tree-get model type-key :views view-key :aliases table-key column-key))
               (column (u:tree-get model type-key :views view-key :columns table-key column-key)))
-        (when (and
-                (equal type-key :resources)
-                (equal (getf field-def :name-sql) "resource_name"))
-          (format t "~{~a=~s~^; ~}"
-            (list
-              "type-key" type-key
-              "field-key" field-key
-              "table-key" table-key
-              "view-key" view-key
-              "column-key" column-key
-              "alias" alias
-              "column" column)))
         (add-to-plist
           field-def
           (list
@@ -680,7 +668,7 @@ that joins tables."
     appending
     (list
       field-key
-      (compile-field-stage-2 model type-key field-key field-def))))
+      (compile-field-stage-2 model type-key field-def))))
 
 (defun default-fields (&key model type-key keys-only)
   (let* ((is-joiner (u:tree-get model type-key :is-joiner))

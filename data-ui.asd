@@ -24,4 +24,4 @@
                                (:file "model")))
                 (:module "tests"
                   :components ((:file "helpers")
-                                (:file "predicates")))))
+                                (:file "predicate-tests")))))
