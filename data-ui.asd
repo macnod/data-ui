@@ -13,14 +13,6 @@
                 :p-log
                 :rbac
                 :dc-eclectic)
-
-                ;; :cl-fad
-                ;; :hunchentoot
-                ;; :swank
-                ;; :spinneret
-                ;; :jose
-                ;; :lass
-
   :serial t
   :components ((:module "lisp"
                  :components ((:file "data-ui-package")
@@ -31,12 +23,5 @@
                                (:file "backend")
                                (:file "model")))
                 (:module "tests"
-                  :components ((:file "data-ui-tests")))))
-
-                               ;; (:file "model")
-                               ;; (:file "data-ui")
-                               ;; (:file "rest")
-
-                               ;; (:file "utils")
-                               ;; (:file "css")
-                               ;; (:file "data-ui")))))
+                  :components ((:file "helpers")
+                                (:file "predicates")))))

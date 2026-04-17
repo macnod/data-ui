@@ -374,7 +374,7 @@ value is of the correct type for its field key."
              "Invalid field key ~s for type ~s." field-key type-key))))))
 
 (defun valid-uuid (uuid)
-  (unless (and (stringp uuid) (re:scan *uuid-regex* uuid))
+  (unless (uuid-p uuid)
     (signal-validation-error "Ivalid UUID ~s")))
 
 (defun valid-insert (insert)

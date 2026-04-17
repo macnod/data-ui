@@ -1,9 +1,8 @@
 (defpackage :data-ui
-  (:use :cl)
+  (:use :cl :fiveam)
   (:local-nicknames
     (:re :ppcre)
     (:db :postmodern)
-    (:t :fiveam)
     (:a :rbac)
     (:u :dc-eclectic)
     (:dt :dc-time)
