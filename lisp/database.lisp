@@ -71,5 +71,5 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     (u:safe-sort roles)))
 
 ;; dcdebug: Debug-only. Remove at some point.
-(defun query (sql)
-  (a:with-rbac (*rbac*) (db:query sql)))
+(defun query (sql &key params (result-type :plists))
+  (a:with-rbac (*rbac*) (a:rbac-query (cons sql params) result-type)))

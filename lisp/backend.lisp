@@ -13,23 +13,48 @@
   (case aggregation
     (:first (car values))
     (:list values)
-    (:distinct (u:distinct-values values))))
+    (:distinct (u:distinct-values values))
+    (t (error "Invalid aggregation ~s." aggregation))))
 
 (defun field-values-for-id (view-result id-key id-value alias-key aggregation)
-  ":private: Retrieves field values for the record where ID-KEY contains
-ID-VALUE. VIEW-RESULT is the result of running an SQL query that's called
-a view in Data UI. ALIAS-KEY is used to retrieve a value from each row in
-VIEW-RESULT. AGGREGATION is a keyword that designates a function to be performed
-against the retrieved values. This function returns the result of calling
-the aggregation function on the retrieved values."
+  ":private: Retrieves from VIEW-RESULT the field values for the record where
+ID-KEY contains ID-VALUE, with those field values aggregated according to
+AGGREGATION.
 
+VIEW-RESULT is the result of running one of the :VIEWS queries associated with a
+type key in *COMPILED-MODEL*. That :VIEWS structure also contains metadata such
+as the alias keys that VIEW-RESULT uses for the fields. The SQL in the :VIEWS
+structure can often return multiple rows for a given record, due to joins with
+other tables. Thus, we need to aggregate the values for a given field.
+
+ID-KEY is the alias key (from the :VIEWS metadata) that VIEW-RESULT uses for the
+ID field. ID-VALUE is the value of the ID field for the record whose field
+values we want to retrieve.
+
+ALIAS-KEY is the alias key (also from the :VEWS metadata) for the field that
+contains the values we want to retrieve. AGGREGATION is a keyword that specifies
+how to aggregate the values for the field."
   (loop for row in view-result
     when (equal (getf row id-key) id-value)
     collect (getf row alias-key) into values
     finally (return (aggregate-values aggregation values))))
 
 (defun view-result-values (type-key field-keys view-result)
-  ":private:"
+  ":private: Given a VIEW-RESULT, which is the result of running one of the
+:VIEWS queries associated with TYPE-KEY, and which can contain multiple rows for
+a given record (due to joins with other tables), this function collapses the
+rows into a list of plists, with one plist per record. That means that only one
+plist will be returned for a given ID, even if there are multiple rows in
+VIEW-RESULT with that ID. The field values in the returned plists consist of the
+same values that are in VIEW-RESULT, except that they are aggregated according
+to the :SOURCE :AGG metadata for the fields in TYPE-KEY. The end result is a a
+list of plists that corresponds in length to the number of distinct IDs in
+VIEW-RESULT, with the fields containing aggregated values for each record. This
+aggregation can, for example, consist of simply associating a list of values
+with a field key in the returned plists. Thus, for example, if you have a
+:USERS record with 3 associated roles, this function will return a single
+plist for that record, and the :ROLES field in that plist will have a list of
+the 3 roles."
   (loop
     with alias-keys = (alias-keys type-key field-keys)
     with id-key = (car alias-keys)
@@ -103,7 +128,8 @@ TYPE-KEY."
   (loop
     with m = *compiled-model*
     for field-key in field-keys
-    collect (u:tree-get m type-key :fields field-key :source :alias-key)))
+    for alias-key = (u:tree-get m type-key :fields field-key :source :alias-key)
+    when alias-key collect alias-key))
 
 (defun aggregations (type-key field-keys)
   ":private: Returns a list of the aggregation keys associated with the fields
@@ -129,19 +155,6 @@ the :ID field key."
     (u:make-keyword
       (format nil "~a-id"
         (u:singular (format nil "~(~a~)" type-key))))))
-
-(defun plist-select (plist keys)
-  ":private: Returns selected key/value pairs in PLIST, where a pair is selected
-if the key is among KEYS."
-  (loop for key in keys
-    append (list key (getf plist key))))
-
-(defun plist-exclude (plist keys)
-  ":private: Returns key/value pairs in PLIST, excluding pairs where the key is
-among KEYS."
-  (loop for key in plist by #'cddr
-    unless (member key keys)
-    append (list key (getf plist key))))
 
 (defun local-fields (type-key &key exclude)
   ":private: Returns a list of TYPE-KEY field keys, excluding default fields such
@@ -258,6 +271,16 @@ has a value in VALUES."
             (query (cons sql values)))
       (a:with-rbac (*rbac*) (a:rbac-query query :column)))))
 
+(defun id-to-resource-name (id)
+  ":private: Returns the resource name for the ressource of type TYPE-KEY with
+ID. This is necessary for dealing with RBAC resources given that the RBAC API
+uses names instead of IDs."
+  (a:with-rbac (*rbac*)
+    (a:rbac-query
+      (list
+        "select resource_name from resources where id = $1"
+        id)
+      :single)))
 
 ;;
 ;; END Internal database helper functions
@@ -608,6 +631,28 @@ update fails.
     ;; Update roles
     (when roles (update-roles type-key data roles))
     uuid))
+
+(defun be-delete (type-key filters)
+  ":public: Deletes the record of type TYPE-KEY that matches FILTERS. If more
+than one record matches, this function raises an error. If no records match,
+this function does nothing. Upon successful deletion, this function returns
+the ID of the deleted record.
+
+FILTERS is a list of filters, where each filter contains a type key (not
+necessarily TYPE-KEY), a field key, an operator key, and a value of the
+appropriate type for the field. All filters must match in order for a record to
+be selected. Alternatively, FILTERS may be string instead, in which case it is
+treated as the UUID of the record to be deleted."
+  (valid-type-key type-key)
+  (if (stringp filters)
+    (valid-uuid filters)
+    (valid-filters filters :required t))
+  (let* ((uuid (id-from-filters-and-data type-key filters))
+          (record (be-item :resources uuid))
+          (resource-name (getf record :name)))
+    (when resource-name
+      (a:remove-resource *rbac* resource-name)
+      uuid)))
 
 ;;
 ;; END Public backend functions

@@ -40,6 +40,7 @@
                         :validations (:required)
                         :column t :not-null t :unique t)
                  :password (:type :password
+                             :source (:view :main :column :password :agg :first)
                              :force-sql-name "password_hash"
                              :ui (:label "Password" :input-type :password)
                              :validations (:required)
