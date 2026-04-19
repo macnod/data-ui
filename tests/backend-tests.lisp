@@ -201,3 +201,356 @@ where users.id in (
         (resource-name :users '(:name "admin" :email "no-email"
                                  :password "password"))
         "users:admin:63acbe08")))
+
+;; Credit: grok-4.20-0309-reasoning
+(test insert-main-query
+  (set-model *model*)
+  ;; Happy path - uses compiled :insert-sql :main, supplies UUID for :id,
+  ;; collects data values for subsequent keys (skipping :id)
+  (let* ((type-key :tags)
+         (insert (u:tree-get *compiled-model* type-key :insert-sql))
+         (uuid "123e4567-e89b-12d3-a456-426614174000")
+         (data '(:name "Test Tag"))
+         (result (insert-main-query type-key insert uuid data))
+         (main-qt (getf insert :main)))
+    (is (and (consp result) (= 3 (length result))))
+    (is (equal (first result) (first main-qt)))
+    (is (equal (second result) uuid))
+    (is (equal (third result) (getf data :name))))
+
+  (let* ((type-key :todos)
+         (insert (u:tree-get *compiled-model* type-key :insert-sql))
+         (uuid "123e4567-e89b-12d3-a456-426614174000")
+         (data '(:name "Test Todo"))
+         (result (insert-main-query type-key insert uuid data))
+         (main-qt (getf insert :main)))
+    (is (and (consp result) (= 3 (length result))))
+    (is (equal (first result) (first main-qt)))
+    (is (equal (second result) uuid))
+    (is (equal (third result) (getf data :name))))
+
+  ;; Validation error paths (insert-main-query calls valid-insert, valid-uuid,
+  ;; valid-data)
+  (signals error (insert-main-query :nonexistent-type '(:main t) "bad-uuid" '(:name "x")))
+  (let ((insert (u:tree-get *compiled-model* :tags :insert-sql))
+        (uuid "123e4567-e89b-12d3-a456-426614174000"))
+    (signals error (insert-main-query :tags nil uuid '(:name "foo")))
+    (signals error (insert-main-query :tags insert "invalid-uuid-string" '(:name "foo")))
+    (signals error (insert-main-query :tags insert uuid '(:unknown-field "value")))))
+
+;; Credit: grok-4.20-0309-reasoning
+(test id-from-filters
+  (is-false (id-from-filters nil))
+  (is-false (id-from-filters '((:users :name :eq "foo"))))
+  (is (equal "123" (id-from-filters '((:users :id :eq "123")))))
+  (is (equal "abc" (id-from-filters '((:users :name :eq "foo")
+                                      (:todos :id :eq "abc")))))
+  (is-false (id-from-filters '((:users :id :like "%123%")))))
+
+;; Credit: grok-4.20-0309-reasoning
+(test id-from-filters-and-data
+  (set-model *model*)
+  ;; Filters is string
+  (is (equal "abc123" (id-from-filters-and-data :users "abc123")))
+  ;; Data has :id
+  (is (equal
+        "def456"
+        (id-from-filters-and-data
+          :users '((:users :name :eq "foo")) '(:id "def456" :name "bar"))))
+  ;; Uses id-from-filters
+  (is (equal
+        "ghi789"
+        (id-from-filters-and-data :users '((:users :id :eq "ghi789")))))
+  ;; No id in data or filters, does lookup (uses existing test data like admin
+  ;; user)
+  (let ((admin-id (a:get-id *rbac* "users" "admin")))
+    (is (equal
+          admin-id
+          (id-from-filters-and-data :users '((:users :name :eq "admin"))))))
+  ;; Returns nil when no match
+  (is-false (id-from-filters-and-data
+              :users '((:users :name :eq "nonexistent-user")))))
+
+;; Credit: grok-4.20-0309-reasoning
+(test update-roles
+  (set-model *model*)
+  (let ((test-todo-name "test-update-roles-todo")
+        (test-tag-name "test-update-roles-tag"))
+    ;; Cleanup from any previous partial test run
+    (be-delete :todos `((:todos :name :eq ,test-todo-name)))
+    ;; Force full cleanup of any stale RBAC resource (name collision on hash)
+    (a:with-rbac (*rbac*)
+      (let ((stale-rn (resource-name :todos `(:name ,test-todo-name))))
+        (when (a:get-id *rbac* "resources" stale-rn)
+          (a:remove-resource *rbac* stale-rn))))
+    (a:with-rbac (*rbac*)
+      (let ((stale-rn (resource-name :tags `(:name ,test-tag-name))))
+        (when (a:get-id *rbac* "resources" stale-rn)
+          (a:remove-resource *rbac* stale-rn)))) 
+    ;; Standard DB cleanup
+    (be-delete :todos `((:todos :name :eq ,test-todo-name)))
+    (be-delete :tags `((:tags :name :eq ,test-tag-name))) 
+    (be-delete :tags `((:tags :name :eq ,test-tag-name)))
+
+    ;; Test with a new :todos record
+    (let* ((todo-id (be-insert :todos `(:name ,test-todo-name)))
+           (todo-data `(:name ,test-todo-name))
+           (rn (resource-name :todos todo-data))
+           (initial-roles (a:list-resource-role-names *rbac* rn)))
+      (is (member "admin" initial-roles :test #'equal))
+      ;; Update to add roles (forces admin)
+      (is (null (update-roles :todos todo-data '("public" "logged-in"))))
+      (let ((updated-roles (a:list-resource-role-names *rbac* rn)))
+        (is (subsetp '("admin" "logged-in" "public") updated-roles :test #'equal))
+        (is (= 3 (length updated-roles))))
+      ;; Update to remove all but admin (use existing role)
+      (is (null (update-roles :todos todo-data '("logged-in"))))
+      (let ((final-roles (a:list-resource-role-names *rbac* rn)))
+        (is (equal '("admin" "logged-in") (sort (copy-list final-roles) #'string<))))
+      (be-delete :todos todo-id))
+
+    ;; Test adding roles to a new :tags record
+    (let* ((tag-id (be-insert :tags `(:name ,test-tag-name)))
+           (tag-data `(:name ,test-tag-name))
+           (rn (resource-name :tags tag-data)))
+      (is (null (update-roles :tags tag-data '("public"))))
+      (let ((roles (a:list-resource-role-names *rbac* rn)))
+        (is (equal '("admin" "public") (sort (copy-list roles) #'string<))))
+      (be-delete :tags tag-id))))
+
+(test list-ids
+  (set-model *model*)
+  ;; Empty values list returns NIL/falsey
+  (is-false (list-ids :todos :name nil))
+  (is (null (list-ids :todos :name '())))
+  ;; Returns list of UUID strings for matching names (uses existing test data)
+  (let ((todo-ids (list-ids :todos :name '("ten" "twelve" "fifteen"))))
+    (is (= 3 (length todo-ids)))
+    (is (every #'stringp todo-ids)))
+  (let ((tag-ids (list-ids :tags :name '("one" "four"))))
+    (is (= 2 (length tag-ids)))
+    (is (every #'stringp tag-ids)))
+  ;; Validation errors
+  (signals error (list-ids :nonexistent-type :name '("x")))
+  (signals error (list-ids :todos :unknown-field '("x")))
+  (signals error (list-ids :todos :name "not-a-list")))
+
+(test id-to-resource-name
+  (set-model *model*)
+  ;; Returns resource name string for valid ID (uses existing test data)
+  (let* ((todo-id (car (list-ids :todos :name '("ten"))))
+         (tag-id (car (list-ids :tags :name '("one"))))
+         (todo-rn (id-to-resource-name todo-id))
+         (tag-rn (id-to-resource-name tag-id)))
+    (is (stringp todo-rn))
+    (is (search "todos:ten:" todo-rn))
+    (is (stringp tag-rn))
+    (is (search "tags:one:" tag-rn)))
+  ;; Returns NIL for non-existent ID
+  (is-false (id-to-resource-name "00000000-0000-0000-0000-000000000000"))
+  ;; Validation (expects valid UUID or queries safely)
+  (is-false (id-to-resource-name nil)))
+
+(test eformat
+  ;; Single newlines collapse to spaces (paragraph flow)
+  (is (equal "Hello world. This is a test."
+             (eformat "Hello world.
+This is a test.")))
+  ;; Double newlines preserve paragraph breaks
+  (is (equal "Paragraph one.
+
+Paragraph two."
+             (eformat "Paragraph one.
+
+Paragraph two.")))
+  ;; Indented lines (bullets, lists, poems) are preserved
+  (is (equal "Here's a poem:
+
+  - She drew a circle
+  - That shut me out
+  - Heretic rebel
+  - A thing to flout
+
+Do you like it?"
+             (eformat "
+Here's a poem:
+
+  - She drew a circle
+  - That shut me out
+  - Heretic rebel
+  - A thing to flout
+
+Do you like it?
+")))
+  ;; Numbers, letters, other whitespace-prefixed lines preserved
+  (is (equal "Steps:
+  1. First
+  2. Second
+
+Notes:
+  a. Alpha
+  b. Beta"
+             (eformat "Steps:
+  1. First
+  2. Second
+
+Notes:
+  a. Alpha
+  b. Beta")))
+  ;; Trimming of leading/trailing whitespace and newlines
+  (is (equal "Trimmed text."
+             (eformat "
+
+  Trimmed text.
+
+
+")))
+  ;; Formatting with params (like FORMAT)
+  (is (equal "Value: 42 and string: hello"
+             (eformat "Value: ~a and string: ~a" 42 "hello")))
+  ;; Edge cases
+  (is (equal "" (eformat "")))
+  (is (equal "" (eformat "
+
+
+")))
+  (is (equal "Single line." (eformat "Single line."))))
+
+(test validation-error
+  (signals validation-error (signal-validation-error "Test error."))
+  (handler-case
+      (signal-validation-error "Invalid ~s for ~s." :foo :bar)
+    (validation-error (e)
+      (is (equal "Invalid :FOO for :BAR." (princ-to-string e)))
+      (is (eq 'validatioN (context e))))))
+
+(test valid-filter
+  (set-model *model*)
+  ;; Valid filter (no error)
+  (is (null (valid-filter '(:todos :name :eq "test"))))
+  ;; Required but missing
+  (signals validation-error (valid-filter nil :required t))
+  ;; Not a list
+  (signals validation-error (valid-filter "not-a-list"))
+  ;; Wrong number of elements
+  (signals validation-error (valid-filter '(:todos :name :eq)))
+  ;; Invalid type key
+  (signals validation-error (valid-filter '(:invalid-type :name :eq "test")))
+  ;; Invalid field key
+  (signals validation-error (valid-filter '(:todos :invalid-field :eq "test")))
+  ;; Invalid operator
+  (signals validation-error (valid-filter '(:todos :name :invalid-op "test")))
+  ;; Invalid value type
+  (signals validation-error (valid-filter '(:todos :name :eq 123))))
+
+(test valid-filters
+  (set-model *model*)
+  ;; Valid filters list (no error)
+  (is (null (valid-filters '((:todos :name :eq "test")
+                             (:tags :name :eq "tag1")))))
+  ;; Required but NIL/empty
+  (signals validation-error (valid-filters nil :required t))
+  (signals validation-error (valid-filters '() :required t))
+  ;; Invalid filter inside list
+  (signals validation-error (valid-filters '((:todos :name :eq "ok")
+                                             "invalid-filter"))))
+
+(test valid-type-key
+  (set-model *model*)
+  (is (null (valid-type-key :todos)))
+  (signals validation-error (valid-type-key :invalid-type))
+  (signals validation-error (valid-type-key nil))
+  (signals validation-error (valid-type-key "string")))
+
+(test valid-field-key
+  (set-model *model*)
+  (is (null (valid-field-key :todos :name)))
+  (signals validation-error (valid-field-key :todos :invalid-field))
+  (signals validation-error (valid-field-key :invalid-type :name))
+  (signals validation-error (valid-field-key nil :name)))
+
+(test valid-data
+  (set-model *model*)
+  ;; Valid data for :todos
+  (is (null (valid-data :todos '(:name "Test Todo" :tags '("one" "two")))))
+  ;; Invalid type-key
+  (signals validation-error (valid-data :invalid-type '(:name "x")))
+  ;; Invalid field
+  (signals validation-error (valid-data :todos '(:invalid-field "x")))
+  ;; Wrong value type
+  (signals validation-error (valid-data :todos '(:name 123)))
+  ;; Invalid UUID for :id
+  (signals validation-error (valid-data :todos '(:id "not-uuid")))
+  ;; Join table must be list of atomic values
+  (signals validation-error (valid-data :todos '(:tags '(1 (2 3))))))
+
+(test valid-uuid
+  (is (null (valid-uuid "123e4567-e89b-12d3-a456-426614174000")))
+  (signals validation-error (valid-uuid "not-uuid"))
+  (signals validation-error (valid-uuid nil))
+  (signals validation-error (valid-uuid 123)))
+
+(test valid-insert
+  (set-model *model*)
+  (let ((insert (u:tree-get *compiled-model* :todos :insert-sql)))
+    (is (null (valid-insert insert))))
+  (signals validation-error (valid-insert nil))
+  (signals validation-error (valid-insert '(:not-main t))))
+
+(test valid-roles
+  (is (null (valid-roles '("admin" "public"))))
+  (is (null (valid-roles nil)))
+  (is (null (valid-roles '("abc-def" "abc:def"))))
+  (signals validation-error (valid-roles '("abc def")))
+  (signals validation-error (valid-roles '("ADMIN" "PUBLIC")))
+  (signals validation-error (valid-roles '("Admin" "Public")))
+  (signals validation-error (valid-roles '("!@#$%%%^" ")(*)*)SDF"))))
+
+(test valid-existing-roles
+  (is (null (valid-existing-roles '("admin"))))
+  (signals validation-error (valid-existing-roles '("nonexistent-role"))))
+
+(test valid-values-list
+  (is (null (valid-values-list '("a" "b"))))
+  (is (null (valid-values-list nil)))
+  (signals validation-error (valid-values-list "not-list"))
+  (signals validation-error (valid-values-list '(1 (2 3)))))
+
+(test id-key
+  (set-model *model*)
+  (is (eq :todo-id (id-key :todos)))
+  (is (eq :user-id (id-key :users)))
+  (is (eq :tag-id (id-key :tags)))
+  (is (eq :role-id (id-key :roles)))
+  ;; Edge cases
+  (signals validation-error (id-key nil))
+  (signals validation-error (id-key :foo)))
+
+(test be-id
+  (set-model *model*)
+  (let ((test-todo-name "test-be-id-todo")
+        (test-tag-name "test-be-id-tag"))
+    ;; Cleanup any previous test data
+    (be-delete :todos `((:todos :name :eq ,test-todo-name)))
+    (be-delete :tags `((:tags :name :eq ,test-tag-name)))
+
+    ;; Create test records
+    (let ((tag-id (be-insert :tags `(:name ,test-tag-name)))
+           (todo-id (be-insert :todos
+                      `(:name ,test-todo-name :tags (,test-tag-name)))))
+
+      ;; By string UUID
+      (is (equal todo-id (be-id :todos todo-id)))
+      (is (equal tag-id (be-id :tags tag-id)))
+      ;; By filter on unique field
+      (is (equal todo-id (be-id :todos `((:todos :name :eq ,test-todo-name)))))
+      (is (equal tag-id (be-id :tags `((:tags :name :eq ,test-tag-name)))))
+      ;; No match returns NIL
+      (is-false (be-id :todos '((:todos :name :eq "nonexistent-todo"))))
+      ;; Cleanup
+      (be-delete :todos todo-id)
+      (be-delete :tags tag-id)))
+
+  ;; Invalid inputs
+  (signals error (be-id :invalid-type '((:users :name :eq "x"))))
+  (signals error (be-id :users "not-uuid-string")))

@@ -272,15 +272,17 @@ has a value in VALUES."
       (a:with-rbac (*rbac*) (a:rbac-query query :column)))))
 
 (defun id-to-resource-name (id)
-  ":private: Returns the resource name for the ressource of type TYPE-KEY with
+  ":private: Returns the resource name for the resource of type with
 ID. This is necessary for dealing with RBAC resources given that the RBAC API
-uses names instead of IDs."
-  (a:with-rbac (*rbac*)
-    (a:rbac-query
-      (list
-        "select resource_name from resources where id = $1"
-        id)
-      :single)))
+uses names instead of IDs. Returns NIL if ID is not a valid UUID or does not
+exist."
+  (when (and id (uuid-p id))
+    (a:with-rbac (*rbac*)
+      (a:rbac-query
+        (list
+          "select resource_name from resources where id = $1"
+          id)
+        :single))))
 
 ;;
 ;; END Internal database helper functions
@@ -292,11 +294,19 @@ uses names instead of IDs."
 
 (defun eformat (s &rest params)
   ":private: Formats S with PARAMS, just like the FORMAT function would. But, it
-first replaces any single newline in S with a spaces. This allows paragraphs to
-be formatted as long lines, but retains paragraph breaks when there is more than
-one consecutive newline. This is useful for formatting error messages, which
-would otherwise turn into long lines in the code."
-  (let ((ss (re:regex-replace-all "([^\\n])\\n([^\\n])" s (format nil "\\1 \\2"))))
+first replaces any single newline in S with a space *unless* that newline is
+followed by two or more whitespace characters (to preserve indented lists,
+bullets, poems, code blocks, etc.). Paragraph breaks (two or more consecutive
+newlines) are preserved. The result is trimmed of leading/trailing whitespace.
+This is useful for formatting error messages and multi-line strings."
+(defun eformat (s &rest params)
+  ":private: Formats S with PARAMS, just like the FORMAT function would. But, it
+first replaces any single newline in S with a space *unless* that newline is
+followed by whitespace (to preserve indented lists, bullets, poems, code
+blocks, etc.). Paragraph breaks (two or more consecutive newlines) are
+preserved. The result is trimmed of leading/trailing whitespace. This is useful
+for formatting error messages and multi-line strings."
+  (let ((ss (re:regex-replace-all "([^\\n])\\n([^\\s])" s "\\1 \\2")))
     (u:trim (apply #'format (append (list nil ss) params)))))
 
 (define-condition validation-error (simple-error error)
@@ -398,7 +408,7 @@ value is of the correct type for its field key."
 
 (defun valid-uuid (uuid)
   (unless (uuid-p uuid)
-    (signal-validation-error "Ivalid UUID ~s")))
+    (signal-validation-error "Invalid UUID ~s" uuid)))
 
 (defun valid-insert (insert)
   (unless (and (u:plistp insert) (getf insert :main))
@@ -425,6 +435,7 @@ value is of the correct type for its field key."
       values)))
 
 (defun id-key (type-key)
+  (valid-type-key type-key)
   (u:make-keyword (format nil "~a-id" (u:singular (format nil "~a" type-key)))))
 
 ;;
@@ -647,13 +658,13 @@ treated as the UUID of the record to be deleted."
   (if (stringp filters)
     (valid-uuid filters)
     (valid-filters filters :required t))
-  (let* ((uuid (id-from-filters-and-data type-key filters))
-          (record (be-item :resources uuid))
-          (resource-name (getf record :name)))
-    (when resource-name
-      (a:remove-resource *rbac* resource-name)
-      uuid)))
-
+  (let ((uuid (id-from-filters-and-data type-key filters)))
+    (when uuid
+      (let* ((record (be-item :resources uuid))
+             (resource-name (getf record :name)))
+        (when resource-name
+          (a:remove-resource *rbac* resource-name)
+          uuid)))))
 ;;
 ;; END Public backend functions
 ;;

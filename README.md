@@ -1,4 +1,4 @@
-# Data-UI
+# Data UI
 
 **Describe your data model once. Get a complete RBAC-backed application.**
 
@@ -21,9 +21,9 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
 ## Overview
 
-If you aim to develop solid, dependable, performant, maintainable, database-backed, ready-to-deploy applications that include full support for Role-Based Access Control (RBAC), and you want a deterministic development process (no countless iterations with an AI only to have to fix the difficult problems yourself in the end), then Data-UI is your friend.
+If you aim to develop solid, dependable, performant, maintainable, database-backed, ready-to-deploy applications that include full support for Role-Based Access Control (RBAC), and you want a deterministic development process (no countless iterations with an AI only to have to fix the difficult problems yourself in the end), then Data UI is your friend.
 
-Data-UI is a Common Lisp system that takes a simple nested plist model and compiles it into a full production-ready data application:
+Data UI is a Common Lisp system that takes a simple nested plist model and **will compile it** into a full production-ready data application:
 
 - PostgreSQL tables (with defaults, constraints, triggers)
 - Smart joined views for lists and forms
@@ -35,12 +35,12 @@ Data-UI is a Common Lisp system that takes a simple nested plist model and compi
 - Complete React frontend
 - Kubernetes manifests for deployment
 
-No manual migrations. No per-type boilerplate. Change the model, call `(set-model *model*)`, and everything updates deterministically. Data-UI aims to let you write the model, compile it into an application, and deploy the application in a half hour.
+No manual migrations. No per-type boilerplate. Change the model, call `(set-model *model*)`, and everything updates deterministically. Data UI aims to let you write the model, compile it into an application, and deploy the application in a half hour.
 
 
 ## Core Philosophy
 
-You describe your entities, relations, and UI behavior in one place. Then, Data-UI:
+You describe your entities, relations, and UI behavior in one place. Then, Data UI:
 
 1. Merges your model with a complete RBAC base model (`*base-model*`)
 2. Enriches types with default fields (`:id`, `:created-at`, `:updated-at`)
@@ -53,7 +53,7 @@ Generic endpoints like `/api/list?type=todos` and `/api/schema/todos/add-form` w
 
 ## Example Model
 
-This example is from what's assigned to the `*model*` variable in `lisp/workbench.lisp`.
+This example is from the `*model*` definition in `lisp/model.lisp`.
 
     (defparameter *model*
       `(:todos
@@ -63,14 +63,25 @@ This example is from what's assigned to the `*model*` variable in `lisp/workbenc
                     :tags (:tables (:tags)))
            :fields (:name (:type :text
                             :ui (:label "To Do" :input-type :line)
-                            :source (:view :main :column :todo-name :agg :first)
+                            :source (:view :main :column :name :agg :first)
                             :column t :not-null t :unique t)
                      :tags (:type :list
                              :ui (:label "Tags" :input-type :checkbox-list)
-                             :source-sel (:list (:view :main :column :tag-name))
-                             :source-all (:list (:table :tags :column :tag-name))
+                             :source (:view :main :table :tags :column :name :agg :list)
+                             :source-all (:view :tags :table :tags :column :name :agg :list)
                              :ids-table :tags
                              :join-table :todo-tags))
+           :list-form (:fields t)
+           :update-form (:fields t)
+           :add-form (:fields t))
+
+         :tags
+         (:table t
+           :create :auto :update :auto :delete :auto
+           :fields (:name (:type :text
+                            :ui (:label "Tag" :input-type :line)
+                            :source (:view :main :table :tags :column :name :agg :first)
+                            :column t :not-null t :unique t))
            :list-form (:fields t)
            :update-form (:fields t)
            :add-form (:fields t))
@@ -78,17 +89,7 @@ This example is from what's assigned to the `*model*` variable in `lisp/workbenc
          :todo-tags
          (:table t :is-joiner t
            :fields (:reference (:target :todos)
-                     :reference (:target :tags)))
-
-         :tags
-         (:table t
-           :create :auto :update :auto :delete :auto
-           :fields (:name (:type :text
-                            :ui (:label "Tag" :input-type :line)
-                            :column t :not-null t :unique t))
-           :list-form (:fields t)
-           :update-form (:fields t)
-           :add-form (:fields t))))
+                     :reference (:target :tags)))))
 
 This single definition aims to give you:
 
@@ -105,7 +106,9 @@ The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and all 
 
 ### Example Compilation Results
 
-This section presents some tiny pieces of the resulting enriched model, after compilation with `(set-model *model*`.
+This section presents some tiny pieces of the resulting enriched model, after compilation with `(set-model *model*)`.
+
+(The example output remains accurate to the current implementation in `lisp/model.lisp`.)
 
 #### Create Table SQL for `:todos`
 
@@ -143,81 +146,74 @@ This section presents some tiny pieces of the resulting enriched model, after co
 
     (:VIEWS
      (:MAIN
-      (:TABLES (:TODOS :TODO-TAGS :TAGS)
-       :SQL
-         "
-           select
-             rt_todos.id         rt_todo_id,
-             rt_todos.created_at rt_todo_created_at,
-             rt_todos.updated_at rt_todo_updated_at,
-                                 rt_todo_name,
-             rt_tags.id          rt_tag_id,
-             rt_tags.created_at  rt_tag_created_at,
-             rt_tags.updated_at  rt_tag_updated_at,
-                                 rt_tag_name
-           from rt_todos
-             join rt_todo_tags on rt_todos.id = rt_todo_tags.todo_id
-             join rt_tags on rt_todo_tags.tag_id = rt_tags.id
-         "
+      (:TABLES (:TODOS :TODO-TAGS :TAGS) :SQL "
+    select
+      rt_todos.id         rt_todos_id,
+      rt_todos.created_at rt_todos_created_at,
+      rt_todos.updated_at rt_todos_updated_at,
+      rt_todos.todo_name  rt_todos_todo_name,
+      rt_tags.id          rt_tags_id,
+      rt_tags.created_at  rt_tags_created_at,
+      rt_tags.updated_at  rt_tags_updated_at,
+      rt_tags.tag_name    rt_tags_tag_name
+    from rt_todos
+      join rt_todo_tags on rt_todos.id = rt_todo_tags.todo_id
+      join rt_tags on rt_todo_tags.tag_id = rt_tags.id
+    "
+       :ALIASES
+       (:TODOS
+        (:ID :RT-TODOS-ID :CREATED-AT :RT-TODOS-CREATED-AT :UPDATED-AT
+         :RT-TODOS-UPDATED-AT :NAME :RT-TODOS-TODO-NAME)
+        :TAGS
+        (:ID :RT-TAGS-ID :CREATED-AT :RT-TAGS-CREATED-AT :UPDATED-AT
+         :RT-TAGS-UPDATED-AT :NAME :RT-TAGS-TAG-NAME))
        :COLUMNS
-         (:TODOS (:RT-TODO-ID "rt_todo_id" 
-                  :RT-TODO-CREATED-AT "rt_todo_created_at"
-                  :RT-TODO-UPDATED-AT "rt_todo_updated_at"
-                  :RT-TODO-NAME "rt_todo_name")
-          :TAGS (:RT-TAG-ID "rt_tag_id"
-                 :RT-TAG-CREATED-AT "rt_tag_created_at"
-                 :RT-TAG-UPDATED-AT "rt_tag_updated_at"
-                 :RT-TAG-NAME "rt_tag_name")))
+       (:TODOS
+        (:ID "rt_todos.id" :CREATED-AT "rt_todos.created_at" :UPDATED-AT
+         "rt_todos.updated_at" :NAME "rt_todos.todo_name")
+        :TAGS
+        (:ID "rt_tags.id" :CREATED-AT "rt_tags.created_at" :UPDATED-AT
+         "rt_tags.updated_at" :NAME "rt_tags.tag_name")))
       :TAGS
-      (:TABLES (:TAGS)
-       :SQL
-         "
-           select
-             rt_tags.id         rt_tag_id,
-             rt_tags.created_at rt_tag_created_at,
-             rt_tags.updated_at rt_tag_updated_at,
-                                rt_tag_name
-           from rt_tags
-         "
+      (:TABLES (:TAGS) :SQL "
+    select
+      rt_tags.id         rt_tags_id,
+      rt_tags.created_at rt_tags_created_at,
+      rt_tags.updated_at rt_tags_updated_at,
+      rt_tags.tag_name   rt_tags_tag_name
+    from rt_tags
+    "
+       :ALIASES
+       (:TAGS
+        (:ID :RT-TAGS-ID :CREATED-AT :RT-TAGS-CREATED-AT :UPDATED-AT
+         :RT-TAGS-UPDATED-AT :NAME :RT-TAGS-TAG-NAME))
        :COLUMNS
-       (:TAGS (:RT-TAG-ID "rt_tag_id"
-               :RT-TAG-CREATED-AT "rt_tag_created_at"
-               :RT-TAG-UPDATED-AT "rt_tag_updated_at"
-               :RT-TAG-NAME "rt_tag_name")))))
+       (:TAGS
+        (:ID "rt_tags.id" :CREATED-AT "rt_tags.created_at" :UPDATED-AT
+         "rt_tags.updated_at" :NAME "rt_tags.tag_name")))))
 
 #### Fields Enrichment for `:todos :fields :name`
     
     (:TODOS
      (:FIELDS
       (:NAME
-       (:CHECKED NIL
-        :UNCHECKED NIL
-        :UI (:LABEL "To Do" :INPUT-TYPE :LINE)
-        :UNIQUE T
-        :PRIMARY-KEY NIL
-        :FS-BACKED NIL
-        :TARGET NIL
-        :IDS-TABLE NIL
-        :JOIN-TABLE NIL
-        :FORCE-SQL-NAME NIL
-        :SQL-NAME "rt_todo_name"
-        :SQL-ALIAS "rt_todo_name"
-        :TYPE-SQL "text"
-        :CREATE-SQL "rt_todo_name text not null unique"
-        :ALIAS-KEY :RT-TODO-NAME
-        :SOURCE (:VIEW :MAIN :COLUMN :TODO-NAME :AGG :FIRST)
-        :TYPE :TEXT
-        :COLUMN T
-        :NOT-NULL T
+       (:BASE-FIELD NIL :CHECKED NIL :UNCHECKED NIL :UI
+        (:LABEL "To Do" :INPUT-TYPE :LINE) :UNIQUE T :PRIMARY-KEY NIL :FS-BACKED
+        NIL :TARGET NIL :IDS-TABLE NIL :JOIN-TABLE NIL :FORCE-SQL-NAME NIL
+        :NAME-SQL "todo_name" :TYPE-SQL "text" :CREATE-SQL
+        "todo_name text not null unique" :SOURCE
+        (:VIEW :MAIN :COLUMN :NAME :AGG :FIRST :ALIAS-KEY :RT-TODOS-TODO-NAME
+         :COLUMN-NAME "rt_todos.todo_name")
+        :SOURCE-SEL NIL :SOURCE-ALL NIL :TYPE :TEXT :COLUMN T :NOT-NULL T
         :REFERENCE NIL))))
 
 ## How It Works
 
-- `set-model` — Compiles the model, enriches it, generates all SQL/views, and stores the result in `*compiled-model*`.
+- `set-model` (in `lisp/model.lisp`) — Compiles the model, enriches it, generates all SQL/views, and stores the result in `*compiled-model*`.
 - **Compilation** — Adds default fields, resolves `:reference` into proper foreign keys, builds joined view SQL, prepares parameterized CRUD statements.
-- **Runtime** — Generic backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`) pull pre-generated SQL from the compiled model.
+- **Runtime** — Generic backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-item`, etc. in `lisp/backend.lisp`) pull pre-generated SQL from the compiled model.
 - **RBAC** — Every operation is gated by `user-allowed` from the rbac library. RBAC tables are treated exactly like your own types, so you can manage users, roles, permissions, and resource access through the same UI/API.
-- **Validation** — Per-field lambdas or common validator keywords (with support for lists). Pre-compiled into machine code during `set-model`. Separate `be-validate` (full form) and `be-validate-field` (real-time single field) functions.
+- **Validation** — Per-field lambdas or common validator keywords (with support for lists). Pre-compiled during `set-model`. Separate validation functions are available.
 
 
 ## Key Model Features
@@ -238,21 +234,24 @@ All endpoints stay **generic** — no per-type handler generation needed:
 
 - `GET /api/schema/:type/:form` → JSON with fields, UI hints, and validation rules (for dynamic React forms)
 - `GET /api/list?type=todos` → RBAC-gated results from the compiled view
-- `POST /api/validate`, `/api/insert`, `/api/update` → call `be-validate` first, then use compiled SQL
+- `POST /api/validate`, `/api/insert`, `/api/update` → call validation first, then use compiled SQL
 
 React (or any frontend) can fetch the schema once and render forms/lists automatically.
 
 
 ## Current Status (March 2026)
 
-- Model compilation + enrichment is working
-- SQL generation for tables, joined views, triggers, and basic CRUD is implemented and tested against PostgreSQL
-- `be-list-internal` and supporting helpers are in place
-- Full RBAC integration via `macnod/rbac` (including `user-allowed`, list functions, and `with-rbac`)
-- Validation architecture finalized (pre-compiled lambdas + common validators)
-- Primary focus now: Solidifying the `be-*` CRUD functions
+The project is still in active development and is **not yet complete**. Recent refactoring includes:
 
-The active implementation lives in [lisp/workbench.lisp](https://github.com/macnod/data-ui/blob/master/lisp/workbench.lisp). Ignore all other files for now.
+- Compilation and model enrichment logic moved to `lisp/model.lisp` (includes `compile-model`, `set-model`, `create-tables`, view/SQL generation).
+- `be-*` functions and related helpers moved to `lisp/backend.lisp`.
+- Supporting code moved/consolidated into `lisp/data-ui.lisp`, `lisp/database.lisp`, `lisp/predicates.lisp`, `lisp/rest.lisp`, and other modules.
+- Removed `lisp/workbench.lisp` and various stale/experimental files.
+- Added comprehensive tests in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (using FiveAM; covers predicates, backend operations, model compilation, validation, etc.).
+
+Model compilation, SQL generation for tables/views/triggers, basic RBAC integration, and validation are implemented and tested. Work continues on fully solidifying CRUD operations, completing the REST API (`lisp/rest.lisp`), generating the React frontend, producing Kubernetes manifests, and achieving the full end-to-end vision.
+
+See `lisp/model.lisp` for the current `*model*` and `*base-model*`, `lisp/backend.lisp` for the `be-*` API, and the `tests/` directory for usage examples. Ignore outdated references in older files. Contributions welcome — this is early stage!
 
 ## Goals & Vision
 
@@ -264,7 +263,7 @@ The active implementation lives in [lisp/workbench.lisp](https://github.com/macn
 
 ## Business & Monetization
 
-Data-UI is and will remain fully open source under the MIT license. The core (model compiler, SQL generation, RBAC integration, CRUD layer, etc.) is free for anyone to use, self-host, or modify.
+Data UI is and will remain fully open source under the MIT license. The core (model compiler, SQL generation, RBAC integration, CRUD layer, etc.) is free for anyone to use, self-host, or modify.
 
 Initially we will focus on building custom applications for clients while dogfooding the tool on our own projects.
 
@@ -290,4 +289,3 @@ Contributions and feedback are very welcome — this is still early stage!
 ## License
 
 MIT
-
