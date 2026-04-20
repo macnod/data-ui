@@ -170,7 +170,7 @@ actual column in the associated table, such as fields that have a non-nil
              (member field-key exclude))
     collect field-key))
 
-(defun resource-name (type-key data)
+(defun make-resource-name (type-key data)
   ":private: Returns a resource name for DATA, a row of TYPE-KEY. This name is
 composed of the type-key, the value associated with the first key in DATA, and a
 short (8 chars) hash of the concatenated, colon-separated values in DATA. We
@@ -186,6 +186,13 @@ have the same :NAME and require the additional :USER value to to be unique."
                       (u:hash-string
                         (format nil "~{~(~a~^:~)~}" name-parts)
                         :size 8)))))
+
+(defun find-resource-name (type-key filters)
+  (if (uuid-p filters)
+    (id-to-resource-name filters)
+    (let* ((id (be-id type-key filters))
+            (item (when id (be-item :resources id))))
+      (when item (getf item :name)))))
 
 (defun insert-main-query (type-key insert uuid data)
   ":private: Returns a list consisting of and SQL string with placeholders
@@ -244,7 +251,7 @@ ROLES is a list of role names. ID is a UUID string. This function returns NIL if
 the update is successful, or an error if the update fails."
   ;; Compute the existing roles for the resource
   (let* ((roles (if (member "admin" roles) roles (cons "admin" roles)))
-          (resource-name (resource-name type-key data))
+          (resource-name (make-resource-name type-key data))
           (existing-roles (a:list-resource-role-names *rbac* resource-name))
           (to-add (set-difference roles existing-roles :test 'equal))
           (to-remove (set-difference existing-roles roles :test 'equal)))
@@ -283,6 +290,21 @@ exist."
           "select resource_name from resources where id = $1"
           id)
         :single))))
+
+(defun id-from-data (type-key data)
+  ":private: Returns the ID of the record of type TYPE-KEY that matches DATA.
+If DATA contains an :ID key, then the value associated with that key is
+returned. Otherwise, this function expects DATA to contain a value for each
+local field (See the LOCAL-FIELDS function) of TYPE-KEY, and looks up the ID
+of the record that matches those values. If no record matches, then this
+function returns NIL. This function ignores any non-local fields in DATA.
+If DATA points to multiple records, then this function raises an error."
+  (or (getf data :id)
+    (let ((filters (loop for field in (local-fields type-key)
+                     for value = (getf data field)
+                     do (valid-value-type type-key field value)
+                     collect (list type-key field :eq value))))
+      (be-id type-key filters))))
 
 ;;
 ;; END Internal database helper functions
@@ -535,39 +557,44 @@ ID. This is perfect for rendering the data in the front end as a form."
 (defun be-insert (type-key data &key roles)
   ":public: Inserts a record of type TYPE-KEY with the given DATA. DATA is a
 plist where the keys are field keys and the values are the values to be
-inserted. This function returns the ID of the newly inserted record, or an error
-if the insert fails. The following example inserts a user with the name \"john\"
-and the role \"admin\":
+inserted. This function returns two values: The ID of the record and T if the
+record this function inserted the record or NIL if the error already exists.
+This function does not perform an uppdate if a record with the same unique
+fields already exists. The following example inserts a user with the name
+\"john\" and the role \"admin\":
 
     `(be-insert :users '(:name \"john\" :roles (\"admin\")))`
 "
   (valid-type-key type-key)
   (valid-data type-key data)
   (valid-existing-roles roles)
-  (let* ((insert (u:tree-get *compiled-model* type-key :insert-sql))
-          ;; Insert RBAC resource row
-          (resource-name (resource-name type-key data))
-          (uuid (a:add-resource *rbac* resource-name :roles roles)))
-    ;; Insert TYPE-KEY row
-    (a:with-rbac (*rbac*)
-      (a:rbac-query (insert-main-query type-key insert uuid data)))
-    ;; Insert rows in join tables
-    (loop with keys = (remove-if
-                        (lambda (k) (member k '(:resource :main)))
-                        (u:plist-keys insert))
-      for key in keys
-      for qt = (getf insert key)
-      for sql = (car qt)
-      for names = (getf data key)
-      ;; TODO: Use list-ids function instead of be-id
-      for value-ids = (loop for name in names
-                        collect (be-id key `((,key :name :eq ,name))))
-      do (loop for value-id in value-ids
-           for query = (cons sql (list uuid value-id))
-           do (a:with-rbac (*rbac*) (a:rbac-query query))))
-    ;; Roles update
-    (when roles (update-roles type-key data roles))
-    uuid))
+  (let ((id (id-from-data type-key data)))
+    (if (id-from-data type-key data)
+      (values id nil)
+      (let* ((insert (u:tree-get *compiled-model* type-key :insert-sql))
+              ;; Insert RBAC resource row
+              (resource-name (make-resource-name type-key data))
+              (uuid (a:add-resource *rbac* resource-name :roles roles)))
+        ;; Insert TYPE-KEY row
+        (a:with-rbac (*rbac*)
+          (a:rbac-query (insert-main-query type-key insert uuid data)))
+        ;; Insert rows in join tables
+        (loop with keys = (remove-if
+                            (lambda (k) (member k '(:resource :main)))
+                            (u:plist-keys insert))
+          for key in keys
+          for qt = (getf insert key)
+          for sql = (car qt)
+          for names = (getf data key)
+          ;; TODO: Use list-ids function instead of be-id
+          for value-ids = (loop for name in names
+                            collect (be-id key `((,key :name :eq ,name))))
+          do (loop for value-id in value-ids
+               for query = (cons sql (list uuid value-id))
+               do (a:with-rbac (*rbac*) (a:rbac-query query))))
+        ;; Roles update
+        (when roles (update-roles type-key data roles))
+        (values uuid t)))))
 
 ;; TODO:
 ;;   - Transaction
@@ -605,6 +632,10 @@ update fails.
           (update-query (append (cons sql values) (list uuid))))
     ;; Update TYPE-KEY row
     (a:with-rbac (*rbac*) (a:rbac-query update-query))
+    ;; Update resource name
+    (a:with-rbac (*rbac*)
+      (db:query "update resources set resource_name = $1 where id = $2"
+        (resource-name type-key data) uuid))
     ;; Update join tables
     (loop
       with keys = (remove-if (lambda (k) (equal k :main)) (u:plist-keys update))

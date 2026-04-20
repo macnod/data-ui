@@ -192,14 +192,14 @@ where users.id in (
   (is (equal (local-fields :todos) '(:name)))
   (is (equal (local-fields :users) '(:name :password :email))))
 
-(test resource-name
+(test make-resource-name
   (set-model *model*)
   (is (equal
-        (resource-name :todos '(:name "Buy milk"))
+        (make-resource-name :todos '(:name "Buy milk"))
         "todos:buy milk:062a683e"))
   (is (equal
-        (resource-name :users '(:name "admin" :email "no-email"
-                                 :password "password"))
+        (make-resource-name :users '(:name "admin" :email "no-email"
+                                      :password "password"))
         "users:admin:63acbe08")))
 
 ;; Credit: grok-4.20-0309-reasoning
@@ -537,7 +537,7 @@ Notes:
     ;; Create test records
     (let ((tag-id (be-insert :tags `(:name ,test-tag-name)))
            (todo-id (be-insert :todos
-                      `(:name ,test-todo-name :tags (,test-tag-name)))))
+                      `(:name ,test-todo-name))))
 
       ;; By string UUID
       (is (equal todo-id (be-id :todos todo-id)))
@@ -554,3 +554,152 @@ Notes:
   ;; Invalid inputs
   (signals error (be-id :invalid-type '((:users :name :eq "x"))))
   (signals error (be-id :users "not-uuid-string")))
+
+(test be-value-id
+  (set-model *model*)
+  (let ((test-tag-name "test-be-value-id-tag"))
+    (be-delete :tags `((:tags :name :eq ,test-tag-name)))
+    (let ((tag-id (be-insert :tags `(:name ,test-tag-name))))
+      ;; Basic lookup by value
+      (is (equal tag-id (be-value-id :tags :name test-tag-name)))
+      ;; No match
+      (is-false (be-value-id :tags :name "nonexistent-tag"))
+      ;; Cleanup
+      (be-delete :tags tag-id))))
+
+(test be-item
+  (set-model *model*)
+  (let ((test-todo-name "test-be-item-todo")
+        (test-tag-name "test-be-item-tag"))
+    (be-delete :todos `((:todos :name :eq ,test-todo-name)))
+    (be-delete :tags `((:tags :name :eq ,test-tag-name)))
+    (let* ((tag-id (be-insert :tags `(:name ,test-tag-name)))
+           (todo-id (be-insert :todos `(:name ,test-todo-name :tags (,test-tag-name)))))
+      ;; Default :update-form
+      (let ((item (be-item :todos todo-id)))
+        (is (equal todo-id (getf item :id)))
+        (is (equal test-todo-name (getf item :name)))
+        (is (member test-tag-name (getf item :tags) :test #'equal)))
+      ;; :list-form
+      (let ((item (be-item :todos todo-id :form :list-form)))
+        (is (equal todo-id (getf item :id)))
+        (is (equal test-todo-name (getf item :name))))
+      ;; Cleanup
+      (be-delete :todos todo-id)
+      (be-delete :tags tag-id))))
+
+(test be-list
+  (set-model *model*)
+  (let ((test-todo-name "test-be-list-todo")
+        (test-tag-name1 "test-be-list-tag1")
+        (test-tag-name2 "test-be-list-tag2"))
+    (be-delete :todos `((:todos :name :eq ,test-todo-name)))
+    (be-delete :tags `((:tags :name :eq ,test-tag-name1)))
+    (be-delete :tags `((:tags :name :eq ,test-tag-name2)))
+    (let ((tag1-id (be-insert :tags `(:name ,test-tag-name1)))
+          (tag2-id (be-insert :tags `(:name ,test-tag-name2)))
+          (todo-id (be-insert :todos `(:name ,test-todo-name :tags (,test-tag-name1 ,test-tag-name2)))))
+      ;; Default :list-form (no filters)
+      (let ((items (be-list :todos)))
+        (is (find todo-id items :key (lambda (i) (getf i :id)) :test #'equal)))
+      ;; With filter
+      (let ((items (be-list :todos :filters `((:todos :name :eq ,test-todo-name)))))
+        (is (= 1 (length items)))
+        (is (equal todo-id (getf (car items) :id))))
+      ;; :update-form
+      (let ((items (be-list :todos :form :update-form)))
+        (is (find todo-id items :key (lambda (i) (getf i :id)) :test #'equal)))
+      ;; Cleanup
+      (be-delete :todos todo-id)
+      (be-delete :tags tag1-id)
+      (be-delete :tags tag2-id))))
+
+(test be-insert
+  (set-model *model*)
+  (let ((test-todo-name "test-be-insert-todo")
+        (test-tag-name "test-be-insert-tag"))
+    (be-delete :todos `((:todos :name :eq ,test-todo-name)))
+    (be-delete :tags `((:tags :name :eq ,test-tag-name)))
+    ;; Basic insert without roles/tags
+    (let ((todo-id (be-insert :todos `(:name ,test-todo-name))))
+      (is (uuid-p todo-id))
+      (let ((item (be-item :todos todo-id)))
+        (is (equal todo-id (getf item :id)))
+        (is (equal test-todo-name (getf item :name))))
+      (be-delete :todos todo-id))
+    ;; Insert with tags and roles
+    (let ((tag-id (be-insert :tags `(:name ,test-tag-name)))
+          (todo-id (be-insert :todos `(:name ,test-todo-name :tags (,test-tag-name)) :roles '("public"))))
+      (is (uuid-p todo-id))
+      (let ((item (be-item :todos todo-id)))
+        (is (equal test-todo-name (getf item :name)))
+        (is (member test-tag-name (getf item :tags) :test #'equal)))
+      (be-delete :todos todo-id)
+      (be-delete :tags tag-id))
+    ;; Validation errors
+    (signals error (be-insert :invalid-type '(:name "x")))
+    (signals error (be-insert :todos '(:invalid-field "x")))
+    (signals error (be-insert :todos '(:name "x") :roles '("invalid-role")))))
+
+(test be-update
+  (let* ((tags (loop for tag-index from 1 to 10
+                 collect
+                 (list :name (format nil "be-update-tag-~d" tag-index))))
+          (tag-names (mapcar (lambda (tag) (getf tag :name)) tags))
+          (todos (loop for todo-index from 1 to 2
+                   collect
+                   (list
+                     :name (format nil "be-update-todo-~d" todo-index)
+                     :tags (u:choose-some tag-names 3))))
+          (todo-names (mapcar (lambda (todo) (getf todo :name)) todos)))
+    ;; Cleanup
+    (loop
+      with filters = '((:tags :name :like "be-update-tag-%"))
+      with stale-tags = (be-list :tags :filters filters)
+      for tag in stale-tags
+      for id = (getf tag :id)
+      for resource-name = (id-to-resource-name id)
+      do (a:remove-resource *rbac* resource-name))
+    (loop
+      with filters = '((:todos :name :like "be-update-todo-%"))
+      with stale-todos = (be-list :todos :filters filters)
+      for todo in stale-todos
+      for id = (getf todo :id)
+      for resource-name = (id-to-resource-name id)
+      do (a:remove-resource *rbac* resource-name))
+    ;; Insert
+    (let* ((tag-ids (loop for tag in tags collect
+                      ;; Insert tag
+                      (setf (getf tag :id) (be-insert :tags tag))))
+            (todo-ids (loop for todo in todos collect
+                        (setf (getf todo :id) (be-insert :todos todo)))))
+      ;; Check that the new items exist
+      (is-true
+        (loop
+          for tag-id in tag-ids
+          for tag-name in tag-names
+          always (equal (getf (be-item :tags tag-id) :name) tag-name)))
+      (is-true
+        (loop
+          for todo-id in todo-ids
+          for todo-name in todo-names
+          always (equal (getf (be-item :todos todo-id) :name) todo-name)))
+      ;; Update the first tag using the tag id
+      (let ((tag-name-1 (format nil "~a-1" (car tag-names))))
+        (be-update :tags (car tag-ids) `(:name ,tag-name-1))
+        (is (equal
+              (getf (be-item :tags (car tag-ids)) :name)
+              tag-name-1)))
+      ;; Updated the tag again
+      (let ((tag-name-2 (format nil "~a-2" (car tag-names))))
+        (be-update :tags (car tag-ids) `(:name ,tag-name-2))
+        (is (equal
+              (getf (be-item :tags (car tag-ids)) :name)
+              tag-name-2)))
+      ;; Update the first todo using a filter with the todo's name
+      (let* ((todo-name-1 (format nil "~a-1" (car todo-names)))
+              (filters `((:todos :name :eq ,(car todo-names)))))
+        (be-update :todos filters `(:name ,todo-name-1))
+        (is (equal
+              (getf (be-item :todos (car todo-ids)) :name)
+              todo-name-1))))))

@@ -494,7 +494,7 @@ that joins tables."
                         (to-sql-identifier
                           (table-reference prev-table-key)))
                       (format nil "~a.id" table-name))
-    for sql = (format nil "join ~a on ~a = ~a"
+    for sql = (format nil "left join ~a on ~a = ~a"
                 table-name
                 prev-table-ref
                 table-ref)
