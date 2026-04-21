@@ -38,6 +38,8 @@
         "[0-9a-fA-F]{4}"
         "[0-9a-fA-F]{12}"))))
 
+(setf a:*default-page-size* 10000)
+
 (defun delete-directory-recursively (path)
   (loop for descriptor in (list-directory-recursively path)
     for resource-name = (u:tree-get descriptor :resource-name)

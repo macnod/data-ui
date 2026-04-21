@@ -93,12 +93,14 @@ where
                       for tag-name = (format nil "~r" tag)
                       collect tag-name))
           (tag-ids (loop for tag-name in tag-names
-                     collect (be-insert :tags `(:name ,tag-name))))
+                     collect (be-insert :tags `(:name ,tag-name) "admin")))
           (todo-ids (loop for todo from 10 to 15
                       for todo-name = (format nil "~r" todo)
                       for tags = (u:choose-some tag-names (+ 1 (mod todo 3)))
                       collect
-                      (be-insert :todos `(:name ,todo-name :tags ,tags))))
+                      (be-insert :todos
+                        `(:name ,todo-name :tags ,tags)
+                        "admin")))
           (tag-keys (form-field-keys :tags :list-form))
           (todo-keys (form-field-keys :todos :list-form))
           (tags-sql (u:tree-get *compiled-model* :tags :views :main :sql))
@@ -281,7 +283,7 @@ where users.id in (
     (be-delete :tags `((:tags :name :eq ,test-tag-name)))
 
     ;; Test with a new :todos record
-    (let* ((todo-id (be-insert :todos `(:name ,test-todo-name)))
+    (let* ((todo-id (be-insert :todos `(:name ,test-todo-name) "admin"))
            (todo-data `(:name ,test-todo-name))
            (rn (make-resource-name :todos todo-data))
            (initial-roles (a:list-resource-role-names *rbac* rn)))
@@ -299,7 +301,7 @@ where users.id in (
       (be-delete :todos todo-id))
 
     ;; Test adding roles to a new :tags record
-    (let* ((tag-id (be-insert :tags `(:name ,test-tag-name)))
+    (let* ((tag-id (be-insert :tags `(:name ,test-tag-name) "admin"))
            (tag-data `(:name ,test-tag-name))
            (rn (make-resource-name :tags tag-data)))
       (is (null (update-roles :tags tag-data '("public"))))
@@ -512,12 +514,9 @@ Notes:
     ;; Cleanup any previous test data
     (be-delete :todos `((:todos :name :eq ,test-todo-name)))
     (be-delete :tags `((:tags :name :eq ,test-tag-name)))
-
     ;; Create test records
-    (let ((tag-id (be-insert :tags `(:name ,test-tag-name)))
-           (todo-id (be-insert :todos
-                      `(:name ,test-todo-name))))
-
+    (let ((tag-id (be-insert :tags `(:name ,test-tag-name) "admin"))
+           (todo-id (be-insert :todos `(:name ,test-todo-name) "admin")))
       ;; By string UUID
       (is (equal todo-id (be-id :todos todo-id)))
       (is (equal tag-id (be-id :tags tag-id)))
@@ -529,7 +528,6 @@ Notes:
       ;; Cleanup
       (be-delete :todos todo-id)
       (be-delete :tags tag-id)))
-
   ;; Invalid inputs
   (signals error (be-id :invalid-type '((:users :name :eq "x"))))
   (signals error (be-id :users "not-uuid-string")))
@@ -537,7 +535,7 @@ Notes:
 (test be-value-id
   (let ((test-tag-name "test-be-value-id-tag"))
     (be-delete :tags `((:tags :name :eq ,test-tag-name)))
-    (let ((tag-id (be-insert :tags `(:name ,test-tag-name))))
+    (let ((tag-id (be-insert :tags `(:name ,test-tag-name) "admin")))
       ;; Basic lookup by value
       (is (equal tag-id (be-value-id :tags :name test-tag-name)))
       ;; No match
@@ -551,9 +549,10 @@ Notes:
     ;; Cleanup
     (be-delete :todos `((:todos :name :eq ,test-todo-name)))
     (be-delete :tags `((:tags :name :eq ,test-tag-name)))
-    (let* ((tag-id (be-insert :tags `(:name ,test-tag-name)))
+    (let* ((tag-id (be-insert :tags `(:name ,test-tag-name) "admin"))
            (todo-id (be-insert :todos
-                      `(:name ,test-todo-name :tags (,test-tag-name)))))
+                      `(:name ,test-todo-name :tags (,test-tag-name))
+                      "admin")))
       ;; Default :update-form
       (let ((item (be-rec todo-id :type-key :todos)))
         (is (equal todo-id (getf item :id)))
@@ -578,9 +577,9 @@ Notes:
       do (be-delete :tags `((:tags :name :eq ,name))))
     ;; Insert test records
     (let* ((tag-ids (loop for name in tag-names collect
-                      (be-insert :tags `(:name ,name))))
+                      (be-insert :tags `(:name ,name) "admin")))
             (todo-id (be-insert :todos
-                       `(:name ,todo-name :tags ,tag-names))))
+                       `(:name ,todo-name :tags ,tag-names) "admin")))
       ;; Tag name lookup
       (is (equal (car tag-names)
             (be-val (car tag-ids) :name :type-key :tags)))
@@ -601,9 +600,12 @@ Notes:
     (be-delete :todos `((:todos :name :eq ,test-todo-name)))
     (be-delete :tags `((:tags :name :eq ,test-tag-name1)))
     (be-delete :tags `((:tags :name :eq ,test-tag-name2)))
-    (let ((tag1-id (be-insert :tags `(:name ,test-tag-name1)))
-          (tag2-id (be-insert :tags `(:name ,test-tag-name2)))
-          (todo-id (be-insert :todos `(:name ,test-todo-name :tags (,test-tag-name1 ,test-tag-name2)))))
+    (let ((tag1-id (be-insert :tags `(:name ,test-tag-name1) "admin"))
+          (tag2-id (be-insert :tags `(:name ,test-tag-name2) "admin"))
+          (todo-id (be-insert :todos
+                     `(:name ,test-todo-name
+                        :tags (,test-tag-name1 ,test-tag-name2))
+                     "admin")))
       ;; Default :list-form (no filters)
       (let ((items (be-list :todos)))
         (is (find todo-id items :key (lambda (i) (getf i :id)) :test #'equal)))
@@ -625,16 +627,23 @@ Notes:
     ;; Cleanup
     (be-delete :todos `((:todos :name :eq ,test-todo-name)))
     (be-delete :tags `((:tags :name :eq ,test-tag-name)))
+    (when (a:get-id *rbac* "users" "todo-user-1")
+      (a:remove-user *rbac* "todo-user-1"))
+    (when (a:get-id *rbac* "roles" "todo-creator")
+      (a:remove-role *rbac* "todo-creator"))
     ;; Basic insert without roles/tags
-    (let ((todo-id (be-insert :todos `(:name ,test-todo-name))))
+    (let ((todo-id (be-insert :todos `(:name ,test-todo-name) "admin")))
       (is (uuid-p todo-id))
       (let ((item (be-rec todo-id :type-key :todos)))
         (is (equal todo-id (getf item :id)))
         (is (equal test-todo-name (getf item :name))))
       (be-delete :todos todo-id))
     ;; Insert with tags and roles
-    (let ((tag-id (be-insert :tags `(:name ,test-tag-name)))
-          (todo-id (be-insert :todos `(:name ,test-todo-name :tags (,test-tag-name)) :roles '("public"))))
+    (let ((tag-id (be-insert :tags `(:name ,test-tag-name) "admin"))
+          (todo-id (be-insert
+                     :todos `(:name ,test-todo-name :tags (,test-tag-name))
+                     "admin"
+                     :roles '("public"))))
       (is (uuid-p todo-id))
       (let ((item (be-rec todo-id :type-key :todos)))
         (is (equal test-todo-name (getf item :name)))
@@ -642,9 +651,30 @@ Notes:
       (be-delete :todos todo-id)
       (be-delete :tags tag-id))
     ;; Validation errors
-    (signals error (be-insert :invalid-type '(:name "x")))
-    (signals error (be-insert :todos '(:invalid-field "x")))
-    (signals error (be-insert :todos '(:name "x") :roles '("invalid-role")))))
+    (signals validation-error (be-insert :invalid-type '(:name "x") "admin"))
+    (signals validation-error (be-insert :todos '(:invalid-field "x") "admin"))
+    (signals validation-error (be-insert :todos '(:name "x")
+                                "admin"
+                                :roles '("invalid-role")))
+    (signals validation-error (be-insert :todos '(:name "x")
+                                "unknown-user"
+                                :roles '("admin")))
+    (signals validation-error
+      (be-insert :todos '(:name "test-insert-todo-guest") "guest"))
+    ;; Add a new role 'todo-creator' with 'create' permission, add a user with
+    ;; that new role, then add a :todos record with that user to test that the
+    ;; new role is properly recognized by the backend permissions check.
+    (a:add-role *rbac* "todo-creator"
+      :permissions '("create" "read" "update" "delete"))
+    (a:add-user *rbac* "todo-user-1" "no-email" "password-1"
+      :roles '("todo-creator"))
+    (be-add-type-roles :todos "admin" "todo-creator")
+    (is (uuid-p (be-insert :todos
+                  '(:name "test-insert-todo-creator")
+                  "todo-user-1")))
+    ;; Clean up the new role and user
+    (a:remove-user *rbac* "todo-user-1")
+    (a:remove-role *rbac* "todo-creator")))
 
 (test be-update
   (let* ((tags (loop for tag-index from 1 to 10
@@ -675,9 +705,11 @@ Notes:
     ;; Insert
     (let* ((tag-ids (loop for tag in tags collect
                       ;; Insert tag
-                      (setf (getf tag :id) (be-insert :tags tag))))
+                      (setf (getf tag :id)
+                        (be-insert :tags tag "admin"))))
             (todo-ids (loop for todo in todos collect
-                        (setf (getf todo :id) (be-insert :todos todo)))))
+                        (setf (getf todo :id)
+                          (be-insert :todos todo "admin")))))
       ;; Check that the new tag records exist
       (is-true
         (loop
@@ -746,3 +778,27 @@ Notes:
         (is (equal
               (sort (be-val (cadr todo-ids) :tags :type-key :todos) #'string<)
               (sort new #'string<)))))))
+
+(test be-delete
+  (let ((todo-name "test-be-delete-todo")
+        (tag-name "test-be-delete-tag"))
+    ;; Cleanup
+    (be-delete :todos `((:todos :name :eq ,todo-name)))
+    (be-delete :tags `((:tags :name :eq ,tag-name)))
+    ;; Test delete by UUID string (ID)
+    (let ((tag-id (be-insert :tags `(:name ,tag-name) "admin")))
+      (is (equal tag-id (be-delete :tags tag-id)))
+      (is-false (be-id :tags `((:tags :name :eq ,tag-name))))
+      (is-false (be-rec tag-id :type-key :tags)))
+    ;; Test delete by filter list
+    (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin")))
+      (is (equal todo-id (be-delete :todos `((:todos :name :eq ,todo-name)))))
+      (is-false (be-id :todos todo-id))
+      (is-false (be-rec todo-id)))
+    ;; Non-existent record returns NIL silently
+    (is-false (be-delete :tags `((:tags :name :eq "nonexistent"))))
+    ;; Validation errors
+    (signals error (be-delete :nonexistent-type '((:tags :name :eq "x"))))
+    (signals error (be-delete :tags "not-a-valid-uuid"))
+    (signals error (be-delete :tags nil))))
+

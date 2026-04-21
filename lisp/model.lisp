@@ -775,14 +775,23 @@ that joins tables."
     for v in (cdr plist) by #'cddr
     when v append (list k v)))
 
+(defun type-has-roles (type-key type-def)
+  (unless (or
+            (equal type-key :resources)
+            (getf type-def :is-joiner))
+    t))
+
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (base (getf type-def :base))
           (fields (compile-fields type-key model))
-          (table-name (table-name type-key base)))
+          (table-name (table-name type-key base))
+          (roles (when (type-has-roles type-key type-def)
+                   (getf type-def :type-roles '("admin")))))
     (add-to-plist
       type-def
       (list
+        :type-roles roles
         :table-name table-name
         :fields fields))))
 
@@ -841,16 +850,43 @@ that joins tables."
     appending (list type-key table-name) into summary
     finally
     (setf *compiled-model* compiled-model)
+    (create-tables)
+    (add-type-roles)
     (return summary)))
 
 (defun create-tables ()
   (loop with m = *compiled-model*
     for type-key in m by #'cddr
+    for table-name = (u:tree-get m type-key :table-name)
     for table = (u:tree-get m type-key :create-table-sql :table)
     for trigger = (u:tree-get m type-key :create-table-sql :trigger)
-    do (a:with-rbac (*rbac*)
-         (db:query table)
-         (db:query trigger))))
+    unless (a:with-rbac (*rbac*)
+             (a:rbac-query
+               (list
+                 "select 1 from information_schema.tables where table_name = $1"
+                 table-name)
+               :single))
+    do
+    (a:with-rbac (*rbac*) (db:query table) (db:query trigger))
+    (pl:pdebug :in "create-tables" :state "added table and triggers"
+      :table table-name :type-key type-key)))
+
+(defun type-resource-name (type-key)
+  (to-sql-identifier type-key :format-string "type-~a"))
+
+(defun add-type-roles ()
+  (loop with m = *compiled-model*
+    for type-key in m by #'cddr
+    for type-def in (cdr m) by #'cddr
+    for roles = (getf type-def :type-roles)
+    for resource-name = (type-resource-name type-key)
+    when (and
+           (type-has-roles type-key (getf m type-key))
+           (not (a:get-id *rbac* "resources" resource-name)))
+    do
+    (pl:pdebug :in "add-type-roles" :state "adding type role"
+      :type-key type-key :resource-name resource-name :type-roles roles)
+    (a:add-resource *rbac* resource-name :roles roles)))
 
 (defun model-for (type-key)
   (getf *compiled-model* type-key))

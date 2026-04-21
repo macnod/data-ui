@@ -459,7 +459,7 @@ value is of the correct type for its field key."
 (defun valid-roles (roles)
   (when roles
     (loop for role in roles
-      unless (a:valid-role-p *rbac* role)
+      unless (be-id :roles `((:roles :name :eq ,role)))
       do (signal-validation-error "Invalid role name ~s." role))))
 
 (defun valid-existing-roles (roles)
@@ -468,6 +468,32 @@ value is of the correct type for its field key."
     for role in roles
     when (not (member role existing-roles :test 'equal))
     do (signal-validation-error "Role ~s does not exist." role)))
+
+(defun valid-user-roles (user roles)
+  (valid-existing-user user)
+  (valid-existing-roles roles)
+  (let* ((user-roles (a:list-user-role-names *rbac* user))
+          (non-user-roles (remove-if
+                            (lambda (r) (member r user-roles :test 'equal))
+                            roles)))
+    (when non-user-roles
+      (signal-validation-error
+        "User ~s does not have the following roles: ~{~s~^, ~}."
+        user non-user-roles))))
+
+
+(defun valid-existing-user (user)
+  (unless (a:get-id *rbac* "users" user)
+    (signal-validation-error "User ~s does not exist." user)))
+
+(defun valid-user-permissions (user type-key &rest permissions)
+  (valid-existing-user user)
+  (loop with resource-name = (type-resource-name type-key)
+    for permission in permissions
+    unless (a:user-allowed *rbac* user permission resource-name)
+    do (signal-validation-error
+         "User ~a does not have ~a permission for resource of type ~s."
+         user permission type-key)))
 
 (defun valid-values-list (values)
   (unless (listp values)
@@ -588,20 +614,24 @@ database query."
       (view-result-values type-key field-keys view-result))))
 
 ;; TODO: Transaction!
-(defun be-insert (type-key data &key roles)
-  ":public: Inserts a record of type TYPE-KEY with the given DATA. DATA is a
-plist where the keys are field keys and the values are the values to be
-inserted. This function returns two values: The ID of the record and T if the
-record this function inserted the record or NIL if the error already exists.
-This function does not perform an uppdate if a record with the same unique
-fields already exists. The following example inserts a user with the name
-\"john\" and the role \"admin\":
+(defun be-insert (type-key data user &key roles)
+  ":public: Inserts a record of type TYPE-KEY with the given DATA, provided
+USER has `create` permissions in TYPE-KEY. DATA is a plist where the keys are
+field keys and the values are the values to be inserted. This function returns
+two values: The ID of the record and T if the record this function inserted the
+record or NIL if the error already exists.  This function does not perform an
+update if a record with the same unique fields already exists. The following
+example inserts a todo with the name \"clean the kitchen\":
 
-    `(be-insert :users '(:name \"john\" :roles (\"admin\")))`
+    `(be-insert :todos
+                '(:name \"clean the kitchen\"
+                  :tags (\"chores\" \"kitchen\")
+                \"admin\")`
 "
   (valid-type-key type-key)
   (valid-data type-key data)
-  (valid-existing-roles roles)
+  (valid-user-roles user roles)
+  (valid-user-permissions user type-key "create")
   (let ((id (id-from-data type-key data)))
     (if (id-from-data type-key data)
       (values id nil)
@@ -755,6 +785,37 @@ treated as the UUID of the record to be deleted."
         (when resource-name
           (a:remove-resource *rbac* resource-name)
           uuid)))))
+
+(defun be-add-type-roles (type-key user &rest roles)
+  ":public: Adds ROLE to the list of roles associated with TYPE-KEY. This
+function returns T if ROLES are successfully added or determined to exist, and a
+validation-error if TYPE-KEY doesn't exist or ROLES includes a ROLE that doesn't
+exist or that is not available to USER."
+  (valid-type-key type-key)
+  (valid-user-roles user roles)
+  (loop with resource-name = (type-resource-name type-key)
+    with resource-roles = (a:list-resource-role-names *rbac* resource-name)
+    for role in (u:distinct-values roles)
+    unless (member role resource-roles :test 'equal)
+    do
+    (pl:pdebug :in "be-add-type-roles" :status "adding type role"
+      :type-key type-key :role role)
+    (a:add-resource-role *rbac* resource-name role)))
+
+(defun be-remove-type-roles (type-key user &rest roles)
+  ":public: Removes ROLE from the list of roles associated with TYPE-KEY. This
+function returns T if ROLES are successfully removed or determined not to be
+associated with TYPE-KEY. The function raises a VALIDATION-ERROR if TYPE-KEY
+doesn't exist or ROLES includes a ROLE that doesn't exist or that is not
+available to USER. The admin role cannot be removed from a type, this function
+ignores that role if it's included in ROLES."
+  (valid-type-key type-key)
+  (valid-user-roles user roles)
+  (loop with resource-name = (type-resource-name type-key)
+    and user-roles = (a:list-user-role-names *rbac* user)
+    for role in (U:distinct-values roles)
+    when (member role user-roles :test 'equal)
+    do (a:remove-resource-role *rbac* resource-name role)))
 ;;
 ;; END Public backend functions
 ;;
