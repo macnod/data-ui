@@ -11,3 +11,8 @@
         (fail ,failure-text))
      (error (e)
        (is (re:scan ,regex (format nil "~a" e))))))
+
+(defun run-tests ()
+  (set-model *model*)
+  (create-tables)
+  (run-all-tests))

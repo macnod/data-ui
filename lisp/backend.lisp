@@ -191,7 +191,7 @@ have the same :NAME and require the additional :USER value to to be unique."
   (if (uuid-p filters)
     (id-to-resource-name filters)
     (let* ((id (be-id type-key filters))
-            (item (when id (be-item :resources id))))
+            (item (when id (be-rec id :type-key :resources))))
       (when item (getf item :name)))))
 
 (defun insert-main-query (type-key insert uuid data)
@@ -278,6 +278,18 @@ has a value in VALUES."
             (query (cons sql values)))
       (a:with-rbac (*rbac*) (a:rbac-query query :column)))))
 
+(defun unknown-values (type-key field-key values)
+  ":private: Returns a list of the values in VALUES that don't exist in the
+database for FIELD-KEY of TYPE-KEY. This is useful for validating that the
+values in a list of values for a field are valid before performing an insert
+or update that includes those values."
+  (valid-type-key type-key)
+  (valid-field-key type-key field-key)
+  (valid-values-list values)
+  (loop for value in values
+    for id = (be-value-id type-key field-key value)
+    when (not id) collect value))
+
 (defun id-to-resource-name (id)
   ":private: Returns the resource name for the resource of type with
 ID. This is necessary for dealing with RBAC resources given that the RBAC API
@@ -306,6 +318,15 @@ If DATA points to multiple records, then this function raises an error."
                      collect (list type-key field :eq value))))
       (be-id type-key filters))))
 
+(defun id-to-type-key (id)
+  ":private: Returns the type key associated with ID."
+  (valid-uuid id)
+  (let* ((resource-name (id-to-resource-name id))
+          (type-string (and
+                         resource-name
+                         (car (re:split ":" resource-name :limit 2)))))
+    (and type-string (u:make-keyword type-string))))
+
 ;;
 ;; END Internal database helper functions
 ;;
@@ -314,13 +335,6 @@ If DATA points to multiple records, then this function raises an error."
 ;; BEGIN Error checking functions
 ;;
 
-(defun eformat (s &rest params)
-  ":private: Formats S with PARAMS, just like the FORMAT function would. But, it
-first replaces any single newline in S with a space *unless* that newline is
-followed by two or more whitespace characters (to preserve indented lists,
-bullets, poems, code blocks, etc.). Paragraph breaks (two or more consecutive
-newlines) are preserved. The result is trimmed of leading/trailing whitespace.
-This is useful for formatting error messages and multi-line strings."
 (defun eformat (s &rest params)
   ":private: Formats S with PARAMS, just like the FORMAT function would. But, it
 first replaces any single newline in S with a space *unless* that newline is
@@ -412,25 +426,31 @@ model."
 keys are field keys and the values are the values to be inserted or updated.
 This function checks that each field key is valid for TYPE-KEY and that each
 value is of the correct type for its field key."
-  (if (type-key-p type-key)
-    (loop
-      for field-key in data by #'cddr
-      for value in (cdr data) by #'cddr
-      for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
-      do
-      (cond
-        ((getf field-def :join-table)
-          (valid-values-list value))
-        ((not (getf field-def :base))
-          (valid-value-type type-key field-key value))
-        ((equal field-key :id)
-          (valid-uuid value))
-        (t (signal-validation-error
-             "Invalid field key ~s for type ~s." field-key type-key))))))
+  (valid-type-key type-key)
+  (loop
+    for field-key in data by #'cddr
+    for value in (cdr data) by #'cddr
+    for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
+    do
+    (cond
+      ((getf field-def :join-table)
+        (valid-values-list value))
+      ((not (getf field-def :base))
+        (valid-value-type type-key field-key value))
+      ((equal field-key :id)
+        (valid-uuid value))
+      (t (signal-validation-error
+           "Invalid field key ~s for type ~s." field-key type-key)))))
 
 (defun valid-uuid (uuid)
   (unless (uuid-p uuid)
     (signal-validation-error "Invalid UUID ~s" uuid)))
+
+(defun valid-existing-uuid (uuid)
+  (valid-uuid uuid)
+  (let* ((query (list "select 1 from resources where id = $1" uuid))
+          (result (a:with-rbac (*rbac*) (a:rbac-query query :single))))
+    (when result t)))
 
 (defun valid-insert (insert)
   (unless (and (u:plistp insert) (getf insert :main))
@@ -518,16 +538,29 @@ error:
 the value VALUE."
   (be-id type-key `((,type-key ,field-key :eq ,value))))
 
-(defun be-item (type-key id &key (form :update-form))
-  ":public: Returns the data associated with the TYPE-KEY record with the given
-ID. This is perfect for rendering the data in the front end as a form."
-  (let* ((m *compiled-model*)
-          (sql (u:tree-get m type-key :views :main :sql))
-          (where (add-where-clause sql (list (list type-key :id :eq id))))
-          (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
-          (field-keys (form-field-keys type-key form)))
-    (car
-      (view-result-values type-key field-keys view-result))))
+(defun be-rec (id &key (form :update-form) type-key)
+  ":public: Returns the TYPE-KEY record with the given ID. Given the IDs are
+UUIDs (globally unique), TYPE-KEY is optional. However, providing TYPE-KEY helps
+the function avoid an extra database query."
+  (when type-key (valid-type-key type-key))
+  (when (valid-existing-uuid id)
+    (let* ((m *compiled-model*)
+            (type-key (if type-key type-key (id-to-type-key id)))
+            (sql (u:tree-get m type-key :views :main :sql))
+            (where (add-where-clause sql (list (list type-key :id :eq id))))
+            (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
+            (field-keys (form-field-keys type-key form)))
+      (car
+        (view-result-values type-key field-keys view-result)))))
+
+(defun be-val (id field-key &key (form :update-form) type-key)
+  ":public: Returns the value for field FIELD-KEY in the TYPE-KEY record with
+ID. Providing TYPE-KEY is optional, but helps the function avoid an extra
+database query."
+  (when type-key (valid-type-key type-key))
+  (valid-field-key type-key field-key)
+  (valid-existing-uuid id)
+  (getf (be-rec id :form form :type-key type-key) field-key))
 
 ;; This function relies on a single query when there are no filters and on 2
 ;; queries where there are filters. This is necessary with the current approach
@@ -625,26 +658,51 @@ update fails.
           (update (u:tree-get m type-key :update-sql))
           (sql (car (getf update :main)))
           (uuid (id-from-filters-and-data type-key filters data))
-          (record (be-item type-key uuid))
+          (record (be-rec uuid :type-key type-key))
           (local-fields (local-fields type-key))
           (values (loop for k in local-fields
-                    collect (or (getf data k) (getf record k))))
-          (update-query (append (cons sql values) (list uuid))))
+                    for value = (or (getf data k) (getf record k))
+                    when (and (equal type-key :todos) (equal k :name))
+                    do (pl:pdebug :in "be-update" :status "computing value"
+                         :type-key type-key :field k :value value)
+                    do (setf (getf data k) value)
+                    collect value))
+          (update-query (append (cons sql values) (list uuid)))
+          (resource-name (make-resource-name type-key data))
+          (join-keys (remove-if
+                       (lambda (k) (equal k :main))
+                       (u:plist-keys update))))
+    (loop for key in join-keys
+      for column = (u:tree-get m type-key :fields key :source :column)
+      for new-values = (getf data key)
+      for unknown-values = (unknown-values key column new-values)
+      when unknown-values
+      do (signal-validation-error
+           "Invalid value~p for field ~s ~s: ~s"
+           (length unknown-values) type-key key unknown-values))
     ;; Update TYPE-KEY row
     (a:with-rbac (*rbac*) (a:rbac-query update-query))
     ;; Update resource name
-    (a:with-rbac (*rbac*)
-      (db:query "update resources set resource_name = $1 where id = $2"
-        (resource-name type-key data) uuid))
+    (when (not (equal resource-name (or (getf data :name) (getf record :name))))
+      (a:with-rbac (*rbac*)
+        (db:query "update resources set resource_name = $1 where id = $2"
+          (make-resource-name type-key data) uuid)))
     ;; Update join tables
     (loop
-      with keys = (remove-if (lambda (k) (equal k :main)) (u:plist-keys update))
-      for key in keys
+      for key in join-keys
       for column = (u:tree-get m type-key :fields key :source :column)
       for existing-values = (getf record key)
       for new-values = (or (getf data key) existing-values)
       for to-add = (set-difference new-values existing-values :test 'equal)
+      for to-add-log = (pl:pdebug :in "be-update"
+                         :status "to-add"
+                         :type-key type-key
+                         :to-add to-add)
       for to-delete = (set-difference existing-values new-values :test 'equal)
+      for to-del-log = (pl:pdebug :in "be-update"
+                         :status "to-delete"
+                         :type-key type-key
+                         :to-delete to-delete)
       for q-delete = (u:tree-get update key :delete)
       for q-delete-sql = (car q-delete)
       for q-delete-keys = (cdr q-delete)
@@ -691,7 +749,7 @@ treated as the UUID of the record to be deleted."
     (valid-filters filters :required t))
   (let ((uuid (id-from-filters-and-data type-key filters)))
     (when uuid
-      (let* ((record (be-item :resources uuid))
+      (let* ((record (be-rec uuid :type-key :resources))
              (resource-name (getf record :name)))
         (when resource-name
           (a:remove-resource *rbac* resource-name)
