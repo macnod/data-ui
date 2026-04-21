@@ -548,6 +548,7 @@ Notes:
 (test be-rec
   (let ((test-todo-name "test-be-rec-todo")
         (test-tag-name "test-be-rec-tag"))
+    ;; Cleanup
     (be-delete :todos `((:todos :name :eq ,test-todo-name)))
     (be-delete :tags `((:tags :name :eq ,test-tag-name)))
     (let* ((tag-id (be-insert :tags `(:name ,test-tag-name)))
@@ -567,6 +568,31 @@ Notes:
       ;; Cleanup
       (be-delete :todos todo-id)
       (be-delete :tags tag-id))))
+
+(test be-val
+  (let ((todo-name "test-be-val-todo")
+         (tag-names '("test-be-val-tag-1" "test-be-val-tag-2")))
+    ;; Cleanup
+    (be-delete :todos `((:todos :name :eq ,todo-name)))
+    (loop for name in tag-names
+      do (be-delete :tags `((:tags :name :eq ,name))))
+    ;; Insert test records
+    (let* ((tag-ids (loop for name in tag-names collect
+                      (be-insert :tags `(:name ,name))))
+            (todo-id (be-insert :todos
+                       `(:name ,todo-name :tags ,tag-names))))
+      ;; Tag name lookup
+      (is (equal (car tag-names)
+            (be-val (car tag-ids) :name :type-key :tags)))
+      ;; Tag name lookup with no :type-key
+      (is (equal (cadr tag-names) (be-val (cadr tag-ids) :name)))
+      ;; Todo name lookup
+      (is (equal todo-name (be-val todo-id :name :type-key :todos)))
+      ;; Todo tags lookup
+      (is (equal
+            (u:safe-sort tag-names)
+            (sort (be-val todo-id :tags) #'string<))))))
+
 
 (test be-list
   (let ((test-todo-name "test-be-list-todo")
@@ -596,6 +622,7 @@ Notes:
 (test be-insert
   (let ((test-todo-name "test-be-insert-todo")
         (test-tag-name "test-be-insert-tag"))
+    ;; Cleanup
     (be-delete :todos `((:todos :name :eq ,test-todo-name)))
     (be-delete :tags `((:tags :name :eq ,test-tag-name)))
     ;; Basic insert without roles/tags

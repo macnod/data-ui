@@ -557,8 +557,9 @@ the function avoid an extra database query."
   ":public: Returns the value for field FIELD-KEY in the TYPE-KEY record with
 ID. Providing TYPE-KEY is optional, but helps the function avoid an extra
 database query."
-  (when type-key (valid-type-key type-key))
-  (valid-field-key type-key field-key)
+  (when type-key
+    (valid-type-key type-key)
+    (valid-field-key type-key field-key))
   (valid-existing-uuid id)
   (getf (be-rec id :form form :type-key type-key) field-key))
 
