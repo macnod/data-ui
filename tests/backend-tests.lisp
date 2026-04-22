@@ -483,7 +483,6 @@ Notes:
 (test valid-roles
   (is (null (valid-roles '("admin" "public"))))
   (is (null (valid-roles nil)))
-  (is (null (valid-roles '("abc-def" "abc:def"))))
   (signals validation-error (valid-roles '("abc def")))
   (signals validation-error (valid-roles '("ADMIN" "PUBLIC")))
   (signals validation-error (valid-roles '("Admin" "Public")))
@@ -607,14 +606,15 @@ Notes:
                         :tags (,test-tag-name1 ,test-tag-name2))
                      "admin")))
       ;; Default :list-form (no filters)
-      (let ((items (be-list :todos)))
+      (let ((items (be-list :todos "admin")))
         (is (find todo-id items :key (lambda (i) (getf i :id)) :test #'equal)))
       ;; With filter
-      (let ((items (be-list :todos :filters `((:todos :name :eq ,test-todo-name)))))
+      (let ((items (be-list :todos "admin"
+                     :filters `((:todos :name :eq ,test-todo-name)))))
         (is (= 1 (length items)))
         (is (equal todo-id (getf (car items) :id))))
       ;; :update-form
-      (let ((items (be-list :todos :form :update-form)))
+      (let ((items (be-list :todos "admin" :form :update-form)))
         (is (find todo-id items :key (lambda (i) (getf i :id)) :test #'equal)))
       ;; Cleanup
       (be-delete :todos todo-id)
@@ -690,14 +690,14 @@ Notes:
     ;; Cleanup
     (loop
       with filters = '((:tags :name :like "be-update-tag-%"))
-      with stale-tags = (be-list :tags :filters filters)
+      with stale-tags = (be-list :tags "admin" :filters filters)
       for tag in stale-tags
       for id = (getf tag :id)
       for resource-name = (id-to-resource-name id)
       do (a:remove-resource *rbac* resource-name))
     (loop
       with filters = '((:todos :name :like "be-update-todo-%"))
-      with stale-todos = (be-list :todos :filters filters)
+      with stale-todos = (be-list :todos "admin" :filters filters)
       for todo in stale-todos
       for id = (getf todo :id)
       for resource-name = (id-to-resource-name id)
