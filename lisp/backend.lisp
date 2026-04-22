@@ -95,20 +95,26 @@ clause that includes placeholders and returns a list of the SQL plus the values
 for the placeholders."
   (if filters
     (loop
-      for index = (next-param-index sql) then (1+ index)
+      for index = (next-param-index sql)
+      then (1+ (length (u:flatten values)))
       for (table-key field-key op-key value) in filters
       for alias = (to-sql-identifier
                     (u:tree-get *compiled-model*
                       table-key :fields field-key
                       :source :column-name))
       for op = (operator-sql op-key)
-      collect (format nil "~a ~a $~d" alias op index)
+      for placeholders = (if (member op-key '(:in :not-in))
+                           (format nil "(~{~a~^, ~})"
+                             (placeholders value :start-at index))
+                           (format nil "$~d" index))
+      collect value into values
+      collect (format nil "~a ~a ~a" alias op placeholders)
       into conditions
       finally
       (return
         (cons
           (format nil "~a~%where~%  ~{~a~^~%  and ~}~%" sql conditions)
-          (mapcar #'cadddr filters))))
+          (u:flatten values))))
     (list sql)))
 
 (defun add-ids-clause (type-key sql ids)
@@ -600,18 +606,37 @@ database query."
 ;; is bad, because the second query does something like `where id in (...)`.
 ;; Eventually we'll need to fix this so that the collapsing occurs in the
 ;; database, with something like `array_agg(...) group by id` in the SQL.
-(defun be-list (type-key &key (form :list-form) filters)
+(defun be-list (type-key user &key (form :list-form) filters)
+  ":public: Returns a list of records of type TYPE-KEY that match FILTERS and
+that USER has `read` permissions for. Each record is returned as a plist, where
+the keys are field keys and the values are the corresponding field values. The
+following example returns a list of all the :todos records that have the tag
+'chores' and that the user 'admin' has permission to read:
+
+    `(be-list :todos \"admin\" :filters '((:tags :name :eq \"chores\")))`"
+  (valid-type-key type-key)
+  (valid-user-permissions user type-key "read")
   (let* ((m *compiled-model*)
-          (sql (u:tree-get m type-key :views :main :sql))
-          (where (add-where-clause sql filters))
-          (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
-          (field-keys (form-field-keys type-key form)))
-    (if (filters-require-join-p type-key filters)
-      (let* ((ids (view-result-ids type-key field-keys view-result))
-              (ids-query (add-ids-clause type-key sql ids))
-              (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
-        (view-result-values type-key field-keys view-result))
-      (view-result-values type-key field-keys view-result))))
+          (search (format nil "~(~a~):%" type-key))
+          (ids (mapcar
+                 (lambda (r) (getf r :resource-id))
+                 (a:list-user-resources
+                   *rbac*
+                   user
+                   "read"
+                   :filters `(("resource_name" "like" ,search))))))
+    (when ids
+      (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
+              (sql (u:tree-get m type-key :views :main :sql))
+              (where (add-where-clause sql all-filters))
+              (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
+              (field-keys (form-field-keys type-key form)))
+        (if (filters-require-join-p type-key filters)
+          (let* ((ids (view-result-ids type-key field-keys view-result))
+                  (ids-query (add-ids-clause type-key sql ids))
+                  (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
+            (view-result-values type-key field-keys view-result))
+          (view-result-values type-key field-keys view-result))))))
 
 ;; TODO: Transaction!
 (defun be-insert (type-key data user &key roles)
