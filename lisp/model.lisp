@@ -1,30 +1,136 @@
 (in-package :data-ui)
 
-(defun general-type (field-type-key)
-  (u:tree-get *field-types* field-type-key :general))
+(defparameter *max-value-length* 1000)
+
+(defun parse-number (s)
+  ":private: Parses a string into a number. Returns the number upon succes, or
+NIL if the string is not a valid number."
+  (let ((s (re:regex-replace "^\\+" (u:trim s) "")))
+    (when (and
+            (string s)
+            (> (length s) 0)
+            (re:scan "^-?\\d*(\\.\\d+)?$" s))
+      (let ((num (handler-case
+                   (read-from-string s)
+                   (error () nil))))
+        (when (numberp num) num)))))
+
+(defun general-type (type-key field-key)
+  (let ((field-type-key (u:tree-get *compiled-model*
+                          type-key :fields field-key :type)))
+    (u:tree-get *field-types* field-type-key :general)))
+
+(defun bad-string (type-key field-key value)
+  (let* ((value-a (format nil "~s" value))
+          (value-b (if (> (length value-a) 20)
+                     (format nil "~a..." (subseq value-a 0 20))
+                     value-a)))
+    (validation-result type-key field-key value-b nil
+      "is not a valid string.")))
+
+(defun valid-value-string (value)
+  (and (or (null value) (stringp value))
+    (<= (length value) *max-value-length*)))
 
 (defun sql-type (type-key field-key field-type-key)
   (or (u:tree-get *field-types* field-type-key :sql)
     (error "Unsupported field type key ~s for field ~s ~s."
       field-type-key type-key field-key)))
 
-(defun validation-error-string (type-key field-key message)
+(defun validation-error-string (type-key field-key value message)
   (let ((type (u:singular (format nil "~(~a~)" type-key)))
-         (field (format nil "~(~a~)" field-key)))
-    (format nil "~a ~a ~a" type field message)))
+         (field (format nil "~(~a~)" field-key))
+         (short-value (when (stringp value)
+                        (if (> (length value) 20)
+                          (format nil "~a..." (subseq value 0 20))
+                          value))))
+    (format nil "~a ~a~a~a"
+      type
+      field
+      (if (not (zerop (length short-value)))
+        (format nil " ~s " short-value)
+        " ")
+      message)))
 
-(defun v-required (type-key field-key value)
-  (unless
-    (case (general-type (u:tree-get *compiled-model*
-                          type-key :fields field-key :type))
-      (:text (and (not (null value)) (not (equal value ""))))
-      (:number (not (null value)))
-      (:list (not (zerop (length value)))))
-    (validation-error-string type-key field-key "is required.")))
+(defun v-required (type-key field-key value user)
+  (declare (ignore user))
+  (let ((valid (case (general-type type-key field-key)
+                 (:text (and (not (null value)) (not (equal value ""))))
+                 (:number (not (null value)))
+                 (:list (not (zerop (length value)))))))
+    (unless valid
+      (validation-error-string type-key field-key value "is required."))))
+
+(defun v-type (type-key field-key value user)
+  (declare (ignore user))
+  (let* ((field-type-key (u:tree-get *compiled-model*
+                           type-key :fields field-key :type))
+          (valid (case field-type-key
+                   (:text (valid-value-string value))
+                   (:password (valid-value-string value))
+                   (:real (parse-number value))
+                   (:integer (and
+                               (parse-number value)
+                               (re:scan "^[0-9]+$" value)))
+                   (:boolean (member (u:make-keyword value) '(:true :false)))
+                   (:uuid (re:scan *uuid-regex* value))
+                   (:timestamp (re:scan *timestamp-regex* value))
+                   (:list (and (listp value)
+                            (every #'valid-value-string value)))
+                   (otherwise nil))))
+    (unless valid
+      (validation-error-string
+        type-key field-key value
+        (format nil "must be a valid ~s." field-type-key)))))
+
+(defun v-user-name (type-key field-key value user)
+  (declare (ignore user))
+  (unless (a:valid-user-name-p *rbac* value)
+    (validation-error-string
+      type-key field-key value "is not a valid user name.")))
+
+(defun v-password (type-key field-key value user)
+  (declare (ignore user))
+  (unless (a:valid-password-p *rbac* value)
+    (validation-error-string
+      type-key field-key value "is not a valid password.")))
+
+(defun v-email (type-key field-key value user)
+  (declare (ignore user))
+  (unless (a:valid-email-p *rbac* value)
+    (validation-error-string
+      type-key field-key value "is not a valid email address.")))
+
+(defun v-exists (type-key field-key value user)
+  (let ((table (u:tree-get *compiled-model* type-key :fields field-key
+                 :source :table))
+         (field (u:tree-get *compiled-model* type-key :fields field-key
+                  :source :column)))
+    (unless (resource-exists-p table field value user)
+      (validation-error-string
+        table field value "not found."))))
+
+(defun v-join-items-exist (type-key field-key value user)
+  (loop for v in value
+    when (v-exists type-key field-key v user)
+    collect v into missing
+    finally
+    (return
+      (when missing
+        (validation-error-string
+          type-key field-key nil
+          (format nil "not found: ~{~a~^, ~}" missing))))))
 
 (defparameter *validation-map*
+  ;; type is not included here because it is automatically applied to all
+  ;; fields, and thus need never be specified in the model definition.
   (list
-    :required #'v-required))
+    :required #'v-required
+    :user-name #'v-user-name
+    :password #'v-password
+    :email #'v-email
+    :join-items-exist #'v-join-items-exist
+    :exists #'v-exists))
 
 (defparameter *base-model*
 `(:users
@@ -37,22 +143,23 @@
        :fields (:name (:type :text
                         :source (:view :main :column :name :agg :first)
                         :ui (:label "Username" :input-type :line)
-                        :validations (:required)
+                        :validations (:required :user-name)
                         :column t :not-null t :unique t)
                  :password (:type :password
                              :source (:view :main :column :password :agg :first)
                              :force-sql-name "password_hash"
                              :ui (:label "Password" :input-type :password)
-                             :validations (:required)
+                             :validations (:required :password)
                              :column t :not-null t)
                  :email (:type :text
                           :force-sql-name "email"
                           :source (:view :main :column :email :agg :first)
                           :ui (:label "Email" :input-type :line)
-                          :validations (:required)
+                          :validations (:required :email)
                           :column t :not-null t)
                  :roles (:type :list
                           :ui (:label "Roles" :input-type :checkbox-list)
+                          :validations (:join-items-exist)
                           :source (:view :main :table :roles :column :name :agg :list)
                           :source-all (:view :roles :table :roles :column :name :agg :list)
                           :ids-table :roles
@@ -148,10 +255,24 @@
                 :tags (:tables (:tags)))
        :fields (:name (:type :text
                         :ui (:label "To Do" :input-type :line)
+                        :validations (:required
+                                       (lambda (type-key field-key value user)
+                                         (declare (ignore user))
+                                         (unless (< (length value) 20)
+                                           (validation-error-string
+                                              type-key field-key value
+                                              "must be less than 20 characters."))))
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
+                 :points (:type :integer
+                           :default 0
+                           :ui (:label "Points" :input-type :line)
+                           :validations (:required)
+                           :source (:view :main :column :points :agg :first)
+                           :column t :not-null t)
                  :tags (:type :list
                          :ui (:label "Tags" :input-type :checkbox-list)
+                         :validations (:join-items-exist)
                          :source (:view :main :table :tags :column :name :agg :list)
                          :source-all (:view :tags :table :tags :column :name :agg :list)
                          :ids-table :tags
@@ -165,6 +286,7 @@
        :create :auto :update :auto :delete :auto
        :fields (:name (:type :text
                         :ui (:label "Tag" :input-type :line)
+                        :validations (:required)
                         :source (:view :main :table :tags :column :name :agg :first)
                         :column t :not-null t :unique t))
        :list-form (:fields t)
@@ -566,6 +688,20 @@ that joins tables."
     (when (getf field-def :column)
       `(:view :main :column ,name-key :agg :first))))
 
+(defun compile-validations (model type-key field-key)
+  (let ((vfs (loop with validations = (u:tree-get model type-key :fields
+                                        field-key :validations)
+               for validation in validations
+               for validation-fn = (if (keywordp validation)
+                                     (getf *validation-map* validation)
+                                     (compile nil validation))
+               when validation-fn collect validation-fn
+               else do (error "Invalid validation definition: ~a" validation))))
+    (push #'v-type vfs)
+    (when (u:tree-get model type-key :fields field-key :required)
+      (push #'v-required vfs))
+    vfs))
+
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
     with force-sql-name = (getf field-def :force-sql-name)
@@ -596,11 +732,13 @@ that joins tables."
                         (getf field-def :default)
                         (getf field-def :type)
                         :quote t)))
+    and validations = (compile-validations model type-key new-field-key)
     with sql-parts = (remove-if-not #'identity
                        (list name-sql type-sql primary-key not-null
                          references unique default))
     with new-def = (let ((name-key (u:make-keyword name-sql)))
                      (list
+                       :validations validations
                        :force-sql-name force-sql-name
                        :name-sql name-sql
                        :type-sql type-sql
@@ -616,7 +754,7 @@ that joins tables."
                                    t
                                    (getf field-def :not-null))
                        :reference (when (equal old-field-key :reference) t)))
-    with attrs = '(:base-field :checked :unchecked :ui :unique
+    with attrs = '(:base-field :checked :unchecked :ui :unique :default
                     :primary-key :fs-backed :target :ids-table :join-table)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
@@ -853,6 +991,15 @@ that joins tables."
     (create-tables)
     (add-type-roles)
     (return summary)))
+
+(defun drop-non-base-tables ()
+  (loop with m = *compiled-model*
+    and sql = "drop table if exists ~a cascade"
+    for type-key in m by #'cddr
+    for base = (u:tree-get m type-key :base)
+    for table-name = (table-name type-key base)
+    for query = (list (format nil sql table-name))
+    unless base do (a:with-rbac (*rbac*) (a:rbac-query query))))
 
 (defun create-tables ()
   (loop with m = *compiled-model*
