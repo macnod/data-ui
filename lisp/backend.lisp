@@ -279,17 +279,19 @@ excluding types that are marked as joiners and the :resources type."
     when (base-resource-type-key-p type-key)
     collect type-key))
 
-(defun full-data (type-key data)
+(defun full-data (type-key data &key record local-only)
   ":private: Returns a plist like DATA, but with any missing fields filled in
 with their defaults from the model. This is useful for ensuring that we have
 all the right fields when we perform inserts or updates."
-  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
-    for field-key in fields by #'cddr
-    for field-def in (cdr fields) by #'cddr
-    for default = (getf field-def :default)
+  (loop with fields = (if local-only
+                        (local-fields type-key)
+                        (user-fields type-key))
+    for field-key in fields
+    for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
+    for default-value = (getf field-def :default)
     for data-value = (getf data field-key)
-    unless (getf field-def :base-field)
-    appending (list field-key (or data-value default))))
+    for record-value = (getf record field-key)
+    appending (list field-key (or data-value record-value default-value))))
 
 ;;
 ;; END Internal helper functions
@@ -436,6 +438,44 @@ VALUE and USER has 'read' permissions for the record. Otherwise, returns NIL."
       :type-key type-key :field-key field-key :value value :user user)
     t))
 
+(defun update-join-tables (type-key id join-keys data record)
+  ":private: Updates the join tables for TYPE-KEY for the fields in JOIN-KEYS
+with the values in DATA or, failing that, in RECORD."
+  (loop
+    with m = *compiled-model*
+    with update = (u:tree-get m type-key :update-sql)
+    for key in join-keys
+    for column = (u:tree-get m type-key :fields key :source :column)
+    for existing-values = (getf record key)
+    for new-values = (or (getf data key) existing-values)
+    for to-add = (set-difference new-values existing-values :test 'equal)
+    for to-delete = (set-difference existing-values new-values :test 'equal)
+    for q-delete = (u:tree-get update key :delete)
+    for q-delete-sql = (car q-delete)
+    for q-delete-keys = (cdr q-delete)
+    for q-delete-key-1 = (id-key type-key)
+    for q-delete-key-2 = (id-key key)
+    for q-insert = (u:tree-get update key :insert)
+    for q-insert-sql = (car q-insert)
+    for q-insert-keys = (cdr q-insert)
+    for q-insert-key-1 = (id-key type-key)
+    for q-insert-key-2 = (id-key key)
+    do
+    ;; Delete
+    (loop for x-id in (list-ids key column to-delete)
+      for q-delete-values = (loop for k in q-delete-keys
+                              when (equal k q-delete-key-1) collect id
+                              when (equal k q-delete-key-2) collect x-id)
+      for q-delete-query = (cons q-delete-sql q-delete-values)
+      do (a:with-rbac (*rbac*) (a:rbac-query q-delete-query)))
+    ;; Insert
+    (loop for x-id in (list-ids key column to-add)
+      for q-insert-values = (loop for k in q-insert-keys
+                              when (equal k q-insert-key-1) collect id
+                              when (equal k q-insert-key-2) collect x-id)
+      for q-insert-query = (cons q-insert-sql q-insert-values)
+      do (a:with-rbac (*rbac*) (a:rbac-query q-insert-query)))))
+
 ;;
 ;; END Internal database helper functions
 ;;
@@ -550,6 +590,19 @@ value is of the correct type for its field key."
         (valid-uuid value))
       (t (signal-validation-error
            "Invalid field key ~s for type ~s." field-key type-key)))))
+
+(defun valid-existing-data (type-key join-keys data)
+  ":private: Checks that the values in DATA for JOIN-KEYS exist in the database
+for TYPE-KEY."
+  (loop with m = *compiled-model*
+    for key in join-keys
+    for column = (u:tree-get m type-key :fields key :source :column)
+    for new-values = (getf data key)
+    for unknown-values = (unknown-values key column new-values)
+    when unknown-values
+    do (signal-validation-error
+         "Invalid value~p for field ~s ~s: ~s"
+         (length unknown-values) type-key key unknown-values)))
 
 (defun valid-uuid (uuid)
   (unless (uuid-p uuid)
@@ -865,25 +918,14 @@ update fails.
           (sql (car (getf update :main)))
           (uuid (id-from-filters-and-data type-key filters data))
           (record (be-rec uuid user :type-key type-key))
-          (local-fields (local-fields type-key))
-          (values (loop for k in local-fields
-                    for value = (or (getf data k) (getf record k)
-                                  (u:tree-get m type-key :fields k :default))
-                    do (setf (getf data k) value)
-                    collect value))
+          (data (full-data type-key data :record record))
+          (values (loop for k in (local-fields type-key) collect (getf data k)))
           (update-query (append (cons sql values) (list uuid)))
           (resource-name (make-resource-name type-key data))
           (join-keys (remove-if
                        (lambda (k) (equal k :main))
                        (u:plist-keys update))))
-    (loop for key in join-keys
-      for column = (u:tree-get m type-key :fields key :source :column)
-      for new-values = (getf data key)
-      for unknown-values = (unknown-values key column new-values)
-      when unknown-values
-      do (signal-validation-error
-           "Invalid value~p for field ~s ~s: ~s"
-           (length unknown-values) type-key key unknown-values))
+    (valid-existing-data type-key join-keys data)
     ;; Update TYPE-KEY row
     (a:with-rbac (*rbac*) (a:rbac-query update-query))
     ;; Update resource name
@@ -892,46 +934,7 @@ update fails.
         (db:query "update resources set resource_name = $1 where id = $2"
           resource-name uuid)))
     ;; Update join tables
-    (loop
-      for key in join-keys
-      for column = (u:tree-get m type-key :fields key :source :column)
-      for existing-values = (getf record key)
-      for new-values = (or (getf data key) existing-values)
-      for to-add = (set-difference new-values existing-values :test 'equal)
-      for to-add-log = (pl:pdebug :in "be-update"
-                         :status "to-add"
-                         :type-key type-key
-                         :to-add to-add)
-      for to-delete = (set-difference existing-values new-values :test 'equal)
-      for to-del-log = (pl:pdebug :in "be-update"
-                         :status "to-delete"
-                         :type-key type-key
-                         :to-delete to-delete)
-      for q-delete = (u:tree-get update key :delete)
-      for q-delete-sql = (car q-delete)
-      for q-delete-keys = (cdr q-delete)
-      for q-delete-key-1 = (id-key type-key)
-      for q-delete-key-2 = (id-key key)
-      for q-insert = (u:tree-get update key :insert)
-      for q-insert-sql = (car q-insert)
-      for q-insert-keys = (cdr q-insert)
-      for q-insert-key-1 = (id-key type-key)
-      for q-insert-key-2 = (id-key key)
-      do
-      ;; Delete
-      (loop for id in (list-ids key column to-delete)
-        for q-delete-values = (loop for k in q-delete-keys
-                                when (equal k q-delete-key-1) collect uuid
-                                when (equal k q-delete-key-2) collect id)
-        for q-delete-query = (cons q-delete-sql q-delete-values)
-        do (a:with-rbac (*rbac*) (a:rbac-query q-delete-query)))
-      ;; Insert
-      (loop for id in (list-ids key column to-add)
-        for q-insert-values = (loop for k in q-insert-keys
-                                when (equal k q-insert-key-1) collect uuid
-                                when (equal k q-insert-key-2) collect id)
-        for q-insert-query = (cons q-insert-sql q-insert-values)
-        do (a:with-rbac (*rbac*) (a:rbac-query q-insert-query))))
+    (update-join-tables type-key uuid join-keys data record)
     ;; Update roles
     (when roles (update-roles type-key data roles))
     uuid))
