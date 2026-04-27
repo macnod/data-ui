@@ -855,38 +855,44 @@ example inserts a todo with the name \"clean the kitchen\":
         (let* ((insert (u:tree-get *compiled-model* type-key :insert-sql))
                 ;; Insert RBAC resource row
                 (resource-name (make-resource-name type-key data))
-                (uuid (a:add-resource *rbac* resource-name :roles roles)))
-          (pl:pdebug :in "be-insert" :status "inserting main row"
-            :type-key type-key :uuid uuid :data data
-            :insert )
-          ;; Insert TYPE-KEY row
-          (a:with-rbac (*rbac*)
-            (a:rbac-query (insert-main-query type-key insert uuid data)))
-          ;; Insert rows in join tables
-          (pl:pdebug :in "be-insert" :status "inserting join table rows"
-            :type-key type-key :data data)
-          (loop with keys = (remove-if
-                              (lambda (k) (member k '(:resource :main)))
-                              (u:plist-keys insert))
-            for key in keys
-            for qt = (getf insert key)
-            for sql = (car qt)
-            for names = (getf data key)
-            ;; TODO: Use list-ids function instead of be-id
-            for value-ids = (list-ids key :name names)
-            do (pl:pdebug :in "be-insert" :status "inserting join table rows"
-                 :type-key type-key :field-key key :names names
-                 :value-ids value-ids :data data)
-            when value-ids do
-            (loop for value-id in value-ids
-              for query = (cons sql (list uuid value-id))
-              do
-              (pl:pdebug :in "be-insert" :status "join table insert"
-                :sql sql :uuid uuid :valid-id value-id)
-              (a:with-rbac (*rbac*) (a:rbac-query query))))
-          ;; Roles update
-          (when roles (update-roles type-key uuid roles))
-          (values uuid t))))))
+                (uuid (a:add-resource *rbac* resource-name :roles roles))
+                (f (u:tree-get *compiled-model* type-key :create)))
+          (cond
+            ((equal f :auto)
+              (pl:pdebug :in "be-insert" :branch "auto-insert"
+                :type-key type-key :uuid uuid :data data)
+              ;; Insert TYPE-KEY row
+              (a:with-rbac (*rbac*)
+                (a:rbac-query (insert-main-query type-key insert uuid data)))
+              ;; Insert rows in join tables
+              (pl:pdebug :in "be-insert" :status "inserting join table rows"
+                :type-key type-key :data data)
+              (loop with keys = (remove-if
+                                  (lambda (k) (member k '(:resource :main)))
+                                  (u:plist-keys insert))
+                for key in keys
+                for qt = (getf insert key)
+                for sql = (car qt)
+                for names = (getf data key)
+                ;; TODO: Use list-ids function instead of be-id
+                for value-ids = (list-ids key :name names)
+                do (pl:pdebug :in "be-insert" :status "inserting join table rows"
+                     :type-key type-key :field-key key :names names
+                     :value-ids value-ids :data data)
+                when value-ids do
+                (loop for value-id in value-ids
+                  for query = (cons sql (list uuid value-id))
+                  do
+                  (pl:pdebug :in "be-insert" :status "join table insert"
+                    :sql sql :uuid uuid :valid-id value-id)
+                  (a:with-rbac (*rbac*) (a:rbac-query query))))
+              ;; Roles update
+              (when roles (update-roles type-key uuid roles))
+              (values uuid t))
+            ((functionp f)
+              (funcall f type-key data user :roles roles))
+            (t (signal-validation-error
+                 "Invalid create function for type ~s: ~s" type-key f))))))))
 
 ;; TODO:
 ;;   - Transaction

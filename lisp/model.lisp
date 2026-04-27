@@ -136,7 +136,15 @@ NIL if the string is not a valid number."
 `(:users
      (:table t :base t
        ;; TODO: :create, :update, and :delete should use RBAC functions
-       :create :auto :update :auto :delete :auto
+       :create (lambda (type-key data user &key roles)
+                 (declare (ignore type-key user))
+                 (a:add-user *rbac*
+                   (getf data :name)
+                   (getf data :email "no-email")
+                   (getf data :password)
+                   :roles roles))
+       :update :auto
+       :delete :auto
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
        :deletable t
@@ -152,10 +160,11 @@ NIL if the string is not a valid number."
                              :validations (:required :password)
                              :column t :not-null t)
                  :email (:type :text
+                          :default "no-email"
                           :force-sql-name "email"
                           :source (:view :main :column :email :agg :first)
                           :ui (:label "Email" :input-type :line)
-                          :validations (:required :email)
+                          :validations (:email)
                           :column t :not-null t)
                  :roles (:type :list
                           :ui (:label "Roles" :input-type :checkbox-list)
@@ -919,9 +928,19 @@ that joins tables."
             (getf type-def :is-joiner))
     t))
 
+(defun compile-create (fn)
+  (cond
+    ((equal fn :auto) :auto)
+    ((equal (type-of fn) 'compiled-function) fn)
+    ((and (equal (type-of fn) 'cons) (eq (car fn) 'lambda))
+      (compile nil fn))
+    ((null fn) nil)
+    (t (error "Invalid :create function definitions: ~a" fn))))
+
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (base (getf type-def :base))
+          (create (compile-create (getf type-def :create)))
           (fields (compile-fields type-key model))
           (table-name (table-name type-key base))
           (roles (when (type-has-roles type-key type-def)
@@ -929,6 +948,7 @@ that joins tables."
     (add-to-plist
       type-def
       (list
+        :create create
         :type-roles roles
         :table-name table-name
         :fields fields))))
