@@ -439,7 +439,19 @@ If DATA points to multiple records, then this function raises an error."
           (type-string (and
                          resource-name
                          (car (re:split ":" resource-name :limit 2)))))
-    (and type-string (u:make-keyword type-string))))
+    (if type-string
+      (u:make-keyword type-string)
+      (loop with base-type-keys = (remove-if-not
+                                    (lambda (k)
+                                      (u:tree-get *compiled-model* k :base))
+                                    (u:plist-keys *compiled-model*))
+        and sql-template = "select 1 from ~a where id = $1"
+        for type-key in base-type-keys
+        for table = (table-name type-key t)
+        for sql = (format nil sql-template table)
+        for query = (list sql id)
+        for exists = (a:with-rbac (*rbac*) (a:rbac-query query :single))
+        when exists do (return type-key)))))
 
 (defun user-read-type-ids (user type-key)
   ":private: Returns a list of resource IDs for resources of type TYPE-KEY that
@@ -456,12 +468,17 @@ USER has 'read' permissions for."
 (defun user-allowed-resource (user uuid permission)
   ":private: Returns T if USER has PERMISSION on the resource with UUID and NIL
 otherwise."
-  (let ((resource-name (id-to-resource-name uuid))
-         (resource-type (id-to-type-key uuid)))
-    (when resource-name
-      (if (member resource-type (base-resource-type-keys))
-        (equal user "admin")
-        (a:user-allowed *rbac* user permission (id-to-resource-name uuid))))))
+  (let ((type-key (id-to-type-key uuid)))
+    (if (base-type-p type-key)
+      (a:user-allowed *rbac* user permission
+        (type-resource-name type-key))
+      (let ((resource-name (id-to-resource-name uuid))
+             (resource-type (id-to-type-key uuid)))
+        (when resource-name
+          (if (member resource-type (base-resource-type-keys))
+            (equal user "admin")
+            (a:user-allowed *rbac* user permission
+              (id-to-resource-name uuid))))))))
 
 (defun resource-exists-p (type-key field-key value user)
   ":private: Returns T if a records of type TYPE-KEY exists where FIELD-KEY has
@@ -805,15 +822,16 @@ optional. However, providing TYPE-KEY helps the function avoid an extra database
 lookup."
   (valid-existing-user user)
   (when type-key (valid-type-key type-key))
-  (when (and (user-allowed-resource user id "read") (uuid-exists-p id))
-    (let* ((m *compiled-model*)
-            (type-key (if type-key type-key (id-to-type-key id)))
-            (sql (u:tree-get m type-key :views :main :sql))
-            (where (add-where-clause sql (list (list type-key :id :eq id))))
-            (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
-            (field-keys (form-field-keys type-key form)))
-      (car
-        (view-result-values type-key field-keys view-result)))))
+  (let ((type-key (if type-key type-key (id-to-type-key id))))
+    (when (and (user-allowed-resource user id "read") (uuid-exists-p id))
+      (let* ((m *compiled-model*)
+              (type-key (if type-key type-key (id-to-type-key id)))
+              (sql (u:tree-get m type-key :views :main :sql))
+              (where (add-where-clause sql (list (list type-key :id :eq id))))
+              (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
+              (field-keys (form-field-keys type-key form)))
+        (car
+          (view-result-values type-key field-keys view-result))))))
 
 (defun be-val (id field-key user &key (form :update-form) type-key)
   ":public: Returns the value for field FIELD-KEY in the TYPE-KEY record with
@@ -821,12 +839,12 @@ ID. Providing TYPE-KEY is optional, but helps the function avoid an extra
 database query."
   (valid-existing-uuid id)
   (valid-existing-user user)
-  (when type-key
-    (valid-type-key type-key)
+  (let ((type-key (or type-key (id-to-type-key id))))
     (valid-field-key type-key field-key)
-    (valid-user-permissions user type-key "read"))
-  (let ((record (be-rec id user :form form :type-key type-key)))
-    (getf record field-key)))
+    (valid-type-key type-key)
+    (user-allowed-resource user id "read")
+    (let ((record (be-rec id user :form form :type-key type-key)))
+      (getf record field-key))))
 
 ;; This function relies on a single query when there are no filters and on 2
 ;; queries where there are filters. This is necessary with the current approach
@@ -1020,13 +1038,21 @@ treated as the UUID of the record to be deleted."
     (valid-uuid filters)
     (valid-filters filters :required t))
   (valid-existing-user user)
-  (let ((uuid (id-from-filters-and-data type-key filters)))
+  (let* ((uuid (id-from-filters-and-data type-key filters))
+         (f (u:tree-get *compiled-model* type-key :delete)))
     (when (and uuid (user-allowed-resource user uuid "delete"))
-      (let* ((record (be-rec uuid user :type-key :resources))
-             (resource-name (getf record :name)))
-        (when resource-name
-          (a:remove-resource *rbac* resource-name)
-          uuid)))))
+      (cond
+        ((equal f :auto)
+          (let* ((record (be-rec uuid user :type-key :resources))
+                  (resource-name (getf record :name)))
+            (when resource-name
+              (a:remove-resource *rbac* resource-name)
+              uuid)))
+        ((functionp f)
+          (let* ((record (be-rec uuid user :type-key type-key)))
+            (funcall f type-key record user)))
+        (t (signal-validation-error
+             "Invalid delete function for type ~s: ~s" type-key f))))))
 
 (defun be-add-type-roles (type-key user &rest roles)
   ":public: Adds ROLE to the list of roles associated with TYPE-KEY. This

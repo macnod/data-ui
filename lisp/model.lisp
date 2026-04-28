@@ -129,10 +129,6 @@ NIL if the string is not a valid number."
     (getf data :password)
     :roles roles))
 
-(defun rbac-update-user (type-key data user &key roles)
-  (declare (ignore type-key user)))
-  ;; Next
-
 (defun rbac-remove-user (type-key data user)
   (declare (ignore type-key user))
   (a:remove-user *rbac* (getf data :name)))
@@ -149,11 +145,11 @@ NIL if the string is not a valid number."
     :exists #'v-exists))
 
 (defparameter *base-model*
-`(:users
+  `(:users
      (:table t :base t
-       ;; TODO: :create, :update, and :delete should use RBAC functions
        :create ,#'rbac-add-user
-       :update ,#'rbac-update-user
+       ;; RBAC API doesn't include an update function, so just use :auto here
+       :update :auto
        :delete ,#'rbac-remove-user
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
@@ -187,9 +183,10 @@ NIL if the string is not a valid number."
        :update-form (:fields t)
        :add-form (:fields t))
 
+     ;; TODO: Mark as internal. User should not be able to interact with this table
+     ;; via the UI or the backend functions.
      :resources
      (:table t :base t
-       ;; TODO: :create, :update, and :delete should use RBAC functions
        :create :auto :update :auto :delete :auto
        :views (:main (:tables (:resources :resource-roles :roles))
                 :roles (:tables (:roles)))
@@ -210,6 +207,8 @@ NIL if the string is not a valid number."
        :update-form (:fields t)
        :add-form (:fields t))
 
+     ;; TODO: Currently, a default list such as ("create" "read" ...) doesn't work
+     ;; because of some kind of validation issue. Fix.
      :permissions
      (:table t :base t
        :create :auto :update :auto :delete :auto
@@ -224,7 +223,6 @@ NIL if the string is not a valid number."
 
      :roles
      (:table t :base t
-       ;; TODO: :create, :update, and :delete should use RBAC functions
        :create :auto :update :auto :delete :auto
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
