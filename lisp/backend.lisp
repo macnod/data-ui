@@ -181,6 +181,26 @@ actual column in the associated table, such as fields that have a non-nil
              (member field-key exclude))
     collect field-key))
 
+(defun local-values-for-update (type-key data record &key id)
+  ":private: Finds the keys listed in the model for TYPE-KEY :SQL-UPDATE, looks
+up the values for each key, and returns the values as a string. Each value is
+chosen from DATA. If the value is not in DATA, then the value is taken from
+RECORD. If the value is not in RECORD, and the field key is :ID, then the value
+given in ID is used."
+  ;; Validations
+  (valid-type-key type-key)
+  ;; Collect data
+  (loop with type-def = (getf *compiled-model* type-key)
+    with main-update = (u:tree-get type-def :update-sql :main)
+    for field-key in (cdr main-update)
+    for field-def = (u:tree-get type-def :fields field-key)
+    for data-value = (getf data field-key)
+    for record-value = (getf record field-key)
+    for default-value = (getf field-def :default)
+    for id-value = (when (equal field-key :id) id)
+    for field-value = (or data-value record-value default-value id-value)
+    collect field-value))
+
 (defun user-fields (type-key)
   ":private: Returns a list of the field keys that should be validated for
 TYPE-KEY. This includes all the local fields (see LOCAL-FIELDS) plus join-table
@@ -239,9 +259,13 @@ inserted."
 (defun id-from-filters (filters)
   ":private: Returns an ID if FILTERS includes a filter with a field key of :ID
 and an operator key of :EQ. Otherwise, returns NIL."
-  (loop for (table-key field-key op-key value) in filters
-         when (and (equal field-key :id) (equal op-key :eq))
-         do (return value)))
+  (if (stringp filters)
+    (progn
+      (valid-existing-uuid filters)
+      filters)
+    (loop for (table-key field-key op-key value) in filters
+      when (and (equal field-key :id) (equal op-key :eq))
+      do (return value))))
 
 (defun id-from-filters-and-data (type-key filters &optional data)
   ":private: Returns the ID of the record of type TYPE-KEY. If FILETRS is a
@@ -283,15 +307,26 @@ excluding types that are marked as joiners and the :resources type."
   ":private: Returns a plist like DATA, but with any missing fields filled in
 with their defaults from the model. This is useful for ensuring that we have
 all the right fields when we perform inserts or updates."
-  (loop with fields = (if local-only
-                        (local-fields type-key)
-                        (user-fields type-key))
+  (loop with fields = (append
+                        (if local-only
+                          (local-fields type-key)
+                          (user-fields type-key))
+                        (when record (list :id)))
     for field-key in fields
     for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
     for default-value = (getf field-def :default)
     for data-value = (getf data field-key)
     for record-value = (getf record field-key)
     appending (list field-key (or data-value record-value default-value))))
+
+(defun uuid-exists-p (uuid)
+  (valid-uuid uuid)
+  (when
+    (loop for type in '("resources" "users" "permissions" "roles")
+      for sql = (format nil "select 1 from ~a where id = $1" type)
+      for query = (list sql uuid)
+      thereis (a:with-rbac (*rbac*) (a:rbac-query query :single)))
+    t))
 
 ;;
 ;; END Internal helper functions
@@ -324,6 +359,21 @@ the update fails."
     (loop for role in to-remove
       do (a:remove-resource-role *rbac* resource-name role))
     resource-name))
+
+(defun update-resource-name (type-key data)
+  ":internal: Updates the resource name for the given record. DATA must include
+the ID of the record. This does nothing for base tables, because base tables
+aren't resources, and the resources table is an internal table that represents
+user resources."
+  (valid-type-key type-key)
+  (let ((resource-name (make-resource-name type-key data))
+         (id (getf data :id)))
+    (when (and
+            (not (base-type-p type-key))
+            (not (equal resource-name (find-resource-name type-key id))))
+      (a:with-rbac (*rbac*)
+        (db:query "update resources set resource_name = $1 where id = $2"
+          resource-name id)))))
 
 (defun list-ids (type-key field-key values)
   ":private: Returns a list of IDs of records of type TYPE-KEY where FIELD-KEY
@@ -438,16 +488,17 @@ VALUE and USER has 'read' permissions for the record. Otherwise, returns NIL."
       :type-key type-key :field-key field-key :value value :user user)
     t))
 
-(defun update-join-tables (type-key id join-keys data record)
+(defun update-join-tables (type-key id data record)
   ":private: Updates the join tables for TYPE-KEY for the fields in JOIN-KEYS
-with the values in DATA or, failing that, in RECORD."
+with the values in DATA."
   (loop
     with m = *compiled-model*
     with update = (u:tree-get m type-key :update-sql)
+    with join-keys = (join-keys type-key)
     for key in join-keys
     for column = (u:tree-get m type-key :fields key :source :column)
     for existing-values = (getf record key)
-    for new-values = (or (getf data key) existing-values)
+    for new-values = (getf data key)
     for to-add = (set-difference new-values existing-values :test 'equal)
     for to-delete = (set-difference existing-values new-values :test 'equal)
     for q-delete = (u:tree-get update key :delete)
@@ -476,6 +527,10 @@ with the values in DATA or, failing that, in RECORD."
       for q-insert-query = (cons q-insert-sql q-insert-values)
       do (a:with-rbac (*rbac*) (a:rbac-query q-insert-query)))))
 
+(defun join-keys (type-key)
+  (loop with update = (u:tree-get *compiled-model* type-key :update-sql)
+    for key in update by #'cddr
+    unless (equal key :main) collect key))
 ;;
 ;; END Internal database helper functions
 ;;
@@ -591,13 +646,16 @@ value is of the correct type for its field key."
       (t (signal-validation-error
            "Invalid field key ~s for type ~s." field-key type-key)))))
 
-(defun valid-existing-data (type-key join-keys data)
+(defun valid-existing-join-data (type-key data)
   ":private: Checks that the values in DATA for JOIN-KEYS exist in the database
 for TYPE-KEY."
-  (loop with m = *compiled-model*
+  (loop
+    with m = *compiled-model*
+    with join-keys = (join-keys type-key)
     for key in join-keys
     for column = (u:tree-get m type-key :fields key :source :column)
-    for new-values = (getf data key)
+    for new-values = (or (getf data key)
+                       (u:tree-get m type-key :fields  key :default))
     for unknown-values = (unknown-values key column new-values)
     when unknown-values
     do (signal-validation-error
@@ -609,10 +667,8 @@ for TYPE-KEY."
     (signal-validation-error "Invalid UUID ~s" uuid)))
 
 (defun valid-existing-uuid (uuid)
-  (valid-uuid uuid)
-  (let* ((query (list "select 1 from resources where id = $1" uuid))
-          (result (a:with-rbac (*rbac*) (a:rbac-query query :single))))
-    (when result t)))
+  (unless (uuid-exists-p uuid)
+    (signal-validation-error "UUID ~a not found." uuid)))
 
 (defun valid-insert (insert)
   (unless (and (u:plistp insert) (getf insert :main))
@@ -631,17 +687,21 @@ for TYPE-KEY."
     do (signal-validation-error "Role ~s does not exist." role)))
 
 (defun valid-user-roles (user roles)
+  ":private: Returns nil (success) if every role in ROLES exists and either USER
+is 'admin' or USER has every role in ROLES. Otherwise, raises a validation
+error."
   (valid-existing-user user)
   (valid-existing-roles roles)
   (let* ((user-roles (a:list-user-role-names *rbac* user))
-          (non-user-roles (remove-if
-                            (lambda (r) (member r user-roles :test 'equal))
-                            roles)))
+          (non-user-roles (if (equal user "admin")
+                            nil
+                            (remove-if
+                              (lambda (r) (member r user-roles :test 'equal))
+                              roles))))
     (when non-user-roles
       (signal-validation-error
         "User ~s does not have the following roles: ~{~s~^, ~}."
         user non-user-roles))))
-
 
 (defun valid-existing-user (user)
   (unless (a:get-id *rbac* "users" user)
@@ -745,8 +805,7 @@ optional. However, providing TYPE-KEY helps the function avoid an extra database
 lookup."
   (valid-existing-user user)
   (when type-key (valid-type-key type-key))
-  (valid-existing-uuid id)
-  (when (user-allowed-resource user id "read")
+  (when (and (user-allowed-resource user id "read") (uuid-exists-p id))
     (let* ((m *compiled-model*)
             (type-key (if type-key type-key (id-to-type-key id)))
             (sql (u:tree-get m type-key :views :main :sql))
@@ -918,29 +977,29 @@ update fails.
     (valid-uuid filters)
     (valid-filters filters :required t))
   (valid-data type-key data)
-  (valid-existing-roles roles)
+  (valid-user-roles user roles)
   (let* ((m *compiled-model*)
-          (update (u:tree-get m type-key :update-sql))
-          (sql (car (getf update :main)))
           (uuid (id-from-filters-and-data type-key filters data))
           (record (be-rec uuid user :type-key type-key))
-          (data (full-data type-key data :record record))
-          (values (loop for k in (local-fields type-key) collect (getf data k)))
-          (update-query (append (cons sql values) (list uuid)))
-          (resource-name (make-resource-name type-key data))
-          (join-keys (remove-if
-                       (lambda (k) (equal k :main))
-                       (u:plist-keys update))))
-    (valid-existing-data type-key join-keys data)
-    ;; Update TYPE-KEY row
-    (a:with-rbac (*rbac*) (a:rbac-query update-query))
-    ;; Update resource name
-    (unless (equal resource-name (find-resource-name type-key uuid))
-      (a:with-rbac (*rbac*)
-        (db:query "update resources set resource_name = $1 where id = $2"
-          resource-name uuid)))
+          (sql (car (u:tree-get m type-key :update-sql :main)))
+          (values (local-values-for-update type-key data record :id uuid))
+          (update-query (cons sql values))
+          (full-data (full-data type-key data :record record)))
+    (valid-existing-join-data type-key full-data)
+    ;; Update TYPE-KEY row (main update)
+    (when (equal type-key :resources)
+      (signal-validation-error "Can't update internal type :resources"))
+    (multiple-value-bind (result update-row-count)
+      (a:with-rbac (*rbac*) (a:rbac-query update-query))
+      (declare (ignore result))
+      (unless (= update-row-count 1)
+        (error "Error updating main ~a row (update row count ~d)"
+          type-key update-row-count))
+      update-row-count)
+    ;; Update resource name (update resources record)
+    (update-resource-name type-key full-data)
     ;; Update join tables
-    (update-join-tables type-key uuid join-keys data record)
+    (update-join-tables type-key uuid full-data record)
     ;; Update roles
     (when roles (update-roles type-key data roles))
     uuid))
@@ -1055,8 +1114,6 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
               (if errors
                 (list :valid :false :errors errors)
                 (list :valid :true)))))
-
-(defun be-types (
 
 ;;
 ;; END Public backend functions

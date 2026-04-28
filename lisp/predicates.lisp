@@ -96,3 +96,6 @@ TYPE-KEY"
      :uuid (:general :text :sql "uuid" :test ,#'uuid-p)
      :timestamp (:general :text :sql "timestamp" :test ,#'timestamp-p)
      :list (:general :list :sql "" :test ,#'listp)))
+
+(defun base-type-p (type-key)
+  (u:tree-get *compiled-model* type-key :base))

@@ -121,6 +121,22 @@ NIL if the string is not a valid number."
           type-key field-key nil
           (format nil "not found: ~{~a~^, ~}" missing))))))
 
+(defun rbac-add-user (type-key data user &key roles)
+  (declare (ignore type-key user))
+  (a:add-user *rbac*
+    (getf data :name)
+    (getf data :email "no-email")
+    (getf data :password)
+    :roles roles))
+
+(defun rbac-update-user (type-key data user &key roles)
+  (declare (ignore type-key user)))
+  ;; Next
+
+(defun rbac-remove-user (type-key data user)
+  (declare (ignore type-key user))
+  (a:remove-user *rbac* (getf data :name)))
+
 (defparameter *validation-map*
   ;; type is not included here because it is automatically applied to all
   ;; fields, and thus need never be specified in the model definition.
@@ -136,15 +152,9 @@ NIL if the string is not a valid number."
 `(:users
      (:table t :base t
        ;; TODO: :create, :update, and :delete should use RBAC functions
-       :create (lambda (type-key data user &key roles)
-                 (declare (ignore type-key user))
-                 (a:add-user *rbac*
-                   (getf data :name)
-                   (getf data :email "no-email")
-                   (getf data :password)
-                   :roles roles))
-       :update :auto
-       :delete :auto
+       :create ,#'rbac-add-user
+       :update ,#'rbac-update-user
+       :delete ,#'rbac-remove-user
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
        :deletable t
