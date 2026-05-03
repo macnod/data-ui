@@ -18,6 +18,7 @@
                  :components ((:file "data-ui-package")
                                (:file "database")
                                (:file "data-ui")
+                               (:file "aux")
                                (:file "predicates")
                                (:file "plist-json")
                                (:file "backend")

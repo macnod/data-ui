@@ -128,7 +128,8 @@ where
         (add-where-clause
           "
 select users.user_name users_user_name from users"
-          '((:users :name :eq "admin")))
+          '((:users :name :eq "admin"))
+          "admin")
         (list "
 select users.user_name users_user_name from users
 where
@@ -189,14 +190,14 @@ where users.id in (
 (test make-resource-name
   (is (equal
         (make-resource-name :todos '(:name "Buy milk"))
-        "todos:buy milk:92cf339e"))
+        "todos:buy-milk:7b8785438497d4f0"))
   (is (equal
         (make-resource-name :users '(:name "admin" :email "no-email"
                                       :password "password"))
-        "users:admin:63acbe08")))
+        "users:admin:63acbe08e3d20863")))
 
 (test find-resource-name
-  (let ((name "test-find-resource-name-tod"))
+  (let ((name "todo-1"))
     (be-delete :todos `((:todos :name :eq ,name)) "admin")
     (let ((id (be-insert :todos `(:name ,name) "admin")))
       (is (equal
@@ -212,7 +213,7 @@ where users.id in (
          (insert (u:tree-get *compiled-model* type-key :insert-sql))
          (uuid "123e4567-e89b-12d3-a456-426614174000")
          (data '(:name "Test Tag"))
-         (result (insert-main-query type-key insert uuid data))
+         (result (insert-main-query type-key insert uuid data "admin"))
          (main-qt (getf insert :main)))
     (is (and (consp result) (= 3 (length result))))
     (is (equal (first result) (first main-qt)))
@@ -223,7 +224,7 @@ where users.id in (
          (insert (u:tree-get *compiled-model* type-key :insert-sql))
          (uuid "123e4567-e89b-12d3-a456-426614174000")
          (data '(:name "Test Todo"))
-         (result (insert-main-query type-key insert uuid data))
+         (result (insert-main-query type-key insert uuid data "admin"))
          (main-qt (getf insert :main)))
     (is (and (consp result) (= 4 (length result))))
     (is (equal (first result) (first main-qt)))
@@ -233,12 +234,14 @@ where users.id in (
   ;; Validation error paths (insert-main-query calls valid-insert, valid-uuid,
   ;; valid-data)
   (signals error (insert-main-query :nonexistent-type '(:main t) "bad-uuid"
-                   '(:name "x")))
+                   '(:name "x") "admin"))
   (let ((insert (u:tree-get *compiled-model* :tags :insert-sql))
         (uuid "123e4567-e89b-12d3-a456-426614174000"))
-    (signals error (insert-main-query :tags nil uuid '(:name "foo")))
-    (signals error (insert-main-query :tags insert "invalid-uuid-string" '(:name "foo")))
-    (signals error (insert-main-query :tags insert uuid '(:unknown-field "value")))))
+    (signals error (insert-main-query :tags nil uuid '(:name "foo") "admin"))
+    (signals error (insert-main-query :tags insert "invalid-uuid-string"
+                     '(:name "foo") "admin"))
+    (signals error (insert-main-query :tags insert uuid
+                     '(:unknown-field "value") "admin"))))
 
 ;; Credit: grok-4.20-0309-reasoning
 (test id-from-filters
@@ -923,7 +926,9 @@ Notes:
           (a:list-resource-role-names
            *rbac*
            (type-resource-name :todos))
-          '("admin")))))
+          '("admin")))
+    (a:remove-role *rbac* role-1)
+    (a:remove-role *rbac* role-2)))
 
 (test be-validate-field
   ;; Validate a good todo name

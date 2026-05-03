@@ -78,7 +78,7 @@ function initialize_database {
 function start_psql {
     echo
     echo "Connecting to database $DB_NAME at $BD_PORT"
-    psql -h $DB_HOST -p $DB_PORT -d $DB_NAME -U $DB_USER
+    psql -P pager=off -h $DB_HOST -p $DB_PORT -d $DB_NAME -U $DB_USER
 }
 
 function start_repl {

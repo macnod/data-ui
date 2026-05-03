@@ -85,56 +85,6 @@ error."
                               hex-components)))
     (format nil "#~{~a~}" final-components)))
 
-(defgeneric has (reference-list thing)
-  (:documentation "Returns T if REFERENCE-LIST contains THING. If THING is a
-string, this function checks for that string in REFERENCE-LIST. If THING is a
-list, this function checks that all elements of THING are in REFERENCE-LIST.")
-  (:method ((reference-list list) (thing string))
-    (when (member thing reference-list :test 'equal) t))
-  (:method ((reference-list list) (thing list))
-    (when
-      (every (lambda (s) (member s reference-list :test 'equal)) thing)
-      t)))
-
-(defun has-some (reference-list query-list)
-  "Returns T if REFERENCE-LIST contains any of the elements in QUERY-LIST."
-  (if (null query-list)
-    t
-    (when
-      (some (lambda (s) (member s reference-list :test 'equal)) query-list)
-      t)))
-
-(defgeneric exclude (reference-list exclude)
-  (:documentation "Returns a list containing the elements of REFERENCE-LIST
-that are not in EXCLUDE. If EXCLUDE is a list, this function excludes all
-elements in EXCLUDE from REFERENCE-LIST. If EXCLUDE is a string, this function
-excludes the string from REFERENCE-LIST")
-  (:method ((reference-list list) (exclude string))
-    "Returns a list containing the elements of REFERENCE-LIST excluding
-the one that is equal to EXCLUDE."
-    (remove-if (lambda (s) (equal s exclude)) reference-list))
-  (:method ((reference-list list) (exclude list))
-    "Returns a list containing the elements of REFERENCE-LIST excluding
-all elements in EXCLUDE."
-    (remove-if
-      (lambda (s) (member s exclude :test 'equal))
-      reference-list)))
-
-(defun exclude-regex (reference-list exclude &optional exceptions)
-  "Returns a list of the elements of REFERENCE-LIST that that don't match the
-EXCLUDE regular expression. However, elements that are not in EXCEPTIONS are
-not excluded, even if they match EXCLUDE."
-  (remove-if (lambda (s)
-               (and
-                 exclude
-                 (not (member s exceptions :test 'equal))
-                 (re:scan exclude s)))
-    reference-list))
-
-(defun exclusive-role-for (username)
-  "Returns the exclusive role for USERNAME."
-  (format nil "~a:exclusive" username))
-
 (defun additional-text (count-actual count-listed count-total)
   "Returns a string indicating, in fuzzy terms, how many additional items, beyond
 COUNT-LISTED, exist and are not being shown. COUNT-ACTUAL is the actual number

@@ -133,6 +133,18 @@ NIL if the string is not a valid number."
   (declare (ignore type-key user))
   (a:remove-user *rbac* (getf data :name)))
 
+(defun rbac-add-role (type-key data user &key roles)
+  (declare (ignore type-key user roles))
+  (let ((name (getf data :name))
+         (permissions (getf data :permissions)))
+    (if permissions
+      (a:add-role *rbac* name :permissions permissions)
+      (a:add-role *rbac* name))))
+
+(defun rbac-remove-role (type-key data user)
+  (declare (ignore type-key user))
+  (a:remove-role *rbac* (getf data :name)))
+
 (defparameter *validation-map*
   ;; type is not included here because it is automatically applied to all
   ;; fields, and thus need never be specified in the model definition.
@@ -151,6 +163,8 @@ NIL if the string is not a valid number."
        ;; RBAC API doesn't include an update function, so just use :auto here
        :update :auto
        :delete ,#'rbac-remove-user
+       ;; TODO: Add key for post-create hook
+       :post-create :add-settings
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
        :deletable t
@@ -186,7 +200,7 @@ NIL if the string is not a valid number."
      ;; TODO: Mark as internal. User should not be able to interact with this table
      ;; via the UI or the backend functions.
      :resources
-     (:table t :base t
+     (:table t :base t :internal t
        :create :auto :update :auto :delete :auto
        :views (:main (:tables (:resources :resource-roles :roles))
                 :roles (:tables (:roles)))
@@ -223,7 +237,9 @@ NIL if the string is not a valid number."
 
      :roles
      (:table t :base t
-       :create :auto :update :auto :delete :auto
+       :create ,#'rbac-add-role
+       :update :auto
+       :delete ,#'rbac-remove-role
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
        :fields (:name (:type :text
@@ -247,19 +263,57 @@ NIL if the string is not a valid number."
        :add-form (:fields t))
 
      :role-permissions
-     (:table t :base t :is-joiner t
+     (:table t :base t :is-joiner t :internal t
        :fields (:reference (:target :roles)
                  :reference (:target :permissions)))
 
      :resource-roles
-     (:table t :base t :is-joiner t
+     (:table t :base t :is-joiner t :internal t
        :fields (:reference (:target :resources)
                  :reference (:target :roles)))
 
      :role-users
-     (:table t :base t :is-joiner t
+     (:table t :base t :is-joiner t :internal t
        :fields (:reference (:target :roles)
-                 :reference (:target :users)))))
+                 :reference (:target :users)))
+
+     :settings
+     (:table t :base t
+       :create :auto :update :auto :delete :delete-setting
+       :deletable t
+       :views (:main (:tables (:settings :user-settings :users))
+                :users (:tables (:users)))
+       :fields (:dark-mode (:type :boolean :default :false
+                             :ui (:label "Dark Mode" :input-type :check-box)
+                             :source (:view :main :column :dark-mode :agg :first)
+                             :column t :not-null t)
+                 :font-size (:type :integer :default 12
+                              :ui (:label "Font Size" :input-type :line)
+                              :source (:view :main :column :font-size :agg :first)
+                              :column t :not-null t)
+                 :display-name (:type :text :default "(non specified)"
+                                 :ui (:label "Real Name" :input-type :line)
+                                 :source (:view :main :column :display-name :agg :first)
+                                 :column t :not-null t)
+                 :bio (:type :text :default "(non specified)"
+                        :ui (:label "Bio" :input-type :text)
+                        :source (:view :main :column :bio :agg :first)
+                        :column t :not-null t)
+                 :user (:type :text
+                          :ui (:label "User" :input-type :hidden)
+                          :source (:view :main :table :users :column :name :agg :first)
+                          :ids-table :users
+                          :join-table :user-settings))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))
+
+     :user-settings
+     (:table t :base t :is-joiner t :internal t
+       :fields (:reference (:target :users)
+                 :reference (:target :settings)))))
+
+       
 
 ;; TODO: Ensure tables are created in the right order. The :todo-tags table
 ;;       references the :todos and :tags tables, so those tables should
@@ -281,8 +335,7 @@ NIL if the string is not a valid number."
                                               "must be less than 20 characters."))))
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
-                 :points (:type :integer
-                           :default 0
+                 :points (:type :integer :default 0
                            :ui (:label "Points" :input-type :line)
                            :validations (:required)
                            :source (:view :main :column :points :agg :first)
@@ -311,7 +364,7 @@ NIL if the string is not a valid number."
        :add-form (:fields t))
 
      :todo-tags
-     (:table t :is-joiner t
+     (:table t :is-joiner t :internal t
        :fields (:reference (:target :todos)
                  :reference (:target :tags)))))
 
@@ -827,15 +880,17 @@ that joins tables."
       (compile-field-stage-2 model type-key field-def))))
 
 (defun default-fields (&key model type-key keys-only)
-  (let* ((is-joiner (u:tree-get model type-key :is-joiner))
+  (let* ((internal (or (u:tree-get model type-key :internal)
+                     (u:tree-get model type-key :is-joiner)))
           (base (u:tree-get model type-key :base))
           (target-resources (when
                              (or
                                (not model)
                                (not type-key)
                                keys-only
-                               (and (not is-joiner) (not base)))
-                             t))
+                               (and (not internal) (not base)))
+                              t))
+          (generate-uuid (or internal base))
           (fields `(:id
                      (:type :uuid
                        :source (:view :main :column :id :agg :first)
@@ -844,7 +899,7 @@ that joins tables."
                        :update nil
                        :target ,(when target-resources :resources)
                        :base-field t
-                       :default ,(when is-joiner :generate-uuid))
+                       :default ,(when generate-uuid :generate-uuid))
                      :created-at
                      (:type :timestamp
                        :source (:view :main :column :created-at :agg :first)
@@ -916,25 +971,8 @@ that joins tables."
                          :columns (view-columns model view-def))
     appending (list view-key view-def-new)))
 
-(defun add-to-plist (plist plist-new)
-  (loop with keys = (u:distinct-values
-                      (append
-                        (u:plist-keys plist)
-                        (u:plist-keys plist-new)))
-    for key in keys
-    for value = (or (getf plist-new key) (getf plist key))
-    appending (list key value)))
-
-(defun remove-null-value-pairs (plist)
-  (loop for k in plist by #'cddr
-    for v in (cdr plist) by #'cddr
-    when v append (list k v)))
-
-(defun type-has-roles (type-key type-def)
-  (unless (or
-            (equal type-key :resources)
-            (getf type-def :is-joiner))
-    t))
+(defun type-has-roles (type-def)
+  (unless (getf type-def :internal) t))
 
 (defun compile-create (fn)
   (cond
@@ -948,14 +986,17 @@ that joins tables."
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (base (getf type-def :base))
+          (is-joiner (getf type-def :is-joiner))
+          (internal (getf type-def :internal is-joiner))
           (create (compile-create (getf type-def :create)))
           (fields (compile-fields type-key model))
           (table-name (table-name type-key base))
-          (roles (when (type-has-roles type-key type-def)
+          (roles (when (type-has-roles type-def)
                    (getf type-def :type-roles '("admin")))))
     (add-to-plist
       type-def
       (list
+        :internal internal
         :create create
         :type-roles roles
         :table-name table-name
@@ -988,8 +1029,7 @@ that joins tables."
                       :views views
                       :insert-sql insert-sql
                       :update-sql update-sql
-                      :delete-sql delete-sql
-                      :create-table-sql create-table-sql))
+                      :delete-sql delete-sql))
     appending (list type-key (add-to-plist type-def new-def))))
 
 (defun stage-3 (model)
@@ -1018,6 +1058,7 @@ that joins tables."
     (setf *compiled-model* compiled-model)
     (create-tables)
     (add-type-roles)
+    ;; (add-default-settings)
     (return summary)))
 
 (defun drop-non-base-tables ()
@@ -1047,7 +1088,7 @@ that joins tables."
       :table table-name :type-key type-key)))
 
 (defun type-resource-name (type-key)
-  (to-sql-identifier type-key :format-string "type-~a"))
+  (format nil "type-~(~a~)" type-key))
 
 (defun add-type-roles ()
   (loop with m = *compiled-model*
@@ -1055,8 +1096,7 @@ that joins tables."
     for type-def in (cdr m) by #'cddr
     for roles = (getf type-def :type-roles)
     for resource-name = (type-resource-name type-key)
-    when (and
-           (type-has-roles type-key (getf m type-key))
+    when (and (type-has-roles type-def)
            (not (a:get-id *rbac* "resources" resource-name)))
     do
     (pl:pdebug :in "add-type-roles" :state "adding type role"
