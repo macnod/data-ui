@@ -681,7 +681,7 @@ Notes:
       (a:remove-user *rbac* user)
       (a:remove-role *rbac* role))))
 
-(test be-insert
+(test be-insert-todo
   (let ((test-todo-name "test-be-insert-todo")
         (test-tag-name "test-be-insert-tag"))
     ;; Cleanup
@@ -735,6 +735,25 @@ Notes:
     ;; Clean up the new role and user
     (a:remove-user *rbac* "todo-user-1")
     (a:remove-role *rbac* "todo-creator")))
+
+(test be-insert-setting
+  (let ((role-data '(:name "role-1" :permissions ("create" "read")))
+         (user-data '(:name "user-1" :password "password-1" :email "no-email")))
+    (unless (a:get-id *rbac* "roles" "role-1")
+      (be-insert :roles role-data "admin"))
+    (unless (a:get-id *rbac* "users" "user-1")
+      (be-insert :users user-data "admin" :roles '("role-1")))
+    (when (be-id :settings '((:users :name :eq "user-1")) "admin")
+      (be-delete :settings '((:users :name :eq "user-1")) "admin"))
+    (is-true (uuid-p (be-insert :settings '(:user "user-1") "admin")))
+    (is (equal
+          (getf (car (be-list :settings "admin"
+                       :filters '((:users :name :eq "user-1"))))
+            :user)
+          "user-1"))
+    (be-delete :settings '((:users :name :eq "user-1")) "admin")
+    (be-delete :users '((:users :name :eq "user-1")) "admin")
+    (be-delete :roles '((:roles :name :eq "role-1")) "admin")))
 
 (test be-update
   (let* ((tags (loop for tag-index from 1 to 10

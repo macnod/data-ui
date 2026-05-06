@@ -191,7 +191,6 @@ NIL if the string is not a valid number."
                           :validations (:join-items-exist)
                           :source (:view :main :table :roles :column :name :agg :list)
                           :source-all (:view :roles :table :roles :column :name :agg :list)
-                          :ids-table :roles
                           :join-table :role-users))
        :list-form (:fields (:name :email :roles))
        :update-form (:fields t)
@@ -256,7 +255,6 @@ NIL if the string is not a valid number."
                                               :table :permissions
                                               :column :name
                                               :agg :list)
-                                :ids-table :permissions
                                 :join-table :role-permissions))
        :list-form (:fields t)
        :update-form (:fields t)
@@ -281,7 +279,7 @@ NIL if the string is not a valid number."
      (:table t :base t
        :create :auto :update :auto :delete :delete-setting
        :deletable t
-       :views (:main (:tables (:settings :user-settings :users))
+       :views (:main (:tables (:settings :users))
                 :users (:tables (:users)))
        :fields (:dark-mode (:type :boolean :default :false
                              :ui (:label "Dark Mode" :input-type :check-box)
@@ -300,20 +298,15 @@ NIL if the string is not a valid number."
                         :source (:view :main :column :bio :agg :first)
                         :column t :not-null t)
                  :user (:type :text
-                          :ui (:label "User" :input-type :hidden)
-                          :source (:view :main :table :users :column :name :agg :first)
-                          :ids-table :users
-                          :join-table :user-settings))
+                         ;; TODO: This should not be needed. Fix compiler.
+                         :force-sql-name "setting_user"
+                         :ui (:label "User" :input-type :hidden)
+                         :target :users
+                         :source (:view :users :table :users :column :name :agg :first)
+                         :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
-       :add-form (:fields t))
-
-     :user-settings
-     (:table t :base t :is-joiner t :internal t
-       :fields (:reference (:target :users)
-                 :reference (:target :settings)))))
-
-       
+       :add-form (:fields t))))
 
 ;; TODO: Ensure tables are created in the right order. The :todo-tags table
 ;;       references the :todos and :tags tables, so those tables should
@@ -345,7 +338,6 @@ NIL if the string is not a valid number."
                          :validations (:join-items-exist)
                          :source (:view :main :table :tags :column :name :agg :list)
                          :source-all (:view :tags :table :tags :column :name :agg :list)
-                         :ids-table :tags
                          :join-table :todo-tags))
        :list-form (:fields t)
        :update-form (:fields t)
@@ -409,10 +401,11 @@ NIL if the string is not a valid number."
     (let* ((table-name (table-name type-key (u:tree-get model type-key :base)))
             (singular-table-name (re:regex-replace "^rt_" (u:singular table-name) ""))
             (force-sql-name (getf field-def :force-sql-name))
-            (target (getf field-def :target))
+            (simple (and (u:tree-get model type-key :is-joiner)
+                      (getf field-def :target)))
             (field-name (to-sql-identifier field-key)))
       (cond
-        (target (to-sql-identifier field-key))
+        (simple (to-sql-identifier field-key))
         (force-sql-name force-sql-name)
         ((member field-key (default-fields :keys-only t))
           (to-sql-identifier field-key))
@@ -500,6 +493,7 @@ fields that have non-NIL values for all HAVE-KEYS."
     and base = (u:tree-get model type-key :base)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
+    for source-table = (u:tree-get field-def :source :table)
     when (getf field-def :join-table)
     collect field-key into keys
     finally (return
@@ -657,48 +651,87 @@ fields that have non-NIL values for all HAVE-KEYS."
                   (lambda (a b) (format nil "~a ~b" a b))
                   fcolumns aliases)))))
 
-(defun view-sql (model view)
-  "Converts a view like '(:users :user-roles :roles) into an SQL query string
-that joins tables."
-  (loop
-    with filter = (or (u:tree-get view :filter) :id)
-    and first-table-key = (car (getf view :tables))
-    with filter-def = (u:tree-get model first-table-key :fields filter)
-    for first = t then nil
-    for prev-table-key in (getf view :tables)
-    for prev-table-name = (table-name
-                            prev-table-key
-                            (u:tree-get model prev-table-key :base))
-    for first-table-name = prev-table-name then first-table-name
-    for prev-is-joiner = (u:tree-get model prev-table-key :is-joiner)
-    for table-key in (cdr (getf view :tables))
-    for table-name = (table-name table-key (u:tree-get model table-key :base))
-    for is-joiner = (u:tree-get model table-key :is-joiner)
-    for prev-table-ref = (if prev-is-joiner
-                           (format nil "~a.~a"
-                             prev-table-name
-                             (to-sql-identifier
-                               (table-reference table-key)))
-                           (format nil "~a.id" prev-table-name))
-    for table-ref = (if is-joiner
-                      (format nil "~a.~a"
-                        table-name
-                        (to-sql-identifier
-                          (table-reference prev-table-key)))
-                      (format nil "~a.id" table-name))
-    for sql = (format nil "left join ~a on ~a = ~a"
-                table-name
-                prev-table-ref
-                table-ref)
-    unless (equal first-table-name table-name)
-    collect sql into sql-lines
-    unless is-joiner collect table-key into table-keys
-    finally
-    (return
-      (format nil "~%select~%~{  ~a~^,~%~}~%from ~a~%~{  ~a~%~}"
-        (formatted-table-columns model (cons first-table-key table-keys))
-        first-table-name
-        sql-lines))))
+(defun single-table-view (model view-def)
+  (let* ((tables (getf view-def :tables))
+          (table-key (car tables))
+          (table-name (table-name table-key
+                        (u:tree-get model table-key :base)))
+          (select-cols (formatted-table-columns
+                         model
+                         (getf view-def :tables))))
+    (format nil "~%select~%~{  ~a~^,~%~}~%from ~a"
+      select-cols table-name)))
+
+(defun xref-field (model from-table-key to-table-key)
+  (loop with from-fields = (u:tree-get model from-table-key :fields)
+    for field-key in from-fields by #'cddr
+    for field-def in (cdr from-fields) by #'cddr
+    when (equal (getf field-def :target) to-table-key)
+    do (return (getf field-def :name-sql))))
+
+(defun double-table-view (model view-def)
+  (let* ((tables (getf view-def :tables))
+          (pri-table-key (car tables))
+          (pri-table-name (table-name pri-table-key
+                            (u:tree-get model pri-table-key
+                              :base)))
+          (sec-table-key (cadr tables))
+          (sec-table-name (table-name sec-table-key
+                            (u:tree-get model sec-table-key
+                              :base)))
+          (from-1 pri-table-name)
+          (from-2 (format nil "left join ~a on ~a.id = ~a.~a"
+                    sec-table-name
+                    sec-table-name
+                    pri-table-name
+                    (xref-field model pri-table-key sec-table-key)))
+          (select-cols (formatted-table-columns
+                         model
+                         (getf view-def :tables))))
+    (format nil "~%select~%~{  ~a~^,~%~}~%from ~{~a~^~%  ~}"
+      select-cols
+      (list from-1 from-2))))
+
+(defun triple-table-view (model view-def)
+  (let* ((tables (getf view-def :tables))
+          (pri-table-key (car tables))
+          (pri-table-name (table-name pri-table-key
+                            (u:tree-get model pri-table-key
+                              :base)))
+          (join-table-key (cadr tables))
+          (join-table-name (table-name join-table-key
+                             (u:tree-get model join-table-key
+                               :base)))
+          (sec-table-key (caddr tables))
+          (sec-table-name (table-name sec-table-key
+                            (u:tree-get model sec-table-key
+                              :base)))
+          (from-1 pri-table-name)
+          (from-2 (format nil "left join ~a on ~a.id = ~a.~a"
+                    join-table-name
+                    pri-table-name
+                    join-table-name
+                    (to-sql-identifier (table-reference pri-table-key))))
+          (from-3 (format nil "left join ~a on ~a.id = ~a.~a"
+                    sec-table-name
+                    sec-table-name
+                    join-table-name
+                    (to-sql-identifier (table-reference sec-table-key))))
+          (select-cols (formatted-table-columns
+                         model
+                         (getf view-def :tables))))
+    (format nil "~%select~%~{  ~a~^,~%~}~%from ~{~a~^~%  ~}"
+      select-cols
+      (list from-1 from-2 from-3))))
+
+(defun view-sql (model view-def)
+  (let ((tables (getf view-def :tables)))
+    (case (length tables)
+      (1 (single-table-view model view-def))
+      (2 (double-table-view model view-def))
+      (3 (triple-table-view model view-def))
+      (otherwise
+        (error "Views with more than 3 tables are not currently supported")))))
 
 (defun keyword-matches (keyword regex)
   (re:scan (format nil "(?i)~a" regex) (format nil "~s" keyword)))
@@ -814,18 +847,15 @@ that joins tables."
                        :type-sql type-sql
                        :create-sql (format nil "~{~a~^ ~}" sql-parts)
                        :source (field-source field-def name-key)
-                       :source-sel (getf field-def :source-sel)
                        :source-all (getf field-def :source-all)
-                       :type (if (getf field-def :target)
-                               :uuid
-                               (getf field-def :type))
+                       :type (or (getf field-def :type) :text)
                        :column column
                        :not-null (if (getf field-def :target)
                                    t
                                    (getf field-def :not-null))
                        :reference (when (equal old-field-key :reference) t)))
-    with attrs = '(:base-field :checked :unchecked :ui :unique :default
-                    :primary-key :fs-backed :target :ids-table :join-table)
+    with attrs = '(:base-field :ui :unique :default
+                    :primary-key :fs-backed :target :join-table)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))

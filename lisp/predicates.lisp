@@ -30,7 +30,6 @@ YYYY-MM-DD HH:MM:SS. (The space may be a T instead.) Otherwise, returns NIL."
 Otherwise, returns NIL."
   (loop for filter in filters
     for table-key = (car filter)
-    for field-key = (cadr filter)
     thereis (not (equal table-key type-key))))
 
 (defun type-key-p (key)

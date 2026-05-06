@@ -132,7 +132,6 @@ VIEW-RESULT."
         sql id-column (placeholders ids))
       ids)))
 
-
 (defun alias-keys (type-key field-keys)
   ":private: Returns a list of the view-result aliases for FIELD-KEYS in
 TYPE-KEY."
@@ -156,10 +155,21 @@ If there is no such FORM node or if the value associated with FORM is not a list
 but rather T, then this function returns a list of all the field keys associated
 with TYPE-KEY. The result always starts with :ID, even when FORM doesn't include
 the :ID field key."
-  (let ((field-keys (u:tree-get *compiled-model* type-key form :fields)))
-    (if (or (not field-keys) (equal field-keys t))
-      (u:plist-keys (u:tree-get *compiled-model* type-key :fields))
-      (cons :id field-keys))))
+  (let ((form-field-keys (u:tree-get *compiled-model* type-key form :fields))
+         (all-field-keys (u:plist-keys
+                           (u:tree-get *compiled-model* type-key :fields))))
+    (cond
+      ((equal form-field-keys t)
+        all-field-keys)
+      ((listp form-field-keys) (not (zerop (length form-field-keys)))
+        (cons :id form-field-keys))
+      ((null form-field-keys)
+        nil)
+      (t (gmn-e "form-field-keys" "Invalid ~s specification for ~s"
+           :params `(,form ,type-key)
+           :log `(:type-key ,type-key :form ,form
+                   :form-field-keys ,(format nil "~(~s~)" form-field-keys)
+                   :all-field-keys (format-list-elements all-field-keys "~(~s~)")))))))
 
 (defun resource-id-keys (type-key)
   (list :id
@@ -182,19 +192,25 @@ actual column in the associated table, such as fields that have a non-nil
     collect field-key))
 
 (defun db-value (type-key field-key user value)
-  (let ((type (u:tree-get *compiled-model* type-key :fields field-key :type)))
-    (case type
-      (:text value)
-      (:password (a:password-hash user value))
-      (:real (if (numberp value) value (parse-number value)))
-      (:integer (if (numberp value) value (parse-number value)))
-      (:boolean (format nil "~(~a~)" value))
-      (:uuid value)
-      (:timestamp value)
-      (:list value)
-      (t (signal-validation-error
-           "Ivalid value ~s for field ~s ~s with field type ~s"
-           value type-key field-key type)))))
+  (let* ((field-def (u:tree-get *compiled-model* type-key :fields field-key))
+         (target (getf field-def :target))
+         (joiner (getf field-def :join-table)))
+    (cond ((and target (not joiner))
+           (resolve-reference-id type-key field-key value))
+          (t
+           (let ((type (getf field-def :type)))
+             (case type
+               (:text value)
+               (:password (a:password-hash user value))
+               (:real (if (numberp value) value (parse-number value)))
+               (:integer (if (numberp value) value (parse-number value)))
+               (:boolean (format nil "~(~a~)" value))
+               (:uuid value)
+               (:timestamp value)
+               (:list value)
+               (t (signal-validation-error
+                    "Ivalid value ~s for field ~s ~s with field type ~s"
+                    value type-key field-key type))))))))
 
 (defun local-values-for-update (type-key data record user &key id)
   ":private: Finds the keys listed in the model for TYPE-KEY :SQL-UPDATE, looks
@@ -433,6 +449,37 @@ has a value in VALUES."
                    id-col table val-col (placeholders values)))
             (query (cons sql values)))
       (a:with-rbac (*rbac*) (a:rbac-query query :column)))))
+
+(defun resolve-reference-id (type-key field-key value)
+  ":private: If the field has a :target (and no :join-table), treat VALUE as a
+display name from the target's :source :column (default 'name'), look it up and
+return the matching UUID. Signals validation error if no match or value is not
+a string. For non-reference fields return VALUE unchanged."
+  (let* ((m *compiled-model*)
+         (field-def (u:tree-get m type-key :fields field-key))
+         (target (getf field-def :target))
+         (joiner (getf field-def :join-table)))
+    (if (and target (not joiner))
+        (cond
+          ((uuid-p value) value)           ; already an ID (e.g. synthetic :id field with :target :resources)
+          ((listp value) value)            ; lists are handled via join-table path
+          ((not (stringp value))
+           (signal-validation-error
+             "Reference field ~s ~s expects a string value, got ~s"
+             type-key field-key value))
+          (t
+           (let* ((target-type target)
+                  (col-key (or (u:tree-get field-def :source :column) :name))
+                  (table (u:tree-get m target-type :table-name))
+                  (val-col (u:tree-get m target-type :fields col-key :name-sql))
+                  (sql (format nil "select id from ~a where ~a = $1" table val-col))
+                  (query (list sql value))
+                  (id (a:with-rbac (*rbac*) (a:rbac-query query :single))))
+             (or id
+                 (signal-validation-error
+                   "Unknown value for reference field ~s ~s: ~s"
+                   type-key field-key value)))))
+      value)))
 
 (defun unknown-values (type-key field-key values)
   ":private: Returns a list of the values in VALUES that don't exist in the
@@ -806,7 +853,14 @@ value is of the correct type for its field key."
       ((equal field-key :id)
         (valid-uuid value))
       (t (signal-validation-error
-           "Invalid field key ~s for type ~s." field-key type-key)))))
+           "Invalid field key ~s for type ~s." field-key type-key)))
+    (let ((target (getf field-def :target))
+          (joiner (getf field-def :join-table))
+          (is-id-or-pk (or (equal field-key :id)
+                           (getf field-def :primary-key))))
+      (when (and target (not joiner) (not is-id-or-pk) value)
+        ;; This will signal a validation error if an ID is not found for value
+        (resolve-reference-id type-key field-key value)))))
 
 (defun valid-existing-join-data (type-key data)
   ":private: Checks that the values in DATA for JOIN-KEYS exist in the database
@@ -1008,6 +1062,7 @@ following example returns a list of all the :todos records that have the tag
   (valid-compiled-model)
   (valid-be-type-key type-key)
   (valid-user-permissions user type-key "read")
+  (valid-filters filters)
   (let* ((m *compiled-model*)
           (user-roles (a:list-user-role-names *rbac* user))
           (type-roles (u:tree-get m type-key :type-roles))
@@ -1026,10 +1081,11 @@ following example returns a list of all the :todos records that have the tag
               (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
               (field-keys (form-field-keys type-key form)))
         (if (filters-require-join-p type-key filters)
-          (let* ((ids (view-result-ids type-key field-keys view-result))
-                  (ids-query (add-ids-clause type-key sql ids))
-                  (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
-            (view-result-values type-key field-keys view-result))
+          (let ((ids (view-result-ids type-key field-keys view-result)))
+            (when ids
+              (let* ((ids-query (add-ids-clause type-key sql ids))
+                      (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
+                (view-result-values type-key field-keys view-result))))
           (view-result-values type-key field-keys view-result))))))
 
 ;; TODO: Add pagination support
