@@ -558,16 +558,20 @@ Notes:
                       `(:name ,test-todo-name :tags (,test-tag-name))
                       "admin")))
       ;; Default :update-form
-      (let ((item (be-rec todo-id "admin" :type-key :todos)))
+      (let ((item (getf (be-rec todo-id "admin" :type-key :todos) :record)))
         (is (equal todo-id (getf item :id)))
         (is (equal test-todo-name (getf item :name)))
         (is (member test-tag-name (getf item :tags) :test #'equal)))
       ;; :list-form
-      (let ((item (be-rec todo-id "admin" :form :list-form :type-key :todos)))
+      (let ((item (getf
+                    (be-rec todo-id "admin" :form :list-form :type-key :todos)
+                    :record)))
         (is (equal todo-id (getf item :id)))
         (is (equal test-todo-name (getf item :name))))
       ;; No :type-key
-      (is (equal (getf (be-rec todo-id "admin") :name) test-todo-name))
+      (is (equal
+            (u:tree-get (be-rec todo-id "admin") :record :name)
+            test-todo-name))
       ;; Cleanup
       (be-delete :todos todo-id "admin")
       (be-delete :tags tag-id "admin"))))
@@ -597,17 +601,20 @@ Notes:
             (sort (be-val todo-id :tags "admin") #'string<))))))
 
 (test be-list
-  (let ((todo-1-name "be-list-todo-1")
-         (todo-2-name "be-list-todo-2")
-         (todo-3-name "be-list-todo-3")
-         (tag-1-name "test-be-list-tag1")
-         (tag-2-name "test-be-list-tag2")
-         (role "be-list-role")
-         (user "be-list-user"))
+  (let ((todo-1-name "todo-1")
+         (todo-2-name "todo-2")
+         (todo-3-name "todo-3")
+         (tag-1-name "tag-1")
+         (tag-2-name "tag-2")
+         (role "role-1")
+         (user "user-1"))
     ;; Clean up any previous test data. This data shouldn't exist in the first
     ;; place, but if a previous test run failed partway...
-    (be-delete :todos `((:todos :name :eq ,todo-1-name)) "admin")
-    (be-delete :todos `((:todos :name :eq ,todo-2-name)) "admin")
+    (loop with todo-ids = (getf
+                            (be-list-column :todos :name "admin"
+                              :filters '((:todos :name :like "todo-%")))
+                            :records)
+      for id in todo-ids do (be-delete :todos id "admin"))
     (be-delete :tags `((:tags :name :eq ,tag-1-name)) "admin")
     (be-delete :tags `((:tags :name :eq ,tag-2-name)) "admin")
     ;; Add new role and user for this test
@@ -627,12 +634,12 @@ Notes:
                         :roles '("admin")))
            (todo-2-id nil)
            (todo-3-id nil))
-      ;; :todos does not yet have the "be-list-role" role; insert should fail
+      ;; :todos does not yet have the "role-1" role; insert should fail
       (signals validation-error
         (be-insert :todos `(:name ,todo-2-name :tags (,tag-1-name ,tag-2-name))
           user :roles (list role)))
       (be-add-type-roles :todos "admin" role)
-      ;; :todos now has the "be-list-role" role; insert should work
+      ;; :todos now has the "role-1" role; insert should work
       (setf todo-2-id
         (be-insert :todos `(:name ,todo-2-name :tags (,tag-1-name ,tag-2-name))
           user :roles (list role)))
@@ -642,31 +649,37 @@ Notes:
       ;; Admin sees all todos
       (let ((todo-ids (mapcar
                         (lambda (i) (getf i :id))
-                        (be-list :todos "admin"))))
+                        (getf (be-list :todos "admin") :records))))
         (is-true (member todo-1-id todo-ids :test #'equal))
         (is-true (member todo-2-id todo-ids :test #'equal))
         (is-true (member todo-3-id todo-ids :test #'equal)))
-      ;; be-list-user sees the todos with the "be-list-role" role only
+      ;; be-list-user sees the todos with the "role-1" role only
       (let ((todo-ids (mapcar
                         (lambda (i) (getf i :id))
-                        (be-list :todos user))))
+                        (getf (be-list :todos user) :records))))
         (is-false (member todo-1-id todo-ids :test #'equal))
         (is-true (member todo-2-id todo-ids :test #'equal))
         (is-true (member todo-3-id todo-ids :test #'equal)))
       ;; Admin request with name filter should return only one todo
-      (let ((todos (be-list :todos "admin"
-                     :filters `((:todos :name :eq ,todo-1-name)))))
+      (let ((todos (getf
+                     (be-list :todos "admin"
+                       :filters `((:todos :name :eq ,todo-1-name)))
+                     :records)))
         (is (= 1 (length todos)))
         (is (equal todo-1-id (getf (car todos) :id))))
-      ;; be-list-user request with name filter (for non-be-list-role todos),
+      ;; be-list-user request with name filter (for todos without role-1),
       ;; should return no todos
       (is-true (zerop
-                 (length (be-list :todos user
-                           :filters `((:todos :name :eq ,todo-1-name))))))
+                 (length
+                   (getf (be-list :todos user
+                           :filters `((:todos :name :eq ,todo-1-name)))
+                     :records))))
       ;; be-list-user request with like name filter that matches all three
-      ;; todos should return only the two be-list-role todos
-      (let ((todos (be-list :todos user
-                     :filters '((:todos :name :like "be-list-todo-%")))))
+      ;; todos should return only the two role-1 todos
+      (let ((todos (getf
+                     (be-list :todos user
+                       :filters '((:todos :name :like "todo-%")))
+                     :records)))
         (is (= 2 (length todos)))
         (is (member todo-2-id (mapcar (lambda (x) (getf x :id)) todos)
               :test #'equal))
@@ -694,7 +707,7 @@ Notes:
     ;; Basic insert without roles/tags
     (let ((todo-id (be-insert :todos `(:name ,test-todo-name) "admin")))
       (is (uuid-p todo-id))
-      (let ((item (be-rec todo-id "admin" :type-key :todos)))
+      (let ((item (getf (be-rec todo-id "admin" :type-key :todos) :record)))
         (is (equal todo-id (getf item :id)))
         (is (equal test-todo-name (getf item :name))))
       (be-delete :todos todo-id "admin"))
@@ -705,7 +718,7 @@ Notes:
                      "admin"
                      :roles '("public"))))
       (is (uuid-p todo-id))
-      (let ((item (be-rec todo-id "admin" :type-key :todos)))
+      (let ((item (getf (be-rec todo-id "admin" :type-key :todos) :record)))
         (is (equal test-todo-name (getf item :name)))
         (is (member test-tag-name (getf item :tags) :test #'equal)))
       (be-delete :todos todo-id "admin")
@@ -747,8 +760,10 @@ Notes:
       (be-delete :settings '((:users :name :eq "user-1")) "admin"))
     (is-true (uuid-p (be-insert :settings '(:user "user-1") "admin")))
     (is (equal
-          (getf (car (be-list :settings "admin"
-                       :filters '((:users :name :eq "user-1"))))
+          (getf (car (getf
+                       (be-list :settings "admin"
+                         :filters '((:users :name :eq "user-1")))
+                       :records))
             :user)
           "user-1"))
     (be-delete :settings '((:users :name :eq "user-1")) "admin")
@@ -769,14 +784,16 @@ Notes:
     ;; Cleanup
     (loop
       with filters = '((:tags :name :like "be-update-tag-%"))
-      with stale-tags = (be-list :tags "admin" :filters filters)
+      with stale-tags = (getf (be-list :tags "admin" :filters filters) :records)
       for tag in stale-tags
       for id = (getf tag :id)
       for resource-name = (id-to-resource-name id)
       do (a:remove-resource *rbac* resource-name))
     (loop
       with filters = '((:todos :name :like "be-update-todo-%"))
-      with stale-todos = (be-list :todos "admin" :filters filters)
+      with stale-todos = (getf
+                           (be-list :todos "admin" :filters filters)
+                           :records)
       for todo in stale-todos
       for id = (getf todo :id)
       for resource-name = (id-to-resource-name id)
@@ -887,67 +904,73 @@ Notes:
     (signals error (be-delete :tags nil "admin"))))
 
 (test be-add-type-roles
-  (let ((role-1 "todo-type-role-1")
-         (role-2 "todo-type-role-2"))
+  (let* ((role-1 "role-1")
+          (role-2 "role-2")
+          (roles (list role-1 role-2)))
     ;; Cleanup
-    (when (a:get-id *rbac* "roles" role-1)
-      (a:remove-role *rbac* role-1))
-    (when (a:get-id *rbac* "roles" role-2)
-      (a:remove-role *rbac* role-2))
-    ;; Add the new roles
-    (a:add-role *rbac* role-1)
-    (a:add-role *rbac* role-2)
-    ;; Types should have a default role of "admin"
-    (is (equal (a:list-resource-role-names
-                 *rbac*
-                 (type-resource-name :todos))
-          '("admin")))
-    ;; Add a new role to the :todos type
-    (be-add-type-roles :todos "admin" role-1)
-    (is (equal
-          (u:safe-sort (a:list-resource-role-names
-                         *rbac*
-                         (type-resource-name :todos)))
-          (list "admin" role-1)))
-    ;; Add another role to the :todos type
-    (be-add-type-roles :todos "admin" role-2)
-    (is (equal
-          (u:safe-sort (a:list-resource-role-names
-                         *rbac*
-                         (type-resource-name :todos)))
-          (list "admin" role-1 role-2)))
-    ;; Clean up again
-    (a:remove-role *rbac* role-1)
-    (a:remove-role *rbac* role-2)))
+    (loop for role in roles
+      when (a:get-id *rbac* "roles" role)
+      do (a:remove-role *rbac* role))
+    (let ((existing-roles (u:safe-sort
+                            (a:list-resource-role-names
+                              *rbac*
+                              (type-resource-name :todos)))))
+      ;; Add the new roles
+      (loop for role in roles do (a:add-role *rbac* role))
+      ;; Make sure the :todos type starts out with the existing roles only
+      (is (equal
+            (u:safe-sort
+              (a:list-resource-role-names *rbac* (type-resource-name :todos)))
+            existing-roles))
+      ;; Add a new role to the :todos type
+      (be-add-type-roles :todos "admin" role-1)
+      (is (equal
+            (u:safe-sort (a:list-resource-role-names
+                           *rbac*
+                           (type-resource-name :todos)))
+            (u:safe-sort (cons role-1 existing-roles))))
+      ;; Add another role to the :todos type
+      (be-add-type-roles :todos "admin" role-2)
+      (is (equal
+            (u:safe-sort (a:list-resource-role-names
+                           *rbac*
+                           (type-resource-name :todos)))
+            (u:safe-sort (append roles existing-roles))))
+      ;; Clean up again
+      (loop for role in roles do (a:remove-role *rbac* role)))))
 
 (test be-remove-type-roles
-  (let ((role-1 "todo-type-role-1")
-         (role-2 "todo-type-role-2"))
+  (let ((role-1 "role-1")
+         (role-2 "role-2")
+         (permissions '("create" "read" "update" "delete")))
     ;; Cleanup
     (when (a:get-id *rbac* "roles" role-1)
       (a:remove-role *rbac* role-1))
     (when (a:get-id *rbac* "roles" role-2)
       (a:remove-role *rbac* role-2))
-    ;; Add the new roles and assign them to the :todos type
-    (a:add-role *rbac* role-1)
-    (a:add-role *rbac* role-2)
-    (be-add-type-roles :todos "admin" role-1 role-2)
-    ;; Remove one of the roles from the :todos type
-    (be-remove-type-roles :todos "admin" role-1)
-    (is (equal
-          (u:safe-sort (a:list-resource-role-names
-                         *rbac*
-                         (type-resource-name :todos)))
-          (list "admin" role-2)))
-    ;; Remove the other role from the :todos type, leaving only "admin"
-    (be-remove-type-roles :todos "admin" role-2)
-    (is (equal
-          (a:list-resource-role-names
-           *rbac*
-           (type-resource-name :todos))
-          '("admin")))
-    (a:remove-role *rbac* role-1)
-    (a:remove-role *rbac* role-2)))
+    (let ((existing-roles (a:list-resource-role-names
+                            *rbac*
+                            (type-resource-name :todos))))
+      ;; Add the new roles and assign them to the :todos type
+      (a:add-role *rbac* role-1 :permissions permissions)
+      (a:add-role *rbac* role-2 :permissions permissions)
+      (be-add-type-roles :todos "admin" role-1 role-2)
+      ;; Remove one of the roles from the :todos type
+      (be-remove-type-roles :todos "admin" role-1)
+      (is (equal
+            (u:safe-sort (a:list-resource-role-names
+                           *rbac*
+                           (type-resource-name :todos)))
+            (u:safe-sort (cons role-2 existing-roles))))
+      ;; Remove the other role from the :todos type, leaving only "admin"
+      (be-remove-type-roles :todos "admin" role-2)
+      (is (equal
+            (a:list-resource-role-names
+              *rbac*
+              (type-resource-name :todos))
+            (u:safe-sort existing-roles)))
+      (a:remove-role *rbac* role-1)
+      (a:remove-role *rbac* role-2))))
 
 (test be-validate-field
   ;; Validate a good todo name

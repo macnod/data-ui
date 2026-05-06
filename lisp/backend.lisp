@@ -8,13 +8,20 @@
   (loop for a from start-at to (1- (+ start-at (length fields)))
     collect (format nil "$~d" a)))
 
+(defun value-or-nil (value)
+  ":private: Returns value unless value is the keyword :null, in which case this
+function returns NIL. This is useful for dealing the values that the database
+returns for fields that are null."
+  (if (equal value :null) nil value))
+
 (defun aggregate-values (aggregation values)
   ":private: Performs AGGREGATION on the VALUES list."
-  (case aggregation
-    (:first (car values))
-    (:list values)
-    (:distinct (u:distinct-values values))
-    (t (error "Invalid aggregation ~s." aggregation))))
+  (when values
+    (case aggregation
+      (:first (value-or-nil (car values)))
+      (:list (remove-if-not #'value-or-nil values))
+      (:distinct (u:distinct-values (remove-if-not #'value-or-nil values)))
+      (t (error "Invalid aggregation ~s." aggregation)))))
 
 (defun field-values-for-id (view-result id-key id-value alias-key aggregation)
   ":private: Retrieves from VIEW-RESULT the field values for the record where
@@ -653,8 +660,11 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
               (where (add-where-clause sql (list (list type-key :id :eq id)) user))
               (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
               (field-keys (form-field-keys type-key form)))
-        (car
-          (view-result-values type-key field-keys view-result))))))
+        (list
+          :type type-key
+          :record (car
+                    (view-result-values type-key field-keys view-result))
+          :allowed-values (allowed-values type-key user))))))
 
 (defun insert-join-table-rows (type-key uuid data)
   (loop
@@ -745,6 +755,46 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
       (insert-join-table-rows type-key uuid data)
       (values uuid t))))
 
+(defun allowed-values-for-field (type-key field-key user)
+  (let* ((m *compiled-model*)
+          (source (u:tree-get m type-key :fields field-key :source))
+          (x-type-key (getf source :table))
+          (x-field-key (getf source :column)))
+    (getf (be-list-column x-type-key x-field-key user) :values)))
+
+(defun allowed-values (type-key user)
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for join-table = (getf field-def :join-table)
+    for target = (getf field-def :target)
+    when (and (or join-table target) (not (equal field-key :id)))
+    appending
+    (list field-key (allowed-values-for-field type-key field-key user))))
+
+(defun list-sql-for (type-key user &key (form :list-form) filters)
+  (declare (ignore form))
+  (valid-compiled-model)
+  (valid-be-type-key type-key)
+  (valid-user-permissions user type-key "read")
+  (valid-filters filters)
+  (let* ((m *compiled-model*)
+          (user-roles (a:list-user-role-names *rbac* user))
+          (type-roles (u:tree-get m type-key :type-roles))
+          (ids (if (base-resource-type-key-p type-key)
+                 (when (u:has-some user-roles type-roles)
+                   (let ((table (table-name type-key
+                                  (u:tree-get m type-key :base))))
+                     (a:with-rbac (*rbac*)
+                       (db:query (format nil "select id from ~a" table)
+                         :column))))
+                 (user-read-type-ids user type-key))))
+    (when ids
+      (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
+              (sql (u:tree-get m type-key :views :main :sql))
+              (where (add-where-clause sql all-filters user))
+              (view-result (a:with-rbac (*rbac*) (a:rbac-query where))))
+        (list :sql where :view-result view-result)))))
 
 ;;
 ;; END Internal database helper functions
@@ -1036,7 +1086,7 @@ database query."
     (valid-field-key type-key field-key)
     (user-allowed-resource user id "read")
     (let ((record (rec id user :form form :type-key type-key)))
-      (getf record field-key))))
+      (u:tree-get record :record field-key))))
 
 ;; This function relies on a single query when there are no filters and on 2
 ;; queries where there are filters. This is necessary with the current approach
@@ -1085,11 +1135,17 @@ following example returns a list of all the :todos records that have the tag
             (when ids
               (let* ((ids-query (add-ids-clause type-key sql ids))
                       (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
-                (view-result-values type-key field-keys view-result))))
-          (view-result-values type-key field-keys view-result))))))
+                (list
+                  :type type-key
+                  :records (view-result-values type-key field-keys view-result)
+                  :allowed-values (allowed-values type-key user)))))
+          (list
+            :type type-key
+            :records (view-result-values type-key field-keys view-result)
+            :allowed-values (allowed-values type-key user)))))))
 
 ;; TODO: Add pagination support
-(defun be-list-column (type-key field-key user &key filters)
+(defun be-list-column (type-key field-key user &key (form :list-form) filters)
   ":public: Returns a list of the values in FIELD-KEY for the records of type
 TYPE-KEY that match FILTERS and that USER has 'read' permissions for. This is
 like BE-LIST, but it returns a list of values instead of a list of records."
@@ -1100,8 +1156,12 @@ like BE-LIST, but it returns a list of values instead of a list of records."
   (if (uuid-p filters)
     (valid-existing-uuid filters)
     (valid-filters filters))
-  (let ((records (be-list type-key user :filters filters)))
-    (mapcar (lambda (r) (getf r field-key)) records)))
+  (let ((records (getf
+                   (be-list type-key user :form form :filters filters)
+                   :records)))
+    (list
+      :type type-key
+      :values (mapcar (lambda (r) (getf r field-key)) records))))
 
 ;; TODO: Transaction!
 (defun be-insert (type-key data user &key roles)
@@ -1169,7 +1229,7 @@ update fails.
   (valid-user-roles user roles)
   (let* ((m *compiled-model*)
           (uuid (id-from-filters-and-data type-key filters data))
-          (record (rec uuid user :type-key type-key))
+          (record (getf (rec uuid user :type-key type-key) :record))
           (sql (car (u:tree-get m type-key :update-sql :main)))
           (values (local-values-for-update type-key data record user :id uuid))
           (update-query (cons sql values))
@@ -1231,7 +1291,7 @@ treated as the UUID of the record to be deleted."
                 :params `(,type-key ,f)
                 :log `(:type-key ,type-key :delete-function ,f :uuid ,uuid)))))
         ((functionp f)
-          (let* ((record (rec uuid user :type-key type-key)))
+          (let* ((record (getf (rec uuid user :type-key type-key) :record)))
             (funcall f type-key record user)
             uuid))
         (t (signal-validation-error

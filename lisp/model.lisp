@@ -1022,7 +1022,16 @@ fields that have non-NIL values for all HAVE-KEYS."
           (fields (compile-fields type-key model))
           (table-name (table-name type-key base))
           (roles (when (type-has-roles type-def)
-                   (getf type-def :type-roles '("admin")))))
+                   (getf type-def
+                     :type-roles
+                     (if base '("admin") '("admin" "logged-in"))))))
+    ;; TODO: Documentation. Be very careful when explicitly adding roles to a
+    ;;       type, because if the role doesn't exist, it will be created here
+    ;;       with full permissions and associated with the type.
+    (loop for role in roles
+      when (not (a:get-id *rbac* "roles" role))
+      do (a:add-role *rbac* role
+           :permissions '("create" "read" "update" "delete")))
     (add-to-plist
       type-def
       (list
