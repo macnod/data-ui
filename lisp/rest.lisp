@@ -273,15 +273,6 @@ exists. Otherwise, logs a message and returns NIL."
           (user (require-auth type-roles))
           (filters-parsed (when filters (parse-filters filters)))
           (form-key (when form (parse-form form)))
-          (debug (pl:pdebug :in "rest-list"
-                   :type type
-                   :type-key type-key
-                   :type-roles type-roles
-                   :user user
-                   :filters filters
-                   :filters-parsed (format nil "~s" filters-parsed)
-                   :form form
-                   :form-key form-key))
           (result (handler-case
                     (be-list type-key user :form form-key :filters filters-parsed)
                     (error (e) (abort-error e)))))
