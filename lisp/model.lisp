@@ -1041,9 +1041,47 @@ fields that have non-NIL values for all HAVE-KEYS."
         :table-name table-name
         :fields fields))))
 
+(defun preliminary-model-check (&optional def key-path)
+  (loop with current = (apply #'u:tree-get (cons def key-path))
+    for key in current by #'cddr
+    for sdef in (cdr current) by #'cddr
+    do (cond
+         ((or (not sdef) (atom sdef))
+           nil)
+         ((and
+            (listp sdef)
+            (equal (car sdef) 'quote))
+           (error
+             "Quoted list in model definition at ~{~(~s~)~^ -> ~}."
+             (append key-path (list key))))
+         ((and
+            (equal (second key-path) :views)
+            (equal key :tables)
+            (listp sdef))
+           t)
+         ((and
+            (equal (second key-path) :fields)
+            (equal key :validations)
+            (listp sdef))
+           t)
+         ((and
+            (member (second key-path) '(:list-form :update-form :add-form))
+            (equal key :fields))
+           t)
+         ((u:plistp sdef)
+           (preliminary-model-check def (append key-path (list key))))
+         ((equal 'quote (car sdef))
+           (error
+             "Quoted list in model definition at ~{~(~s~)~^ -> ~}."
+             (append key-path (list key))))
+         (t (error
+              "Invalid value in model defintion at ~{~(~s~)~^ -> ~}: ~s"
+              (append key-path (list key)) sdef)))))
+
 (defun stage-1 (model)
   (loop
     with full-model = (append *base-model* model)
+    initially (preliminary-model-check full-model)
     for type-key in full-model by #'cddr
     for type-def in (cdr full-model) by #'cddr
     for compiled-def = (compile-type-def full-model type-key)
