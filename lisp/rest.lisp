@@ -230,10 +230,14 @@ exists. Otherwise, logs a message and returns NIL."
 (defun parse-filters (filters-json)
   (loop with lists = (y:parse filters-json)
     for (type-string field-string op-string value) in lists
-    for type-key = (make-type-key type-string)
-    for field-key = (make-field-key type-key field-string)
-    for op-key = (make-operator-key op-string)
-    for filter = (list type-key field-key op-key value)
+    for type-key = (parse-type type-string)
+    for field-key = (parse-field type-key field-string)
+    for op-key = (parse-operator op-string)
+    for filter = (append
+                   (remove-if-not
+                     #'identity
+                     (list type-key field-key op-key))
+                   (list value))
     when (every #'identity filter)
     collect filter into good
     else collect filter into bad
