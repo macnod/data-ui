@@ -51,6 +51,46 @@ how to aggregate the values for the field."
     collect value into values
     finally (return (aggregate-values aggregation values))))
 
+(defun alias-key-to-field-key (type-key alias-key)
+  ":private: Returns the field key associated with ALIAS-KEY in the :VIEWS
+metadata for TYPE-KEY."
+  (loop
+    with m = *compiled-model*
+    with aliases = (u:tree-get m type-key :views :main :aliases)
+    for alias-type-key in aliases by #'cddr
+    for alias-type-def in (cdr aliases) by #'cddr
+    for field-key = (loop for field-key in alias-type-def by #'cddr
+                      for alias in (cdr alias-type-def) by #'cddr
+                      when (equal alias alias-key)
+                      do (return field-key))
+    when field-key do (return field-key)))
+
+(defun view-result (type-key query)
+  ":private: Runs QUERY against the database and returns the result. QUERY is a
+list whose car is an SQL string with placeholders and whose cdr is a list of the
+values for those placeholders. The result is a list of plists, where each plist
+represents a row in the query result, with the keys being the column names or
+aliases from the SQL and the values being the corresponding field values for
+that row. TYPE-KEY is used to look up the type of each field, to determine if
+any further transformation of the field's value is necessary, such as
+converting timetstamps from integers to ISO 8601 strings."
+  (let ((result (a:with-rbac (*rbac*) (a:rbac-query query))))
+    (loop for row in result
+      collect
+      (loop with m = *compiled-model*
+        with fields = (u:tree-get m type-key :fields)
+        and aliases = (u:tree-get m type-key :views :main :aliases)
+        for key in row by #'cddr
+        for value in (cdr row) by #'cddr
+        for field-key = (alias-key-to-field-key type-key key)
+        for field-type = (u:tree-get fields field-key :type)
+        for final-value = (case field-type
+                            (:timestamp (when value
+                                          (dt:timestamp-string
+                                            :universal-time value)))
+                            (t value))
+        appending (list key final-value)))))
+
 (defun view-result-values (type-key field-keys view-result)
   ":private: Given a VIEW-RESULT, which is the result of running one of the
 :VIEWS queries associated with TYPE-KEY, and which can contain multiple rows for
@@ -1128,7 +1168,7 @@ following example returns a list of all the :todos records that have the tag
       (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
               (sql (u:tree-get m type-key :views :main :sql))
               (where (add-where-clause sql all-filters user))
-              (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
+              (view-result (view-result type-key where))
               (field-keys (form-field-keys type-key form)))
         (if (filters-require-join-p type-key filters)
           (let ((ids (view-result-ids type-key field-keys view-result)))

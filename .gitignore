@@ -34,3 +34,4 @@ dev/kube/rendered-manifests.yaml
 /tests/input-files/
 /tests/shared-files/
 TODO.md
+/.debug/

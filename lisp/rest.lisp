@@ -135,14 +135,16 @@ exists. Otherwise, logs a message and returns NIL."
                      t)))
     (values user allowed required-roles)))
 
-(defun make-json-error (error-string)
+(defun make-json-error (status-code error-string)
   (let ((errors (cond ((listp error-string)
                         (format nil "~{~a~^ ~}." error-string))
                   ((stringp error-string)
                     error-string)
                   (t (format nil "Bad error string: ~s"
                        error-string)))))
-    (plist-to-json (list :error errors))))
+    (setf (h:content-type*) "application/json")
+    (setf (h:return-code*) status-code)
+    (plist-to-json (list :status-code status-code :error errors))))
 
 (defun require-auth (&optional required-roles)
   "Returns the current user if authorized.
@@ -152,11 +154,12 @@ exists. Otherwise, logs a message and returns NIL."
     (declare (ignore required))
     (cond
       ((not (stringp (get-bearer-token)))
-       (setf (h:return-code*) h:+http-authorization-required+)
-       (h:abort-request-handler (make-json-error "missing or invalid token")))
+       (h:abort-request-handler
+         (make-json-error
+           h:+http-authorization-required+ "missing or invalid token")))
       ((not allowed)
-       (setf (h:return-code*) h:+http-forbidden+)
-       (h:abort-request-handler (make-json-error "forbidden")))
+        (h:abort-request-handler
+          (make-json-error h:+http-forbidden+ "forbidden")))
       (t user))))
 
 (defun session-user (required-roles)
@@ -172,9 +175,10 @@ exists. Otherwise, logs a message and returns NIL."
     (values user allowed required-roles)))
 
 (defun abort-request (error-code format-string params)
-  (setf (h:return-code*) error-code)
-  (make-json-error
-    (apply #'format (append (list nil format-string) params))))
+  (h:abort-request-handler
+    (make-json-error
+      error-code
+      (apply #'format (append (list nil format-string) params)))))
 
 (defun abort-not-found (format-string &rest params)
   (abort-request h:+http-not-found+ format-string params))
