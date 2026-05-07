@@ -140,6 +140,7 @@ function export_repl_environment {
     export LOG_FILE="tests/repl.log"
     export LOG_SEVERITY="DEBUG"
     export SWANK_PORT="4010"
+    export HTTP_PORT="8081"
     export RUN_TESTS="false"
 }
 
@@ -150,6 +151,7 @@ function export_test_environment {
     export LOG_FILE="tests/test.log"
     export LOG_SEVERITY="DEBUG"
     export SWANK_PORT="4011"
+    export HTTP_PORT="8082"
     export RUN_TESTS="true"
 }
 

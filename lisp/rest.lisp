@@ -1,6 +1,6 @@
 (in-package :data-ui)
 
-;; HTTP and Swank servers
+;; Environment variables
 (defparameter *http-port* (u:getenv "HTTP_PORT" :default 8080 :type :integer))
 (defparameter *document-root*
   (let* ((dir (u:getenv "DOCUMENT_ROOT"
@@ -10,9 +10,15 @@
 (defparameter *temp-directory* (u:getenv "FS_TEMP_DIRECTORY"
                                  :default "/app/temp-files/"))
 (defparameter *web-directory* (u:getenv "WEB_DIRECTORY" :default "/app/web"))
+(defparameter *jwt-secret*
+  (b:string-to-octets (u:getenv "JWT_SECRET" :default "32-char secret")))
+
+;; Constants
+
+;; Global variables
+(defparameter *guest* "guest")
 (defparameter *favicon* (u:join-paths *web-directory* "favicon.ico"))
 (defparameter *http-server* nil)
-
 
 ;;
 ;; BEGIN Custom Hunchentoot acceptor
@@ -65,3 +71,218 @@
 
 ;; Where Hunchentoot should store temporary files during uploads
 (setf h:*tmp-directory* *temp-directory*)
+
+;;
+;; BEGIN JWT Token
+;;
+
+(defun issue-jwt (user-id &optional (expiration-seconds 3600))
+  ":private: Issue a JWT for a user."
+  (let* ((claims `(("sub" . ,user-id)
+                    ("exp" . ,(+ (dt:universal-time-to-unix-time)
+                                expiration-seconds)))))
+    (j:encode :hs256 *jwt-secret* claims)))
+
+(defun validate-jwt (token)
+  ":private: Validate a JWT token. Returns username if JWT token validates and user
+exists. Otherwise, logs a message and returns NIL."
+  (handler-case
+    (multiple-value-bind (claims headers sig)
+      (jose:decode :hs256 *jwt-secret* token)
+      (declare (ignore headers sig))
+      (when claims
+        (let ((user-id (cdr (assoc "sub" claims :test #'string=))))
+          (if user-id
+            (let ((user (handler-case
+                          (a:get-value *rbac* "users" "username"
+                            "id" user-id)
+                          (error (e)
+                            (pl:pwarn :status "invalid user id in jwt"
+                              :condition e)
+                            nil))))
+              (if user
+                user
+                (progn
+                  (pl:pwarn :status "user id not in database" :user-id user-id)
+                  nil)))
+            (progn
+              (pl:pwarn :status "user id not in jwt")
+              nil)))))
+    (error (e)
+      (pl:pwarn :status "invalid jwt" :condition e)
+      nil)))
+
+;;
+;; END JWT Token
+;;
+
+(defun get-bearer-token ()
+  "Extracts the JWT from the Authorization: Bearer header."
+  (let ((auth (h:header-in* "Authorization")))
+    (when (and auth (u:starts-with "Bearer " auth))
+      (u:trim (subseq auth 7)))))
+
+(defun current-user (&optional required-roles)
+  "Returns (VALUES USER ALLOWED REQUIRED-ROLES).
+  - USER is the authenticated user or *GUEST* if no valid token.
+  - ALLOWED is T if the user has at least one of the REQUIRED-ROLES.
+  - REQUIRED-ROLES is the same as what was passed in, for convenience."
+  (let* ((token (get-bearer-token))
+          (user (if token (validate-jwt token) *guest*))
+          (user-roles (when user (a:get-id *rbac* "users" user)))
+          (allowed (if required-roles
+                     (u:has-some required-roles user-roles)
+                     t)))
+    (values user allowed required-roles)))
+
+(defun make-json-error (error-string)
+  (let ((errors (cond ((listp error-string)
+                        (format nil "~{~a~^ ~}." error-string))
+                  ((stringp error-string)
+                    error-string)
+                  (t (format nil "Bad error string: ~s"
+                       error-string)))))
+    (plist-to-json (list :error errors))))
+
+(defun require-auth (&optional required-roles)
+  "Returns the current user if authorized.
+   Otherwise aborts the request with 401 or 403."
+  (multiple-value-bind (user allowed required)
+      (current-user required-roles)
+    (declare (ignore required))
+    (cond
+      ((not (stringp (get-bearer-token)))
+       (setf (h:return-code*) h:+http-authorization-required+)
+       (h:abort-request-handler (make-json-error "missing or invalid token")))
+      ((not allowed)
+       (setf (h:return-code*) h:+http-forbidden+)
+       (h:abort-request-handler (make-json-error "forbidden")))
+      (t user))))
+
+(defun session-user (required-roles)
+  (let* ((token (h:session-value :jwt-token))
+          (user (if token (validate-jwt token) *guest*))
+          (user-roles (when user (a:list-user-role-names *rbac* user)))
+          (allowed (u:has-some required-roles user-roles)))
+    (pl:pdebug :in "session-user"
+      :token token
+      :required-roles required-roles
+      :roles user-roles
+      :allowed allowed)
+    (values user allowed required-roles)))
+
+(defun abort-request (error-code format-string params)
+  (setf (h:return-code*) error-code)
+  (make-json-error
+    (apply #'format (append (list nil format-string) params))))
+
+(defun abort-not-found (format-string &rest params)
+  (abort-request h:+http-not-found+ format-string params))
+
+(defun abort-bad-request (format-string &rest params)
+  (abort-request h:+http-bad-request+ format-string params))
+
+(defun abort-error (format-string &rest params)
+  (abort-request h:+http-internal-server-error+ format-string params))
+
+(defun abort-forbidden (format-string &rest params)
+  (abort-request h:+http-forbidden+ format-string params))
+
+(defun abort-auth (format-string &rest params)
+  (abort-request h:+http-authorization-required+ format-string params))
+
+(defun parse-type (type-string)
+  (if (and
+        type-string
+        (stringp type-string)
+        (not (zerop (length type-string)))
+        (re:scan "^[-a-zA-Z0-9]" type-string)
+        (not (re:scan "^[-0-9]|[-0-9]$" type-string))
+        (u:tree-get *compiled-model* (u:make-keyword type-string)))
+    (u:make-keyword type-string)
+    (abort-not-found "Type ~s not found." type-string)))
+
+(defun parse-field (type-key field-string)
+  (if (and
+        type-key
+        (keywordp type-key)
+        field-string
+        (stringp field-string)
+        (not (zerop (length field-string)))
+        (re:scan "^[-a-zA-Z0-9]" field-string)
+        (not (re:scan "^[-0-9]|[-0-9]$" field-string))
+        (u:tree-get *compiled-model* type-key :fields
+          (u:make-keyword field-string)))
+    (u:make-keyword field-string)
+    (abort-not-found "Field ~s ~s not found" type-key field-string)))
+
+(defun parse-operator (operator-string)
+  (if (and
+        (stringp operator-string)
+        (not (zerop (length operator-string)))
+        (< (length operator-string) 20)
+        (re:scan "^[-a-zA-Z]+$" operator-string)
+        (handler-case (operator-sql (u:make-keyword operator-string))
+          (error nil)))
+    (u:make-keyword operator-string)
+    (abort-not-found "Operator ~s not found" operator-string)))
+
+(defun parse-filters (filters-json)
+  (loop with lists = (y:parse filters-json)
+    for (type-string field-string op-string value) in lists
+    for type-key = (make-type-key type-string)
+    for field-key = (make-field-key type-key field-string)
+    for op-key = (make-operator-key op-string)
+    for filter = (list type-key field-key op-key value)
+    when (every #'identity filter)
+    collect filter into good
+    else collect filter into bad
+    finally
+    (if bad
+      (abort-bad-request "Bad filters ~{~s~^ ~}" filter)
+      (return good))))
+
+(defun parse-form (form-string)
+  (loop with form-keys = (list :list-form :update-form :add-form)
+    for form-key in form-keys
+    when (equal (format nil "~(~a~)" form-key) form-string)
+    do (return form-key)))
+
+(h:define-easy-handler (health :uri "/health") ()
+  (format nil "OK~%"))
+
+(h:define-easy-handler (rest-list :uri "/api/list" :default-request-type :get)
+  (type
+    (filters :init-form nil)
+    (form :init-form "list-form"))
+  (let* ((type-key (parse-type type))
+          (type-roles (when type-key (get-type-roles type-key)))
+          (user "admin") ;; (require-auth type-roles))
+          (filters-parsed (when filters (parse-filters filters)))
+          (form-key (when form (parse-form form)))
+          (debug (pl:pdebug :in "rest-list"
+                   :type type
+                   :type-key type-key
+                   :type-roles type-roles
+                   :user user
+                   :filters filters
+                   :filters-parsed (format nil "~s" filters-parsed)
+                   :form form
+                   :form-key form-key))
+          (result (handler-case
+                    (be-list type-key user :form form-key :filters filters-parsed)
+                    (error (e) (abort-error e)))))
+    (setf (h:content-type*) "application/json")
+    (plist-to-json result)))
+
+(defun start-web-server ()
+  (setf *http-server* (make-instance 'fs-acceptor
+                        :port *http-port*
+                        :document-root *document-root*))
+  (setf
+    h:*show-lisp-errors-p* t
+    (h:acceptor-persistent-connections-p *http-server*) nil)
+  (pl:pinfo :in "start-web-server"
+    :status "server started"
+    :endpoint (format nil "http://localhost:~d" *http-port*))
+  (h:start *http-server*))

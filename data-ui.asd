@@ -8,6 +8,9 @@
                 :yason
                 :fiveam
                 :swank
+                :hunchentoot
+                :jose
+                :babel
                 :dc-ds
                 :dc-time
                 :p-log
@@ -22,7 +25,8 @@
                                (:file "predicates")
                                (:file "plist-json")
                                (:file "backend")
-                               (:file "model")))
+                               (:file "model")
+                               (:file "rest")))
                 (:module "tests"
                   :components ((:file "helpers")
                                 (:file "predicate-tests")

@@ -3,6 +3,10 @@
   (:local-nicknames
     (:re :ppcre)
     (:db :postmodern)
+    (:h :hunchentoot)
+    (:j :jose)
+    (:y :yason)
+    (:b :babel)
     (:a :rbac)
     (:u :dc-eclectic)
     (:dt :dc-time)
