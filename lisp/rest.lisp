@@ -149,18 +149,23 @@ exists. Otherwise, logs a message and returns NIL."
 (defun require-auth (&optional required-roles)
   "Returns the current user if authorized.
    Otherwise aborts the request with 401 or 403."
-  (multiple-value-bind (user allowed required)
-      (current-user required-roles)
-    (declare (ignore required))
-    (cond
-      ((not (stringp (get-bearer-token)))
-       (h:abort-request-handler
-         (make-json-error
-           h:+http-authorization-required+ "missing or invalid token")))
-      ((not allowed)
-        (h:abort-request-handler
-          (make-json-error h:+http-forbidden+ "forbidden")))
-      (t user))))
+  ;; The following two lines are temporary, until I implement the login
+  ;; endpoint. As soon as I've done that, I need to remove these two lines
+  ;; and uncomment the lines that follow.
+  (declare (ignore required-roles))
+  "admin")
+  ;; (multiple-value-bind (user allowed required)
+  ;;     (current-user required-roles)
+  ;;   (declare (ignore required))
+  ;;   (cond
+  ;;     ((not (stringp (get-bearer-token)))
+  ;;      (h:abort-request-handler
+  ;;        (make-json-error
+  ;;          h:+http-authorization-required+ "missing or invalid token")))
+  ;;     ((not allowed)
+  ;;       (h:abort-request-handler
+  ;;         (make-json-error h:+http-forbidden+ "forbidden")))
+  ;;     (t user))))
 
 (defun session-user (required-roles)
   (let* ((token (h:session-value :jwt-token))
@@ -265,7 +270,7 @@ exists. Otherwise, logs a message and returns NIL."
     (form :init-form "list-form"))
   (let* ((type-key (parse-type type))
           (type-roles (when type-key (get-type-roles type-key)))
-          (user "admin") ;; (require-auth type-roles))
+          (user (require-auth type-roles))
           (filters-parsed (when filters (parse-filters filters)))
           (form-key (when form (parse-form form)))
           (debug (pl:pdebug :in "rest-list"
