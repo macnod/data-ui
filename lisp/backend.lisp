@@ -85,7 +85,9 @@ converting timetstamps from integers to ISO 8601 strings."
         for field-key = (alias-key-to-field-key type-key key)
         for field-type = (u:tree-get fields field-key :type)
         for final-value = (case field-type
-                            (:timestamp (when value
+                            (:timestamp (when (and
+                                                value
+                                                (not (equal value :null)))
                                           (dt:timestamp-string
                                             :universal-time value)))
                             (t value))

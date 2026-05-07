@@ -163,7 +163,7 @@ NIL if the string is not a valid number."
        ;; RBAC API doesn't include an update function, so just use :auto here
        :update :auto
        :delete ,#'rbac-remove-user
-       ;; TODO: Add key for post-create hook
+       ;; TODO: Add processing for the :post-create key.
        :post-create :add-settings
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
@@ -192,7 +192,7 @@ NIL if the string is not a valid number."
                           :source (:view :main :table :roles :column :name :agg :list)
                           :source-all (:view :roles :table :roles :column :name :agg :list)
                           :join-table :role-users))
-       :list-form (:fields (:name :email :roles))
+       :list-form (:fields (:name :created-at :updated-at :email :roles))
        :update-form (:fields t)
        :add-form (:fields t))
 
@@ -302,7 +302,7 @@ NIL if the string is not a valid number."
                          :force-sql-name "setting_user"
                          :ui (:label "User" :input-type :hidden)
                          :target :users
-                         :source (:view :users :table :users :column :name :agg :first)
+                          :source (:view :users :table :users :column :name :agg :first)
                          :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)

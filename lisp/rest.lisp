@@ -146,6 +146,10 @@ exists. Otherwise, logs a message and returns NIL."
     (setf (h:return-code*) status-code)
     (plist-to-json (list :status-code status-code :error errors))))
 
+(defun render-output (result)
+  (setf (h:content-type*) "application/json")
+  (plist-to-json result))
+
 (defun require-auth (&optional required-roles)
   "Returns the current user if authorized.
    Otherwise aborts the request with 401 or 403."
@@ -274,10 +278,21 @@ exists. Otherwise, logs a message and returns NIL."
           (filters-parsed (when filters (parse-filters filters)))
           (form-key (when form (parse-form form)))
           (result (handler-case
-                    (be-list type-key user :form form-key :filters filters-parsed)
+                    (be-list type-key user
+                      :form form-key :filters filters-parsed)
                     (error (e) (abort-error e)))))
-    (setf (h:content-type*) "application/json")
-    (plist-to-json result)))
+    (render-output result)))
+
+(h:define-easy-handler (rest-item :uri "/api/item" :default-request-type :get)
+  (id type (form :init-form "update-form"))
+  (let* ((type-key (parse-type type))
+          (type-roles (when type-key (get-type-roles type-key)))
+          (user (require-auth type-roles))
+          (form-key (when form (parse-form form)))
+          (result (handler-case
+                    (be-rec id user :type-key type-key :form form-key)
+                    (error (e) (abort-error e)))))
+    (render-output result)))
 
 (defun start-web-server ()
   (setf *http-server* (make-instance 'fs-acceptor

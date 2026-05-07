@@ -156,7 +156,8 @@ where users.id in (
 (test alias-keys
   (is (equal
         (alias-keys :users (form-field-keys :users :list-form))
-        (list :users-id :users-user-name :users-email :roles-role-name)))
+        (list :users-id :users-created-at :users-updated-at
+          :users-user-name :users-email :roles-role-name)))
   (is (equal
         (alias-keys :users (form-field-keys :users :update-form))
         (list :users-id :users-created-at :users-updated-at :users-user-name
@@ -174,7 +175,7 @@ where users.id in (
 (test form-field-keys
   (is (equal
         (form-field-keys :users :list-form)
-        (list :id :name :email :roles)))
+        (list :id :created-at :updated-at :name :email :roles)))
   (is (equal
         (form-field-keys :users :update-form)
         (list :id :created-at :updated-at :name :password :email :roles))))
