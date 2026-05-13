@@ -153,7 +153,16 @@ where users.id in (
 )"
           "1" "2" "3"))))
 
-(test alias-keys
+(test form-field-keys-1
+  (is (equal
+        (u:safe-sort (form-field-keys :users :list-form))
+        (u:safe-sort '(:id :created-at :updated-at :name :email :roles))))
+  (is (equal
+        (u:safe-sort (form-field-keys :users :update-form))
+        (u:safe-sort
+          '(:id :created-at :updated-at :name :password :email :roles)))))
+
+(test alias-keys-1
   (is (equal
         (u:safe-sort
           (alias-keys :users (form-field-keys :users :list-form)))
@@ -177,15 +186,6 @@ where users.id in (
   (is (equal
         (aggregations :todos (form-field-keys :todos :list-form))
         (list :first :first :first :first :first :list))))
-
-(test form-field-keys
-  (is (equal
-        (u:safe-sort (form-field-keys :users :list-form))
-        (u:safe-sort '(:id :created-at :updated-at :name :email :roles))))
-  (is (equal
-        (u:safe-sort (form-field-keys :users :update-form))
-        (u:safe-sort
-          '(:id :created-at :updated-at :name :password :email :roles)))))
 
 (test resource-id-keys
   (is (equal (resource-id-keys :todos) '(:id :todo-id)))
@@ -778,7 +778,7 @@ Notes:
     (be-delete :users '((:users :name :eq "user-1")) "admin")
     (be-delete :roles '((:roles :name :eq "role-1")) "admin")))
 
-(test be-insert-role
+(test be-insert-role-1
   (let ((role "role-1")
          (permissions '("create" "read")))
     (when (a:get-id *rbac* "roles" role)

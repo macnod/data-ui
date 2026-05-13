@@ -31,4 +31,5 @@
                 (:module "tests"
                   :components ((:file "helpers")
                                 (:file "predicate-tests")
-                                (:file "backend-tests")))))
+                                (:file "backend-tests")
+                                (:file "rest-tests")))))

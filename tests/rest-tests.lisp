@@ -1,9 +1,5 @@
 (in-package :data-ui)
 
-(def-suite rest-suite :description "ReST endpoint tests")
-
-(in-suite rest-suite)
-
 (defun http-get (url)
   (multiple-value-bind (data code meta)
     (dr:http-request url :method :get :accept "application/json")
@@ -19,6 +15,10 @@
       *http-host* *http-port* endpoint params)
     (format nil "http://~a:~a~a"
       *http-host* *http-port* endpoint)))
+
+(def-suite rest-suite :description "ReST endpoint tests")
+
+(in-suite rest-suite)
 
 (test rest-list
   (let ((response (http-get (make-url "/api/list" '(:type :permissions)))))
