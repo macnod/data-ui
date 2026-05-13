@@ -3,6 +3,7 @@
   (:local-nicknames
     (:re :ppcre)
     (:db :postmodern)
+    (:dr :drakma)
     (:h :hunchentoot)
     (:j :jose)
     (:y :yason)

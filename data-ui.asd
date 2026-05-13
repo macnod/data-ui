@@ -5,6 +5,7 @@
   :depends-on (:cl-ppcre
                 :postmodern
                 :cl-fad
+                :drakma
                 :yason
                 :fiveam
                 :swank

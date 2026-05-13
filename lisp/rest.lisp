@@ -1,6 +1,7 @@
 (in-package :data-ui)
 
 ;; Environment variables
+(defparameter *http-host* (u:getenv "HTTP_HOST" :default "127.0.0.1"))
 (defparameter *http-port* (u:getenv "HTTP_PORT" :default 8080 :type :integer))
 (defparameter *document-root*
   (let* ((dir (u:getenv "DOCUMENT_ROOT"
@@ -40,6 +41,7 @@
     (unless (and health-log *log-suppress-health*)
       (pl:plog log-severity
         (list
+          :in "acceptor-log-access"
           :type "access"
           :client (h:real-remote-addr)
           :hop (h:remote-addr*)
@@ -64,7 +66,7 @@
                          (t :debug)))
           (message (apply #'format
                      (append nil format-string) format-arguments)))
-    (pl:plog log-severity (list :text message))))
+    (pl:plog log-severity (list :in "log-message" :text message))))
 ;;
 ;; END Custom Hunchentoot acceptor
 ;;
@@ -204,6 +206,13 @@ exists. Otherwise, logs a message and returns NIL."
 (defun abort-auth (format-string &rest params)
   (abort-request h:+http-authorization-required+ format-string params))
 
+(defun parse-id (id)
+  (cond
+    ((uuid-p id) id)
+    ((or (null id) (zerop (length id)))
+      (abort-bad-request "Parameter 'id' is required."))
+    (t (abort-bad-request "The value for 'id', ~s, is not a valid UUID." id))))
+
 (defun parse-type (type-string)
   (if (and
         type-string
@@ -213,7 +222,9 @@ exists. Otherwise, logs a message and returns NIL."
         (not (re:scan "^[-0-9]|[-0-9]$" type-string))
         (u:tree-get *compiled-model* (u:make-keyword type-string)))
     (u:make-keyword type-string)
-    (abort-not-found "Type ~s not found." type-string)))
+    (if type-string
+      (abort-not-found "Type ~s not found." type-string)
+      (abort-bad-request "Parameter 'type' is required."))))
 
 (defun parse-field (type-key field-string)
   (if (and
@@ -285,7 +296,8 @@ exists. Otherwise, logs a message and returns NIL."
 
 (h:define-easy-handler (rest-item :uri "/api/item" :default-request-type :get)
   (id type (form :init-form "update-form"))
-  (let* ((type-key (parse-type type))
+  (let* ((id (parse-id id))
+          (type-key (parse-type type))
           (type-roles (when type-key (get-type-roles type-key)))
           (user (require-auth type-roles))
           (form-key (when form (parse-form form)))
@@ -305,3 +317,6 @@ exists. Otherwise, logs a message and returns NIL."
     :status "server started"
     :endpoint (format nil "http://localhost:~d" *http-port*))
   (h:start *http-server*))
+
+(defun stop-web-server ()
+  (h:stop *http-server*))

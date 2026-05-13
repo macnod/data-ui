@@ -4,6 +4,7 @@ SCRIPT_NAME=$(basename $0)
 ACTION="$1"
 
 export ADMIN_PASSWORD="admin-password-1"
+export HTTP_HOST="127.0.0.1"
 export DB_HOST="127.0.0.1"
 export DB_INIT_TEMPLATE="tests/init-template.sql"
 export DB_INIT_SQL="tests/init.sql"

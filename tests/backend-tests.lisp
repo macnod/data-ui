@@ -155,17 +155,23 @@ where users.id in (
 
 (test alias-keys
   (is (equal
-        (alias-keys :users (form-field-keys :users :list-form))
-        (list :users-id :users-created-at :users-updated-at
-          :users-user-name :users-email :roles-role-name)))
+        (u:safe-sort
+          (alias-keys :users (form-field-keys :users :list-form)))
+        (u:safe-sort
+          '(:users-id :users-created-at :users-updated-at
+             :users-user-name :users-email :roles-role-name))))
   (is (equal
-        (alias-keys :users (form-field-keys :users :update-form))
-        (list :users-id :users-created-at :users-updated-at :users-user-name
-          :users-password-hash :users-email :roles-role-name)))
+        (u:safe-sort
+          (alias-keys :users (form-field-keys :users :update-form)))
+        (u:safe-sort '(:users-id :users-created-at :users-updated-at
+                        :users-user-name :users-password-hash :users-email
+                        :roles-role-name))))
   (is (equal
-        (alias-keys :todos (form-field-keys :todos :list-form))
-        (list :rt-todos-id :rt-todos-created-at :rt-todos-updated-at
-          :rt-todos-todo-name :rt-todos-todo-points :rt-tags-tag-name))))
+        (u:safe-sort
+          (alias-keys :todos (form-field-keys :todos :list-form)))
+        (u:safe-sort
+          '(:rt-todos-id :rt-todos-created-at :rt-todos-updated-at
+             :rt-todos-todo-name :rt-todos-todo-points :rt-tags-tag-name)))))
 
 (test aggregations
   (is (equal
@@ -174,11 +180,12 @@ where users.id in (
 
 (test form-field-keys
   (is (equal
-        (form-field-keys :users :list-form)
-        (list :id :created-at :updated-at :name :email :roles)))
+        (u:safe-sort (form-field-keys :users :list-form))
+        (u:safe-sort '(:id :created-at :updated-at :name :email :roles))))
   (is (equal
-        (form-field-keys :users :update-form)
-        (list :id :created-at :updated-at :name :password :email :roles))))
+        (u:safe-sort (form-field-keys :users :update-form))
+        (u:safe-sort
+          '(:id :created-at :updated-at :name :password :email :roles)))))
 
 (test resource-id-keys
   (is (equal (resource-id-keys :todos) '(:id :todo-id)))
@@ -770,6 +777,27 @@ Notes:
     (be-delete :settings '((:users :name :eq "user-1")) "admin")
     (be-delete :users '((:users :name :eq "user-1")) "admin")
     (be-delete :roles '((:roles :name :eq "role-1")) "admin")))
+
+(test be-insert-role
+  (let ((role "role-1")
+         (permissions '("create" "read")))
+    (when (a:get-id *rbac* "roles" role)
+      (a:remove-role *rbac* role))
+    (let ((id (be-insert :roles `(:name ,role :permissions ,permissions)
+                "admin")))
+      (is-true (be-rec id "admin"))
+      (is (equal id (a:get-id *rbac* "roles" role)))
+      (is (equal id (u:tree-get
+                      (be-list :roles "admin"
+                        :filters `((:roles :name :eq ,role)))
+                      :records 0 :id)))
+      (is (equal
+            (u:safe-sort permissions)
+            (u:safe-sort (u:tree-get
+                           (be-rec id "admin")
+                           :record :permissions))))
+      (be-delete :roles id "admin")
+      (is-false (be-rec id "admin")))))
 
 (test be-update
   (let* ((tags (loop for tag-index from 1 to 10
