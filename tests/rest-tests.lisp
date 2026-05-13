@@ -23,13 +23,14 @@
 (test rest-list
   (let ((response (http-get (make-url "/api/list" '(:type :permissions)))))
     (is (equal (getf response :code) 200))
-    (is (equal (u:tree-get response :data :type) "permissions"))
+    (is (equal (u:tree-get response :data :status) "success"))
+    (is (equal (u:tree-get response :data :result :type) "permissions"))
     (is (equal
-          (u:safe-sort (u:tree-col response :data :records :name))
+          (u:safe-sort (u:tree-col response :data :result :records :name))
           (u:safe-sort '("create" "read" "update" "delete"))))
     (is (equal
-          (u:safe-sort (u:plist-keys (u:tree-get response :data :records 0)))
+          (u:safe-sort (u:plist-keys (u:tree-get response :data :result :records 0)))
           (u:safe-sort '(:id :created-at :updated-at :name))))
-    (is-false (u:tree-get response :data :allowed-values))
+    (is-false (u:tree-get response :data :result :allowed-values))
     (is (> (parse-integer (u:tree-get response :meta :content-length))
           500))))

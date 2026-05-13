@@ -20,5 +20,6 @@
     :params '("admin" "logged-in" "public"
                "admin:exclusive" "guest:exclusive"))
   (set-model *model*)
-  (start-web-server)
+  (unless *http-server*
+    (start-web-server))
   (run-all-tests))

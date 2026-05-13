@@ -146,11 +146,16 @@ exists. Otherwise, logs a message and returns NIL."
                        error-string)))))
     (setf (h:content-type*) "application/json")
     (setf (h:return-code*) status-code)
-    (plist-to-json (list :status-code status-code :error errors))))
+    (plist-to-json (list
+                     :status "fail"
+                     :status-code status-code
+                     :error errors))))
 
 (defun render-output (result)
   (setf (h:content-type*) "application/json")
-  (plist-to-json result))
+  (plist-to-json (list
+                   :status "success"
+                   :result result)))
 
 (defun require-auth (&optional required-roles)
   "Returns the current user if authorized.
@@ -252,23 +257,24 @@ exists. Otherwise, logs a message and returns NIL."
     (abort-not-found "Operator ~s not found" operator-string)))
 
 (defun parse-filters (filters-json)
-  (loop with lists = (y:parse filters-json)
-    for (type-string field-string op-string value) in lists
-    for type-key = (parse-type type-string)
-    for field-key = (parse-field type-key field-string)
-    for op-key = (parse-operator op-string)
-    for filter = (append
-                   (remove-if-not
-                     #'identity
-                     (list type-key field-key op-key))
-                   (list value))
-    when (every #'identity filter)
-    collect filter into good
-    else collect filter into bad
-    finally
-    (if bad
-      (abort-bad-request "Bad filters ~{~s~^ ~}" filter)
-      (return good))))
+  (when filters-json
+    (loop with lists = (y:parse filters-json)
+      for (type-string field-string op-string value) in lists
+      for type-key = (parse-type type-string)
+      for field-key = (parse-field type-key field-string)
+      for op-key = (parse-operator op-string)
+      for filter = (append
+                     (remove-if-not
+                       #'identity
+                       (list type-key field-key op-key))
+                     (list value))
+      when (every #'identity filter)
+      collect filter into good
+      else collect filter into bad
+      finally
+      (if bad
+        (abort-bad-request "Bad filters ~{~s~^ ~}" filter)
+        (return good)))))
 
 (defun parse-form (form-string)
   (loop with form-keys = (list :list-form :update-form :add-form)
@@ -286,7 +292,7 @@ exists. Otherwise, logs a message and returns NIL."
   (let* ((type-key (parse-type type))
           (type-roles (when type-key (get-type-roles type-key)))
           (user (require-auth type-roles))
-          (filters-parsed (when filters (parse-filters filters)))
+          (filters-parsed (parse-filters filters))
           (form-key (when form (parse-form form)))
           (result (handler-case
                     (be-list type-key user
@@ -306,6 +312,17 @@ exists. Otherwise, logs a message and returns NIL."
                     (error (e) (abort-error e)))))
     (render-output result)))
 
+(h:define-easy-handler (rest-id :uri "/api/id" :default-request-type :get)
+  (type filters)
+  (let* ((type-key (parse-type type))
+          (type-roles (when type-key (get-type-roles type-key)))
+          (user (require-auth type-roles))
+          (filters-parsed (parse-filters filters))
+          (result (handler-case
+                    (be-id type-key filters-parsed user)
+                    (error (e) (abort-error e)))))
+    (render-output result)))
+
 (defun start-web-server ()
   (setf *http-server* (make-instance 'fs-acceptor
                         :port *http-port*
@@ -319,4 +336,5 @@ exists. Otherwise, logs a message and returns NIL."
   (h:start *http-server*))
 
 (defun stop-web-server ()
-  (h:stop *http-server*))
+  (h:stop *http-server*)
+  (setf *http-server* nil))
