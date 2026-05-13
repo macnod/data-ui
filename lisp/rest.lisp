@@ -65,7 +65,7 @@
                          (:info :info)
                          (t :debug)))
           (message (apply #'format
-                     (append nil format-string) format-arguments)))
+                     (append (list nil format-string) format-arguments))))
     (pl:plog log-severity (list :in "log-message" :text message))))
 ;;
 ;; END Custom Hunchentoot acceptor
