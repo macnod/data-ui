@@ -807,6 +807,16 @@ error messages explaining what is wrong with the value in that field."
                     (error (e) (abort-error e)))))
     (render-output result)))
 
+(h:define-easy-handler (rest-types :uri "/api/types" :default-request-type :get)
+  ()
+  ":public: Endpoint for getting a list of all the defined types. This is useful
+for dynamically creating a menu in the frontend."
+  (let* ((user (require-auth '("logged-in"))))
+    (render-output
+      (mapcar
+        (lambda (x) (format nil "~(~a~)" x))
+        (be-types user)))))
+
 (defun start-web-server ()
   (setf *http-server* (make-instance 'fs-acceptor
                         :port *http-port*
