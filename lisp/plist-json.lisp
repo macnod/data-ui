@@ -27,6 +27,7 @@
   (cond
     ((null x) "[]")                    ; nil -> empty array
     ((eq x :false) "false")
+    ((eq x :true) "true")
     ((eq x :null) "null")
     ((stringp x)
      (format nil "\"~a\"" (escape-json-string x)))
@@ -125,4 +126,6 @@
 plist-to-json).  Returns a plist for top-level objects, a list for top-level
 arrays."
   (let ((yason:*parse-object-as* :alist))
-    (json-to-plist-aux (yason:parse json))))
+    (handler-case
+      (json-to-plist-aux (yason:parse json))
+      (error (e) (error "Failed to parse JSON: ~a" e)))))

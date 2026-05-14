@@ -145,6 +145,14 @@ NIL if the string is not a valid number."
   (declare (ignore type-key user))
   (a:remove-role *rbac* (getf data :name)))
 
+(defun rbac-add-permission (type-key data user &key roles)
+  (declare (ignore type-key user roles))
+  (a:add-permission *rbac* (getf data :name)))
+
+(defun rbac-remove-permission (type-key data user)
+  (declare (ignore type-key user))
+  (a:remove-permission *rbac* (getf data :name)))
+
 (defparameter *validation-map*
   ;; type is not included here because it is automatically applied to all
   ;; fields, and thus need never be specified in the model definition.
@@ -224,7 +232,9 @@ NIL if the string is not a valid number."
      ;; because of some kind of validation issue. Fix.
      :permissions
      (:table t :base t
-       :create :auto :update :auto :delete :auto
+       :create ,#'rbac-add-permission
+       :update :auto
+       :delete ,#'rbac-remove-permission
        :deletable t
        :fields (:name (:type :text
                         :ui (:label "Permission" :input-type :line)

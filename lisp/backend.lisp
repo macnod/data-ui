@@ -43,10 +43,6 @@ contains the values we want to retrieve. AGGREGATION is a keyword that specifies
 how to aggregate the values for the field."
   (loop for row in view-result
     for value = (getf row alias-key)
-    ;; when (and
-    ;;        (equal (getf row id-key) id-value)
-    ;;        value
-    ;;        (not (equal value :null)))
     when (equal (getf row id-key) id-value)
     collect value into values
     finally (return (aggregate-values aggregation values))))
@@ -419,7 +415,8 @@ all the right fields when we perform inserts or updates."
     t))
 
 (defun get-type-roles (type-key)
-  (a:list-resource-role-names *rbac* (type-resource-name type-key)))
+  (when (type-key-p type-key)
+    (a:list-resource-role-names *rbac* (type-resource-name type-key))))
 
 (defun set-type-roles (type-key roles)
   (let* ((existing (get-type-roles type-key))
@@ -713,7 +710,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
               (type-key (if type-key type-key (id-to-type-key id)))
               (sql (u:tree-get m type-key :views :main :sql))
               (where (add-where-clause sql (list (list type-key :id :eq id)) user))
-              (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
+              (view-result (view-result type-key where))
               (field-keys (form-field-keys type-key form)))
         (list
           :type type-key
@@ -849,7 +846,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
       (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
               (sql (u:tree-get m type-key :views :main :sql))
               (where (add-where-clause sql all-filters user))
-              (view-result (a:with-rbac (*rbac*) (a:rbac-query where))))
+              (view-result (view-result type-key where)))
         (list :sql where :view-result view-result)))))
 
 ;;
@@ -1101,7 +1098,7 @@ error:
                       `((,type-key :id :eq ,filters))
                       filters))
           (where (add-where-clause sql efilters user))
-          (view-result (a:with-rbac (*rbac*) (a:rbac-query where)))
+          (view-result (view-result type-key where))
           (field-keys '(:id))
           (result (view-result-values type-key field-keys view-result)))
     (cond
@@ -1190,7 +1187,8 @@ following example returns a list of all the :todos records that have the tag
           (let ((ids (view-result-ids type-key field-keys view-result)))
             (when ids
               (let* ((ids-query (add-ids-clause type-key sql ids))
-                      (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
+                      (view-result (view-result type-key ids-query)))
+                ;; (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
                 (list
                   :type type-key
                   :fields (fe-fields type-key :form form)
