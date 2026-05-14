@@ -835,6 +835,8 @@ fields that have non-NIL values for all HAVE-KEYS."
                         (getf field-def :default)
                         (getf field-def :type)
                         :quote t)))
+    and default-value = (getf field-def :default
+                          (unless (equal (getf field-def :type) :list) :null))
     and validations = (compile-validations model type-key new-field-key)
     with sql-parts = (remove-if-not #'identity
                        (list name-sql type-sql primary-key not-null
@@ -853,9 +855,10 @@ fields that have non-NIL values for all HAVE-KEYS."
                        :not-null (if (getf field-def :target)
                                    t
                                    (getf field-def :not-null))
-                       :reference (when (equal old-field-key :reference) t)))
-    with attrs = '(:base-field :ui :unique :default
-                    :primary-key :fs-backed :target :join-table)
+                       :reference (when (equal old-field-key :reference) t)
+                       :default default-value))
+    with attrs = '(:base-field :ui :unique :primary-key :fs-backed :target
+                    :join-table)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
