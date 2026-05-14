@@ -685,6 +685,19 @@ with the values in DATA."
     for key in update by #'cddr
     unless (equal key :main) collect key))
 
+(defun fe-fields (type-key &key (form :list-form))
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    and form-fields = (u:tree-get *compiled-model* type-key form :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for ui = (getf field-def :ui)
+    for default = (getf field-def :default)
+    when (and (or (equal form-fields t) (member field-key form-fields))
+           (getf ui :input-type)
+           (not (equal (getf ui :input-type) :hidden)))
+    append (list field-key
+             (add-to-plist (list :default default) ui))))
+
 (defun rec (id user &key (form :update-form) type-key (public t))
   ":private: Returns the TYPE-KEY record with the given ID, provided that it is
 accessible to USER. Given the IDs are UUIDs (globally unique), TYPE-KEY is
@@ -704,6 +717,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
               (field-keys (form-field-keys type-key form)))
         (list
           :type type-key
+          :fields (fe-fields type-key)
           :record (car
                     (view-result-values type-key field-keys view-result))
           :allowed-values (allowed-values type-key user))))))
@@ -1179,10 +1193,12 @@ following example returns a list of all the :todos records that have the tag
                       (view-result (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
                 (list
                   :type type-key
+                  :fields (fe-fields type-key :form form)
                   :records (view-result-values type-key field-keys view-result)
                   :allowed-values (allowed-values type-key user)))))
           (list
             :type type-key
+            :fields (fe-fields type-key :form form)
             :records (view-result-values type-key field-keys view-result)
             :allowed-values (allowed-values type-key user)))))))
 
@@ -1203,6 +1219,9 @@ like BE-LIST, but it returns a list of values instead of a list of records."
                    :records)))
     (list
       :type type-key
+      :fe-fields (list
+                   field-key
+                   (getf (fe-fields type-key :form form) field-key))
       :values (mapcar (lambda (r) (getf r field-key)) records))))
 
 ;; TODO: Transaction!
