@@ -23,6 +23,10 @@ function App() {
   const [type, setType] = useState('roles')
   const [showAddForm, setShowAddForm] = useState(false)
   const [formValues, setFormValues] = useState<Record<string, any>>({})
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [editRecord, setEditRecord] = useState<any>(null)
+
+  const isEditMode = !!editRecord
 
   const changeType = (newType: string) => {
     setType(newType)
@@ -53,6 +57,80 @@ function App() {
     } else {
       alert('Failed to insert')
     }
+  }
+
+  const openEditForm = (record: any) => {
+    setEditRecord(record)
+    setFormValues({ ...record })
+    setShowAddForm(false)
+  }
+
+  const closeForm = () => {
+    setEditRecord(null)
+    setShowAddForm(false)
+    setFormValues({})
+  }
+
+  const submitForm = async () => {
+    const { roles, ...rest } = formValues
+    const payload: any = { type, data: rest }
+    if (roles) payload.roles = roles
+
+    let res
+    if (isEditMode) {
+      payload.filters = editRecord.id
+      res = await fetch('/api/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+    } else {
+      res = await fetch('/api/insert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+    }
+
+    if (res.ok) {
+      closeForm()
+      fetch(`/api/list?type=${type}`)
+        .then(r => r.json())
+        .then(setData)
+    } else {
+      alert(isEditMode ? 'Failed to update' : 'Failed to insert')
+    }
+  }
+
+  const toggleSelect = (id: string) => {
+    if (selectedIds.includes(id)) {
+      setSelectedIds(selectedIds.filter(x => x !== id))
+    } else {
+      setSelectedIds([...selectedIds, id])
+    }
+  }
+
+  const deleteSelected = async () => {
+    if (selectedIds.length === 0) return
+
+    const toDelete = records.filter((r: any) => selectedIds.includes(r.id))
+    const nameField = listFields.includes('name') ? 'name' : listFields[0]
+    const names = toDelete.map((r: any) => r[nameField] || r.id).join(', ')
+
+    if (!confirm(`Delete ${names}?`)) return
+
+    for (const id of selectedIds) {
+      const payload = { type, filters: id }
+      await fetch('/api/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+    }
+    setSelectedIds([])
+    fetch(`/api/list?type=${type}`)
+      .then(r => r.json())
+      .then(setData)
   }
 
   useEffect(() => {
@@ -101,14 +179,23 @@ function App() {
 
       <h2>{data.result.type}</h2>
 
-      <button onClick={() => setShowAddForm(!showAddForm)}>
-        {showAddForm ? 'Cancel' : 'Add'}
-      </button>
+      <div style={{ marginBottom: '0.5rem' }}>
+        <button onClick={() => { setShowAddForm(!showAddForm); setEditRecord(null) }}>
+          {showAddForm ? 'Cancel' : 'Add'}
+        </button>
+        <button onClick={deleteSelected} style={{ marginLeft: '0.5rem' }}>
+          Delete Selected
+        </button>
+      </div>
 
-      {showAddForm && (
-        <form style={{ marginTop: '1rem' }}>
-          {addFields.map(f => {
-            const fieldMeta = data.result['add-form'][f]
+      {(showAddForm || isEditMode) && (
+        <form style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
+          <h3>{isEditMode ? 'Edit' : 'Add'} {data.result.type}</h3>
+
+          {(isEditMode ? Object.keys(data.result['update-form']) : addFields).map(f => {
+            const fieldMeta = isEditMode
+              ? data.result['update-form'][f]
+              : data.result['add-form'][f]
             const allowed = data.result['allowed-values']?.[f] || []
             const isCheckboxList = fieldMeta['input-type'] === 'checkbox-list'
 
@@ -136,7 +223,6 @@ function App() {
               )
             }
 
-            // Default: text input
             return (
               <div key={f} style={{ marginBottom: '0.5rem' }}>
                 <label>{fieldMeta.label}</label><br />
@@ -148,8 +234,12 @@ function App() {
               </div>
             )
           })}
-          <button type="button" onClick={submitAddForm}>
-            Submit
+
+          <button type="button" onClick={submitForm}>
+            {isEditMode ? 'Update' : 'Submit'}
+          </button>
+          <button type="button" onClick={closeForm} style={{ marginLeft: '0.5rem' }}>
+            Cancel
           </button>
         </form>
       )}
@@ -157,6 +247,8 @@ function App() {
       <table>
         <thead>
           <tr>
+            <th style={{ width: '40px', textAlign: 'center', color: 'red' }}>✕</th>
+            <th style={{ width: '60px' }}></th>
             {listFields.map(f => (
               <th key={f}>{data.result['list-form'][f].label}</th>
             ))}
@@ -165,6 +257,16 @@ function App() {
         <tbody>
           {records.map((rec, idx) => (
             <tr key={idx}>
+              <td style={{ textAlign: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(rec.id)}
+                  onChange={() => toggleSelect(rec.id)}
+                />
+              </td>
+              <td>
+                <button onClick={() => openEditForm(rec)}>Edit</button>
+              </td>
               {listFields.map(f => {
                 const val = rec[f]
                 let display = ''

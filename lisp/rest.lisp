@@ -285,7 +285,7 @@ exists. Otherwise, logs a message and returns NIL."
         else collect filter into bad
         finally
         (if bad
-          (abort-bad-request "Bad filters ~{~s~^ ~}" filter)
+          (abort-bad-request "Bad filters ~{~s~^ ~}" bad)
           (return good))))))
 
 (defun parse-form (form-string)

@@ -683,17 +683,29 @@ with the values in DATA."
     unless (equal key :main) collect key))
 
 (defun fe-fields (type-key &key (form :list-form))
-  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+  (loop
+    with base = (u:tree-get *compiled-model* type-key :base)
+    with fields = (append
+                    (u:tree-get *compiled-model* type-key :fields)
+                    (unless base
+                      `(:roles (:ui (:label "Roles"
+                                      :input-type "checkbox-list")))))
     and form-fields = (u:tree-get *compiled-model* type-key form :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
-    for ui = (getf field-def :ui)
     for default = (getf field-def :default)
-    when (and (or (equal form-fields t) (member field-key form-fields))
-           (getf ui :input-type)
+    for non-base-roles-field = (and (not base) (equal field-key :roles))
+    for ui = (getf field-def :ui)
+    when (and
+           (or
+             (equal form-fields t)
+             (member field-key form-fields)
+             non-base-roles-field)
+           (or (getf ui :input-type) non-base-roles-field)
            (not (equal (getf ui :input-type) :hidden)))
     append (list field-key
              (add-to-plist (list :default default) ui))))
+
 
 (defun rec (id user &key (form :update-form) type-key (public t))
   ":private: Returns the TYPE-KEY record with the given ID, provided that it is
@@ -817,13 +829,39 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
 
 (defun allowed-values (type-key user)
   (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    and base = (u:tree-get *compiled-model* type-key :base)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
     for join-table = (getf field-def :join-table)
     for target = (getf field-def :target)
     when (and (or join-table target) (not (equal field-key :id)))
     appending
-    (list field-key (allowed-values-for-field type-key field-key user))))
+    (list field-key (allowed-values-for-field type-key field-key user))
+    into allowed
+    finally
+    (return
+      (if base
+        allowed
+        (append
+          allowed
+          (list :roles
+            (remove-if
+              (lambda (r)
+                (member r '("admin" "admin:exclusive" "guest:exclusive")
+                  :test 'equal))
+              (a:list-role-names *rbac*))))))))
+
+(defun add-roles-to-view (type-key view)
+  (if (u:tree-get *compiled-model* type-key :base)
+    view
+    (loop
+      for record in view
+      for id = (getf record :id)
+      for resource-name = (id-to-resource-name id)
+      for roles = (remove-if
+                    (lambda (x) (equal x "admin"))
+                    (a:list-resource-role-names *rbac* resource-name))
+      collect (add-to-plist record (list :roles roles)))))
 
 (defun list-sql-for (type-key user &key (form :list-form) filters)
   (declare (ignore form))
@@ -1165,7 +1203,9 @@ following example returns a list of all the :todos records that have the tag
   (valid-compiled-model)
   (valid-be-type-key type-key)
   (valid-user-permissions user type-key "read")
-  (valid-filters filters)
+  (if (uuid-p filters)
+    (valid-existing-uuid filters)
+    (valid-filters filters))
   (let* ((m *compiled-model*)
           (user-roles (a:list-user-role-names *rbac* user))
           (type-roles (u:tree-get m type-key :type-roles))
@@ -1199,7 +1239,9 @@ following example returns a list of all the :todos records that have the tag
             :list-form (fe-fields type-key :form :list-form)
             :add-form (fe-fields type-key :form :add-form)
             :update-form (fe-fields type-key :form :update-form)
-            :records (view-result-values type-key field-keys view-result)
+            :records (add-roles-to-view
+                       type-key
+                       (view-result-values type-key field-keys view-result))
             :allowed-values (allowed-values type-key user)))))))
 
 ;; TODO: Add pagination support
@@ -1311,7 +1353,7 @@ update fails.
     ;; Update join tables
     (update-join-tables type-key uuid full-data record)
     ;; Update roles
-    (when roles (update-roles type-key data roles))
+    (when roles (update-roles type-key filters roles))
     uuid))
 
 (defun be-delete (type-key filters user)
