@@ -275,7 +275,7 @@ given in ID is used."
     for default-value = (getf field-def :default)
     for id-value = (when (equal field-key :id) id)
     for field-value = (or data-value record-value default-value id-value)
-    collect (db-value type-key field-key user  field-value)))
+    collect (db-value type-key field-key user field-value)))
 
 (defun user-fields (type-key)
   ":private: Returns a list of the field keys that should be validated for

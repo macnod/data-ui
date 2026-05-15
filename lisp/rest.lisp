@@ -191,10 +191,14 @@ exists. Otherwise, logs a message and returns NIL."
     (values user allowed required-roles)))
 
 (defun abort-request (error-code format-string params)
-  (h:abort-request-handler
-    (make-json-error
-      error-code
-      (apply #'format (append (list nil format-string) params)))))
+  (let ((reason (if params
+                  (apply #'format (append nil format-string) params)
+                  format-string)))
+    (pl:pdebug :in "abort-request" :error-code error-code
+      :format-string format-string
+      :params params
+      :reason reason)
+    (h:abort-request-handler (make-json-error error-code reason))))
 
 (defun abort-not-found (format-string &rest params)
   (abort-request h:+http-not-found+ format-string params))

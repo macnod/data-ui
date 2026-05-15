@@ -11,6 +11,7 @@ interface ListResponse {
     type: string
     fields: Record<string, Field>
     records: any[]
+    'allowed-values'?: Record<string, string[]>
   }
 }
 
@@ -25,6 +26,30 @@ function App() {
     setType(newType)
     setShowAddForm(false)
     setFormValues({})
+  }
+
+  const submitAddForm = async () => {
+    const payload = {
+      type,
+      data: formValues
+    }
+
+    const res = await fetch('/api/insert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+
+    if (res.ok) {
+      setShowAddForm(false)
+      setFormValues({})
+      // Refresh the list
+      fetch(`/api/list?type=${type}`)
+        .then(r => r.json())
+        .then(setData)
+    } else {
+      alert('Failed to insert')
+    }
   }
 
   useEffect(() => {
@@ -78,17 +103,48 @@ function App() {
 
       {showAddForm && (
         <form style={{ marginTop: '1rem' }}>
-          {fields.map(f => (
-            <div key={f} style={{ marginBottom: '0.5rem' }}>
-              <label>{data.result.fields[f].label}</label><br />
-              <input
-                type="text"
-                value={formValues[f] || ''}
-                onChange={e => setFormValues({ ...formValues, [f]: e.target.value })}
-              />
-            </div>
-          ))}
-          <button type="button" onClick={() => alert('Submit not wired yet')}>
+          {fields.map(f => {
+            const fieldMeta = data.result.fields[f]
+            const allowed = data.result['allowed-values']?.[f] || []
+            const isCheckboxList = fieldMeta['input-type'] === 'checkbox-list'
+
+            if (isCheckboxList) {
+              const selected = formValues[f] || []
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  {allowed.map((val: string) => (
+                    <label key={val} style={{ display: 'block', marginLeft: '1rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(val)}
+                        onChange={e => {
+                          const next = e.target.checked
+                            ? [...selected, val]
+                            : selected.filter((v: string) => v !== val)
+                          setFormValues({ ...formValues, [f]: next })
+                        }}
+                      />
+                      {val}
+                    </label>
+                  ))}
+                </div>
+              )
+            }
+
+            // Default: text input
+            return (
+              <div key={f} style={{ marginBottom: '0.5rem' }}>
+                <label>{fieldMeta.label}</label><br />
+                <input
+                  type="text"
+                  value={formValues[f] || ''}
+                  onChange={e => setFormValues({ ...formValues, [f]: e.target.value })}
+                />
+              </div>
+            )
+          })}
+          <button type="button" onClick={submitAddForm}>
             Submit
           </button>
         </form>

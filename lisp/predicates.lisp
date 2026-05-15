@@ -88,8 +88,25 @@ TYPE-KEY"
 (setf *field-types*
   `(:text (:general :text :sql "text" :test ,#'stringp)
      :password (:general :text :sql "text" :test ,#'stringp)
-     :real (:general :number :sql "real" :test ,#'numberp)
-     :integer (:general :number :sql "integer" :test ,#'integerp)
+     :real (:general :number :sql "real"
+             :test ,(lambda (x)
+                      (or
+                        (numberp x)
+                        (and
+                          (stringp x)
+                          (re:scan "^-?[0-9.]+$" x)
+                          (< (count #\. x) 2)
+                          (not (re:scan "\\.$" x))))))
+     :integer (:general :number :sql "integer"
+                :test ,(lambda (x)
+                         (or
+                           (integerp x)
+                           (and
+                             (stringp x)
+                             (handler-case (parse-integer x)
+                               (error (e)
+                                 (declare (ignore e))
+                                 nil))))))
      :boolean (:general :boolean :sql "boolean"
                 :test ,(lambda (v) (member v '(:true :false))))
      :uuid (:general :text :sql "uuid" :test ,#'uuid-p)
