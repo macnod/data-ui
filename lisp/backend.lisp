@@ -1196,7 +1196,9 @@ following example returns a list of all the :todos records that have the tag
                   :allowed-values (allowed-values type-key user)))))
           (list
             :type type-key
-            :fields (fe-fields type-key :form form)
+            :list-form (fe-fields type-key :form :list-form)
+            :add-form (fe-fields type-key :form :add-form)
+            :update-form (fe-fields type-key :form :update-form)
             :records (view-result-values type-key field-keys view-result)
             :allowed-values (allowed-values type-key user)))))))
 

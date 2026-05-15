@@ -9,7 +9,9 @@ interface ListResponse {
   status: string
   result: {
     type: string
-    fields: Record<string, Field>
+    'list-form': Record<string, Field>
+    'add-form': Record<string, Field>
+    'update-form': Record<string, Field>
     records: any[]
     'allowed-values'?: Record<string, string[]>
   }
@@ -29,10 +31,12 @@ function App() {
   }
 
   const submitAddForm = async () => {
-    const payload = {
+    const { roles, ...rest } = formValues
+    const payload: any = {
       type,
-      data: formValues
+      data: rest
     }
+    if (roles) payload.roles = roles
 
     const res = await fetch('/api/insert', {
       method: 'POST',
@@ -43,7 +47,6 @@ function App() {
     if (res.ok) {
       setShowAddForm(false)
       setFormValues({})
-      // Refresh the list
       fetch(`/api/list?type=${type}`)
         .then(r => r.json())
         .then(setData)
@@ -70,7 +73,7 @@ function App() {
         <h1>Data UI</h1>
         <div>
           {types.map(t => (
-            <button key={t} onClick={() => setType(t)} style={{ marginRight: 8 }}>
+            <button key={t} onClick={() => changeType(t)} style={{ marginRight: 8 }}>
               {t}
             </button>
           ))}
@@ -80,7 +83,8 @@ function App() {
     )
   }
 
-  const fields = Object.keys(data.result.fields)
+  const listFields = Object.keys(data.result['list-form'])
+  const addFields = Object.keys(data.result['add-form'])
   const records = data.result.records
 
   return (
@@ -103,8 +107,8 @@ function App() {
 
       {showAddForm && (
         <form style={{ marginTop: '1rem' }}>
-          {fields.map(f => {
-            const fieldMeta = data.result.fields[f]
+          {addFields.map(f => {
+            const fieldMeta = data.result['add-form'][f]
             const allowed = data.result['allowed-values']?.[f] || []
             const isCheckboxList = fieldMeta['input-type'] === 'checkbox-list'
 
@@ -153,15 +157,15 @@ function App() {
       <table>
         <thead>
           <tr>
-            {fields.map(f => (
-              <th key={f}>{data.result.fields[f].label}</th>
+            {listFields.map(f => (
+              <th key={f}>{data.result['list-form'][f].label}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {records.map((rec, idx) => (
             <tr key={idx}>
-              {fields.map(f => {
+              {listFields.map(f => {
                 const val = rec[f]
                 let display = ''
                 if (Array.isArray(val)) {
