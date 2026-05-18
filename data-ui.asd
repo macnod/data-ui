@@ -25,8 +25,8 @@
                                (:file "aux")
                                (:file "predicates")
                                (:file "plist-json")
-                               (:file "backend")
                                (:file "model")
+                               (:file "backend")
                                (:file "rest")))
                 (:module "tests"
                   :components ((:file "helpers")
