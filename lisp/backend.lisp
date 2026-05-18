@@ -1290,6 +1290,7 @@ example inserts a todo with the name \"clean the kitchen\":
 "
   (valid-compiled-model)
   (valid-type-key type-key)
+  (pl:pdebug :in "be-insert" :type-key type-key :roles roles)
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (let ((data (full-data type-key data)))
@@ -1300,16 +1301,21 @@ example inserts a todo with the name \"clean the kitchen\":
         (let* ((m *compiled-model*)
                 (f (u:tree-get m type-key :create))
                 (base (u:tree-get m type-key :base))
-                (internal (u:tree-get m type-key :internal)))
-          (cond
-            ((and (equal f :auto) (not base) (not internal))
-              (insert-normal type-key data roles user))
-            ((and (equal f :auto) (not internal))
-              (insert-base type-key data user))
-            ((functionp f)
-              (funcall f type-key data user :roles roles))
-            (t (signal-validation-error
-                 "Invalid create function for type ~s: ~s" type-key f))))))))
+                (internal (u:tree-get m type-key :internal))
+                (post-create (u:tree-get m type-key :post-create))
+                (new-id (cond
+                          ((and (equal f :auto) (not base) (not internal))
+                            (insert-normal type-key data roles user))
+                          ((and (equal f :auto) (not internal))
+                            (insert-base type-key data user))
+                          ((functionp f)
+                            (funcall f type-key data user :roles roles))
+                          (t (signal-validation-error
+                               "Invalid create function for type ~s: ~s"
+                               type-key f)))))
+          (when post-create
+            (funcall post-create type-key new-id data user))
+          (values new-id t))))))
 
 ;; TODO:
 ;;   - Transaction

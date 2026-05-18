@@ -49,12 +49,11 @@
           :host (h:host)
           :method (h:request-method*)
           :uri uri
-          :return-code code
-          :status return-code
+          :status (or return-code code)
           :content-length (or (h:content-length*) 0)
-          :content-type (or (h:content-type*) "unknown")
-          :referer (h:referer)
-          :agent (h:user-agent))))))
+          :content-type (or (h:content-type*) "")
+          :referer (or (h:referer) "")
+          :agent (or (h:user-agent) ""))))))
 
 (defmethod h:acceptor-log-message ((acceptor fs-acceptor)
                                     log-level
@@ -136,7 +135,7 @@ exists. Otherwise, logs a message and returns NIL."
                      t)))
     (values user allowed required-roles)))
 
-(defun make-json-error (status-code error-string)
+(defun make-json-error (status-code error-string &optional details-plist)
   (let ((errors (cond ((listp error-string)
                         (format nil "~{~a~^ ~}." error-string))
                   ((stringp error-string)
@@ -145,10 +144,14 @@ exists. Otherwise, logs a message and returns NIL."
                        error-string)))))
     (setf (h:content-type*) "application/json")
     (setf (h:return-code*) status-code)
-    (plist-to-json (list
-                     :status "fail"
-                     :status-code status-code
-                     :error errors))))
+    (plist-to-json
+      (add-to-plist
+        (list
+          :status "fail"
+          :status-code status-code
+          :error errors)
+        (when details-plist
+          (list :details details-plist))))))
 
 (defun render-output (result)
   (setf (h:content-type*) "application/json")
@@ -189,41 +192,63 @@ exists. Otherwise, logs a message and returns NIL."
       :allowed allowed)
     (values user allowed required-roles)))
 
-(defun abort-request (error-code format-string params)
-  (let ((reason (apply #'format (append (list nil format-string) params))))
-    (pl:pdebug :in "abort-request" :error-code error-code
-      :format-string format-string
-      :params params
-      :reason reason)
-    (h:abort-request-handler (make-json-error error-code reason))))
+(defun abort-request (error-code message &optional details-plist)
+  (pl:plog :error
+    (add-to-plist
+      (list
+        :in "abort-request"
+        :error-code error-code
+        :message message)
+      (when details-plist
+        (list :details details-plist))))
+  (h:abort-request-handler (make-json-error error-code message details-plist)))
 
-(defun abort-not-found (format-string &rest params)
-  (abort-request h:+http-not-found+ format-string params))
+(defun abort-not-found (error-object &rest details-plist)
+  (abort-request
+    h:+http-not-found+
+    (princ-to-string error-object)
+    details-plist))
 
-(defun abort-bad-request (format-string &rest params)
-  (abort-request h:+http-bad-request+ format-string params))
+(defun abort-bad-request (error-object &rest details-plist)
+  (abort-request
+    h:+http-bad-request+
+    (princ-to-string error-object)
+    details-plist))
 
-(defun abort-error (format-string &rest params)
-  (abort-request h:+http-internal-server-error+ format-string params))
+(defun abort-error (error-object &rest details-plist)
+  (abort-request
+    h:+http-internal-server-error+
+    (princ-to-string error-object)
+    details-plist))
 
-(defun abort-forbidden (format-string &rest params)
-  (abort-request h:+http-forbidden+ format-string params))
+(defun abort-forbidden (error-object &rest details-plist)
+  (abort-request
+    h:+http-forbidden+
+    (princ-to-string error-object)
+    details-plist))
 
-(defun abort-auth (format-string &rest params)
-  (abort-request h:+http-authorization-required+ format-string params))
+(defun abort-auth (error-object &rest details-plist)
+  (abort-request
+    h:+http-authorization-required+
+    (princ-to-string error-object)
+    details-plist))
 
 (defun parse-posted-json ()
   (let ((json (h:raw-post-data :force-text t)))
     (handler-case (json-to-plist json)
-      (error (e) (abort-bad-request "Invalid JSON in request body: ~a~%~a"
-               json e)))))
+      (error (e)
+        (abort-bad-request e
+          :message "Invalid JSON in request body."
+          :json json)))))
 
 (defun parse-id (id)
   (cond
     ((uuid-p id) id)
     ((or (null id) (zerop (length id)))
       (abort-bad-request "Parameter 'id' is required."))
-    (t (abort-bad-request "The value for 'id', ~s, is not a valid UUID." id))))
+    (t (abort-bad-request
+         "The value for 'id' is not a valid UUID."
+         :id id))))
 
 (defun parse-type (type-string)
   (if (and
@@ -235,7 +260,7 @@ exists. Otherwise, logs a message and returns NIL."
         (u:tree-get *compiled-model* (u:make-keyword type-string)))
     (u:make-keyword type-string)
     (if type-string
-      (abort-not-found "Type ~s not found." type-string)
+      (abort-not-found "Type not found." :type type-string)
       (abort-bad-request "Parameter 'type' is required."))))
 
 (defun parse-field (type-key field-string)
@@ -250,7 +275,9 @@ exists. Otherwise, logs a message and returns NIL."
         (u:tree-get *compiled-model* type-key :fields
           (u:make-keyword field-string)))
     (u:make-keyword field-string)
-    (abort-not-found "Field ~s ~s not found" type-key field-string)))
+    (abort-not-found "Field not found"
+      :type type-key
+      :field field-string)))
 
 (defun parse-operator (operator-string)
   (if (and
@@ -261,35 +288,41 @@ exists. Otherwise, logs a message and returns NIL."
         (handler-case (operator-sql (u:make-keyword operator-string))
           (error nil)))
     (u:make-keyword operator-string)
-    (abort-not-found "Operator ~s not found" operator-string)))
+    (abort-bad-request "Operator not found" :operator operator-string)))
 
 (defun parse-filters (filters-json &key allow-id)
-  (when filters-json
-    (if (and allow-id (uuid-p filters-json))
-      filters-json
-      (loop with lists = (y:parse filters-json)
-        for (type-string field-string op-string value) in lists
-        for type-key = (parse-type type-string)
-        for field-key = (parse-field type-key field-string)
-        for op-key = (parse-operator op-string)
-        for filter = (append
-                       (remove-if-not
-                         #'identity
-                         (list type-key field-key op-key))
-                       (list value))
-        when (every #'identity filter)
-        collect filter into good
-        else collect filter into bad
-        finally
-        (if bad
-          (abort-bad-request "Bad filters ~{~s~^ ~}" bad)
-          (return good))))))
+  (handler-case
+    (when filters-json
+      (if (and allow-id (uuid-p filters-json))
+        filters-json
+        (loop with lists = (y:parse filters-json)
+          for (type-string field-string op-string value) in lists
+          for type-key = (parse-type type-string)
+          for field-key = (parse-field type-key field-string)
+          for op-key = (parse-operator op-string)
+          for filter = (append
+                         (remove-if-not
+                           #'identity
+                           (list type-key field-key op-key))
+                         (list value))
+          when (every #'identity filter)
+          collect filter into good
+          else collect filter into bad
+          finally
+          (if bad
+            (abort-bad-request "Bad filters ~{~s~^ ~}" bad)
+            (return good)))))
+    (error (e)
+      (abort-bad-request e
+        :message "Invalid JSON in filters parameter."
+        :filters-json filters-json
+        :allow-id allow-id))))
 
 (defun parse-form (form-string)
-  (loop with form-keys = (list :list-form :update-form :add-form)
-    for form-key in form-keys
+  (loop for form-key in *forms*
     when (equal (format nil "~(~a~)" form-key) form-string)
-    do (return form-key)))
+    do (return form-key)
+    finally (abort-bad-request "Form not found" :form form-string)))
 
 (h:define-easy-handler (health :uri "/health") ()
   (format nil "OK~%"))
@@ -331,7 +364,11 @@ are 'list-form', 'update-form', and 'add-form'."
           (result (handler-case
                     (be-list type-key user
                       :form form-key :filters filters-parsed)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e :type type :filters filters
+                        :form form))
+                    (error (e)
+                      (abort-error e :type type :filters filters :form form)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-item :uri "/api/item" :default-request-type :get)
@@ -364,7 +401,9 @@ are 'list-form', 'update-form', and 'add-form'."
           (form-key (when form (parse-form form)))
           (result (handler-case
                     (be-rec id user :type-key type-key :form form-key)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e :type type :id id :form form))
+                    (error (e) (abort-error e :type type :id id :form form)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-id :uri "/api/id" :default-request-type :get)
@@ -399,7 +438,10 @@ JSON-encoded list of lists."
           (filters-parsed (parse-filters filters))
           (result (handler-case
                     (be-id type-key filters-parsed user)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e :type type :filters filters))
+                    (error (e)
+                      (abort-error e :type type :filters filters)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-value-id :uri "/api/value-id"
@@ -433,7 +475,11 @@ Required. The value to look up in the specified field."
           (field-key (parse-field type-key field))
           (result (handler-case
                     (be-value-id type-key field-key value user)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e
+                        :type type :field field :value value))
+                    (error (e)
+                      (abort-error e :type type :field field :value value)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-value :uri "/api/value" :default-request-type :get)
@@ -467,7 +513,12 @@ and used to look up the field in the model."
           (field-key (parse-field type-key field))
           (result (handler-case
                     (be-val id field-key user :form form :type-key type-key)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e
+                        :type type :id id :field field :form form))
+                    (error (e)
+                      (abort-error e
+                        :type type :id id :field field :form form)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-column :uri "/api/column"
@@ -513,7 +564,12 @@ are 'list-form', 'update-form', and 'add-form'."
           (result (handler-case
                     (be-list-column type-key field-key user
                       :form form-key :filters filters-parsed)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e
+                        :type type :field field :filters filters :form form))
+                    (error (e)
+                      (abort-error e
+                        :type type :field field :filters filters :form form)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-insert :uri "/api/insert"
@@ -586,7 +642,11 @@ The POST must include a header of 'Content-Type: application/json'."
     (multiple-value-bind (id inserted)
       (handler-case
         (be-insert type-key data user :roles roles)
-        (error (e) (abort-error e)))
+        (validation-error (e)
+          (abort-bad-request
+            e :type type :data data :roles roles :user user))
+        (error (e)
+          (abort-error e :type type :data data :roles roles :user user)))
       (render-output (list :id id :inserted (if inserted :true :false))))))
 
 (h:define-easy-handler (rest-update :uri "/api/update"
@@ -640,7 +700,12 @@ The POST must include a header of 'Content-Type: application/json'."
           (roles (getf tree :roles))
           (result (handler-case
                     (be-update type-key filters data user :roles roles)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e
+                        :type type :filters filters :data data :roles roles))
+                    (error (e)
+                      (abort-error e
+                        :type type :filters filters :data data :roles roles)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-delete :uri "/api/delete"
@@ -680,7 +745,10 @@ The POST must include a header of 'Content-Type: application/json'."
           (filters (parse-filters (getf tree :filters) :allow-id t))
           (result (handler-case
                     (be-delete type-key filters user)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e :type type :filters filters))
+                    (error (e)
+                      (abort-error e :type type :filters filters)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-validate-field :uri "/api/validate-field"
@@ -739,7 +807,11 @@ explaining why the value is invalid."
           (field-key (parse-field type-key field))
           (result (handler-case
                     (be-validate-field type-key field-key value user)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request
+                        e :type type :field field :value value))
+                    (error (e)
+                      (abort-error e :type type :field field :value value)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-validate-form :uri "/api/validate-form"
@@ -805,7 +877,10 @@ error messages explaining what is wrong with the value in that field."
           (user (require-auth type-roles))
           (result (handler-case
                     (be-validate-form type-key data user)
-                    (error (e) (abort-error e)))))
+                    (validation-error (e)
+                      (abort-bad-request e :type type :data data))
+                    (error (e)
+                      (abort-error e :type type :data data)))))
     (render-output result)))
 
 (h:define-easy-handler (rest-types :uri "/api/types" :default-request-type :get)

@@ -153,6 +153,17 @@ NIL if the string is not a valid number."
   (declare (ignore type-key user))
   (a:remove-permission *rbac* (getf data :name)))
 
+(defun add-user-settings (type-key id data user)
+  (declare (ignore type-key id user))
+  (let ((username (getf data :name)))
+    (pl:pdebug :in "add-user-settings" :data data :username username)
+    (be-insert :settings `(:dark-mode :false
+                            :font-size 10
+                            :display-name ,username
+                            :user ,username)
+      "admin"
+      :roles (list (a:exclusive-role-for username)))))
+
 (defparameter *validation-map*
   ;; type is not included here because it is automatically applied to all
   ;; fields, and thus need never be specified in the model definition.
@@ -174,7 +185,7 @@ NIL if the string is not a valid number."
        :update :auto
        :delete ,#'rbac-remove-user
        ;; TODO: Add processing for the :post-create key.
-       :post-create :add-settings
+       :post-create ,#'add-user-settings
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
        :deletable t
@@ -314,7 +325,7 @@ NIL if the string is not a valid number."
                          :force-sql-name "setting_user"
                          :ui (:label "User" :input-type :hidden)
                          :target :users
-                          :source (:view :users :table :users :column :name :agg :first)
+                         :source (:view :users :table :users :column :name :agg :first)
                          :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
