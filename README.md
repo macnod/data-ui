@@ -239,17 +239,15 @@ All endpoints stay **generic** — no per-type handler generation needed:
 React (or any frontend) can fetch the schema once and render forms/lists automatically.
 
 
-## Current Status (March 2026)
+## Current Status (May 2026)
 
-The project is still in active development and is **not yet complete**. Recent refactoring includes:
+The project is still in active development. Recent progress includes:
 
-- Compilation and model enrichment logic moved to `lisp/model.lisp` (includes `compile-model`, `set-model`, `create-tables`, view/SQL generation).
-- `be-*` functions and related helpers moved to `lisp/backend.lisp`.
-- Supporting code moved/consolidated into `lisp/data-ui.lisp`, `lisp/database.lisp`, `lisp/predicates.lisp`, `lisp/rest.lisp`, and other modules.
-- Removed `lisp/workbench.lisp` and various stale/experimental files.
-- Added comprehensive tests in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (using FiveAM; covers predicates, backend operations, model compilation, validation, etc.).
+- Basic CRUD operations are operational via the backend, REST API, and frontend React code
+- Comprehensive tests for compilation, predicates, and backend code are in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (using FiveAM).
+- Preliminary React code basics are in place in the `web/` directory.
 
-Model compilation, SQL generation for tables/views/triggers, basic RBAC integration, and validation are implemented and tested. Work continues on fully solidifying CRUD operations, completing the REST API (`lisp/rest.lisp`), generating the React frontend, producing Kubernetes manifests, and achieving the full end-to-end vision.
+Model compilation, SQL generation for tables/views/triggers, basic RBAC integration, validation, and basic CRUD are implemented and tested. Work continues on fully solidifying the REST API, completing the React frontend, producing Kubernetes manifests, and achieving the full end-to-end vision.
 
 See `lisp/model.lisp` for the current `*model*` and `*base-model*`, `lisp/backend.lisp` for the `be-*` API, and the `tests/` directory for usage examples. Ignore outdated references in older files. Contributions welcome — this is early stage!
 
