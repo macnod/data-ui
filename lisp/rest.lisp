@@ -64,9 +64,8 @@
                          (:warning :warn)
                          (:info :info)
                          (t :debug)))
-          (message (apply #'format
-                     (append (list nil format-string) format-arguments))))
-    (pl:plog log-severity (list :in "log-message" :text message))))
+          (message (apply #'format (append (list nil format-string) format-arguments))))
+    (pl:plog log-severity (list :in "acceptor-log-message" :text message))))
 ;;
 ;; END Custom Hunchentoot acceptor
 ;;
@@ -191,9 +190,7 @@ exists. Otherwise, logs a message and returns NIL."
     (values user allowed required-roles)))
 
 (defun abort-request (error-code format-string params)
-  (let ((reason (if params
-                  (apply #'format (append nil format-string) params)
-                  format-string)))
+  (let ((reason (apply #'format (append (list nil format-string) params))))
     (pl:pdebug :in "abort-request" :error-code error-code
       :format-string format-string
       :params params

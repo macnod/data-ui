@@ -45,7 +45,7 @@
   (let ((response (http-get (make-url "/api/list" :type :permissions))))
     (is (equal (getf response :code) 200))
     (is (equal (u:tree-get response :data :status) "success"))
-    (is (equal (u:tree-get response :data :result :type) "permissions"))
+    (is (equal (u:tree-get response :data :result :type-key) "permissions"))
     (is (equal
           (u:safe-sort (u:tree-col response :data :result :records :name))
           (u:safe-sort '("create" "read" "update" "delete"))))

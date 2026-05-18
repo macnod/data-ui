@@ -297,13 +297,13 @@ where users.id in (
             (initial-roles (a:list-resource-role-names *rbac* resource-name)))
       (is-true (u:has initial-roles "admin"))
       ;; Update to add roles (forces admin)
-      (let ((resource-name-1 (update-roles :todos todo-id
+      (let ((resource-name-1 (update-roles :todos todo-id "admin"
                                '("public" "logged-in"))))
         (is (equal resource-name resource-name-1)))
       (let ((roles (a:list-resource-role-names *rbac* resource-name)))
         (is (equal (u:safe-sort roles) '("admin" "logged-in" "public"))))
       ;; Update to remove all but admin
-      (let ((resource-name-2 (update-roles :todos todo-id '("admin"))))
+      (let ((resource-name-2 (update-roles :todos todo-id "admin" '("admin"))))
         (is (equal resource-name resource-name-2)))
       (let ((roles (a:list-resource-role-names *rbac* resource-name)))
         (is (equal '("admin") roles)))
@@ -312,7 +312,7 @@ where users.id in (
     (let* ((tag-id (be-insert :tags `(:name ,test-tag-name) "admin"))
             (filters `((:tags :name :eq ,test-tag-name)))
             (resource-name (find-resource-name :tags filters)))
-      (let ((resource-name-1 (update-roles :tags tag-id '("admin" "public"))))
+      (let ((resource-name-1 (update-roles :tags tag-id "admin" '("admin" "public"))))
         (is (equal resource-name resource-name-1)))
       (let ((roles (a:list-resource-role-names *rbac* resource-name)))
         (is (equal '("admin" "public") (u:safe-sort roles))))

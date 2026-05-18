@@ -118,3 +118,8 @@ SIGNAL-VALIDATION-ERROR function."
 function."
   (guru-meditation-number function-name format-string
     :params params :log log :condition #'error))
+
+;; TODO: Tests
+(defun add-to-list (existing-list &rest new-elements)
+  (let ((to-add (set-difference new-elements existing-list :test 'equal)))
+    (append existing-list to-add)))

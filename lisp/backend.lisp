@@ -105,21 +105,22 @@ with a field key in the returned plists. Thus, for example, if you have a
 :USERS record with 3 associated roles, this function will return a single
 plist for that record, and the :ROLES field in that plist will have a list of
 the 3 roles."
-  (loop
-    with alias-keys = (alias-keys type-key field-keys)
-    with id-key = (car alias-keys)
-    with distinct-ids = (view-result-ids type-key field-keys view-result)
-    with aggregations = (aggregations type-key field-keys)
-    for id in distinct-ids
-    collect
-    (append (list :id id)
-      (loop for key in (cdr field-keys)
-        for alias in (cdr alias-keys)
-        for aggregation in (cdr aggregations)
-        appending
-        (list
-          key
-          (field-values-for-id view-result id-key id alias aggregation))))))
+  (when view-result
+    (loop
+      with alias-keys = (alias-keys type-key field-keys)
+      with id-key = (car alias-keys)
+      with distinct-ids = (view-result-ids type-key field-keys view-result)
+      with aggregations = (aggregations type-key field-keys)
+      for id in distinct-ids
+      collect
+      (append (list :id id)
+        (loop for key in (cdr field-keys)
+          for alias in (cdr alias-keys)
+          for aggregation in (cdr aggregations)
+          appending
+          (list
+            key
+            (field-values-for-id view-result id-key id alias aggregation)))))))
 
 (defun view-result-ids (type-key field-keys view-result)
   ":private: "
@@ -433,6 +434,47 @@ all the right fields when we perform inserts or updates."
     (lambda (element) (format nil format-string element))
     list))
 
+(defun fe-fields (type-key)
+  (loop
+    for form in *forms*
+    when (u:tree-get *compiled-model* type-key form)
+    append
+    (list
+      form
+      (loop
+        with base = (u:tree-get *compiled-model* type-key :base)
+        with fields = (append
+                        (u:tree-get *compiled-model* type-key :fields)
+                        (unless base
+                          `(:roles (:ui (:label "Roles"
+                                          :input-type "checkbox-list")))))
+        and form-fields = (u:tree-get *compiled-model* type-key form :fields)
+        for field-key in fields by #'cddr
+        for field-def in (cdr fields) by #'cddr
+        for default = (getf field-def :default)
+        for non-base-roles-field = (and (not base) (equal field-key :roles))
+        for ui = (getf field-def :ui)
+        when (and
+               (or
+                 (equal form-fields t)
+                 (member field-key form-fields)
+                 non-base-roles-field)
+               (or (getf ui :input-type) non-base-roles-field)
+               (not (equal (getf ui :input-type) :hidden)))
+        append (list field-key
+                 (add-to-plist (list :default default) ui))))))
+
+(defun list-result (type-key user &optional field-keys view-result)
+  (add-to-plist
+    (list
+      :type-key type-key
+      :records (add-roles-to-view
+                 type-key
+                 (view-result-values type-key field-keys view-result))
+      :allowed-values (allowed-values type-key user))
+    (fe-fields type-key)))
+
+
 ;;
 ;; END Internal helper functions
 ;;
@@ -441,7 +483,7 @@ all the right fields when we perform inserts or updates."
 ;; BEGIN Database helper functions
 ;;
 
-(defun update-roles (type-key filters roles)
+(defun update-roles (type-key filters user roles)
   ":private: Updates the RBAC roles for the resource of type TYPE-KEY with ID.
 ROLES is a list of role names. ID is a UUID string. This function returns the
 resource name of the updated record if the update is successful, or an error if
@@ -452,7 +494,7 @@ the update fails."
     (valid-existing-uuid filters)
     (valid-filters filters :required t))
   ;; Compute the existing roles for the resource
-  (let* ((roles (if (member "admin" roles) roles (cons "admin" roles)))
+  (let* ((roles (add-to-list roles "admin"))
           (resource-name (find-resource-name type-key filters))
           (existing-roles (a:list-resource-role-names *rbac* resource-name))
           (to-add (set-difference roles existing-roles :test 'equal))
@@ -682,31 +724,6 @@ with the values in DATA."
     for key in update by #'cddr
     unless (equal key :main) collect key))
 
-(defun fe-fields (type-key &key (form :list-form))
-  (loop
-    with base = (u:tree-get *compiled-model* type-key :base)
-    with fields = (append
-                    (u:tree-get *compiled-model* type-key :fields)
-                    (unless base
-                      `(:roles (:ui (:label "Roles"
-                                      :input-type "checkbox-list")))))
-    and form-fields = (u:tree-get *compiled-model* type-key form :fields)
-    for field-key in fields by #'cddr
-    for field-def in (cdr fields) by #'cddr
-    for default = (getf field-def :default)
-    for non-base-roles-field = (and (not base) (equal field-key :roles))
-    for ui = (getf field-def :ui)
-    when (and
-           (or
-             (equal form-fields t)
-             (member field-key form-fields)
-             non-base-roles-field)
-           (or (getf ui :input-type) non-base-roles-field)
-           (not (equal (getf ui :input-type) :hidden)))
-    append (list field-key
-             (add-to-plist (list :default default) ui))))
-
-
 (defun rec (id user &key (form :update-form) type-key (public t))
   ":private: Returns the TYPE-KEY record with the given ID, provided that it is
 accessible to USER. Given the IDs are UUIDs (globally unique), TYPE-KEY is
@@ -801,7 +818,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
     ;; Insert rows in join tables
     (insert-join-table-rows type-key uuid data)
     ;; Update roles
-    (when roles (update-roles type-key uuid roles))
+    (when roles (update-roles type-key uuid user roles))
     (values uuid t)))
 
 (defun insert-base (type-key data user)
@@ -852,16 +869,17 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
               (a:list-role-names *rbac*))))))))
 
 (defun add-roles-to-view (type-key view)
-  (if (u:tree-get *compiled-model* type-key :base)
-    view
-    (loop
-      for record in view
-      for id = (getf record :id)
-      for resource-name = (id-to-resource-name id)
-      for roles = (remove-if
-                    (lambda (x) (equal x "admin"))
-                    (a:list-resource-role-names *rbac* resource-name))
-      collect (add-to-plist record (list :roles roles)))))
+  (when view
+    (if (u:tree-get *compiled-model* type-key :base)
+      view
+      (loop
+        for record in view
+        for id = (getf record :id)
+        for resource-name = (id-to-resource-name id)
+        for roles = (remove-if
+                      (lambda (x) (equal x "admin"))
+                      (a:list-resource-role-names *rbac* resource-name))
+        collect (add-to-plist record (list :roles roles))))))
 
 (defun list-sql-for (type-key user &key (form :list-form) filters)
   (declare (ignore form))
@@ -1217,7 +1235,7 @@ following example returns a list of all the :todos records that have the tag
                        (db:query (format nil "select id from ~a" table)
                          :column))))
                  (user-read-type-ids user type-key))))
-    (when ids
+    (if ids
       (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
               (sql (u:tree-get m type-key :views :main :sql))
               (where (add-where-clause sql all-filters user))
@@ -1228,21 +1246,9 @@ following example returns a list of all the :todos records that have the tag
             (when ids
               (let* ((ids-query (add-ids-clause type-key sql ids))
                       (view-result (view-result type-key ids-query)))
-                ;; (a:with-rbac (*rbac*) (a:rbac-query ids-query))))
-                (list
-                  :type type-key
-                  :fields (fe-fields type-key :form form)
-                  :records (view-result-values type-key field-keys view-result)
-                  :allowed-values (allowed-values type-key user)))))
-          (list
-            :type type-key
-            :list-form (fe-fields type-key :form :list-form)
-            :add-form (fe-fields type-key :form :add-form)
-            :update-form (fe-fields type-key :form :update-form)
-            :records (add-roles-to-view
-                       type-key
-                       (view-result-values type-key field-keys view-result))
-            :allowed-values (allowed-values type-key user)))))))
+                (list-result type-key user field-keys view-result))))
+          (list-result type-key user field-keys view-result)))
+      (list-result type-key user))))
 
 ;; TODO: Add pagination support
 (defun be-list-column (type-key field-key user &key (form :list-form) filters)
@@ -1259,12 +1265,13 @@ like BE-LIST, but it returns a list of values instead of a list of records."
   (let ((records (getf
                    (be-list type-key user :form form :filters filters)
                    :records)))
-    (list
-      :type type-key
-      :fe-fields (list
-                   field-key
-                   (getf (fe-fields type-key :form form) field-key))
-      :values (mapcar (lambda (r) (getf r field-key)) records))))
+    (add-to-plist
+      (list
+        :type type-key
+        :values (mapcar (lambda (r) (getf r field-key)) records))
+      (list
+        form
+        (list field-key (u:tree-get (fe-fields type-key) form field-key))))))
 
 ;; TODO: Transaction!
 (defun be-insert (type-key data user &key roles)
@@ -1353,7 +1360,7 @@ update fails.
     ;; Update join tables
     (update-join-tables type-key uuid full-data record)
     ;; Update roles
-    (when roles (update-roles type-key filters roles))
+    (when roles (update-roles type-key filters user roles))
     uuid))
 
 (defun be-delete (type-key filters user)

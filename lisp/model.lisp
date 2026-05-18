@@ -164,6 +164,8 @@ NIL if the string is not a valid number."
     :join-items-exist #'v-join-items-exist
     :exists #'v-exists))
 
+(defparameter *forms* '(:list-form :add-form :update-form))
+
 (defparameter *base-model*
   `(:users
      (:table t :base t
