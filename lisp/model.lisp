@@ -325,7 +325,22 @@ NIL if the string is not a valid number."
                          :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
-       :add-form (:fields t))))
+       :add-form (:fields t))
+
+     :tokens
+     (:table t :base t
+       :create nil :update :nil :delete nil
+       :views (:main (:tables (:tokens)))
+       :fields (:user (:type :text
+                        :ui (:label "User" :input-type :line)
+                        ;; TODO: A bad :view, :table, :column, or :agg should
+                        ;;       raise a compile-time error.
+                        :source (:view :main :column :user :agg :first)
+                        :column t :not-null t :unique t)
+                 :value (:type :text
+                          :ui (:lable "Value" :input-type :line)
+                          :source (:view :main :column :value :agg :first)
+                          :column t :not-null t :unique t)))))
 
 ;; TODO: Ensure tables are created in the right order. The :todo-tags table
 ;;       references the :todos and :tags tables, so those tables should
@@ -1205,7 +1220,7 @@ fields that have non-NIL values for all HAVE-KEYS."
   (loop with m = *compiled-model*
     for type-key in m by #'cddr
     for type-def in (cdr m) by #'cddr
-    for roles = (getf type-def :type-roles)
+    for roles = (add-to-list (getf type-def :type-roles) "admin")
     for resource-name = (type-resource-name type-key)
     when (and (type-has-roles type-def)
            (not (a:get-id *rbac* "resources" resource-name)))

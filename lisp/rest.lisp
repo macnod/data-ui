@@ -76,41 +76,70 @@
 ;; BEGIN JWT Token
 ;;
 
-(defun issue-jwt (user-id &optional (expiration-seconds 3600))
-  ":private: Issue a JWT for a user."
+(defun issue-jwt (type user-id expiration-seconds)
+  ":private: Issue a JWT token of the specifiied type for a user."
   (let* ((claims `(("sub" . ,user-id)
                     ("exp" . ,(+ (dt:universal-time-to-unix-time)
-                                expiration-seconds)))))
+                                expiration-seconds))
+                    ("type" . ,type))))
     (j:encode :hs256 *jwt-secret* claims)))
 
-(defun validate-jwt (token)
-  ":private: Validate a JWT token. Returns username if JWT token validates and user
-exists. Otherwise, logs a message and returns NIL."
+(defun issue-access-token (user-id &optional (expiration-seconds 3600))
+  ":private: Issue a JWT access token for a user."
+  (issue-jwt "access" user-id expiration-seconds))
+
+(defun issue-refresh-token (user-id &optional (expiration-seconds (* 24 3600 7)))
+  ":private: Issue a JWT refresh token for a user."
+  (issue-jwt "refresh" user-id expiration-seconds))
+
+(defun validate-jwt (token type)
+  ":private: Validate a JWT token of the given type. Returns username if JWT
+token validates and user exists. Otherwise, logs a message and returns NIL."
   (handler-case
     (multiple-value-bind (claims headers sig)
       (jose:decode :hs256 *jwt-secret* token)
       (declare (ignore headers sig))
       (when claims
-        (let ((user-id (cdr (assoc "sub" claims :test #'string=))))
-          (if user-id
-            (let ((user (handler-case
-                          (a:get-value *rbac* "users" "username"
-                            "id" user-id)
+        (let* ((user-id (cdr (assoc "sub" claims :test #'string=)))
+                (token-type (cdr (assoc "type" claims :test #'string=)))
+                (user (when user-id
+                        (handler-case
+                          (a:get-value *rbac* "users" "user_name" "id" user-id)
                           (error (e)
-                            (pl:pwarn :status "invalid user id in jwt"
-                              :condition e)
-                            nil))))
-              (if user
-                user
-                (progn
-                  (pl:pwarn :status "user id not in database" :user-id user-id)
-                  nil)))
-            (progn
-              (pl:pwarn :status "user id not in jwt")
-              nil)))))
-    (error (e)
-      (pl:pwarn :status "invalid jwt" :condition e)
-      nil)))
+                            (pl:pwarn :in "validate-access-token"
+                              :status "error looking up user id in database"
+                              :user-id user-id
+                              :condition (princ-to-string e)))))))
+          (cond
+            ((not (equal token-type type))
+              (pl:pwarn :in "validate-access-token"
+                :status "invalid token type"
+                :token token
+                :expected-type type
+                :actual-type token-type
+                :claims claims)
+              nil)
+            ((not user-id)
+              (pl:pwarn :in "validate-access-token"
+                :status "missing user id in token"
+                :token token
+                :claims claims)
+              nil)
+            ((not user)
+              (pl:pwarn :in "validate-access-token"
+                :status "user id not found in database"
+                :user-id user-id))
+            (t user)))))))
+
+(defun validate-access-token (token)
+  ":private: Validate a JWT access token. Returns username if JWT token
+validates and user exists. Otherwise, logs a message and returns NIL."
+  (validate-jwt token "access"))
+
+(defun validate-refresh-token (token)
+  ":private: Validate a JWT refresh token. Returns username if JWT token
+validates and user exists. Otherwise, logs a message and returns NIL."
+  (validate-jwt token "refresh"))
 
 ;;
 ;; END JWT Token
@@ -119,8 +148,11 @@ exists. Otherwise, logs a message and returns NIL."
 (defun get-bearer-token ()
   "Extracts the JWT from the Authorization: Bearer header."
   (let ((auth (h:header-in* "Authorization")))
-    (when (and auth (u:starts-with "Bearer " auth))
-      (u:trim (subseq auth 7)))))
+    (pl:pdebug :in "get-bearer-token" :auth auth)
+    (when (and auth (u:starts-with auth "Bearer "))
+      (let ((token (u:trim (subseq auth 7))))
+        (pl:pdebug :in "get-bearer-token" :token token)
+        token))))
 
 (defun current-user (&optional required-roles)
   "Returns (VALUES USER ALLOWED REQUIRED-ROLES).
@@ -128,12 +160,28 @@ exists. Otherwise, logs a message and returns NIL."
   - ALLOWED is T if the user has at least one of the REQUIRED-ROLES.
   - REQUIRED-ROLES is the same as what was passed in, for convenience."
   (let* ((token (get-bearer-token))
-          (user (if token (validate-jwt token) *guest*))
-          (user-roles (when user (a:get-id *rbac* "users" user)))
+          (user (if token (validate-access-token token) *guest*))
+          (user-roles (when user (a:list-user-role-names *rbac* user)))
           (allowed (if required-roles
                      (u:has-some required-roles user-roles)
                      t)))
+    (pl:pdebug :in "current-user" :token token :user user :user-roles user-roles
+      :required-roles required-roles :allowed allowed)
+    (unless user
+      (abort-auth "Invalid or expired token."))
     (values user allowed required-roles)))
+
+(defun store-token (username token)
+  ":private: Store the JWT token in the database."
+  (handler-case
+    (let ((id (be-value-id :tokens :user username "admin"))
+           (data `(:user ,username :value ,token)))
+      (if id
+        (be-update :tokens id data "admin")
+        (be-insert-internal :tokens data "admin")))
+    (error (e)
+      (abort-error e :message "Error storing token in database."
+        :token token :username username :value token))))
 
 (defun make-json-error (status-code error-string &optional details-plist)
   (let ((errors (cond ((listp error-string)
@@ -165,32 +213,18 @@ exists. Otherwise, logs a message and returns NIL."
   ;; The following two lines are temporary, until I implement the login
   ;; endpoint. As soon as I've done that, I need to remove these two lines
   ;; and uncomment the lines that follow.
-  (declare (ignore required-roles))
-  "admin")
-  ;; (multiple-value-bind (user allowed required)
-  ;;     (current-user required-roles)
-  ;;   (declare (ignore required))
-  ;;   (cond
-  ;;     ((not (stringp (get-bearer-token)))
-  ;;      (h:abort-request-handler
-  ;;        (make-json-error
-  ;;          h:+http-authorization-required+ "missing or invalid token")))
-  ;;     ((not allowed)
-  ;;       (h:abort-request-handler
-  ;;         (make-json-error h:+http-forbidden+ "forbidden")))
-  ;;     (t user))))
-
-(defun session-user (required-roles)
-  (let* ((token (h:session-value :jwt-token))
-          (user (if token (validate-jwt token) *guest*))
-          (user-roles (when user (a:list-user-role-names *rbac* user)))
-          (allowed (u:has-some required-roles user-roles)))
-    (pl:pdebug :in "session-user"
-      :token token
-      :required-roles required-roles
-      :roles user-roles
-      :allowed allowed)
-    (values user allowed required-roles)))
+  (multiple-value-bind (user allowed required)
+      (current-user required-roles)
+    (pl:pdebug :in "require-auth" :user user :allowed allowed :required required)
+    (cond
+      ((not (stringp (get-bearer-token)))
+       (h:abort-request-handler
+         (make-json-error
+           h:+http-authorization-required+ "missing or invalid token")))
+      ((not allowed)
+        (h:abort-request-handler
+          (make-json-error h:+http-forbidden+ "forbidden")))
+      (t user))))
 
 (defun abort-request (error-code message &optional details-plist)
   (pl:plog :error
@@ -892,6 +926,42 @@ for dynamically creating a menu in the frontend."
       (mapcar
         (lambda (x) (format nil "~(~a~)" x))
         (be-types user)))))
+
+(h:define-easy-handler (rest-login :uri "/api/login" :default-request-type :post)
+  ()
+  ":public: Endpoint for logging in and getting a JWT token."
+  (let* ((tree (parse-posted-json))
+          (username (getf tree :username))
+          (password (getf tree :password))
+          (user-id (handler-case
+                     (a:login *rbac* username password)
+                     (error (e) (abort-error e :message "Error during login"))))
+          (refresh-token (issue-refresh-token user-id))
+          (access-token (issue-access-token user-id))
+          (result `(:access-token ,access-token
+                     :refresh-token ,refresh-token)))
+    (store-token username refresh-token)
+    (render-output result)))
+
+(h:define-easy-handler (rest-refresh :uri "/api/refresh" :default-request-type :post)
+  ()
+  ":public: Endpoint for refreshing a JWT token. This is useful for getting a
+new short-lived token using a long-lived token, without requiring the user to
+log in again with their username and password."
+  (let* ((token (get-bearer-token))
+          (user (when token (validate-refresh-token token)))
+          (user-id (when user (a:get-id *rbac* "users" user)))
+          (token-exists (when user-id
+                          (handler-case
+                            (be-value-id :tokens :value token "admin")
+                            (error (e)
+                              (abort-error e
+                                :message "Error looking up token"))))))
+    (pl:pdebug :in "rest-refresh" :user user :user-id user-id
+      :token-exists token-exists :token token)
+    (if token-exists
+      (render-output `(:access-token ,(issue-access-token user-id)))
+      (abort-auth "Invalid or expired token"))))
 
 (defun start-web-server ()
   (setf *http-server* (make-instance 'fs-acceptor

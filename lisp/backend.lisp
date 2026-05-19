@@ -1356,7 +1356,8 @@ not.
 "
   (valid-compiled-model)
   (valid-type-key type-key)
-  (pl:pdebug :in "be-insert" :type-key type-key :roles roles)
+  (pl:pdebug :in "be-insert-internal"
+    :type-key type-key :data data :roles roles)
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (let ((data (full-data type-key data)))
