@@ -14,6 +14,9 @@ interface ListResponse {
     'update-form': Record<string, Field>
     records: any[]
     'allowed-values'?: Record<string, string[]>
+    create?: boolean
+    delete?: boolean
+    update?: boolean
   }
 }
 
@@ -180,12 +183,16 @@ function App() {
       <h2>{data.result.type}</h2>
 
       <div style={{ marginBottom: '0.5rem' }}>
-        <button onClick={() => { setShowAddForm(!showAddForm); setEditRecord(null) }}>
-          {showAddForm ? 'Cancel' : 'Add'}
-        </button>
-        <button onClick={deleteSelected} style={{ marginLeft: '0.5rem' }}>
-          Delete Selected
-        </button>
+        {data.result.create && (
+          <button onClick={() => { setShowAddForm(!showAddForm); setEditRecord(null) }}>
+            {showAddForm ? 'Cancel' : 'Add'}
+          </button>
+        )}
+        {data.result.delete && (
+          <button onClick={deleteSelected} style={{ marginLeft: '0.5rem' }}>
+            Delete Selected
+          </button>
+        )}
       </div>
 
       {(showAddForm || isEditMode) && (
@@ -247,8 +254,12 @@ function App() {
       <table>
         <thead>
           <tr>
-            <th style={{ width: '40px', textAlign: 'center', color: 'red' }}>✕</th>
-            <th style={{ width: '60px' }}></th>
+            {data.result.delete && (
+              <th style={{ width: '40px', textAlign: 'center', color: 'red' }}>✕</th>
+            )}
+            {data.result.update && (
+              <th style={{ width: '60px' }}></th>
+            )}
             {listFields.map(f => (
               <th key={f}>{data.result['list-form'][f].label}</th>
             ))}
@@ -257,16 +268,20 @@ function App() {
         <tbody>
           {records.map((rec, idx) => (
             <tr key={idx}>
-              <td style={{ textAlign: 'center' }}>
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(rec.id)}
-                  onChange={() => toggleSelect(rec.id)}
-                />
-              </td>
-              <td>
-                <button onClick={() => openEditForm(rec)}>Edit</button>
-              </td>
+              {data.result.delete && (
+                <td style={{ textAlign: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(rec.id)}
+                    onChange={() => toggleSelect(rec.id)}
+                  />
+                </td>
+              )}
+              {data.result.update && (
+                <td>
+                  <button onClick={() => openEditForm(rec)}>Edit</button>
+                </td>
+              )}
               {listFields.map(f => {
                 const val = rec[f]
                 let display = ''

@@ -153,14 +153,14 @@ NIL if the string is not a valid number."
   (declare (ignore type-key user))
   (a:remove-permission *rbac* (getf data :name)))
 
-(defun add-user-settings (type-key id data user)
-  (declare (ignore type-key id user))
+(defun add-user-settings (type-key id data roles user)
+  (declare (ignore type-key id roles user))
   (let ((username (getf data :name)))
     (pl:pdebug :in "add-user-settings" :data data :username username)
-    (be-insert :settings `(:dark-mode :false
-                            :font-size 10
-                            :display-name ,username
-                            :user ,username)
+    (be-insert-internal :settings `(:dark-mode :false
+                                     :font-size 10
+                                     :display-name ,username
+                                     :user ,username)
       "admin"
       :roles (list (a:exclusive-role-for username)))))
 
@@ -1149,9 +1149,13 @@ fields that have non-NIL values for all HAVE-KEYS."
   (loop
     for user in (list "admin" "guest")
     for setting-id = (be-value-id :settings :user user "admin")
-    unless setting-id
-    do (be-insert :settings `(:user ,user) "admin"
-         :roles (list (a:exclusive-role-for user)))))
+    unless setting-id do
+    (add-user-settings
+      :settings
+      nil
+      `(:name ,user)
+      (list (a:exclusive-role-for user))
+      "admin")))
 
 (defun set-model (model)
   (loop

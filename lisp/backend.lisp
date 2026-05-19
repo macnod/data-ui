@@ -1332,7 +1332,58 @@ example inserts a todo with the name \"clean the kitchen\":
                                "Invalid create function for type ~s: ~s"
                                type-key f)))))
           (when post-create
-            (funcall post-create type-key new-id data user))
+            (funcall post-create nil nil data nil nil))
+          (values new-id t))))))
+
+(defun be-insert-internal (type-key data user &key roles)
+  ":private: Inserts a record of type TYPE-KEY with the given DATA, provided
+USER has `create` permissions in TYPE-KEY. DATA is a plist where the keys are
+field keys and the values are the values to be inserted. This function returns
+two values: The ID of the record and T if the record this function inserted the
+record or NIL if the error already exists.  This function does not perform an
+update if a record with the same unique fields already exists. The following
+example inserts a todo with the name \"clean the kitchen\":
+
+    `(be-insert :todos
+                '(:name \"clean the kitchen\"
+                  :tags (\"chores\" \"kitchen\")
+                \"admin\")`
+
+This function differs from be-insert in that be-insert requires the :create
+key to have a valid function or :auto, where as this internal version does
+not.
+"
+  (valid-compiled-model)
+  (valid-type-key type-key)
+  (pl:pdebug :in "be-insert" :type-key type-key :roles roles)
+  (valid-user-roles user roles)
+  (valid-user-permissions user type-key "create")
+  (let ((data (full-data type-key data)))
+    (valid-data type-key data)
+    (let ((id (id-from-data type-key data)))
+      (if id
+        (values id nil)
+        (let* ((m *compiled-model*)
+                (f (u:tree-get m type-key :create))
+                (base (u:tree-get m type-key :base))
+                (internal (u:tree-get m type-key :internal))
+                (post-create (u:tree-get m type-key :post-create))
+                (new-id (cond
+                          ((and
+                             (or (null f) (equal f :auto))
+                             (not base) (not internal))
+                            (insert-normal type-key data roles user))
+                          ((and
+                             (or (null f) (equal f :auto))
+                             (not internal))
+                            (insert-base type-key data user))
+                          ((functionp f)
+                            (funcall f type-key data user :roles roles))
+                          (t (signal-validation-error
+                               "Invalid create function for type ~s: ~s"
+                               type-key f)))))
+          (when post-create
+            (funcall post-create nil nil data nil nil))
           (values new-id t))))))
 
 ;; TODO:
