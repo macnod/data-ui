@@ -86,16 +86,18 @@
 
 (defun parse-json-atom (token)
   "Parse a JSON atomic value (string, number, true, false, null)."
-  (cond
-    ((stringp token)
-     token)
-    ((numberp token)
-     token)
-    ((eq token t) t)                    ; JSON true
-    ((eq token :false) :false)          ; we will produce this from the parser
-    ((eq token :null) :null)
-    (t
-     (error "Unexpected JSON atom: ~S" token))))
+  (let ((result (cond
+                  ((stringp token)
+                    token)
+                  ((numberp token)
+                    token)
+                  ((eq token yason:true) :true)
+                  ((eq token yason:false) :false)
+                  ((eq token :null) :null)
+                  (t
+                    (error "Unexpected JSON atom: ~S" token)))))
+    (format t "token=~s; result=~s~%" token result)
+    result))
 
 (defun json-to-plist-object (obj)
   "Convert a parsed JSON object (alist of (string . value)) to a plist."
@@ -111,9 +113,21 @@
   "Internal recursive dispatcher."
   (cond
     ((null x) nil)                      ; [] or null in some contexts → nil
-    ((and (listp x) (every (lambda (pair) (and (consp pair) (stringp (car pair)))) x))
-     ;; It's a JSON object (represented as alist with string keys)
-     (json-to-plist-object x))
+    ((and
+       (listp x)
+       (every #'listp x)
+       (= (handler-case (length (car x)) (error (e) (declare (ignore e)) 0)) 4)
+       (operator-string-p (handler-case (third (car x)) (error (e) (declare (ignore e)) ""))))
+      (loop for y in x
+        collect
+        (loop for z in (butlast y)
+          collect (json-string-to-symbol z) into keys
+          finally (return (append keys (last y))))))
+    ((and
+       (listp x)
+       (every (lambda (pair) (and (consp pair) (stringp (car pair)))) x))
+      ;; It's a JSON object (represented as alist with string keys)
+      (json-to-plist-object x))
     ((listp x)
      ;; It's a JSON array
      (json-to-plist-array x))
@@ -125,7 +139,8 @@
   "Converts a JSON string into a nested plist / list structure (inverse of
 plist-to-json).  Returns a plist for top-level objects, a list for top-level
 arrays."
-  (let ((yason:*parse-object-as* :alist))
+  (let ((yason:*parse-object-as* :alist)
+         (yason:*parse-json-booleans-as-symbols* t))
     (handler-case
       (json-to-plist-aux (yason:parse json))
       (error (e) (error "Failed to parse JSON: ~a" e)))))

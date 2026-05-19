@@ -695,7 +695,7 @@ The POST must include a header of 'Content-Type: application/json'."
           (type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
-          (filters (parse-filters (getf tree :filters) :allow-id t))
+          (filters (getf tree :filters))
           (data (getf tree :data))
           (roles (getf tree :roles))
           (result (handler-case

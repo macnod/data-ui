@@ -86,6 +86,7 @@ converting timetstamps from integers to ISO 8601 strings."
                                                 (not (equal value :null)))
                                           (dt:timestamp-string
                                             :universal-time value)))
+                            (:boolean (if value :true :false))
                             (t value))
         appending (list key final-value)))))
 

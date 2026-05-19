@@ -772,7 +772,6 @@ Notes:
           (be-list-column :settings :id "admin"
             :filters `((:users :name :eq ,user)))
           :values 0)))
-    (be-delete :settings `((:users :name :eq ,user)) "admin")
     (be-delete :users `((:users :name :eq ,user)) "admin")
     (be-delete :roles `((:roles :name :eq ,role)) "admin")))
 

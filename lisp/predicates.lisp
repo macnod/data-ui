@@ -63,6 +63,9 @@ returns NIL."
             (error () nil)))
     t))
 
+(defun operator-string-p (s)
+  (and (stringp s) (operator-key-p (u:make-keyword s))))
+
 (defun filter-p (filter)
   ":private: Returns T if FILTER is a list of the form (TYPE-KEY FIELD-KEY
 OPERATOR-KEY VALUE), with TYPE-KEY being a valid type key in the model,
