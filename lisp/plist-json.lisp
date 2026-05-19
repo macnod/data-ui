@@ -96,7 +96,6 @@
                   ((eq token :null) :null)
                   (t
                     (error "Unexpected JSON atom: ~S" token)))))
-    (format t "token=~s; result=~s~%" token result)
     result))
 
 (defun json-to-plist-object (obj)
