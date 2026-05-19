@@ -39,9 +39,13 @@ function App() {
 
   const submitAddForm = async () => {
     const { roles, ...rest } = formValues
+    // Omit empty or whitespace-only string values from POST
+    const filteredRest = Object.fromEntries(
+      Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
+    )
     const payload: any = {
       type,
-      data: rest
+      data: filteredRest
     }
     if (roles) payload.roles = roles
 
@@ -76,7 +80,11 @@ function App() {
 
   const submitForm = async () => {
     const { roles, ...rest } = formValues
-    const payload: any = { type, data: rest }
+    // Omit empty or whitespace-only string values from POST
+    const filteredRest = Object.fromEntries(
+      Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
+    )
+    const payload: any = { type, data: filteredRest }
     if (roles) payload.roles = roles
 
     let res
@@ -205,6 +213,7 @@ function App() {
               : data.result['add-form'][f]
             const allowed = data.result['allowed-values']?.[f] || []
             const isCheckboxList = fieldMeta['input-type'] === 'checkbox-list'
+            const isCheckBox = fieldMeta['input-type'] === 'check-box'
 
             if (isCheckboxList) {
               const selected = formValues[f] || []
@@ -226,6 +235,22 @@ function App() {
                       {val}
                     </label>
                   ))}
+                </div>
+              )
+            }
+
+            if (isCheckBox) {
+              const checked = !!formValues[f]
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={e => setFormValues({ ...formValues, [f]: e.target.checked })}
+                    />
+                    {' '}{fieldMeta.label}
+                  </label>
                 </div>
               )
             }

@@ -39,9 +39,11 @@ The frontend is intentionally minimal and schema-driven. It consumes `list-form`
 - `*model*`, defined in `lisp/model.lisp`, contains an example model for a To Do list
 - React frontend has:
   - Type selector (`/api/types`)
-  - Dynamic list with delete checkboxes
+  - Dynamic list with conditional Add / Delete Selected buttons and per-row Edit buttons
+  - Delete checkboxes (shown when `delete: true`)
   - Expandable Add/Edit form (uses `add-form` / `update-form`)
   - Role management via injected `roles` field (filtered `allowed-values`)
+  - The `/api/list` response now includes `create`/`delete`/`update` booleans to control which action buttons are shown
 - Focus is on proving the end-to-end loop before polish
 
 ## Important Design Decisions
@@ -59,6 +61,7 @@ The frontend is intentionally minimal and schema-driven. It consumes `list-form`
 - Run: `npm install && npm run dev` (proxies `/api` to backend on port 8081)
 - The app is intentionally simple — avoid adding heavy routing, state libraries, or styling until MVP is proven
 - All forms render from the schema returned by `/api/list`
+- Permission flags (`create`/`delete`/`update`) returned by `/api/list` control visibility of Add, Delete, and Edit controls
 
 ## Goals
 
