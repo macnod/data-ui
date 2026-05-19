@@ -188,7 +188,6 @@ NIL if the string is not a valid number."
        :post-create ,#'add-user-settings
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
-       :deletable t
        :fields (:name (:type :text
                         :source (:view :main :column :name :agg :first)
                         :ui (:label "Username" :input-type :line)
@@ -221,10 +220,9 @@ NIL if the string is not a valid number."
      ;; via the UI or the backend functions.
      :resources
      (:table t :base t :internal t
-       :create :auto :update :auto :delete :auto
+       :create nil :update nil :delete nil
        :views (:main (:tables (:resources :resource-roles :roles))
                 :roles (:tables (:roles)))
-       :deletable t
        :fields (:name (:type :text
                         :ui (:label "Resource" :input-type :line)
                         :source (:view :main :column :name :agg :first)
@@ -248,7 +246,6 @@ NIL if the string is not a valid number."
        :create ,#'rbac-add-permission
        :update :auto
        :delete ,#'rbac-remove-permission
-       :deletable t
        :fields (:name (:type :text
                         :ui (:label "Permission" :input-type :line)
                         :source (:view :main :column :name :agg :first)
@@ -300,8 +297,7 @@ NIL if the string is not a valid number."
 
      :settings
      (:table t :base t
-       :create :auto :update :auto :delete :delete-setting
-       :deletable t
+       :create nil :update :auto :delete nil
        :views (:main (:tables (:settings :users))
                 :users (:tables (:users)))
        :fields (:dark-mode (:type :boolean :default :false
@@ -1149,6 +1145,14 @@ fields that have non-NIL values for all HAVE-KEYS."
           (model-3 (stage-3 model-2)))
     model-3))
 
+(defun add-system-user-settings ()
+  (loop
+    for user in (list "admin" "guest")
+    for setting-id = (be-value-id :settings :user user "admin")
+    unless setting-id
+    do (be-insert :settings `(:user ,user) "admin"
+         :roles (list (a:exclusive-role-for user)))))
+
 (defun set-model (model)
   (loop
     initially (setf *compiled-model* nil)
@@ -1161,7 +1165,7 @@ fields that have non-NIL values for all HAVE-KEYS."
     (setf *compiled-model* compiled-model)
     (create-tables)
     (add-type-roles)
-    ;; (add-default-settings)
+    (add-system-user-settings)
     (return summary)))
 
 (defun drop-non-base-tables ()

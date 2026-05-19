@@ -464,10 +464,16 @@ all the right fields when we perform inserts or updates."
         append (list field-key
                  (add-to-plist (list :default default) ui))))))
 
+(defun true-or-false (&rest path)
+  (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
+
 (defun list-result (type-key user &optional field-keys view-result)
   (add-to-plist
     (list
       :type-key type-key
+      :create (true-or-false type-key :create)
+      :update (true-or-false type-key :update)
+      :delete (true-or-false type-key :delete)
       :records (add-roles-to-view
                  type-key
                  (view-result-values type-key field-keys view-result))
@@ -1173,7 +1179,19 @@ the value VALUE."
   (valid-field-key type-key field-key)
   (valid-value-type type-key field-key value)
   (valid-existing-user user)
-  (be-id type-key `((,type-key ,field-key :eq ,value)) user))
+  (let* ((table (u:tree-get *compiled-model*
+                 type-key :fields field-key :source :table))
+          (target-type-key (if table
+                             (case table
+                               (:main type-key)
+                               (otherwise table))
+                             type-key))
+          (target-field-key (if (equal target-type-key type-key)
+                              field-key
+                              (u:tree-get *compiled-model*
+                                type-key :fields field-key
+                                :source :column))))
+    (be-id type-key `((,target-type-key ,target-field-key :eq ,value)) user)))
 
 (defun be-rec (id user &key (form :update-form) type-key)
   ":public: Returns the TYPE-KEY record with the given ID, provided that it is

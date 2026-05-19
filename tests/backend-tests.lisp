@@ -757,22 +757,24 @@ Notes:
     (a:remove-user *rbac* "todo-user-1")
     (a:remove-role *rbac* "todo-creator")))
 
-;; (test be-insert-setting
-;;   (let* ((role-data '(:name "role-1" :permissions ("create" "read")))
-;;           (user-data '(:name "user-1" :password "password-1" :email "no-email"))
-;;           (role (getf role-data :name)))
-;;     (unless (a:get-id *rbac* "roles" role)
-;;       (be-insert :roles role-data "admin"))
-;;     (unless (a:get-id *rbac* "users" "user-1")
-;;       (be-insert :users user-data "admin" :roles (list role)))
-;;     (when (be-id :settings '((:users :name :eq "user-1")) "admin")
-;;       (be-delete :settings '((:users :name :eq "user-1")) "admin"))
-;;     (is-true
-;;       (uuid-p
-;;           (car (be-list-column :settings '((:settings :user :eq "user-1")) "admin"))))
-;;     (be-delete :settings '((:users :name :eq "user-1")) "admin")
-;;     (be-delete :users '((:users :name :eq "user-1")) "admin")
-;;     (be-delete :roles '((:roles :name :eq "role-1")) "admin")))
+(test be-insert-setting
+  (let* ((role-data '(:name "role-1" :permissions ("create" "read")))
+          (user-data '(:name "user-1" :password "password-1" :email "no-email"))
+          (role (getf role-data :name))
+          (user (getf user-data :name)))
+    (unless (a:get-id *rbac* "roles" role)
+      (be-insert :roles role-data "admin"))
+    (unless (a:get-id *rbac* "users" "user-1")
+      (be-insert :users user-data "admin" :roles (list role)))
+    (is-true
+      (uuid-p
+        (u:tree-get
+          (be-list-column :settings :id "admin"
+            :filters `((:users :name :eq ,user)))
+          :values 0)))
+    (be-delete :settings `((:users :name :eq ,user)) "admin")
+    (be-delete :users `((:users :name :eq ,user)) "admin")
+    (be-delete :roles `((:roles :name :eq ,role)) "admin")))
 
 (test be-insert-role-1
   (let ((role "role-1")
