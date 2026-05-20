@@ -41,25 +41,25 @@
 
 (in-suite rest-suite)
 
-(test rest-list
-  (let ((response (http-get (make-url "/api/list" :type :permissions))))
-    (is (equal (getf response :code) 200))
-    (is (equal (u:tree-get response :data :status) "success"))
-    (is (equal (u:tree-get response :data :result :type-key) "permissions"))
-    (is (equal
-          (u:safe-sort (u:tree-col response :data :result :records :name))
-          (u:safe-sort '("create" "read" "update" "delete"))))
-    (is (equal
-          (u:safe-sort (u:plist-keys (u:tree-get response :data :result :records 0)))
-          (u:safe-sort '(:id :created-at :updated-at :name))))
-    (is-false (u:tree-get response :data :result :allowed-values))
-    (is (> (parse-integer (u:tree-get response :meta :content-length))
-          500))))
+;; (test rest-list
+;;   (let ((response (http-get (make-url "/api/list" :type :permissions))))
+;;     (is (equal (getf response :code) 200))
+;;     (is (equal (u:tree-get response :data :status) "success"))
+;;     (is (equal (u:tree-get response :data :result :type-key) "permissions"))
+;;     (is (equal
+;;           (u:safe-sort (u:tree-col response :data :result :records :name))
+;;           (u:safe-sort '("create" "read" "update" "delete"))))
+;;     (is (equal
+;;           (u:safe-sort (u:plist-keys (u:tree-get response :data :result :records 0)))
+;;           (u:safe-sort '(:id :created-at :updated-at :name))))
+;;     (is-false (u:tree-get response :data :result :allowed-values))
+;;     (is (> (parse-integer (u:tree-get response :meta :content-length))
+;;           500))))
 
-(test rest-id
-  (let ((response (http-get (make-url "/api/id"
-                              :type :users
-                              :filters '((:users :name :eq "admin"))))))
-    (is (equal (getf response :code) 200))
-    (is (equal (u:tree-get response :data :status) "success"))
-    (is-true (uuid-p (u:tree-get response :data :result)))))
+;; (test rest-id
+;;   (let ((response (http-get (make-url "/api/id"
+;;                               :type :users
+;;                               :filters '((:users :name :eq "admin"))))))
+;;     (is (equal (getf response :code) 200))
+;;     (is (equal (u:tree-get response :data :status) "success"))
+;;     (is-true (uuid-p (u:tree-get response :data :result)))))

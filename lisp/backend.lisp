@@ -155,6 +155,12 @@ for the placeholders."
                       table-key :fields field-key
                       :source :column-name))
       for op = (operator-sql op-key)
+      for log = (pl:pdebug :in "add-where-clause"
+                  :table-key table-key
+                  :field-key field-key
+                  :op-key op-key
+                  :value value
+                  :alias alias)
       for placeholders = (if (member op-key '(:in :not-in))
                            (format nil "(~{~a~^, ~})"
                              (placeholders value :start-at index))
@@ -163,10 +169,11 @@ for the placeholders."
       collect (format nil "~a ~a ~a" alias op placeholders)
       into conditions
       finally
-      (return
-        (cons
-          (format nil "~a~%where~%  ~{~a~^~%  and ~}~%" sql conditions)
-          (u:flatten values))))
+      (let ((where (format nil "~a~%where~%  ~{~a~^~%  and ~}~%"
+                     sql conditions))
+             (params (u:flatten values)))
+        (pl:pdebug :in "add-where-clause" :where where :params params :filters filters)
+        (return (cons where (u:flatten values)))))
     (list sql)))
 
 (defun add-ids-clause (type-key sql ids)
@@ -417,6 +424,8 @@ all the right fields when we perform inserts or updates."
     t))
 
 (defun get-type-roles (type-key)
+  (pl:pdebug :in "get-type-roles" :type-key type-key
+    :resource-name (type-resource-name type-key))
   (when (type-key-p type-key)
     (a:list-resource-role-names *rbac* (type-resource-name type-key))))
 
@@ -501,9 +510,14 @@ the update fails."
     (valid-existing-uuid filters)
     (valid-filters filters :required t))
   ;; Compute the existing roles for the resource
-  (let* ((roles (add-to-list roles "admin"))
+  (let* ((roles (add-to-list roles "admin" (a:exclusive-role-for user)))
           (resource-name (find-resource-name type-key filters))
-          (existing-roles (a:list-resource-role-names *rbac* resource-name))
+          (existing-roles (progn
+                            (pl:pdebug :in "update-roles"
+                              :step 1
+                              :type-key type-key
+                              :resource-name resource-name)
+                            (a:list-resource-role-names *rbac* resource-name)))
           (to-add (set-difference roles existing-roles :test 'equal))
           (to-remove (set-difference existing-roles roles :test 'equal)))
     ;; Add new roles
@@ -813,9 +827,9 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
   ;; Insert resources row
   (let* ((resource-name (make-resource-name type-key data))
           (uuid (a:add-resource *rbac* resource-name :roles roles))
-          (insert (u:tree-get *compiled-model* type-key :insert-sql)))
-    (pl:pdebug :in "be-insert"
-      :branch "normal auto"
+          (insert (u:tree-get *compiled-model* type-key :insert-sql))
+          (all-roles (cons (a:exclusive-role-for user) roles)))
+    (pl:pdebug :in "insert-normal"
       :type-key type-key :uuid uuid :data data
       :sql (car (insert-main-query type-key insert uuid data user))
       :params (cdr (insert-main-query type-key insert uuid data user)))
@@ -825,7 +839,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
     ;; Insert rows in join tables
     (insert-join-table-rows type-key uuid data)
     ;; Update roles
-    (when roles (update-roles type-key uuid user roles))
+    (update-roles type-key uuid user all-roles)
     (values uuid t)))
 
 (defun insert-base (type-key data user)
@@ -883,6 +897,9 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
         for record in view
         for id = (getf record :id)
         for resource-name = (id-to-resource-name id)
+        for log-1 = (pl:pdebug :in "add-roles-to-view"
+                      :type-key type-key
+                      :resource-name resource-name)
         for roles = (remove-if
                       (lambda (x) (equal x "admin"))
                       (a:list-resource-role-names *rbac* resource-name))
@@ -1309,7 +1326,6 @@ example inserts a todo with the name \"clean the kitchen\":
 "
   (valid-compiled-model)
   (valid-type-key type-key)
-  (pl:pdebug :in "be-insert" :type-key type-key :roles roles)
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (let ((data (full-data type-key data)))
@@ -1317,24 +1333,26 @@ example inserts a todo with the name \"clean the kitchen\":
     (let ((id (id-from-data type-key data)))
       (if id
         (values id nil)
-        (let* ((m *compiled-model*)
-                (f (u:tree-get m type-key :create))
-                (base (u:tree-get m type-key :base))
-                (internal (u:tree-get m type-key :internal))
-                (post-create (u:tree-get m type-key :post-create))
-                (new-id (cond
-                          ((and (equal f :auto) (not base) (not internal))
-                            (insert-normal type-key data roles user))
-                          ((and (equal f :auto) (not internal))
-                            (insert-base type-key data user))
-                          ((functionp f)
-                            (funcall f type-key data user :roles roles))
-                          (t (signal-validation-error
-                               "Invalid create function for type ~s: ~s"
-                               type-key f)))))
-          (when post-create
-            (funcall post-create nil nil data nil nil))
-          (values new-id t))))))
+        (progn
+          (pl:pdebug :in "be-insert" :type-key type-key :status "validated")
+          (let* ((m *compiled-model*)
+                  (f (u:tree-get m type-key :create))
+                  (base (u:tree-get m type-key :base))
+                  (internal (u:tree-get m type-key :internal))
+                  (post-create (u:tree-get m type-key :post-create))
+                  (new-id (cond
+                            ((and (equal f :auto) (not base) (not internal))
+                              (insert-normal type-key data roles user))
+                            ((and (equal f :auto) (not internal))
+                              (insert-base type-key data user))
+                            ((functionp f)
+                              (funcall f type-key data user :roles roles))
+                            (t (signal-validation-error
+                                 "Invalid create function for type ~s: ~s"
+                                 type-key f)))))
+            (when post-create
+              (funcall post-create nil nil data nil nil))
+            (values new-id t)))))))
 
 (defun be-insert-internal (type-key data user &key roles)
   ":private: Inserts a record of type TYPE-KEY with the given DATA, provided
@@ -1493,13 +1511,19 @@ exist or that is not available to USER."
   (valid-type-key type-key)
   (valid-user-roles user roles)
   (let ((resource-name (type-resource-name type-key)))
-    (loop with resource-roles = (a:list-resource-role-names *rbac* resource-name)
+    (loop
+      initially (pl:pdebug :in "be-add-type-roles" :step 1
+                  :type-key type-key
+                  :resource-name resource-name)
+      with resource-roles = (a:list-resource-role-names *rbac* resource-name)
       for role in (u:distinct-values roles)
       unless (member role resource-roles :test 'equal)
       do
-      (pl:pdebug :in "be-add-type-roles" :status "adding type role"
-        :type-key type-key :role role)
+      (pl:pdebug :in "be-add-type-roles" :step 2
+        :type-key type-key :resource-name resource-name :role role)
       (a:add-resource-role *rbac* resource-name role))
+    (pl:pdebug :in "be-add-type-roles" :step 3
+      :type-key type-key :resource-name resource-name)
     (a:list-resource-role-names *rbac* resource-name)))
 
 (defun be-remove-type-roles (type-key user &rest roles)
@@ -1517,7 +1541,29 @@ ignores that role if it's included in ROLES."
       for role in (U:distinct-values roles)
       when (member role user-roles :test 'equal)
       do (a:remove-resource-role *rbac* resource-name role))
+    (pl:pdebug :in "be-remove-type-roles"
+      :type-key type-key :resource-name resource-name)
     (a:list-resource-role-names *rbac* resource-name)))
+
+(defun trim-maybe (value)
+  ":private: If VALUE is a string, this function returns the trimmed value. If
+VALUE is not a string, this function returns VALUE. Otherwise, if VALUE is an
+array this function returns the same array with any string elements in the
+array trimmed."
+  (pl:pdebug :in "trim-maybe" :step 1 :value value)
+  (let ((result (if (listp value)
+                  (progn
+                    (pl:pdebug :in "trim-maybe" :step 2 :value value)
+                    (mapcar
+                      (lambda (s) (if (string s) (u:trim s) s))
+                      value))
+                  (if (stringp value)
+                    (progn
+                      (pl:pdebug :in "trim-maybe" :step 3 :value value)
+                      (u:trim value))
+                    value))))
+    (pl:pdebug :in "trim-maybe" :step 4 :result result)
+    result))
 
 (defun be-validate-field (type-key field-key value user)
   ":public: Validates that VALUE is acceptable for FIELD-KEY of TYPE-KEY. This
@@ -1532,17 +1578,23 @@ if VALUE is valid for the field, and
 if VALUE is not valid for the field. `{error-message-list}` is a list of strings
 describing the problems with VALUE."
   (valid-compiled-model)
+  (pl:pdebug :in "be-validate-field" :step 1
+    :type-key type-key :field-key field-key :value value :user user)
   (loop
     with validations = (u:tree-get *compiled-model*
                          type-key :fields field-key :validations)
     initially
     (valid-type-key type-key)
     (valid-field-key type-key field-key)
+    (pl:pdebug :in "be-validate-field" :step 2
+      :type-key type-key :field-key field-key :value value)
     for validation in validations
-    for clean-value = (if (listp value)
-                        (mapcar #'u:trim value)
-                        (u:trim value))
+    for clean-value = (trim-maybe value)
+    for log-1 = (pl:pdebug :in "be-validate-field" :step 3
+                  :clean-value clean-value
+                  :validation validation)
     for e = (funcall validation type-key field-key clean-value user)
+    for log-2 = (pl:pdebug :in "be-validate-field" :step 4 :e e)
     when e collect e into errors
     finally (return
               (if errors
@@ -1562,18 +1614,33 @@ when all values are valid, and
 
 when even one value is invalid. `{error-message-list}` is a list of strings."
   (valid-compiled-model)
-  (loop with data = (loop for key in (user-fields type-key)
-                      for value = (getf values key)
-                      append (list key value))
+  (loop
+    with fields = (u:tree-get *compiled-model* type-key :fields)
+    with data = (loop for key in (user-fields type-key)
+                  for default = (u:tree-get fields key :default)
+                  for value = (getf values key default)
+                  do (pl:pdebug :in "be-validate-form" :step 1
+                       :key key :default default :value value)
+                  append (list key value))
     for field-key in data by #'cddr
     for value in (cdr data) by #'cddr
+    for log-1 = (pl:pdebug :in "be-validate-form"
+                  :step 2
+                  :type-key type-key
+                  :field-key field-key :value value)
     for e = (be-validate-field type-key field-key value user)
     when (equal (getf e :valid) :false)
     append (getf e :errors) into errors
-    finally (return
-              (if errors
-                (list :valid :false :errors errors)
-                (list :valid :true)))))
+    finally
+    (pl:pdebug :in "be-validate-form"
+      :step 3
+      :type-key type-key
+      :valid (if errors :false :true)
+      :errors errors)
+    (return
+      (if errors
+        (list :valid :false :errors errors)
+        (list :valid :true)))))
 
 (defun be-types (user)
   (valid-compiled-model)
@@ -1583,7 +1650,8 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
     for allowed = (a:user-allowed *rbac*
                     user "read" (type-resource-name type-key))
     for internal = (getf type-def :internal)
-    when (and allowed (not internal))
+    for display = (getf type-def :display)
+    when (and display allowed (not internal))
     collect type-key))
 
 ;;

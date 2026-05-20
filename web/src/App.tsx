@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { apiFetch, setTokens, clearTokens, isAuthenticated } from './api'
 
 interface Field {
   label: string
@@ -29,7 +30,27 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [editRecord, setEditRecord] = useState<any>(null)
 
+  // Auth state
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
+  const [loggedIn, setLoggedIn] = useState(false)
+
   const isEditMode = !!editRecord
+
+  const fetchTypes = () => {
+    apiFetch('/api/types')
+      .then(res => res.json())
+      .then(json => setTypes(json.result || []))
+      .catch(() => setTypes([]))
+  }
+
+  const fetchList = () => {
+    apiFetch(`/api/list?type=${type}`)
+      .then(res => res.json())
+      .then(setData)
+      .catch(() => setData(null))
+  }
 
   const changeType = (newType: string) => {
     setType(newType)
@@ -49,18 +70,15 @@ function App() {
     }
     if (roles) payload.roles = roles
 
-    const res = await fetch('/api/insert', {
+    const res = await apiFetch('/api/insert', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     })
 
     if (res.ok) {
       setShowAddForm(false)
       setFormValues({})
-      fetch(`/api/list?type=${type}`)
-        .then(r => r.json())
-        .then(setData)
+      fetchList()
     } else {
       alert('Failed to insert')
     }
@@ -78,6 +96,34 @@ function App() {
     setFormValues({})
   }
 
+  const handleLogin = async () => {
+    setLoginError('')
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      })
+      const json = await res.json()
+      if (json.status === 'success' && json.result) {
+        const access = json.result['access-token']
+        const refresh = json.result['refresh-token']
+        if (access && refresh) {
+          setTokens(access, refresh)
+          setLoggedIn(true)
+          setUsername('')
+          setPassword('')
+        } else {
+          setLoginError('Invalid response from server')
+        }
+      } else {
+        setLoginError(json.result?.message || 'Login failed')
+      }
+    } catch (e) {
+      setLoginError('Network error')
+    }
+  }
+
   const submitForm = async () => {
     const { roles, ...rest } = formValues
     // Omit empty or whitespace-only string values from POST
@@ -90,24 +136,20 @@ function App() {
     let res
     if (isEditMode) {
       payload.filters = editRecord.id
-      res = await fetch('/api/update', {
+      res = await apiFetch('/api/update', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
     } else {
-      res = await fetch('/api/insert', {
+      res = await apiFetch('/api/insert', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
     }
 
     if (res.ok) {
       closeForm()
-      fetch(`/api/list?type=${type}`)
-        .then(r => r.json())
-        .then(setData)
+      fetchList()
     } else {
       alert(isEditMode ? 'Failed to update' : 'Failed to insert')
     }
@@ -132,31 +174,48 @@ function App() {
 
     for (const id of selectedIds) {
       const payload = { type, filters: id }
-      await fetch('/api/delete', {
+      await apiFetch('/api/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
     }
     setSelectedIds([])
-    fetch(`/api/list?type=${type}`)
-      .then(r => r.json())
-      .then(setData)
+    fetchList()
   }
 
   useEffect(() => {
-    fetch('/api/types')
-      .then(res => res.json())
-      .then(json => setTypes(json.result))
-  }, [])
+    if (!loggedIn) return
+    fetchTypes()
+    fetchList()
+  }, [loggedIn, type])
 
-  useEffect(() => {
-    fetch(`/api/list?type=${type}`)
-      .then(res => res.json())
-      .then(setData)
-  }, [type])
+  if (!loggedIn) {
+    return (
+      <div style={{ maxWidth: 320, margin: '100px auto', padding: 20 }}>
+        <h1>Data UI</h1>
+        <h2>Login</h2>
+        <input
+          type="text"
+          placeholder="Username"
+          value={username}
+          onChange={e => setUsername(e.target.value)}
+          style={{ width: '100%', marginBottom: 8 }}
+        />
+        <input
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          style={{ width: '100%', marginBottom: 8 }}
+          onKeyDown={e => e.key === 'Enter' && handleLogin()}
+        />
+        <button onClick={handleLogin} style={{ width: '100%' }}>Login</button>
+        {loginError && <p style={{ color: 'red' }}>{loginError}</p>}
+      </div>
+    )
+  }
 
-  if (!data || !data.result || Array.isArray(data.result)) {
+  if (!data || !data.result || Array.isArray(data.result) || !data.result['list-form']) {
     return (
       <div>
         <h1>Data UI</h1>
@@ -179,6 +238,12 @@ function App() {
   return (
     <div>
       <h1>Data UI</h1>
+
+      <div style={{ marginBottom: '1rem' }}>
+        <button onClick={() => { clearTokens(); setLoggedIn(false); setData(null) }}>
+          Logout
+        </button>
+      </div>
 
       <div>
         {types.map(t => (

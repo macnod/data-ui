@@ -3,17 +3,25 @@
 (defparameter *max-value-length* 1000)
 
 (defun parse-number (s)
-  ":private: Parses a string into a number. Returns the number upon succes, or
-NIL if the string is not a valid number."
-  (let ((s (re:regex-replace "^\\+" (u:trim s) "")))
-    (when (and
-            (string s)
-            (> (length s) 0)
-            (re:scan "^-?\\d*(\\.\\d+)?$" s))
-      (let ((num (handler-case
-                   (read-from-string s)
-                   (error () nil))))
-        (when (numberp num) num)))))
+  ":private: Parses S into a number. Returns the number upon success, or NIL if
+the string is not a valid number. If S is is already a number, this function
+returns S. If S is not a string or a number, this function returns NIL."
+  (cond
+    ((numberp s) s)
+    ((stringp s)
+      (let ((s (re:regex-replace "^\\+" (u:trim s) "")))
+        (when (and
+                (string s)
+                (> (length s) 0)
+                (re:scan "^-?\\d*(\\.\\d+)?$" s))
+          (let ((num (handler-case
+                       (read-from-string s)
+                       (error () nil))))
+            (when (numberp num) num)))))
+    (t nil)))
+
+(defun is-integer (s)
+  (integerp (parse-number s)))
 
 (defun general-type (type-key field-key)
   (let ((field-type-key (u:tree-get *compiled-model*
@@ -63,15 +71,15 @@ NIL if the string is not a valid number."
 
 (defun v-type (type-key field-key value user)
   (declare (ignore user))
+  (pl:pdebug :in "v-type" :step 1
+    :type-key type-key :field-key field-key :value value)
   (let* ((field-type-key (u:tree-get *compiled-model*
                            type-key :fields field-key :type))
           (valid (case field-type-key
                    (:text (valid-value-string value))
                    (:password (valid-value-string value))
                    (:real (parse-number value))
-                   (:integer (and
-                               (parse-number value)
-                               (re:scan "^[0-9]+$" value)))
+                   (:integer (is-integer value))
                    (:boolean (member (u:make-keyword value) '(:true :false)))
                    (:uuid (re:scan *uuid-regex* value))
                    (:timestamp (re:scan *timestamp-regex* value))
@@ -122,7 +130,8 @@ NIL if the string is not a valid number."
           (format nil "not found: ~{~a~^, ~}" missing))))))
 
 (defun rbac-add-user (type-key data user &key roles)
-  (declare (ignore type-key user))
+  (declare (ignore type-key))
+  (pl:pdebug :in "rbac-add-user" :user user :roles roles)
   (a:add-user *rbac*
     (getf data :name)
     (getf data :email "no-email")
@@ -184,6 +193,7 @@ NIL if the string is not a valid number."
        ;; RBAC API doesn't include an update function, so just use :auto here
        :update :auto
        :delete ,#'rbac-remove-user
+       :display t
        ;; TODO: Add processing for the :post-create key.
        :post-create ,#'add-user-settings
        :views (:main (:tables (:users :role-users :roles))
@@ -220,7 +230,7 @@ NIL if the string is not a valid number."
      ;; via the UI or the backend functions.
      :resources
      (:table t :base t :internal t
-       :create nil :update nil :delete nil
+       :create nil :update nil :delete nil :display nil
        :views (:main (:tables (:resources :resource-roles :roles))
                 :roles (:tables (:roles)))
        :fields (:name (:type :text
@@ -246,6 +256,7 @@ NIL if the string is not a valid number."
        :create ,#'rbac-add-permission
        :update :auto
        :delete ,#'rbac-remove-permission
+       :display t
        :fields (:name (:type :text
                         :ui (:label "Permission" :input-type :line)
                         :source (:view :main :column :name :agg :first)
@@ -259,6 +270,7 @@ NIL if the string is not a valid number."
        :create ,#'rbac-add-role
        :update :auto
        :delete ,#'rbac-remove-role
+       :display t
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
        :fields (:name (:type :text
@@ -297,7 +309,7 @@ NIL if the string is not a valid number."
 
      :settings
      (:table t :base t
-       :create nil :update :auto :delete nil
+       :create nil :update :auto :delete nil :display t
        :views (:main (:tables (:settings :users))
                 :users (:tables (:users)))
        :fields (:dark-mode (:type :boolean :default :false
@@ -329,9 +341,12 @@ NIL if the string is not a valid number."
 
      :tokens
      (:table t :base t
-       :create nil :update :nil :delete nil
+       :create nil :update nil :delete nil :display nil
        :views (:main (:tables (:tokens)))
        :fields (:user (:type :text
+                        ;; TODO: We shouldn't need to have :ui hints for this
+                        ;;       type, yet there are failures if we don't
+                        ;;       include :ui here.
                         :ui (:label "User" :input-type :line)
                         ;; TODO: A bad :view, :table, :column, or :agg should
                         ;;       raise a compile-time error.
@@ -348,7 +363,8 @@ NIL if the string is not a valid number."
 (defparameter *model*
   `(:todos
      (:table t
-       :create :auto :update :auto :delete :auto
+       :create :auto :update :auto :delete :auto :display t
+       :type-roles ("todo-users")
        :views (:main (:tables (:todos :todo-tags :tags))
                 :tags (:tables (:tags)))
        :fields (:name (:type :text
@@ -367,6 +383,10 @@ NIL if the string is not a valid number."
                            :validations (:required)
                            :source (:view :main :column :points :agg :first)
                            :column t :not-null t)
+                 :done (:type :boolean :default :false
+                         :ui (:label "Done" :input-type :check-box)
+                         :source (:view :main :column :done :agg :first)
+                         :column t :not-null t)
                  :tags (:type :list
                          :ui (:label "Tags" :input-type :checkbox-list)
                          :validations (:join-items-exist)
@@ -379,7 +399,8 @@ NIL if the string is not a valid number."
 
      :tags
      (:table t
-       :create :auto :update :auto :delete :auto
+       :create :auto :update :auto :delete :auto :display t
+       :type-roles ("todo-users")
        :fields (:name (:type :text
                         :ui (:label "Tag" :input-type :line)
                         :validations (:required)
@@ -819,11 +840,31 @@ fields that have non-NIL values for all HAVE-KEYS."
              (t (error "Invalid UUID value '~a'" value))))
     (otherwise (error "Unknown FIELD-TYPE-KEY '~a'" field-type-key))))
 
-(defun field-source (field-def name-key)
-  (or
-    (getf field-def :source)
-    (when (getf field-def :column)
-      `(:view :main :column ,name-key :agg :first))))
+(defun field-source (model type-key field-key field-def name-key)
+  (let* ((source (or
+                   (getf field-def :source)
+                   (when (getf field-def :column)
+                     `(:view :main :column ,name-key :agg :first))))
+          (source-table (getf source :table))
+          (t-key (if source-table source-table type-key))
+          (f-key (getf source :column))
+          (internal (or (u:tree-get model type-key :internal)
+                      (u:tree-get model type-key :join-table))))
+    (if internal
+      source
+      (progn
+        (when (and
+                t-key
+                f-key
+                (not (or
+                       (u:tree-get model t-key :fields f-key)
+                       (member f-key (default-fields :keys-only t)))))
+          (error "Unknown field at ~(~s~) :fields ~(~s~) :source ~(~s~)"
+            type-key field-key f-key))
+        (when (and t-key (not f-key))
+                (error ":column spec missing from field ~(~s~) ~(~s~) :source"
+                  type-key field-key))
+        source))))
 
 (defun compile-validations (model type-key field-key)
   (let ((vfs (loop with validations = (u:tree-get model type-key :fields
@@ -882,7 +923,8 @@ fields that have non-NIL values for all HAVE-KEYS."
                        :name-sql name-sql
                        :type-sql type-sql
                        :create-sql (format nil "~{~a~^ ~}" sql-parts)
-                       :source (field-source field-def name-key)
+                       :source (field-source model type-key new-field-key
+                                 field-def name-key)
                        :source-all (getf field-def :source-all)
                        :type (or (getf field-def :type) :text)
                        :column column
@@ -1059,9 +1101,7 @@ fields that have non-NIL values for all HAVE-KEYS."
           (fields (compile-fields type-key model))
           (table-name (table-name type-key base))
           (roles (when (type-has-roles type-def)
-                   (getf type-def
-                     :type-roles
-                     (if base '("admin") '("admin" "logged-in"))))))
+                   (getf type-def :type-roles '("admin")))))
     ;; TODO: Documentation. Be very careful when explicitly adding roles to a
     ;;       type, because if the role doesn't exist, it will be created here
     ;;       with full permissions and associated with the type.
@@ -1102,6 +1142,10 @@ fields that have non-NIL values for all HAVE-KEYS."
             (listp sdef))
            t)
          ((and
+            (equal key :type-roles)
+            (listp sdef)
+            t))
+         ((and
             (member (second key-path) '(:list-form :update-form :add-form))
             (equal key :fields))
            t)
@@ -1112,7 +1156,7 @@ fields that have non-NIL values for all HAVE-KEYS."
              "Quoted list in model definition at ~{~(~s~)~^ -> ~}."
              (append key-path (list key))))
          (t (error
-              "Invalid value in model defintion at ~{~(~s~)~^ -> ~}: ~s"
+              "Invalid value in model definition at ~{~(~s~)~^ -> ~}: ~s"
               (append key-path (list key)) sdef)))))
 
 (defun stage-1 (model)

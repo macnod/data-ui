@@ -180,7 +180,7 @@ validates and user exists. Otherwise, logs a message and returns NIL."
         (be-update :tokens id data "admin")
         (be-insert-internal :tokens data "admin")))
     (error (e)
-      (abort-error e :message "Error storing token in database."
+      (abort-error e :reason "Error storing token in database."
         :token token :username username :value token))))
 
 (defun make-json-error (status-code error-string &optional details-plist)
@@ -232,7 +232,7 @@ validates and user exists. Otherwise, logs a message and returns NIL."
       (list
         :in "abort-request"
         :error-code error-code
-        :message message)
+        :reason message)
       (when details-plist
         (list :details details-plist))))
   (h:abort-request-handler (make-json-error error-code message details-plist)))
@@ -272,7 +272,7 @@ validates and user exists. Otherwise, logs a message and returns NIL."
     (handler-case (json-to-plist json)
       (error (e)
         (abort-bad-request e
-          :message "Invalid JSON in request body."
+          :reason "Invalid JSON in request body."
           :json json)))))
 
 (defun parse-id (id)
@@ -348,7 +348,7 @@ validates and user exists. Otherwise, logs a message and returns NIL."
             (return good)))))
     (error (e)
       (abort-bad-request e
-        :message "Invalid JSON in filters parameter."
+        :reason "Invalid JSON in filters parameter."
         :filters-json filters-json
         :allow-id allow-id))))
 
@@ -935,7 +935,7 @@ for dynamically creating a menu in the frontend."
           (password (getf tree :password))
           (user-id (handler-case
                      (a:login *rbac* username password)
-                     (error (e) (abort-error e :message "Error during login"))))
+                     (error (e) (abort-error e :reason "Error during login"))))
           (refresh-token (issue-refresh-token user-id))
           (access-token (issue-access-token user-id))
           (result `(:access-token ,access-token
@@ -956,7 +956,7 @@ log in again with their username and password."
                             (be-value-id :tokens :value token "admin")
                             (error (e)
                               (abort-error e
-                                :message "Error looking up token"))))))
+                                :reason "Error looking up token"))))))
     (pl:pdebug :in "rest-refresh" :user user :user-id user-id
       :token-exists token-exists :token token)
     (if token-exists

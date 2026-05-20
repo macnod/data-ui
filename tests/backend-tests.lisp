@@ -180,25 +180,26 @@ where users.id in (
           (alias-keys :todos (form-field-keys :todos :list-form)))
         (u:safe-sort
           '(:rt-todos-id :rt-todos-created-at :rt-todos-updated-at
-             :rt-todos-todo-name :rt-todos-todo-points :rt-tags-tag-name)))))
+             :rt-todos-todo-name :rt-todos-todo-points
+             :rt-todos-todo-done :rt-tags-tag-name)))))
 
 (test aggregations
   (is (equal
         (aggregations :todos (form-field-keys :todos :list-form))
-        (list :first :first :first :first :first :list))))
+        (list :first :first :first :first :first :first :list))))
 
 (test resource-id-keys
   (is (equal (resource-id-keys :todos) '(:id :todo-id)))
   (is (equal (resource-id-keys :users) '(:id :user-id))))
 
 (test local-fields
-  (is (equal (local-fields :todos) '(:name :points)))
+  (is (equal (local-fields :todos) '(:name :points :done)))
   (is (equal (local-fields :users) '(:name :password :email))))
 
 (test make-resource-name
   (is (equal
         (make-resource-name :todos '(:name "Buy milk"))
-        "todos:buy-milk:7b8785438497d4f0"))
+        "todos:buy-milk:eef53f79d4e4742e"))
   (is (equal
         (make-resource-name :users '(:name "admin" :email "no-email"
                                       :password "password"))
@@ -234,7 +235,7 @@ where users.id in (
          (data '(:name "Test Todo"))
          (result (insert-main-query type-key insert uuid data "admin"))
          (main-qt (getf insert :main)))
-    (is (and (consp result) (= 4 (length result))))
+    (is (and (consp result) (= 5 (length result))))
     (is (equal (first result) (first main-qt)))
     (is (equal (second result) uuid))
     (is (equal (third result) (getf data :name))))
@@ -1058,6 +1059,14 @@ Notes:
   (is (equal
         (be-validate-form
           :todos
+          '(:name "test todo"
+             :points 3
+             :tags ("tag-1" "tag-2"))
+          "admin")
+        '(:valid :true)))
+  (is (equal
+        (be-validate-form
+          :todos
           '(:name "this is a very long name"
              :points "three"
              :tags ("tag-1" "tag-2" "tag-3"))
@@ -1076,7 +1085,4 @@ Notes:
           '(:name "test todo"
              :tags ("tag-1" "tag-2"))
           "admin")
-        '(:valid :false
-           :errors
-           ("todo points must be a valid :INTEGER."
-             "todo points is required.")))))
+        '(:valid :true))))
