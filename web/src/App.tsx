@@ -35,6 +35,7 @@ function App() {
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState('')
   const [loggedIn, setLoggedIn] = useState(false)
+  const [loggedInUser, setLoggedInUser] = useState('')
 
   const isEditMode = !!editRecord
 
@@ -111,6 +112,7 @@ function App() {
         if (access && refresh) {
           setTokens(access, refresh)
           setLoggedIn(true)
+          setLoggedInUser(username)
           setUsername('')
           setPassword('')
         } else {
@@ -219,7 +221,7 @@ function App() {
     return (
       <div>
         <div style={{ position: 'relative' }}>
-          <h1>Data UI</h1>
+          <h1 style={{ margin: 0 }}>Data UI</h1>
           <div style={{
             position: 'absolute',
             left: '50%',
@@ -229,6 +231,15 @@ function App() {
             fontWeight: 'bold'
           }}>
             {type}
+          </div>
+          <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
+            <button
+              onClick={() => { clearTokens(); setLoggedIn(false); setLoggedInUser(''); setData(null) }}
+              style={{}}
+            >
+              Logout
+            </button>
           </div>
         </div>
         <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
@@ -261,7 +272,7 @@ function App() {
   return (
     <div>
       <div style={{ position: 'relative' }}>
-        <h1>Data UI</h1>
+        <h1 style={{ margin: 0 }}>Data UI</h1>
         <div style={{
           position: 'absolute',
           left: '50%',
@@ -272,12 +283,15 @@ function App() {
         }}>
           {type}
         </div>
-      </div>
-
-      <div style={{ marginBottom: '1rem' }}>
-        <button onClick={() => { clearTokens(); setLoggedIn(false); setData(null) }}>
-          Logout
-        </button>
+        <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
+          <button
+            onClick={() => { clearTokens(); setLoggedIn(false); setLoggedInUser(''); setData(null) }}
+            style={{}}
+          >
+            Logout
+          </button>
+        </div>
       </div>
 
       <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>

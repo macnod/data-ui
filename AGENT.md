@@ -25,7 +25,13 @@ The non-frontend code is almost entirely Common Lisp (SBCL). Tests live in the `
 
 The frontend is intentionally minimal and schema-driven. It consumes `list-form`/`add-form`/`update-form`, `records`, and `allowed-values` from the API to render dynamic lists and forms.
 
-## Code Ownership & AI Guidelines
+## AI Agent Workflow & Tooling
+- Use specialized file tools exclusively: `Glob`, `Grep`, `Read`, `Edit`, `Write` (never `Bash` for file inspection/editing)
+- Delegate open-ended research, codebase exploration, or multi-file searches to `researcher` agent
+- Use `TodoWrite` to track any multi-step work (3+ distinct steps/phases)
+- Delegate complex multi-file edits or systematic refactors to `executor`
+- All pre-work discussions and planning remain mandatory before code changes
+
 
 - All Lisp code (model compiler, backend functions, REST endpoints, database layer, etc.) was written by a human.
 - AI agents must not modify any Lisp source files outside `web/` without special permission from a human. That code is complex and largely outside of AI's current capabilities.
@@ -68,13 +74,8 @@ The frontend is intentionally minimal and schema-driven. It consumes `list-form`
 Deliver a working MVP by December that demonstrates the full path from model to deployed application, including a minimal but functional React UI.
 
 ## Current Focus / To Do (MVP)
-
-- Tackling the login/auth flow, potentially including a landing page for the site
-- Paging
-- Sorting
-- Settings
-- Filtering/searching
-- Completing REST endpoint tests in `tests/`
-- Setting up a test framework for the React frontend code
-- Hardening the React frontend (forms, validation feedback, error handling)
-- Preparing a minimal deployment story (for the December demo video)
+See TODO.md for the live prioritized list. Key items include:
+- Model/compiler extensions: password hashing, read-only types, :fs-backed support
+- JWT auth, schema endpoints, validation
+- React: auth context, dynamic forms/menus, file handling UI
+- Tests, deployment manifests, model input formats, demo video
