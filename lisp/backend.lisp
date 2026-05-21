@@ -1374,8 +1374,11 @@ example inserts a todo with the name \"clean the kitchen\":
                   (f (u:tree-get m type-key :create))
                   (base (u:tree-get m type-key :base))
                   (internal (u:tree-get m type-key :internal))
-                  (post-create (u:tree-get m type-key :post-create))
-                  (new-id (cond
+                  (pre-create (u:tree-get m type-key :pre-create))
+                  (post-create (u:tree-get m type-key :post-create)))
+            (when pre-create
+              (funcall pre-create type-key data roles user))
+            (let ((new-id (cond
                             ((and (equal f :auto) (not base) (not internal))
                               (insert-normal type-key data roles user))
                             ((and (equal f :auto) (not internal))
@@ -1385,9 +1388,9 @@ example inserts a todo with the name \"clean the kitchen\":
                             (t (signal-validation-error
                                  "Invalid create function for type ~s: ~s"
                                  type-key f)))))
-            (when post-create
-              (funcall post-create nil nil data nil nil))
-            (values new-id t)))))))
+              (when post-create
+                (funcall post-create nil nil data nil nil))
+              (values new-id t))))))))
 
 (defun be-insert-internal (type-key data user &key roles)
   ":private: Inserts a record of type TYPE-KEY with the given DATA, provided
