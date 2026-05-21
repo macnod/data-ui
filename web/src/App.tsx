@@ -218,10 +218,33 @@ function App() {
   if (!data || !data.result || Array.isArray(data.result) || !data.result['list-form']) {
     return (
       <div>
-        <h1>Data UI</h1>
-        <div>
+        <div style={{ position: 'relative' }}>
+          <h1>Data UI</h1>
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            fontSize: '1.1rem',
+            fontWeight: 'bold'
+          }}>
+            {type}
+          </div>
+        </div>
+        <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
           {types.map(t => (
-            <button key={t} onClick={() => changeType(t)} style={{ marginRight: 8 }}>
+            <button
+              key={t}
+              onClick={() => changeType(t)}
+              style={{
+                padding: '0.5rem 1rem',
+                border: 'none',
+                background: t === type ? '#fff' : '#f0f0f0',
+                borderBottom: t === type ? '2px solid #000' : 'none',
+                fontWeight: t === type ? 'bold' : 'normal',
+                cursor: 'pointer'
+              }}
+            >
               {t}
             </button>
           ))}
@@ -237,7 +260,19 @@ function App() {
 
   return (
     <div>
-      <h1>Data UI</h1>
+      <div style={{ position: 'relative' }}>
+        <h1>Data UI</h1>
+        <div style={{
+          position: 'absolute',
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          fontSize: '1.1rem',
+          fontWeight: 'bold'
+        }}>
+          {type}
+        </div>
+      </div>
 
       <div style={{ marginBottom: '1rem' }}>
         <button onClick={() => { clearTokens(); setLoggedIn(false); setData(null) }}>
@@ -245,15 +280,24 @@ function App() {
         </button>
       </div>
 
-      <div>
+      <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
         {types.map(t => (
-          <button key={t} onClick={() => changeType(t)} style={{ marginRight: 8 }}>
+          <button
+            key={t}
+            onClick={() => changeType(t)}
+            style={{
+              padding: '0.5rem 1rem',
+              border: 'none',
+              background: t === type ? '#fff' : '#f0f0f0',
+              borderBottom: t === type ? '2px solid #000' : 'none',
+              fontWeight: t === type ? 'bold' : 'normal',
+              cursor: 'pointer'
+            }}
+          >
             {t}
           </button>
         ))}
       </div>
-
-      <h2>{data.result.type}</h2>
 
       <div style={{ marginBottom: '0.5rem' }}>
         {data.result.create && (

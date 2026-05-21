@@ -131,12 +131,14 @@ returns S. If S is not a string or a number, this function returns NIL."
 
 (defun rbac-add-user (type-key data user &key roles)
   (declare (ignore type-key))
-  (pl:pdebug :in "rbac-add-user" :user user :roles roles)
-  (a:add-user *rbac*
-    (getf data :name)
-    (getf data :email "no-email")
-    (getf data :password)
-    :roles roles))
+  (let ((all-roles (add-to-list roles "settings")))
+    (pl:pdebug :in "rbac-add-user" :user user
+      :roles roles :all-roles all-roles)
+    (a:add-user *rbac*
+      (getf data :name)
+      (getf data :email "no-email")
+      (getf data :password)
+      :roles all-roles)))
 
 (defun rbac-remove-user (type-key data user)
   (declare (ignore type-key user))
@@ -194,6 +196,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :update :auto
        :delete ,#'rbac-remove-user
        :display t
+       :type-roles ("logged-in")
        ;; TODO: Add processing for the :post-create key.
        :post-create ,#'add-user-settings
        :views (:main (:tables (:users :role-users :roles))
@@ -257,6 +260,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :update :auto
        :delete ,#'rbac-remove-permission
        :display t
+       :type-roles ("logged-in")
        :fields (:name (:type :text
                         :ui (:label "Permission" :input-type :line)
                         :source (:view :main :column :name :agg :first)
@@ -271,6 +275,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :update :auto
        :delete ,#'rbac-remove-role
        :display t
+       :type-roles ("logged-in")
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
        :fields (:name (:type :text
@@ -308,8 +313,10 @@ returns S. If S is not a string or a number, this function returns NIL."
                  :reference (:target :users)))
 
      :settings
-     (:table t :base t
+     (:table t :base nil
        :create nil :update :auto :delete nil :display t
+       :type-roles ("settings")
+       :per-user t
        :views (:main (:tables (:settings :users))
                 :users (:tables (:users)))
        :fields (:dark-mode (:type :boolean :default :false
@@ -335,7 +342,7 @@ returns S. If S is not a string or a number, this function returns NIL."
                          :target :users
                          :source (:view :users :table :users :column :name :agg :first)
                          :column t :not-null t :unique t))
-       :list-form (:fields t)
+       :list-form (:fields (:dark-mode :font-size :display-name :bio))
        :update-form (:fields t)
        :add-form (:fields t))
 

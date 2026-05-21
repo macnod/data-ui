@@ -106,13 +106,13 @@ token validates and user exists. Otherwise, logs a message and returns NIL."
                         (handler-case
                           (a:get-value *rbac* "users" "user_name" "id" user-id)
                           (error (e)
-                            (pl:pwarn :in "validate-access-token"
+                            (pl:pwarn :in "validate-jwt"
                               :status "error looking up user id in database"
                               :user-id user-id
                               :condition (princ-to-string e)))))))
           (cond
             ((not (equal token-type type))
-              (pl:pwarn :in "validate-access-token"
+              (pl:pwarn :in "validate-jwt"
                 :status "invalid token type"
                 :token token
                 :expected-type type
@@ -120,16 +120,23 @@ token validates and user exists. Otherwise, logs a message and returns NIL."
                 :claims claims)
               nil)
             ((not user-id)
-              (pl:pwarn :in "validate-access-token"
+              (pl:pwarn :in "validate-jwt"
                 :status "missing user id in token"
                 :token token
                 :claims claims)
               nil)
             ((not user)
-              (pl:pwarn :in "validate-access-token"
+              (pl:pwarn :in "validate-jwt"
                 :status "user id not found in database"
-                :user-id user-id))
-            (t user)))))))
+                :user-id user-id)
+              nil)
+            (t user)))))
+    (jose/errors:jwt-claims-expired (e)
+      (abort-auth e :reason "token expired"
+        :token token :type type :condition (princ-to-string e)))
+    (error (e)
+      (abort-auth e :reason "invalid token"
+        :token token :type type :condition (princ-to-string e)))))
 
 (defun validate-access-token (token)
   ":private: Validate a JWT access token. Returns username if JWT token
@@ -213,18 +220,23 @@ validates and user exists. Otherwise, logs a message and returns NIL."
   ;; The following two lines are temporary, until I implement the login
   ;; endpoint. As soon as I've done that, I need to remove these two lines
   ;; and uncomment the lines that follow.
-  (multiple-value-bind (user allowed required)
+  (handler-case
+    (multiple-value-bind (user allowed required)
       (current-user required-roles)
-    (pl:pdebug :in "require-auth" :user user :allowed allowed :required required)
-    (cond
-      ((not (stringp (get-bearer-token)))
-       (h:abort-request-handler
-         (make-json-error
-           h:+http-authorization-required+ "missing or invalid token")))
-      ((not allowed)
-        (h:abort-request-handler
-          (make-json-error h:+http-forbidden+ "forbidden")))
-      (t user))))
+      (pl:pdebug :in "require-auth" :user user :allowed allowed :required required)
+      (cond
+        ((not (stringp (get-bearer-token)))
+          (abort-auth "Missing or invalid token"))
+        ((not allowed)
+          (abort-auth "User does not have required roles"
+            :user user :required-roles required-roles))
+        ((not user)
+          (abort-auth "User not found"
+            :user user :required-roles required-roles))
+        (t user)))
+    (error (e)
+      (abort-auth e :reason "error during authentication"
+        :required-roles required-roles))))
 
 (defun abort-request (error-code message &optional details-plist)
   (pl:plog :error

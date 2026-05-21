@@ -444,7 +444,19 @@ all the right fields when we perform inserts or updates."
     (lambda (element) (format nil format-string element))
     list))
 
-(defun fe-fields (type-key)
+(defun show-roles-p (type-key form user)
+  (let* ((m *compiled-model*)
+          (fields (u:tree-get m type-key form :fields))
+          (base (u:tree-get m type-key :base)))
+    (when (and
+            (not base)
+            (or
+              (equal fields t)
+              (u:has fields :roles)
+              (u:has (a:list-user-role-names *rbac* user) "admin")))
+      t)))
+
+(defun fe-fields (type-key user)
   (loop
     for form in *forms*
     when (u:tree-get *compiled-model* type-key form)
@@ -455,7 +467,7 @@ all the right fields when we perform inserts or updates."
         with base = (u:tree-get *compiled-model* type-key :base)
         with fields = (append
                         (u:tree-get *compiled-model* type-key :fields)
-                        (unless base
+                        (when (show-roles-p type-key form user)
                           `(:roles (:ui (:label "Roles"
                                           :input-type "checkbox-list")))))
         and form-fields = (u:tree-get *compiled-model* type-key form :fields)
@@ -477,7 +489,7 @@ all the right fields when we perform inserts or updates."
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
 
-(defun list-result (type-key user &optional field-keys view-result)
+(defun list-result (type-key user form &optional field-keys view-result)
   (add-to-plist
     (list
       :type-key type-key
@@ -486,9 +498,11 @@ all the right fields when we perform inserts or updates."
       :delete (true-or-false type-key :delete)
       :records (add-roles-to-view
                  type-key
+                 form
+                 user
                  (view-result-values type-key field-keys view-result))
       :allowed-values (allowed-values type-key user))
-    (fe-fields type-key)))
+    (fe-fields type-key user)))
 
 
 ;;
@@ -764,7 +778,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
               (field-keys (form-field-keys type-key form)))
         (list
           :type type-key
-          :fields (fe-fields type-key)
+          :fields (fe-fields type-key user)
           :record (car
                     (view-result-values type-key field-keys view-result))
           :allowed-values (allowed-values type-key user))))))
@@ -889,21 +903,31 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
                   :test 'equal))
               (a:list-role-names *rbac*))))))))
 
-(defun add-roles-to-view (type-key view)
+(defun add-roles-to-view (type-key form user view)
   (when view
-    (if (u:tree-get *compiled-model* type-key :base)
-      view
-      (loop
-        for record in view
-        for id = (getf record :id)
-        for resource-name = (id-to-resource-name id)
-        for log-1 = (pl:pdebug :in "add-roles-to-view"
-                      :type-key type-key
-                      :resource-name resource-name)
-        for roles = (remove-if
-                      (lambda (x) (equal x "admin"))
-                      (a:list-resource-role-names *rbac* resource-name))
-        collect (add-to-plist record (list :roles roles))))))
+    (let* ((m *compiled-model*)
+            (fields (u:tree-get m type-key form :fields))
+            (base (u:tree-get m type-key :base)))
+      (pl:pdebug :in "add-roles-to-view"
+        :step 1
+        :type-key type-key
+        :form form
+        :fields fields
+        :abse base)
+      (if (show-roles-p type-key form user)
+        (loop
+          for record in view
+          for id = (getf record :id)
+          for resource-name = (id-to-resource-name id)
+          for log-1 = (pl:pdebug :in "add-roles-to-view"
+                        :step 2
+                        :type-key type-key
+                        :resource-name resource-name)
+          for roles = (remove-if
+                        (lambda (x) (equal x "admin"))
+                        (a:list-resource-role-names *rbac* resource-name))
+          collect (add-to-plist record (list :roles roles)))
+        view))))
 
 (defun list-sql-for (type-key user &key (form :list-form) filters)
   (declare (ignore form))
@@ -928,6 +952,14 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
               (where (add-where-clause sql all-filters user))
               (view-result (view-result type-key where)))
         (list :sql where :view-result view-result)))))
+
+(defun remove-existing-non-user-roles (user roles)
+  (let* ((existing-roles (a:list-role-names *rbac*))
+          (user-roles (a:list-user-role-names *rbac* user)))
+    (loop for role in roles
+      when (or (u:has user-roles role)
+             (not (u:has existing-roles role)))
+      collect role)))
 
 ;;
 ;; END Internal database helper functions
@@ -1282,9 +1314,9 @@ following example returns a list of all the :todos records that have the tag
             (when ids
               (let* ((ids-query (add-ids-clause type-key sql ids))
                       (view-result (view-result type-key ids-query)))
-                (list-result type-key user field-keys view-result))))
-          (list-result type-key user field-keys view-result)))
-      (list-result type-key user))))
+                (list-result type-key user form field-keys view-result))))
+          (list-result type-key user form field-keys view-result)))
+      (list-result type-key user form))))
 
 ;; TODO: Add pagination support
 (defun be-list-column (type-key field-key user &key (form :list-form) filters)
@@ -1307,7 +1339,9 @@ like BE-LIST, but it returns a list of values instead of a list of records."
         :values (mapcar (lambda (r) (getf r field-key)) records))
       (list
         form
-        (list field-key (u:tree-get (fe-fields type-key) form field-key))))))
+        (list
+          field-key
+          (u:tree-get (fe-fields type-key user) form field-key))))))
 
 ;; TODO: Transaction!
 (defun be-insert (type-key data user &key roles)
@@ -1431,7 +1465,7 @@ update fails.
     (valid-uuid filters)
     (valid-filters filters :required t))
   (valid-data type-key data)
-  (valid-user-roles user roles)
+  (valid-user-roles user (remove-existing-non-user-roles user roles))
   (let* ((m *compiled-model*)
           (uuid (id-from-filters-and-data type-key filters data))
           (record (getf (rec uuid user :type-key type-key) :record))

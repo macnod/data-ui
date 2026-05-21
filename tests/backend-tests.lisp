@@ -43,11 +43,14 @@ from users
   join roles on role_users.role_id = roles.id
 where
   users.id = $1
+order by
+  roles.role_name
 "
                    id))
           (view-result (a:with-rbac (*rbac*) (a:rbac-query query))))
-    (is (equal (field-values-for-id view-result :users-id id :roles-role-name :first)
-          "admin"))))
+    (is (field-values-for-id
+          view-result :users-id id :roles-role-name :first)
+      "admin")))
 
 (test view-result-values
   (let* ((id (a:get-id *rbac* "users" "admin"))
@@ -77,7 +80,7 @@ where
     (is (equal (getf result :id) id))
     (is (equal (getf result :name) "admin"))
     (is (equal (getf result :email) "no-email"))
-    (is (equal (length roles) 3))
+    (is (equal (length roles) 6))
     (is (member "admin" roles :test 'equal))
     (is (member "logged-in" roles :test 'equal))
     (is (member "public" roles :test 'equal))))
@@ -302,12 +305,13 @@ where users.id in (
                                '("public" "logged-in"))))
         (is (equal resource-name resource-name-1)))
       (let ((roles (a:list-resource-role-names *rbac* resource-name)))
-        (is (equal (u:safe-sort roles) '("admin" "logged-in" "public"))))
+        (is (equal (u:safe-sort roles)
+              '("admin" "admin:exclusive" "logged-in" "public"))))
       ;; Update to remove all but admin
       (let ((resource-name-2 (update-roles :todos todo-id "admin" '("admin"))))
         (is (equal resource-name resource-name-2)))
       (let ((roles (a:list-resource-role-names *rbac* resource-name)))
-        (is (equal '("admin") roles)))
+        (is (equal '("admin" "admin:exclusive") roles)))
       (be-delete :todos todo-id "admin"))
     ;; Test adding roles to a new :tags record
     (let* ((tag-id (be-insert :tags `(:name ,test-tag-name) "admin"))
@@ -316,7 +320,7 @@ where users.id in (
       (let ((resource-name-1 (update-roles :tags tag-id "admin" '("admin" "public"))))
         (is (equal resource-name resource-name-1)))
       (let ((roles (a:list-resource-role-names *rbac* resource-name)))
-        (is (equal '("admin" "public") (u:safe-sort roles))))
+        (is (equal '("admin" "admin:exclusive" "public") (u:safe-sort roles))))
       (be-delete :tags tag-id "admin"))))
 
 (test list-ids
@@ -626,6 +630,7 @@ Notes:
       for id in todo-ids do (be-delete :todos id "admin"))
     (be-delete :tags `((:tags :name :eq ,tag-1-name)) "admin")
     (be-delete :tags `((:tags :name :eq ,tag-2-name)) "admin")
+    (be-delete :users `((:users :name :eq ,user)) "admin")
     ;; Add new role and user for this test
     (unless (a:get-id *rbac* "roles" role)
       (a:add-role *rbac* role :permissions '("read" "create")))
@@ -648,6 +653,7 @@ Notes:
         (be-insert :todos `(:name ,todo-2-name :tags (,tag-1-name ,tag-2-name))
           user :roles (list role)))
       (be-add-type-roles :todos "admin" role)
+      (be-add-type-roles :tags "admin" role)
       ;; :todos now has the "role-1" role; insert should work
       (setf todo-2-id
         (be-insert :todos `(:name ,todo-2-name :tags (,tag-1-name ,tag-2-name))
