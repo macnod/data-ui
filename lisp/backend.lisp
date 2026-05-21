@@ -447,12 +447,13 @@ all the right fields when we perform inserts or updates."
 (defun show-roles-p (type-key form user)
   (let* ((m *compiled-model*)
           (fields (u:tree-get m type-key form :fields))
-          (base (u:tree-get m type-key :base)))
+          (base (u:tree-get m type-key :base))
+          (per-user (u:tree-get m type-key :per-user)))
     (when (and
             (not base)
+            (not per-user)
             (or
               (equal fields t)
-              (u:has fields :roles)
               (u:has (a:list-user-role-names *rbac* user) "admin")))
       t)))
 
@@ -1509,21 +1510,22 @@ treated as the UUID of the record to be deleted."
     (valid-uuid filters)
     (valid-filters filters :required t))
   (valid-existing-user user)
-  (let* ((uuid (id-from-filters-and-data type-key filters))
-         (f (u:tree-get *compiled-model* type-key :delete)))
+  (let* ((m *compiled-model*)
+          (uuid (be-id type-key filters "admin"))
+          (record (when uuid (rec uuid "admin" :type-key type-key)))
+          (f (u:tree-get m type-key :delete))
+          (pre-delete (u:tree-get m type-key :pre-delete))
+          (post-delete (u:tree-get m type-key :post-delete)))
     (when (and uuid (user-allowed-resource user uuid "delete"))
+      (when pre-delete
+        (funcall pre-delete type-key uuid record user))
       (cond
         ((equal (type-of f) 'keyword)
           (case f
             (:auto
               (let ((resource-name (id-to-resource-name uuid)))
                 (when resource-name
-                  (a:remove-resource *rbac* resource-name)
-                  uuid)))
-            (:delete-setting
-              (a:with-rbac (*rbac*)
-                (a:rbac-query
-                  (list "delete from settings where id = $1" uuid))))
+                  (a:remove-resource *rbac* resource-name))))
             (otherwise
               (gmn-e
                 "be-delete" "Can't delete ~s with :delete function ~s"
@@ -1531,10 +1533,16 @@ treated as the UUID of the record to be deleted."
                 :log `(:type-key ,type-key :delete-function ,f :uuid ,uuid)))))
         ((functionp f)
           (let* ((record (getf (rec uuid user :type-key type-key) :record)))
-            (funcall f type-key record user)
-            uuid))
+            (funcall f type-key record user)))
         (t (signal-validation-error
-             "Invalid delete function for type ~s: ~s" type-key f))))))
+             "Invalid delete function for type ~s: ~s" type-key f)))
+      (pl:pdebug :in "be-delete" :step 1
+        :post-delete (princ-to-string post-delete))
+      (when post-delete
+        (pl:pdebug :in "be-delete" :step 2)
+        (funcall post-delete type-key uuid record user)
+        (pl:pdebug :in "be-delete" :step 3 :uuid uuid))
+      uuid)))
 
 (defun be-add-type-roles (type-key user &rest roles)
   ":public: Adds ROLE to the list of roles associated with TYPE-KEY. This

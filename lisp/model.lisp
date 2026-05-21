@@ -175,6 +175,22 @@ returns S. If S is not a string or a number, this function returns NIL."
       "admin"
       :roles (list (a:exclusive-role-for username)))))
 
+(defun remove-user-settings (type-key id record user)
+  (declare (ignore type-key id user))
+  (let* ((username (u:tree-get record :record :name))
+          (settings-id (when username
+                         (be-id :settings
+                           `((:users :name :eq ,username))
+                           "admin")))
+          (resource-name (when settings-id
+                           (id-to-resource-name settings-id))))
+    (pl:pdebug :in "remove-user-settings" :step 2
+      :username username
+      :settings-id settings-id
+      :settings-resource-name resource-name)
+    (when resource-name
+      (a:remove-resource *rbac* resource-name))))
+
 (defparameter *validation-map*
   ;; type is not included here because it is automatically applied to all
   ;; fields, and thus need never be specified in the model definition.
@@ -199,6 +215,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :type-roles ("logged-in")
        ;; TODO: Add processing for the :post-create key.
        :post-create ,#'add-user-settings
+       :pre-delete ,#'remove-user-settings
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
        :fields (:name (:type :text
@@ -313,7 +330,10 @@ returns S. If S is not a string or a number, this function returns NIL."
                  :reference (:target :users)))
 
      :settings
-     (:table t :base nil
+     (:table t
+       ;; Here, base is set to nil because we want settings to have roles. That
+       ;; is how we restrict users to their own settings row.
+       :base nil
        :create nil :update :auto :delete nil :display t
        :type-roles ("settings")
        :per-user t
@@ -338,11 +358,11 @@ returns S. If S is not a string or a number, this function returns NIL."
                  :user (:type :text
                          ;; TODO: This should not be needed. Fix compiler.
                          :force-sql-name "setting_user"
-                         :ui (:label "User" :input-type :hidden)
+                         :ui (:label "Login" :input-type :read-only)
                          :target :users
                          :source (:view :users :table :users :column :name :agg :first)
                          :column t :not-null t :unique t))
-       :list-form (:fields (:dark-mode :font-size :display-name :bio))
+       :list-form (:fields (:user :dark-mode :font-size :display-name :bio))
        :update-form (:fields t)
        :add-form (:fields t))
 
