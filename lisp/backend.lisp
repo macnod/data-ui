@@ -296,33 +296,74 @@ fields."
     unless (getf field-def :base-field)
     collect field-key))
 
-(defun make-resource-name (type-key data &key record)
-  ":private: Returns a resource name for DATA, a row of TYPE-KEY. This name is
-composed of the type-key, the value associated with the first key in DATA, and a
-short (8 chars) hash of the concatenated, colon-separated values in DATA. We
-want resource names to be unique, and some types, such as user-settings might
-have the same :NAME and require the additional :USER value to to be unique.
-**WARNING**: Do not use this function to retrieve the resource name for an existing
-record! Use FIND-RESOURCE-NAME instead."
-  (loop
-    for field in (local-fields type-key)
-    for data-value = (getf data field)
-    for record-value = (getf record field)
-    for default-value = (u:tree-get *compiled-model*
-                          type-key :fields field :default)
-    for value = (or data-value record-value default-value)
-    for name-part = (format nil "~(~a~)" value)
-    collect name-part into name-parts
-    finally
-    (return
-      (re:regex-replace "\\s"
-        (format nil "~(~a~):~a:~a"
-          type-key
-          (car name-parts)
-          (u:hash-string
-            (format nil "~{~(~a~^:~)~}" name-parts)
-            :size 16))
-        "-"))))
+(defun make-resource-name (type-key data)
+  ":private: Returns a resource name for DATA, representing a new or existing
+record of type TYPE-KEY. This name is composed of the type-key, the first 10
+characters of the stringified value associated with one of the fields in DATA,
+and a random UUID. If the :name field is present in DATA and valid for TYPE-KEY,
+that field value is chosen.  Otherwise, the first non-base field from the
+compiled model that appears in DATA is used. The resulting ID looks like this:
+
+  todos:todo-1:6b3de23c-bf06-9b80-1e8e-40e9b66c3eaa
+
+This function signals error conditions for the following:
+
+  - Invalid value in TYPE-KEY
+  - Value of TYPE-KEY points to a :base type
+  - DATA is not a plist
+  - DATA lacks a key that is among the non-default fields keys for TYPE-KEY
+    in the compiled model
+  - A value in DATA does not comply with it's keys declared type
+
+Upon success, this function returns the resource name.
+
+The purpose of the resource name is to give the developer or debugger a chance
+to identify resources directly in the resources table, without having to do
+joins. A join might still be necessary in some cases, because this
+resource-naming convention will fail to identify records uniquely in some cases.
+
+Also, the resources table requires every resource name, across all other
+tables, to have a unique name. The resources table is what allows this code to
+transparently weave RBAC capabilities into all user-defined types.
+
+**WARNING**: Do not use this function to retrieve the resource name for an
+existing record! Use FIND-RESOURCE-NAME instead."
+  (valid-non-base-type-key type-key)
+  (valid-data type-key data)
+  (let* ((type-string (format nil "~(~a~)" type-key))
+          (base-fields (default-fields
+                         :model *compiled-model*
+                         :type-key type-key
+                         :keys-only t))
+          (data-fields (u:plist-keys data))
+          (remaining-fields (remove-if-not #'identity
+                              (stable-set-difference
+                                data-fields
+                                base-fields)))
+          (name-value (getf data :name))
+          (field-key (if name-value
+                       :name
+                       (loop for key in remaining-fields
+                         when (getf data key) do (return key))))
+          (field-string (if field-key
+                          (format nil "~(~a~)" field-key)
+                          "NIL"))
+          (field-value (when field-key (getf data field-key)))
+          (formatted-value (if field-value
+                             (let* ((s1 (format nil "~a" field-value))
+                                     (s2 (re:regex-replace-all
+                                           "^-|-$"
+                                           (re:regex-replace-all
+                                             "[^-a-zA-Z0-9]" s1 "-")
+                                           "")))
+                               (cond
+                                 ((> (length s2) 10)
+                                   (format nil "~a" (subseq s2 0 10)))
+                                 ((zerop (length s2))
+                                   "NIL")
+                                 (t s2)))
+                             "NIL")))
+    (format nil "~a:~a:~a:~a" type-string field-string formatted-value (u:uuid))))
 
 (defun find-resource-name (type-key filters)
   (if (uuid-p filters)
@@ -543,14 +584,14 @@ the update fails."
       do (a:remove-resource-role *rbac* resource-name role))
     resource-name))
 
-(defun update-resource-name (type-key data)
+(defun update-resource-name (type-key record)
   ":internal: Updates the resource name for the given record. DATA must include
 the ID of the record. This does nothing for base tables, because base tables
 aren't resources, and the resources table is an internal table that represents
 user resources."
   (valid-type-key type-key)
-  (let ((resource-name (make-resource-name type-key data))
-         (id (getf data :id)))
+  (let ((resource-name (make-resource-name type-key record))
+         (id (getf record :id)))
     (when (and
             (not (base-type-p type-key))
             (not (equal resource-name (find-resource-name type-key id))))
@@ -623,10 +664,9 @@ ID. This is necessary for dealing with RBAC resources given that the RBAC API
 uses names instead of IDs. Returns NIL if ID is not a valid UUID, does not
 exist, or points to a base or internal table."
   (when (and id (uuid-p id))
-    (a:with-rbac (*rbac*)
-      (a:rbac-query
-        (list "select resource_name from resources where id = $1" id)
-          :single))))
+    (query "select resource_name from resources where id = $1"
+      :params (list id)
+      :result-type :single)))
 
 (defun id-from-data (type-key data)
   ":private: Returns the ID of the record of type TYPE-KEY that matches DATA.
@@ -1038,6 +1078,14 @@ Expected a value of type ~s, but got value ~s."
   (unless (type-key-p type-key)
     (signal-validation-error "Invalid type key ~a" type-key)))
 
+(defun valid-non-base-type-key (type-key)
+  ":private: Checks that TYPE-KEY is a valid non-base type key in the model,
+meaning that the type lacks `:base t`."
+  (unless (and
+            (type-key-p type-key)
+            (not (u:tree-get *compiled-model* type-key :base)))
+    (signal-validation-error "Invalid non-base type key ~a" type-key)))
+
 (defun valid-be-type-key (type-key)
   (unless (and
             (type-key-p type-key)
@@ -1062,6 +1110,9 @@ value is of the correct type for its field key."
     for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
     do
     (cond
+      ((null field-def)
+        (signal-validation-error
+          "Unknown field key ~s for type ~s." field-key type-key))
       ((getf field-def :join-table)
         (valid-values-list value))
       ((not (getf field-def :base))
@@ -1072,9 +1123,10 @@ value is of the correct type for its field key."
            "Invalid field key ~s for type ~s." field-key type-key)))
     (let ((target (getf field-def :target))
           (joiner (getf field-def :join-table))
-          (is-id-or-pk (or (equal field-key :id)
-                           (getf field-def :primary-key))))
-      (when (and target (not joiner) (not is-id-or-pk) value)
+          (is-id-or-pk (or
+                         (equal field-key :id)
+                         (getf field-def :primary-key))))
+      (when (and (not target) (not joiner) (not is-id-or-pk) value)
         ;; This will signal a validation error if an ID is not found for value
         (resolve-reference-id type-key field-key value)))))
 

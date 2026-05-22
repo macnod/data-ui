@@ -339,10 +339,17 @@ returns S. If S is not a string or a number, this function returns NIL."
        :per-user t
        :views (:main (:tables (:settings :users))
                 :users (:tables (:users)))
-       :fields (:dark-mode (:type :boolean :default :false
-                             :ui (:label "Dark Mode" :input-type :check-box)
-                             :source (:view :main :column :dark-mode :agg :first)
-                             :column t :not-null t)
+       :fields (:user (:type :text
+                        ;; TODO: This should not be needed. Fix compiler.
+                        :force-sql-name "setting_user"
+                        :ui (:label "Login" :input-type :read-only)
+                        :target :users
+                        :source (:view :users :table :users :column :name :agg :first)
+                        :column t :not-null t :unique t)
+                 :dark-mode (:type :boolean :default :false
+                              :ui (:label "Dark Mode" :input-type :check-box)
+                              :source (:view :main :column :dark-mode :agg :first)
+                              :column t :not-null t)
                  :font-size (:type :integer :default 12
                               :ui (:label "Font Size" :input-type :line)
                               :source (:view :main :column :font-size :agg :first)
@@ -354,20 +361,13 @@ returns S. If S is not a string or a number, this function returns NIL."
                  :bio (:type :text :default "(non specified)"
                         :ui (:label "Bio" :input-type :text)
                         :source (:view :main :column :bio :agg :first)
-                        :column t :not-null t)
-                 :user (:type :text
-                         ;; TODO: This should not be needed. Fix compiler.
-                         :force-sql-name "setting_user"
-                         :ui (:label "Login" :input-type :read-only)
-                         :target :users
-                         :source (:view :users :table :users :column :name :agg :first)
-                         :column t :not-null t :unique t))
+                        :column t :not-null t))
        :list-form (:fields (:user :dark-mode :font-size :display-name :bio))
        :update-form (:fields t)
        :add-form (:fields t))
 
      :tokens
-     (:table t :base t
+     (:table t :base nil
        :create nil :update nil :delete nil :display nil
        :views (:main (:tables (:tokens)))
        :fields (:user (:type :text

@@ -205,13 +205,26 @@ where users.id in (
   (is (equal (local-fields :users) '(:name :password :email))))
 
 (test make-resource-name
-  (is (equal
-        (make-resource-name :todos '(:name "Buy milk"))
-        "todos:buy-milk:eef53f79d4e4742e"))
-  (is (equal
-        (make-resource-name :users '(:name "admin" :email "no-email"
-                                      :password "password"))
-        "users:admin:63acbe08e3d20863")))
+  (let ((resource-name (make-resource-name :todos '(:name "Buy milk"))))
+    (is-true (and
+               (u:starts-with resource-name "todos:name:Buy-milk:")
+               (uuid-p (fourth (re:split ":" resource-name))))))
+  (let ((resource-name (make-resource-name
+                         :todos '(:name "Buy milk" :points 10))))
+    (is-true (and
+               (u:starts-with resource-name "todos:name:Buy-milk:")
+               (uuid-p (fourth (re:split ":" resource-name))))))
+  (let ((resource-name (make-resource-name
+                         :todos '(:points 10 :name "Buy milk"))))
+    (is-true (and
+               (u:starts-with resource-name "todos:name:Buy-milk:")
+               (uuid-p (fourth (re:split ":" resource-name))))))
+  (let ((resource-name (make-resource-name :todos '(:points 10))))
+    (is-true (and
+               (u:starts-with resource-name "todos:points:10:")
+               (uuid-p (fourth (re:split ":" resource-name))))))
+  (signals validation-error (make-resource-name :users '(:name "user-1")))
+  (signals validation-error (make-resource-name :todos '(:xxxx "xxxx"))))
 
 (test find-resource-name
   (let ((name "todo-1"))
@@ -374,9 +387,9 @@ where users.id in (
          (todo-rn (id-to-resource-name todo-id))
          (tag-rn (id-to-resource-name tag-id)))
     (is (stringp todo-rn))
-    (is (search "todos:ten:" todo-rn))
+    (is (search "todos:name:ten:" todo-rn))
     (is (stringp tag-rn))
-    (is (search "tags:one:" tag-rn)))
+    (is (search "tags:name:one:" tag-rn)))
   ;; Returns NIL for non-existent ID
   (is-false (id-to-resource-name "00000000-0000-0000-0000-000000000000"))
   ;; Validation (expects valid UUID or queries safely)

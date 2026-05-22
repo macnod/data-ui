@@ -123,3 +123,9 @@ function."
 (defun add-to-list (existing-list &rest new-elements)
   (let ((to-add (set-difference new-elements existing-list :test 'equal)))
     (append existing-list to-add)))
+
+(defun stable-set-difference (list-1 list-2 &key (test #'equal))
+  ":private: Like set-difference, but retains the order of LIST-1."
+  (loop with keys = (set-difference list-1 list-2 :test test)
+    for key in list-1
+    when (u:has keys key) collect key))
