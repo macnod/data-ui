@@ -13,6 +13,10 @@ export DB_USER="dataui"
 export DB_PASSWORD="dataui-password"
 export PGPASSWORD="$DB_PASSWORD"
 
+TIMEOUT=60
+SLEEP_INTERVAL=1
+SLEEP_MAX=10
+
 sed "s/:database_name:/$DB_NAME/" $DB_INIT_TEMPLATE > $DB_INIT_SQL
 
 function usage {
@@ -24,6 +28,7 @@ function usage {
     echo "         test file at $TEST_FILE, but doesn't run the tests. You"
     echo "         can connect to the REPL with the a client like Slime at"
     echo "         the reported Swank port."
+    echo "db       Start the PostgreSQL database and connect to it."
     echo "psql     Connect to the PostgreSQL database for the REPL."
     echo "tests    Runs all the tests and reports success or failure."
     echo "docs     Generates the REAME file."
@@ -34,29 +39,47 @@ function usage {
     echo "help     Displays this help text."
 }
 
+function wait_for_postgres {
+    local quiet="$1"
+    local interval=$SLEEP_INTERVAL
+    SECONDS=0
+    if [[ -z "$quiet" ]]; then
+        echo "Waiting for postgres..."
+    fi
+    until docker compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
+                 pg_isready -U postgres ${quiet:+&>/dev/null}; do
+        if (( SECONDS >= TIMEOUT )); then
+            echo "ERROR: Timed out waiting for PostgreSQL. Waited $SECONDS seconds." >&2
+            return 1
+        fi
+        sleep $interval
+        if (( interval < SLEEP_MAX )); then
+            interval=$(( interval + 1 ))
+        fi
+    done
+}
+
 function start_postgres_quietly {
     echo
-    echo "Starting PosgreSQL"
-    docker-compose -f "$DB_DOCKER_COMPOSE" up -d &>/dev/null
-    until docker-compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
-                         pg_isready -U postgres &>/dev/null; do
-        echo "Waiting for postgres..."
-        sleep 1
-    done
+    echo "Starting PostgreSQL"
+    if ! docker compose -f "$DB_DOCKER_COMPOSE" up -d &>/dev/null; then
+        echo "ERROR: Failed to start PostgreSQL with docker compose" >&2
+        return 1
+    fi
+    wait_for_postgres quiet
     echo "PostgreSQL is up on port ${DB_PORT}"
     sleep 2
 }
 
 function start_postgres {
     echo
-    echo "Starting PosgreSQL"
-    echo "docker-compose -f \"${DB_DOCKER_COMPOSE}\" up -d"
-    docker-compose -f "$DB_DOCKER_COMPOSE" up -d
-    until docker-compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
-                         pg_isready -U postgres; do
-        echo "Waiting for postgres..."
-        sleep 1
-    done
+    echo "Starting PostgreSQL"
+    echo "docker compose -f \"${DB_DOCKER_COMPOSE}\" up -d"
+    if ! docker compose -f "$DB_DOCKER_COMPOSE" up -d; then
+        echo "ERROR: Failed to start PostgreSQL with docker compose" >&2
+        return 1
+    fi
+    wait_for_postgres
     echo "PostgreSQL is up on port ${DB_PORT}"
     sleep 2
 }
@@ -125,13 +148,13 @@ function compile {
 
 function stop_database {
     echo "Stopping and removing database container"
-    echo "docker-compose -f \"${DB_DOCKER_COMPOSE}\" down --remove-orphans --volumes"
-    docker-compose -f "$DB_DOCKER_COMPOSE" down --remove-orphans --volumes
+    echo "docker compose -f \"${DB_DOCKER_COMPOSE}\" down --remove-orphans --volumes"
+    docker compose -f "$DB_DOCKER_COMPOSE" down --remove-orphans --volumes
 }
 
 function stop_database_quietly {
     echo "Stopping and removing database container"
-    docker-compose -f "$DB_DOCKER_COMPOSE" down &>/dev/null
+    docker compose -f "$DB_DOCKER_COMPOSE" down &>/dev/null
 }
 
 function export_repl_environment {
@@ -169,6 +192,13 @@ case "$ACTION" in
         start_postgres_quietly
         initialize_database_quietly
         start_repl
+        stop_database_quietly
+        ;;
+    db)
+        export_repl_environment
+        start_postgres
+        initialize_database
+        start_psql
         stop_database_quietly
         ;;
     psql)
