@@ -239,13 +239,31 @@ All endpoints stay **generic** — no per-type handler generation needed:
 React (or any frontend) can fetch the schema once and render forms/lists automatically.
 
 
+## Development
+
+- Start a repl-environment terminal
+    cd data-ui
+    scripts/run.sh repl
+- Connect Slime to the Data UI Swank server.
+  - In Emacs: `M-x slime-connect RET localhost RET 4010`
+    - Host: localhost
+    - Port: 4010, or whatever the repl-environment terminal says
+- Compile a model
+  - In Slime: `(set-model *model*)`
+  - Optionally, run tests with: `(run-tests)`
+- Start a web environment terminal
+    cd data-ui/web
+    npm install
+    npm run dev
+- Navigate to http:///localhost:3000
+
 ## Current Status (May 2026)
 
 The project is still in active development. Recent progress includes:
 
 - Basic CRUD operations are operational via the backend, REST API, and frontend React code
 - Comprehensive tests for compilation, predicates, and backend code are in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (using FiveAM).
-- Preliminary React code basics are in place in the `web/` directory.
+- Preliminary React code basics are in place in the `web/` directory. Rudimentary functionality is there and one can already log in and navigate the app as a user, with basic CRUD and RBAC support.
 
 Model compilation, SQL generation for tables/views/triggers, basic RBAC integration, validation, and basic CRUD are implemented and tested. Work continues on fully solidifying the REST API, completing the React frontend, producing Kubernetes manifests, and achieving the full end-to-end vision.
 
@@ -253,11 +271,26 @@ See `lisp/model.lisp` for the current `*model*` and `*base-model*`, `lisp/backen
 
 ## Goals & Vision
 
-- Build simple multi-table applications extremely quickly
-- Make RBAC complexity completely invisible to the developer
-- Achieve deterministic, reproducible deploys (target: under 30 minutes from nothing to live app)
-- Support future YAML/JSON model input and AI-assisted model generation
-- Business model: Sell custom apps to clients, offer hosting & support, and make the system available to others
+Data UI exists to solve a problem that existing low-code and backend tools handle poorly: building production-grade, multi-user applications that allow users to interact with each other, share resources, and that require robust, evolving role-based access control.
+
+Most collaborative applications — internal tools, client portals, team workspaces, resource-sharing systems — need fine-grained permissions that change over time. Current low-code platforms either offer weak or bolted-on RBAC, or they generate large amounts of opaque code that must be manually finished and maintained. The result is slow iteration, hidden permission bugs, and painful refactoring when requirements change.
+
+Data UI takes a different approach. You describe your data model, relationships, UI hints, and RBAC rules in one small, reviewable plist. The system compiles this into:
+
+- PostgreSQL tables, views, and triggers
+- Parameterized CRUD operations with full RBAC enforcement
+- A complete schema-driven React frontend
+- Generic REST endpoints that work for every type, including the built-in RBAC types themselves
+
+Because RBAC entities (users, roles, permissions) are treated as first-class types, permission changes are made through the same interface as any other data — no separate admin layer or model edits required.
+
+The model acts as the DNA of the application. Small, auditable changes produce deterministic, system-wide updates. This makes iteration fast and safe: refine your vision by editing the model rather than rewriting code.
+
+For custom logic and external integrations, Data UI provides typed hooks that receive pre-evaluated authorization context and a well-defined payload. Developers attach behavior without rebuilding the core application architecture.
+
+The result is a tool that lets technical users and small teams build reliable, RBAC-protected collaborative applications much faster and with greater long-term maintainability than traditional development or existing low-code platforms.
+
+MVP target: December 2026. After the MVP, planned work includes a hosted service with JSON/YAML model input, AI-assisted model generation, and professional support services.
 
 ## Business & Monetization
 

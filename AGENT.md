@@ -11,6 +11,7 @@ Describe your data model once. The system generates:
 - Generic backend functions (`be-*`)
 - Generic REST endpoints (`/api/list`, `/api/insert`, `/api/update`, `/api/delete`, etc.)
 - Schema-driven React frontend
+- Kubernetes manifests for deployment
 
 The goal is deterministic, repeatable development: change the model, recompile, and the application updates.
 
@@ -58,7 +59,7 @@ The frontend is intentionally minimal and schema-driven. It consumes `list-form`
 - Non-base types automatically receive a `roles` field (checkbox-list) in all forms
 - The backend injects filtered `allowed-values.roles` so users only see roles they can assign
 - Forms are schema-driven; the frontend does not hard-code field lists
-- Delete uses the existing single-record endpoint in a loop (acceptable for MVP)
+- Delete uses the existing single-record-delete endpoint in a loop (acceptable for MVP)
 - Keep models small; hide RBAC complexity from model authors
 
 ## Working with the Frontend
