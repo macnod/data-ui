@@ -45,18 +45,30 @@ function wait_for_postgres {
     SECONDS=0
     if [[ -z "$quiet" ]]; then
         echo "Waiting for postgres..."
+        until docker compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
+                     pg_isready -U postgres; do
+            if (( SECONDS >= TIMEOUT )); then
+                echo "ERROR: Timed out waiting for PostgreSQL. Waited $SECONDS seconds." >&2
+                return 1
+            fi
+            sleep $interval
+            if (( interval < SLEEP_MAX )); then
+                interval=$(( interval + 1 ))
+            fi
+        done
+    else
+        until docker compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
+                     pg_isready -U postgres &>/dev/null; do
+            if (( SECONDS >= TIMEOUT )); then
+                echo "ERROR: Timed out waiting for PostgreSQL. Waited $SECONDS seconds." >&2
+                return 1
+            fi
+            sleep $interval
+            if (( interval < SLEEP_MAX )); then
+                interval=$(( interval + 1 ))
+            fi
+        done
     fi
-    until docker compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
-                 pg_isready -U postgres ${quiet:+&>/dev/null}; do
-        if (( SECONDS >= TIMEOUT )); then
-            echo "ERROR: Timed out waiting for PostgreSQL. Waited $SECONDS seconds." >&2
-            return 1
-        fi
-        sleep $interval
-        if (( interval < SLEEP_MAX )); then
-            interval=$(( interval + 1 ))
-        fi
-    done
 }
 
 function start_postgres_quietly {
