@@ -219,11 +219,8 @@ the :ID field key."
         (cons :id form-field-keys))
       ((null form-field-keys)
         nil)
-      (t (gmn-e "form-field-keys" "Invalid ~s specification for ~s"
-           :params `(,form ,type-key)
-           :log `(:type-key ,type-key :form ,form
-                   :form-field-keys ,(format nil "~(~s~)" form-field-keys)
-                   :all-field-keys (format-list-elements all-field-keys "~(~s~)")))))))
+      (t (report-e "form-field-keys" "Invalid ~s specification for ~s"
+           ~form ~type-key)))))
 
 (defun resource-id-keys (type-key)
   (list :id
@@ -262,9 +259,9 @@ actual column in the associated table, such as fields that have a non-nil
                (:uuid value)
                (:timestamp value)
                (:list value)
-               (t (signal-validation-error
-                    "Ivalid value ~s for field ~s ~s with field type ~s"
-                    value type-key field-key type))))))))
+               (t (report-ve "db-value"
+                    "Invalid value ~s for field ~s ~s with field type ~s"
+                    ~value ~type-key ~field-key ~type))))))))
 
 (defun local-values-for-update (type-key data record user &key id)
   ":private: Finds the keys listed in the model for TYPE-KEY :SQL-UPDATE, looks
@@ -548,9 +545,88 @@ all the right fields when we perform inserts or updates."
       :allowed-values (allowed-values type-key user))
     (fe-fields type-key user)))
 
-
 ;;
 ;; END Internal helper functions
+;;
+
+;;
+;; BEGIN Filesystem functions
+;;
+
+(defun path-field (type-key)
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (getf field-def :path) do (return field-key)))
+
+(defun file-field (type-key)
+  (loop with fields = (u:tree-get type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (equal (getf field-def :type) :file)
+    do (return field-key)))
+
+(defun store-directory (type-key logical-path user roles)
+  (pl:pdebug :in "store-directory" :step 1
+    :type-key type-key :logical-path logical-path :user user :roles roles)
+  (let* ((logical-parent (u:path-parent logical-path))
+          (fs-path (fs-path type-key logical-path))
+          (fs-parent-path (fs-path type-key logical-parent))
+          (name-field (path-field type-key)))
+    (pl:pdebug :in "store-directory" :step 2
+      :logical-parent logical-parent
+      :fs-path fs-path
+      :fs-parent-path fs-parent-path
+      :name-field name-field)
+    (let* ((resource (find-resource-name
+                       type-key
+                       `((,type-key ,name-field :eq ,logical-path))))
+            (parent-resource (find-resource-name
+                               type-key
+                               `((,type-key ,name-field :eq ,logical-parent)))))
+      (pl:pdebug :in "store-directory" :step 3
+        :resource resource
+        :parent-resource parent-resource)
+      (let* ((parent-roles (when parent-resource
+                             (a:list-resource-role-names
+                               *rbac* parent-resource)))
+              (user-roles (a:list-user-role-names *rbac* user))
+              (req-roles (if roles roles parent-roles))
+              (non-parent-roles (set-difference req-roles parent-roles
+                                  :test #'equal))
+              (non-user-roles (set-difference req-roles user-roles
+                                :test #'equal)))
+        (pl:pdebug :in "store-directory" :step 2)
+        (when resource
+          (report-ve "store-directory" "Directory already exists."
+            logical-path fs-path resource))
+        (unless parent-resource
+          (report-ve "store-directory" "Parent directory doesn't exist."
+            logical-path fs-path logical-parent fs-parent-path))
+        (unless (a:user-allowed *rbac* user "create" parent-resource)
+          (report-ve "store-directory"
+            "User does not have access to parent directory."
+            user logical-path fs-path logical-parent fs-parent-path
+            parent-resource))
+        (when non-parent-roles
+          (report-ve "store-directory"
+            "Can't assign roles that parent doesn't have."
+            logical-path non-parent-roles parent-roles req-roles user-roles))
+        (when non-user-roles
+          (report-ve "store-directory"
+            "Can't assign roles that user doesn't have."
+            user user-roles non-user-roles req-roles parent-roles))
+        (ensure-directories-exist fs-path)
+        logical-path))))
+
+(defun fs-insert (type-key data user roles)
+  (let* ((path-field (path-field type-key))
+          (logical-path (when path-field (getf data path-field))))
+    (when logical-path
+      (store-directory type-key logical-path user roles))))
+
+;;
+;; END Filesystem functions
 ;;
 
 ;;
@@ -623,29 +699,29 @@ display name from the target's :source :column (default 'name'), look it up and
 return the matching UUID. Signals validation error if no match or value is not
 a string. For non-reference fields return VALUE unchanged."
   (let* ((m *compiled-model*)
-         (field-def (u:tree-get m type-key :fields field-key))
-         (target (getf field-def :target))
-         (joiner (getf field-def :join-table)))
+          (field-def (u:tree-get m type-key :fields field-key))
+          (target (getf field-def :target))
+          (joiner (getf field-def :join-table)))
     (if (and target (not joiner))
-        (cond
-          ((uuid-p value) value)           ; already an ID (e.g. synthetic :id field with :target :resources)
-          ((listp value) value)            ; lists are handled via join-table path
-          ((not (stringp value))
-           (signal-validation-error
-             "Reference field ~s ~s expects a string value, got ~s"
-             type-key field-key value))
-          (t
-           (let* ((target-type target)
+      (cond
+        ((uuid-p value) value)           ; already an ID (e.g. synthetic :id field with :target :resources)
+        ((listp value) value)            ; lists are handled via join-table path
+        ((not (stringp value))
+          (report-ve "resolve-reference-id"
+            "Reference field ~s ~s expects a string value, got ~s"
+            ~type-key ~field-key ~value))
+        (t
+          (let* ((target-type target)
                   (col-key (or (u:tree-get field-def :source :column) :name))
                   (table (u:tree-get m target-type :table-name))
                   (val-col (u:tree-get m target-type :fields col-key :name-sql))
                   (sql (format nil "select id from ~a where ~a = $1" table val-col))
                   (query (list sql value))
                   (id (a:with-rbac (*rbac*) (a:rbac-query query :single))))
-             (or id
-                 (signal-validation-error
-                   "Unknown value for reference field ~s ~s: ~s"
-                   type-key field-key value)))))
+            (or id
+              (report-ve "result-reference-id"
+                "Unknown value for reference field ~s ~s: ~s"
+                ~type-key ~field-key ~value)))))
       value)))
 
 (defun unknown-values (type-key field-key values)
@@ -869,14 +945,10 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
   (let* ((delete (u:tree-get *compiled-model* type-key :delete-sql))
           (sql (car delete)))
     (unless (equal (list :id) (cdr delete))
-      (pl:pdebug :in "delete-by-id"
-        :error "delete-by-id works on some base types only"
-        :type-key type-key
-        :uuid uuid
-        :sql sql
-        :param-keys (format-list-elements (cdr delete) "~(~s~)"))
-      (signal-validation-error
-        "delete-by-id works on base types only"))
+      (let ((param-keys (format-list-elements (cdr delete) "~(~s~)")))
+        (report-ve "delete-by-id"
+          "delete-by-id works on some base types only"
+          type-key uuid sql param-keys)))
     (a:with-rbac (*rbac*)
       (a:rbac-query (list sql uuid)))))
 
@@ -1020,19 +1092,18 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
       (loop with type-keys = '(:users :resources :permissions :roles :settings)
         for type-key in type-keys
         always (u:plistp (getf *compiled-model* type-key))))
-    (signal-validation-error
-      "No model has been compiled yet.")))
+    (report-ve "valid-compiled-model" "No model has been compiled yet.")))
 
 (defun valid-value-type (type-key field-key value)
   ":private: Returns T if VALUE is of the correct type for FIELD-KEY in TYPE-KEY
 in the model. Otherwise, returns NIL."
   (unless (value-type-p type-key field-key value)
-    (signal-validation-error
-      "Invalid value type for field ~s ~s. Expected type ~s, but got value ~s."
-      type-key
-      field-key
-      (u:tree-get *compiled-model* type-key :fields field-key :type)
-      value)))
+    (let ((field-type (u:tree-get *compiled-model*
+                        type-key :fields field-key :type)))
+      (report-ve
+        "valid-value-type"
+        "Invalid value type for field ~s ~s. Expected type ~s, but got value ~s."
+        ~type-key ~field-key ~field-type ~value))))
 
 (defun valid-filter (filter &key required)
   ":private: Returns NIL if FILTER is a list of the form (TYPE-KEY FIELD-KEY
@@ -1042,43 +1113,43 @@ operator key, and VALUE being of the correct type for the field. Otherwise,
 raises a VALIDATION-ERROR condition with a message describing the problem with
 FILTER."
   (when (and required (not filter))
-    (signal-validation-error "Filter cannot be NIL."))
+    (report-ve "valid-filter" "Filter cannot be NIL."))
   (unless (listp filter)
-    (signal-validation-error "Filter ~s is not a list." filter))
+    (report-ve "valid-filter" "Filter ~s is not a list." ~filter))
   (unless (= (length filter) 4)
-    (signal-validation-error "Filter ~s does not have 4 elements." filter))
+    (report-ve "valid-filter" "Filter ~s does not have 4 elements." ~filter))
   (destructuring-bind (type-key field-key op-key value) filter
     (unless (type-key-p type-key)
-      (signal-validation-error "Invalid type key ~s." type-key))
+      (report-ve "valid-filter" "Invalid type key ~s." ~type-key))
     (unless (field-key-p type-key field-key)
-      (signal-validation-error "Invalid field key ~s for type ~s."
-        field-key type-key))
+      (report-ve "valid-filter" "Invalid field key ~s for type ~s."
+        ~field-key ~type-key))
     (unless (operator-key-p op-key)
-      (signal-validation-error "Invalid operator key ~s." op-key))
+      (report-ve "valid-filter" "Invalid operator key ~s." ~op-key))
     (unless (field-type-key-p
               (u:tree-get *compiled-model* type-key :fields field-key :type))
-      (signal-validation-error "Invalid field type key for field ~s ~s ~s."
-        type-key field-key type-key))
+      (report-ve "valid-filter" "Invalid field type key for field ~s ~s ~s."
+        ~type-key ~field-key ~type-key))
     (unless (value-type-p type-key field-key value)
-      (signal-validation-error
-        (eformat "
+      (let* ((field-type (u:tree-get *compiled-model*
+                           type-key :fields field-key :type))
+              (err (eformat "
 Invalid value type for field ~s ~s.
 Expected a value of type ~s, but got value ~s."
-          type-key field-key
-          (u:tree-get *compiled-model* type-key :fields field-key :type)
-          value)))))
+                   type-key field-key field-type value)))
+        (report-ve "valid-filter" err)))))
 
 (defun valid-filters (filters &key required)
   ":private: Checks that FILTERS is valid."
   (when (and required (null filters))
-    (signal-validation-error "FILTERS cannot be NIL."))
+    (report-ve "valid-filters" "FILTERS cannot be NIL."))
   (loop for filter in filters
     do (valid-filter filter :required t)))
 
 (defun valid-type-key (type-key)
   ":private: Checks that TYPE-KEY is a valid type key in the model."
   (unless (type-key-p type-key)
-    (signal-validation-error "Invalid type key ~a" type-key)))
+    (report-ve "valid-type-key" "Invalid type key ~a" ~type-key)))
 
 (defun valid-non-base-type-key (type-key)
   ":private: Checks that TYPE-KEY is a valid non-base type key in the model,
@@ -1086,19 +1157,21 @@ meaning that the type lacks `:base t`."
   (unless (and
             (type-key-p type-key)
             (not (u:tree-get *compiled-model* type-key :base)))
-    (signal-validation-error "Invalid non-base type key ~a" type-key)))
+    (report-ve "valid-non-base-type-key"
+      "Invalid non-base type key ~a" ~type-key)))
 
 (defun valid-be-type-key (type-key)
   (unless (and
             (type-key-p type-key)
             (not (u:tree-get *compiled-model* type-key :internal)))
-    (signal-validation-error "Invalid backend type key ~a" type-key)))
+    (report-ve "valid-be-type-key" "Invalid backend type key ~a" ~type-key)))
 
 (defun valid-field-key (type-key field-key)
   ":private: Checks that FIELD-KEY is a valid field key for TYPE-KEY in the
 model."
   (unless (field-key-p type-key field-key)
-    (signal-validation-error "Invalid field key ~a ~a." type-key field-key)))
+    (report-ve "valid-field-key"
+      "Invalid field key ~a ~a." ~type-key ~field-key)))
 
 (defun valid-data (type-key data)
   ":private: Checks that DATA is valid for TYPE-KEY. DATA is a plist where the
@@ -1113,16 +1186,16 @@ value is of the correct type for its field key."
     do
     (cond
       ((null field-def)
-        (signal-validation-error
-          "Unknown field key ~s for type ~s." field-key type-key))
+        (report-ve "valid-data"
+          "Unknown field key ~s for type ~s." ~field-key ~type-key))
       ((getf field-def :join-table)
         (valid-values-list value))
       ((not (getf field-def :base))
         (valid-value-type type-key field-key value))
       ((equal field-key :id)
         (valid-uuid value))
-      (t (signal-validation-error
-           "Invalid field key ~s for type ~s." field-key type-key)))
+      (t (report-ve "valid-data"
+           "Invalid field key ~s for type ~s." ~field-key ~type-key)))
     (let ((target (getf field-def :target))
           (joiner (getf field-def :join-table))
           (is-id-or-pk (or
@@ -1143,34 +1216,35 @@ for TYPE-KEY."
     for new-values = (or (getf data key)
                        (u:tree-get m type-key :fields  key :default))
     for unknown-values = (unknown-values key column new-values)
+    for l = (length unknown-values)
     when unknown-values
-    do (signal-validation-error
+    do (report-ve "valid-existing-join-data"
          "Invalid value~p for field ~s ~s: ~s"
-         (length unknown-values) type-key key unknown-values)))
+         ~l ~type-key ~key ~unknown-values)))
 
 (defun valid-uuid (uuid)
   (unless (uuid-p uuid)
-    (signal-validation-error "Invalid UUID ~s" uuid)))
+    (report-ve "valid-uuid" "Invalid UUID ~s" ~uuid)))
 
 (defun valid-existing-uuid (uuid)
   (unless (uuid-exists-p uuid)
-    (signal-validation-error "UUID ~a not found." uuid)))
+    (report-ve "valid-existing-uuid" "UUID ~a not found." ~uuid)))
 
 (defun valid-insert (insert)
   (unless (and (u:plistp insert) (getf insert :main))
-    (signal-validation-error "Invalid insert ~s" insert)))
+    (report-ve "valid-insert" "Invalid insert ~s" ~insert)))
 
 (defun valid-roles (&rest roles)
   (loop for role in (u:flatten roles)
     unless (be-id :roles `((:roles :name :eq ,role)) "admin")
-    do (signal-validation-error "Invalid role name ~s." role)))
+    do (report-ve "valid-roles" "Invalid role name ~s." ~role)))
 
 (defun valid-existing-roles (roles)
   (valid-roles roles)
   (loop with existing-roles = (a:list-role-names *rbac*)
     for role in roles
     when (not (member role existing-roles :test 'equal))
-    do (signal-validation-error "Role ~s does not exist." role)))
+    do (report-ve "valid-existing-roles" "Role ~s does not exist." ~role)))
 
 (defun valid-user-roles (user roles)
   ":private: Returns nil (success) if every role in ROLES exists and either USER
@@ -1185,29 +1259,30 @@ error."
                               (lambda (r) (member r user-roles :test 'equal))
                               roles))))
     (when non-user-roles
-      (signal-validation-error
+      (report-ve "valid-user-roles"
         "User ~s does not have the following roles: ~{~s~^, ~}."
-        user non-user-roles))))
+        ~user ~non-user-roles))))
 
 (defun valid-existing-user (user)
   (unless (a:get-id *rbac* "users" user)
-    (signal-validation-error "User ~s does not exist." user)))
+    (report-ve "valid-existing-user" "User ~s does not exist." ~user)))
 
 (defun valid-user-permissions (user type-key &rest permissions)
   (valid-existing-user user)
   (loop with resource-name = (type-resource-name type-key)
     for permission in permissions
     unless (a:user-allowed *rbac* user permission resource-name)
-    do (signal-validation-error
+    do (report-ve "valid-existing-user-permissions"
          "User ~a does not have ~a permission for resource of type ~s."
-         user permission type-key)))
+         ~user ~permission ~type-key)))
 
 (defun valid-values-list (values)
   (unless (listp values)
-    (signal-validation-error "Expected a list of values, but got ~s." values))
+    (report-ve "valid-values-list"
+      "Expected a list of values, but got ~s." ~values))
   (unless (every #'atom values)
-    (signal-validation-error "Expected a list of atomic values, but got ~s."
-      values)))
+    (report-ve "valid-values-list"
+      "Expected a list of atomic values, but got ~s." ~values)))
 
 (defun id-key (type-key)
   (valid-type-key type-key)
@@ -1423,7 +1498,8 @@ example inserts a todo with the name \"clean the kitchen\":
       (if id
         (values id nil)
         (progn
-          (pl:pdebug :in "be-insert" :type-key type-key :status "validated")
+          (pl:pdebug :in "be-insert" :step 1
+            :type-key type-key :status "validated")
           (let* ((m *compiled-model*)
                   (f (u:tree-get m type-key :create))
                   (base (u:tree-get m type-key :base))
@@ -1432,6 +1508,8 @@ example inserts a todo with the name \"clean the kitchen\":
                   (post-create (u:tree-get m type-key :post-create)))
             (when pre-create
               (funcall pre-create type-key data roles user))
+            (pl:pdebug :in "be-insert" :step 2 :user user)
+            (fs-insert type-key data user roles)
             (let ((new-id (cond
                             ((and (equal f :auto) (not base) (not internal))
                               (insert-normal type-key data roles user))
@@ -1439,9 +1517,9 @@ example inserts a todo with the name \"clean the kitchen\":
                               (insert-base type-key data user))
                             ((functionp f)
                               (funcall f type-key data user :roles roles))
-                            (t (signal-validation-error
+                            (t (report-ve "be-insert"
                                  "Invalid create function for type ~s: ~s"
-                                 type-key f)))))
+                                 ~type-key ~f)))))
               (when post-create
                 (funcall post-create nil nil data nil nil))
               (values new-id t))))))))
@@ -1491,9 +1569,9 @@ not.
                             (insert-base type-key data user))
                           ((functionp f)
                             (funcall f type-key data user :roles roles))
-                          (t (signal-validation-error
+                          (t (report-ve "be-insert-internal"
                                "Invalid create function for type ~s: ~s"
-                               type-key f)))))
+                               ~type-key ~f)))))
           (when post-create
             (funcall post-create nil nil data nil nil))
           (values new-id t))))))
@@ -1534,7 +1612,7 @@ update fails.
     (valid-existing-join-data type-key full-data)
     ;; Update TYPE-KEY row (main update)
     (when (equal type-key :resources)
-      (signal-validation-error "Can't update internal type :resources"))
+      (report-ve "be-update" "Can't update internal type :resources"))
     (multiple-value-bind (result update-row-count)
       (a:with-rbac (*rbac*) (a:rbac-query update-query))
       (declare (ignore result))
@@ -1584,15 +1662,14 @@ treated as the UUID of the record to be deleted."
                 (when resource-name
                   (a:remove-resource *rbac* resource-name))))
             (otherwise
-              (gmn-e
-                "be-delete" "Can't delete ~s with :delete function ~s"
-                :params `(,type-key ,f)
-                :log `(:type-key ,type-key :delete-function ,f :uuid ,uuid)))))
+              (report-e "be-delete"
+                "Can't delete ~s (~a) with :delete function ~s"
+                type-key uuid f))))
         ((functionp f)
           (let* ((record (getf (rec uuid user :type-key type-key) :record)))
             (funcall f type-key record user)))
-        (t (signal-validation-error
-             "Invalid delete function for type ~s: ~s" type-key f)))
+        (t (report-ve "be-delete"
+             "Invalid delete function for type ~s: ~s" ~type-key ~f)))
       (pl:pdebug :in "be-delete" :step 1
         :post-delete (princ-to-string post-delete))
       (when post-delete

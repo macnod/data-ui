@@ -92,20 +92,13 @@ the GMN-FNAME funcition."
                    (u:hash-string function-name :size 6)
                    (u:random-hex-number 3)))
           (in (getf log :in function-name))
-          (text (format nil
-                  "~a [Guru Meditation Number ~a]"
-                  (apply #'format (append
-                                    (list nil format-string)
-                                    params))
-                  number))
+          (text (apply #'format (append (list nil format-string) params)))
+          (text-gmn (format nil "~a [Guru Meditation Number ~a]" text number))
           (logpl (add-to-plist
                    log
-                   (list
-                     :in in
-                     :error text
-                     :gmn number))))
+                   (list :in in :error text :guru-meditation-number number))))
     (pl:plog :error logpl)
-    (funcall condition text)))
+    (funcall condition text-gmn)))
 
 (defun gmn-ve (function-name format-string &key params log)
   ":private: Shortcut for calling GURU-MEDITATION-NUMBER with the
@@ -113,11 +106,67 @@ SIGNAL-VALIDATION-ERROR function."
   (guru-meditation-number function-name format-string
     :params params :log log :condition #'signal-validation-error))
 
+(defmacro report-ve (function-name format-string &rest var-specs)
+  "Report a validation error with automatic param and log construction.
+
+   Symbols starting with ~ are included in :params (without the ~).
+   All symbols go into :log (without the ~)."
+  (let* ((cleaned (mapcar (lambda (spec)
+                            (if (and (symbolp spec)
+                                  (char= (char (symbol-name spec) 0) #\~))
+                              (intern (subseq (symbol-name spec) 1)
+                                (symbol-package spec))
+                              spec))
+                    var-specs))
+          (param-symbols (remove-if-not
+                           (lambda (spec)
+                             (and (symbolp spec)
+                               (char= (char (symbol-name spec) 0) #\~)))
+                           var-specs))
+          (param-cleaned (mapcar (lambda (sym)
+                                   (intern (subseq (symbol-name sym) 1)
+                                     (symbol-package sym)))
+                           param-symbols))
+          (log-pairs (mapcan (lambda (sym)
+                               (list (u:make-keyword sym) sym))
+                       cleaned)))
+    `(gmn-ve ,function-name ,format-string
+       :params (list ,@param-cleaned)
+       :log (list ,@log-pairs))))
+
 (defun gmn-e (function-name format-string &key params log)
   ":private: Shortcut for calling GURU-MEDITATION-NUMBER with the ERROR
 function."
   (guru-meditation-number function-name format-string
     :params params :log log :condition #'error))
+
+(defmacro report-e (function-name format-string &rest var-specs)
+  "Report an error with automatic param and log construction.
+
+   Symbols starting with ~ are included in :params (without the ~).
+   All symbols go into :log (without the ~)."
+  (let* ((cleaned (mapcar (lambda (spec)
+                            (if (and (symbolp spec)
+                                     (char= (char (symbol-name spec) 0) #\~))
+                                (intern (subseq (symbol-name spec) 1)
+                                        (symbol-package spec))
+                                spec))
+                          var-specs))
+         (param-symbols (remove-if-not
+                         (lambda (spec)
+                           (and (symbolp spec)
+                                (char= (char (symbol-name spec) 0) #\~)))
+                         var-specs))
+         (param-cleaned (mapcar (lambda (sym)
+                                  (intern (subseq (symbol-name sym) 1)
+                                          (symbol-package sym)))
+                                param-symbols))
+         (log-pairs (mapcan (lambda (sym)
+                              (list (u:make-keyword sym) sym))
+                            cleaned)))
+    `(gmn-e ,function-name ,format-string
+       :params (list ,@param-cleaned)
+       :log (list ,@log-pairs))))
 
 ;; TODO: Tests
 (defun add-to-list (existing-list &rest new-elements)
