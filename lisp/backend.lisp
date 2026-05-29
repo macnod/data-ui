@@ -349,16 +349,17 @@ existing record! Use FIND-RESOURCE-NAME instead."
                           (format nil "~(~a~)" field-key)
                           "NIL"))
           (field-value (when field-key (getf data field-key)))
+          (mvl 32)
           (formatted-value (if field-value
                              (let* ((s1 (format nil "~a" field-value))
                                      (s2 (re:regex-replace-all
                                            "^-|-$"
                                            (re:regex-replace-all
-                                             "[^-a-zA-Z0-9]" s1 "-")
+                                             "[^-/a-zA-Z0-9]" s1 "-")
                                            "")))
                                (cond
-                                 ((> (length s2) 10)
-                                   (format nil "~a" (subseq s2 0 10)))
+                                 ((> (length s2) mvl)
+                                   (format nil "~a" (subseq s2 0 mvl)))
                                  ((zerop (length s2))
                                    "NIL")
                                  (t s2)))

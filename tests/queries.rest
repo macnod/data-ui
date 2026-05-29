@@ -1,6 +1,5 @@
 # Set variables
 :host = http://localhost:8081
-:access-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxODlmNDI4OS1iYTFkLTRhNzgtYjgyYS1mOGU0NWM2M2RjNjAiLCJleHAiOjE3ODAwMzM2NzcsInR5cGUiOiJhY2Nlc3MifQ.DpKgVc1hdul25d6uuY5PQErn75j_YfaQglsLqVo641s
 
 # Login
 POST :host/api/login
@@ -14,7 +13,9 @@ Content-Type: application/json
 
 # Refresh
 POST :host/api/refresh
-Authorization: Bearer :access-token
+Authorization: Bearer :refresh-token
+-> jq-set-var: :access-token .result["access-token"]
+{}
 
 # Roles 1
 GET :host/api/list?type=roles
@@ -340,6 +341,10 @@ Authorization: Bearer :access-token
 {
   "type": "directories",
   "data": {
-    "name": "/a/"
+    "name": "/c/a-1/"
   }
 }
+
+# List directories
+GET :host/api/list?type=directories
+Authorization: Bearer :access-token

@@ -233,7 +233,7 @@ validates and user exists. Otherwise, logs a message and returns NIL."
 
 (defun abort-request (error-code message &optional details-plist)
   (let ((details (loop for key in details-plist by #'cddr
-                   for val in details-plist by #'cddr
+                   for val in (cdr details-plist) by #'cddr
                    when val append (list key val))))
     (pl:plog :error
       (add-to-plist
@@ -430,58 +430,68 @@ validates and user exists. Otherwise, logs a message and returns NIL."
 (defun store-directory (type-key logical-path user roles)
   (pl:pdebug :in "store-directory" :step 1)
   (let* ((logical-parent (u:path-parent logical-path))
-          (target-path (fs-path type-key logical-path))
-          (parent-path (u:path-parent target-path))
-          (name-field (path-field :type-key))
-          (target-name (find-resource-name
-                         type-key
-                         `((,type-key ,name-field :eq ,target-path))))
-          (parent-name (find-resource-name
-                         type-key
-                         `((,type-key ,name-field :eq ,parent-path))))
-          (parent-roles (a:list-resource-role-names *rbac* parent-name))
-          (user-roles (a:list-user-role-names *rbac* user))
-          (req-roles (if roles roles parent-roles))
-          (non-parent-roles (set-difference req-roles parent-roles
-                              :test #'equal))
-          (non-user-roles (set-difference req-roles user-roles)))
-    (pl:pdebug :in "store-directory" :step 2)
-    (when target-name
-      (abort-bad-request "Directory already exists."
-        :directory logical-path
-        :file-system-path target-path
-        :resource-name target-name))
-    (unless parent-name
-      (abort-bad-request "Parent directory doesn't exist."
-        :directory logical-path
-        :directory-fs-path target-path
-        :parent-directory logical-parent
-        :parent-fs-path parent-path
-        :parent-resource-name parent-name))
-    (unless (a:user-allowed *rbac* user "create" parent-name)
-      (abort-bad-request "User does not have access to parent directory."
-        :user user
-        :directory logical-path
-        :directory-fs-path target-path
-        :parent-directory logical-parent
-        :parent-fs-path parent-path
-        :parent-resource-name parent-name))
-    (when non-parent-roles
-      (abort-bad-request "Can't assign roles that parent doesn't have."
-        :directory logical-path
-        :bad-roles non-parent-roles
-        :parent-roles parent-roles
-        :requested-roles req-roles
-        :user-roles user-roles))
-    (when non-user-roles
-      (abort-bad-request "Can't assign roles that user doesn't have."
-        :user user
-        :user-roles user-roles
-        :non-user-roles non-user-roles
-        :requested-roles req-roles
-        :parent-roles parent-roles))
-    (ensure-directories-exist target-path)
-    logical-path))
+          (fs-path (fs-path type-key logical-path))
+          (fs-parent-path (fs-path type-key logical-parent))
+          (name-field (path-field type-key)))
+    (pl:pdebug :in "store-directory" :step 2
+      :logical-parent logical-parent
+      :fs-path fs-path
+      :fs-parent-path fs-parent-path
+      :name-field name-field)
+    (let* ((resource (find-resource-name
+                       type-key
+                       `((,type-key ,name-field :eq ,logical-path))))
+            (parent-resource (find-resource-name
+                               type-key
+                               `((,type-key ,name-field :eq ,logical-parent)))))
+      (pl:pdebug :in "store-directory" :step 3
+        :resource resource
+        :parent-resource parent-resource)
+      (let* ((parent-roles (when parent-resource
+                             (a:list-resource-role-names
+                               *rbac* parent-resource)))
+              (user-roles (a:list-user-role-names *rbac* user))
+              (req-roles (if roles roles parent-roles))
+              (non-parent-roles (set-difference req-roles parent-roles
+                                  :test #'equal))
+              (non-user-roles (set-difference req-roles user-roles
+                                :test #'equal)))
+        (pl:pdebug :in "store-directory" :step 2)
+        (when resource
+          (abort-bad-request "Directory already exists."
+            :logical-path logical-path
+            :fs-path fs-path
+            :resource resource))
+        (unless parent-resource
+          (abort-bad-request "Parent directory doesn't exist."
+            :logical-path logical-path
+            :fs-path fs-path
+            :logical-parent logical-parent
+            :fs-parent-path fs-parent-path))
+        (unless (a:user-allowed *rbac* user "create" parent-resource)
+          (abort-bad-request "User does not have access to parent directory."
+            :user user
+            :logical-path logical-path
+            :fs-path fs-path
+            :logical-parent logical-parent
+            :fs-parent-path fs-parent-path
+            :parent-resource parent-resource))
+        (when non-parent-roles
+          (abort-bad-request "Can't assign roles that parent doesn't have."
+            :logical-path logical-path
+            :bad-roles non-parent-roles
+            :parent-roles parent-roles
+            :requested-roles req-roles
+            :user-roles user-roles))
+        (when non-user-roles
+          (abort-bad-request "Can't assign roles that user doesn't have."
+            :user user
+            :user-roles user-roles
+            :non-user-roles non-user-roles
+            :requested-roles req-roles
+            :parent-roles parent-roles))
+        (ensure-directories-exist fs-path)
+        logical-path))))
 
 
 (h:define-easy-handler (health :uri "/health") ()
@@ -813,6 +823,8 @@ POST /api/insert"
           (user (require-auth type-roles))
           (path-field (path-field type-key))
           (logical-path (when path-field (getf data path-field))))
+    (pl:pdebug :in "rest-insert" :endpoint "/api/insert"
+      :type type-key :path-field path-field :logical-path logical-path)
     (when logical-path
       (store-directory type-key logical-path user roles))
     (multiple-value-bind (id inserted)

@@ -1,7 +1,6 @@
 # Document root
-tests/files/*
-dev/shared-files/*
-prod/shared-files/*
+/tests/input-files/
+/tests/shared-files/
 
 # Emacs
 *~
@@ -28,10 +27,8 @@ prod/shared-files/*
 *.wx32fsl
 
 # Helm
-prod/kube/rendered-manifests.yaml
-dev/kube/rendered-manifests.yaml
 *.log
-/tests/input-files/
-/tests/shared-files/
+
+# Miscellaneous
 TODO.md
 /.debug/

@@ -18,7 +18,9 @@
   (let* ((dir (u:getenv "DOCUMENT_ROOT"
                :default "/app/shared-files/"))
           (normalized (probe-file dir)))
-    (format nil "~a" normalized)))
+    (if normalized
+      (format nil "~a" normalized)
+      (error "Document root not found: ~a" normalized))))
 (defparameter *temp-directory* (u:getenv "FS_TEMP_DIRECTORY"
                                  :default "/app/temp-files/"))
 

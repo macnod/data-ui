@@ -1312,6 +1312,30 @@ fields that have non-NIL values for all HAVE-KEYS."
       (list (a:exclusive-role-for user))
       "admin")))
 
+(defun add-root-fs-resources ()
+  (unless (probe-file *doc-root*)
+    (error "Document root not found: ~a" *doc-root*))
+  (loop
+    for type-key in *compiled-model* by #'cddr
+    for type-def in (cdr *compiled-model*) by #'cddr
+    for roles = (getf type-def :type-roles)
+    for path-field = (path-field type-key)
+    for is-leaf = (getf type-def :is-leaf)
+    when (and (not is-leaf) path-field) do
+    (let* ((logical-path "/")
+            (type-path (format nil "/~(~a~)/" type-key))
+            (fs-path (u:join-paths *doc-root* type-path))
+            (resource-name (find-resource-name
+                             type-key
+                             `((,type-key ,path-field :eq ,logical-path)))))
+      (unless resource-name
+        (ensure-directories-exist fs-path)
+        (be-insert-internal
+          :directories
+          `(:name ,logical-path)
+          "admin"
+          :roles roles)))))
+
 (defun set-model (model)
   (loop
     initially (setf *compiled-model* nil)
@@ -1325,6 +1349,7 @@ fields that have non-NIL values for all HAVE-KEYS."
     (create-tables)
     (add-type-roles)
     (add-system-user-settings)
+    (add-root-fs-resources)
     (return summary)))
 
 (defun drop-non-base-tables ()
