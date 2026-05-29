@@ -1,0 +1,309 @@
+:host = http://localhost:8081
+:access-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZjI4YzllYS01NGZmLTRjYjgtOGZmZi0yZTg3Y2NiZGQ0NDciLCJleHAiOjE3ODAwMjQ1NDYsInR5cGUiOiJhY2Nlc3MifQ.cYJTfqOXjvRcb-31kbCjIk6PO-aqNQG8eECbxe9m7QE
+
+#
+# /api/list
+#
+
+# Roles 1
+GET :host/api/list?type=roles
+
+# Roles w/delete permission
+GET :host/api/list?type=roles&filters=[["permissions","name","eq","delete"]]
+
+# Roles, non-existent permission
+GET :host/api/list?type=roles&filters=[["permissions","name","eq","del"]]
+
+# Roles, with mispelled type
+GET :host/api/list?type=rols
+
+# Users
+GET :host/api/list?type=users
+
+# Todos
+GET :host/api/list?type=todos
+
+# Users with admin role
+GET :host/api/list?type=users&filters=[["roles","name","eq","admin"]]
+
+# All users (no filter)
+GET :host/api/list?type=users
+
+#
+# /api/rec
+#
+
+# Get a user a record
+GET :host/api/item?id=0c2daa90-2ce8-47a6-a3d1-d172242d8cb0&type=roles
+
+#
+# /api/id
+#
+
+# Get the ID of a role record
+GET :host/api/id?type=roles&filters=[["roles","name","eq","admin"]]
+
+
+#
+# Permissions /api/column
+#
+GET :host/api/column?type=permissions&field=name
+
+#
+# /api/insert
+#
+POST :host/api/insert
+Content-Type: application/json
+
+{
+  "type": "permissions",
+  "data": {
+    "name": "p-11"
+  },
+  "roles": ["public"]
+}
+
+# List permission with name p-10
+GET :host/api/list?type=permissions&filters=[["permissions","name","eq","p-12"]]
+
+# Get the ID of permission with name p-10
+GET :host/api/value-id?type=permissions&field=name&value=p-11
+
+# Get the record for the p-10/p-11 permission
+GET :host/api/item?type=permissions&id=00a2c305-e731-4467-9c8f-c88bed433b88
+
+# LIst permissions
+GET :host/api/list?type=permissions
+
+# Update the name of the p-10 permission
+POST :host/api/update
+Content-Type: application/json
+
+{
+  "type": "permissions",
+  "filters": "00a2c305-e731-4467-9c8f-c88bed433b88",
+  "data": {
+    "name": "p-12"
+  }
+}
+
+# Delete permission p-12
+POST :host/api/delete
+Content-Type: application/json
+
+{
+  "type": "permissions",
+  "filters": "00a2c305-e731-4467-9c8f-c88bed433b88"
+}
+
+# List tags
+GET :host/api/list?type=tags
+
+# List roles
+GET :host/api/column?type=roles&field=name
+
+# List users
+GET :host/api/list?type=users
+
+# List user names
+GET :host/api/column?type=users&field=name
+
+# Add role
+POST :host/api/insert
+Content-Type: application/json
+
+{
+  "type": "roles",
+  "data": {
+    "name": "role-1",
+    "permissions": ["create", "read", "update", "delete"]
+  }
+}
+
+# Add user
+POST :host/api/insert
+Content-Type: application/json
+
+{
+  "type": "users",
+  "data": {
+    "name": "user-1",
+    "password": "password-1",
+    "email": "user-1@sinistercode.com"
+  },
+  "roles": ["role-1"]
+}
+
+# Add user
+POST :host/api/insert
+Content-Type: application/json
+
+{
+  "type": "users",
+  "data": {
+    "name": "user-2",
+    "password": "password-2",
+    "email": "user-2@sinistercode.com"
+  },
+  "roles": ["role-1"]
+}
+
+# Get user
+GET :host/api/list?type=users&filters=[["users","name","eq","user-2"]]
+
+# Insert a todo item
+POST :host/api/insert
+Authorization: Bearer :access-token
+Content-Type: application/json
+
+{
+  "type": "todos",
+  "data": {
+    "name": "todo-1",
+    "points": 2
+  }
+}
+
+# Insert like React
+POST :host/api/insert
+Content-Type: application/json
+
+{"type":"todos","data":{"name":"todo-1","points":"10","tags":["one"]}}
+
+# List todos
+GET :host/api/list?type=todos
+
+# List users
+GET :host/api/list?type=users
+
+# List types
+GET :host/api/types
+
+# List settings
+GET :host/api/list?type=settings
+Authorization: Bearer :access-token
+
+# Update todo roles
+POST :host/api/update
+Content-Type: application/json
+
+{
+  "type": "todos",
+  "data": {
+    "id": "03ff0170-c1d8-4838-86e9-f7596ba276e6",
+    "created-at": "2026-05-14T22:53:42",
+    "updated-at": "2026-05-14T22:53:42",
+    "name": "clean closet",
+    "points": 2,
+    "tags": [
+      "tag-1",
+      "tag-2"
+    ]
+  },
+  "roles": [
+    "admin",
+    "role-1",
+    "public",
+    "role-2"
+  ],
+  "filters": "03ff0170-c1d8-4838-86e9-f7596ba276e6"
+}
+
+# List widgets
+GET :host/api/list?type=widgets
+
+# List roles
+GET :host/api/list?type=roles&filters=[["roles","name","eq","role-2"]]
+
+# List role names
+GET :host/api/column?type=roles&field=name
+
+# List user names
+GET :host/api/column?type=users&field=name
+
+# Insert role-1
+POST :host/api/insert
+Content-Type: application/json
+
+{
+  "type": "roles",
+  "data": {
+    "name": "role-1",
+    "permissions": ["create","read","update","delete"]
+  }
+}
+
+# Insert user
+:user = user-2
+POST :host/api/insert
+Content-Type: application/json
+
+{
+  "type": "users",
+  "data": {
+    "name": ":user",
+    "password": ":user",
+    "email": ":user@sinistercode.com"
+  },
+  "roles": ["role-2"]
+}
+
+# List admin settings
+GET :host/api/list?type=settings&filters=[["users","name","eq","admin"]]
+Authorization: Bearer :access-token
+
+# List permissions
+GET :host/api/list?type=permissions
+Authorization: Bearer :access-token
+
+# Update settings
+POST :host/api/update
+Content-Type: application/json
+
+{
+  "type": "settings",
+  "data": {
+    "dark-mode": true,
+    "font-size": 11
+  },
+  "filters": [["users","name","eq","admin"]]
+}
+
+# Login
+POST :host/api/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "admin-password-1"
+}
+
+# Refresh
+POST :host/api/refresh
+Authorization: Bearer :access-token
+
+# Permissions
+GET :host/api/list?type=permissions
+Authorization: Bearer :access-token
+
+# Add permission
+POST :host/api/insert
+Authorization: Bearer :access-token
+
+{
+  "type": "permissions",
+  "data": {
+    "name": "bogus"
+  }
+}
+
+# Add a directory
+POST :host/api/insert
+Authorization: Bearer :access-token
+
+{
+  "type": "directories",
+  "data": {
+    "name": "/a/"
+  }
+}

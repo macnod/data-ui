@@ -3,13 +3,6 @@
 ;; Environment variables
 (defparameter *http-host* (u:getenv "HTTP_HOST" :default "127.0.0.1"))
 (defparameter *http-port* (u:getenv "HTTP_PORT" :default 8080 :type :integer))
-(defparameter *document-root*
-  (let* ((dir (u:getenv "DOCUMENT_ROOT"
-               :default "/app/shared-files/"))
-          (normalized (probe-file dir)))
-    (format nil "~a" normalized)))
-(defparameter *temp-directory* (u:getenv "FS_TEMP_DIRECTORY"
-                                 :default "/app/temp-files/"))
 (defparameter *web-directory* (u:getenv "WEB_DIRECTORY" :default "/app/web"))
 (defparameter *jwt-secret*
   (b:string-to-octets (u:getenv "JWT_SECRET" :default "32-char secret")))
@@ -239,15 +232,17 @@ validates and user exists. Otherwise, logs a message and returns NIL."
         :required-roles required-roles))))
 
 (defun abort-request (error-code message &optional details-plist)
-  (pl:plog :error
-    (add-to-plist
-      (list
-        :in "abort-request"
-        :error-code error-code
-        :reason message)
-      (when details-plist
-        (list :details details-plist))))
-  (h:abort-request-handler (make-json-error error-code message details-plist)))
+  (let ((details (loop for key in details-plist by #'cddr
+                   for val in details-plist by #'cddr
+                   when val append (list key val))))
+    (pl:plog :error
+      (add-to-plist
+        (list
+          :in "abort-request"
+          :error-code error-code
+          :reason message)
+        (when details-plist (list :details details))))
+    (h:abort-request-handler (make-json-error error-code message details))))
 
 (defun abort-not-found (error-object &rest details-plist)
   (abort-request
@@ -370,6 +365,125 @@ validates and user exists. Otherwise, logs a message and returns NIL."
     do (return form-key)
     finally (abort-bad-request "Form not found" :form form-string)))
 
+(defun path-field (type-key)
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (getf field-def :path) do (return field-key)))
+
+(defun file-field (type-key)
+  (loop with fields = (u:tree-get type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (equal (getf field-def :type) :file)
+    do (return field-key)))
+
+(defun store-file (type-key temp-path logical-path user roles)
+  (let* ((logical-parent (u:path-parent logical-path))
+          (target-path (fs-path type-key logical-path))
+          (target-parent (u:path-parent target-path))
+          (name-field (path-field type-key))
+          (target-name (find-resource-name
+                         type-key
+                         `((,type-key ,name-field :eq ,target-path))))
+          (parent-name (find-resource-name
+                         type-key
+                         `((,type-key ,name-field :eq ,target-parent))))
+          (parent-roles (a:list-resource-role-names *rbac* parent-name))
+          (req-roles (if roles roles parent-roles))
+          (user-roles (a:list-user-role-names *rbac* user))
+          (non-parent-roles (set-difference req-roles parent-roles
+                              :test #'equal))
+          (non-user-roles (set-difference req-roles user-roles
+                            :test #'equal)))
+    ;; Ensure the file or directory doesn't already exist
+    (when target-name
+      (abort-bad-request "File already exists."
+        :file logical-path :resource-name target-name))
+    ;; Ensure the parent directory already exists
+    (unless parent-name
+      (abort-bad-request "Directory doesn't exist." :directory logical-parent))
+    ;; Check user access to parent directory
+    (unless (a:user-allowed *rbac* user "create" parent-name)
+      (abort-bad-request "User does not have access to directory."
+        :user user :directory logical-parent))
+    ;; Check the roles the user is assigning to this file
+    (when non-parent-roles
+      (abort-bad-request "Can't specify roles that parent doesn't have."
+        :directory logical-parent
+        :bad-roles non-parent-roles
+        :parent-roles parent-roles
+        :requested-roles req-roles
+        :user-roles user-roles))
+    (when non-user-roles
+      (abort-bad-request "Can't specify roles that user doesn't have."
+        :user user
+        :non-user-roles non-user-roles
+        :requested-roles req-roles
+        :parent-roles parent-roles
+        :user-roles user-roles))
+    ;; Create the filesystem thing
+    (u:copy-file temp-path target-path :if-exists :error)
+    ;; Return the filesystem path of the new file or directory
+    logical-path))
+
+(defun store-directory (type-key logical-path user roles)
+  (pl:pdebug :in "store-directory" :step 1)
+  (let* ((logical-parent (u:path-parent logical-path))
+          (target-path (fs-path type-key logical-path))
+          (parent-path (u:path-parent target-path))
+          (name-field (path-field :type-key))
+          (target-name (find-resource-name
+                         type-key
+                         `((,type-key ,name-field :eq ,target-path))))
+          (parent-name (find-resource-name
+                         type-key
+                         `((,type-key ,name-field :eq ,parent-path))))
+          (parent-roles (a:list-resource-role-names *rbac* parent-name))
+          (user-roles (a:list-user-role-names *rbac* user))
+          (req-roles (if roles roles parent-roles))
+          (non-parent-roles (set-difference req-roles parent-roles
+                              :test #'equal))
+          (non-user-roles (set-difference req-roles user-roles)))
+    (pl:pdebug :in "store-directory" :step 2)
+    (when target-name
+      (abort-bad-request "Directory already exists."
+        :directory logical-path
+        :file-system-path target-path
+        :resource-name target-name))
+    (unless parent-name
+      (abort-bad-request "Parent directory doesn't exist."
+        :directory logical-path
+        :directory-fs-path target-path
+        :parent-directory logical-parent
+        :parent-fs-path parent-path
+        :parent-resource-name parent-name))
+    (unless (a:user-allowed *rbac* user "create" parent-name)
+      (abort-bad-request "User does not have access to parent directory."
+        :user user
+        :directory logical-path
+        :directory-fs-path target-path
+        :parent-directory logical-parent
+        :parent-fs-path parent-path
+        :parent-resource-name parent-name))
+    (when non-parent-roles
+      (abort-bad-request "Can't assign roles that parent doesn't have."
+        :directory logical-path
+        :bad-roles non-parent-roles
+        :parent-roles parent-roles
+        :requested-roles req-roles
+        :user-roles user-roles))
+    (when non-user-roles
+      (abort-bad-request "Can't assign roles that user doesn't have."
+        :user user
+        :user-roles user-roles
+        :non-user-roles non-user-roles
+        :requested-roles req-roles
+        :parent-roles parent-roles))
+    (ensure-directories-exist target-path)
+    logical-path))
+
+
 (h:define-easy-handler (health :uri "/health") ()
   (format nil "OK~%"))
 
@@ -439,7 +553,9 @@ form
 
 Optional. The name of the form to use for rendering the output. This will be
 converted to a keyword and used to look up the form in the model.  Valid values
-are 'list-form', 'update-form', and 'add-form'."
+are 'list-form', 'update-form', and 'add-form'.
+
+GET /api/item"
   (let* ((id (parse-id id))
           (type-key (parse-type type))
           (type-roles (get-type-roles type-key))
@@ -477,7 +593,9 @@ identify a single record. Example:
 
 Alternatively, a single ID can be specified as the filter, in which case the
 'filters' parameter value consists of a simple UUID string instead of a
-JSON-encoded list of lists."
+JSON-encoded list of lists.
+
+GET /api/id"
   (let* ((type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
@@ -514,7 +632,9 @@ keyword and used to look up the field in the model.
 
 value
 
-Required. The value to look up in the specified field."
+Required. The value to look up in the specified field.
+
+GET /api/id"
   (let* ((type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
@@ -551,7 +671,9 @@ Required. The UUID of the record to retrieve.
 field
 
 Required. The name of the field to retrieve. This will be converted to a keyword
-and used to look up the field in the model."
+and used to look up the field in the model.
+
+GET /api/value"
   (let* ((id (parse-id id))
           (type-key (parse-type type))
           (type-roles (get-type-roles type-key))
@@ -600,7 +722,9 @@ form
 
 Optional. The name of the form to use for rendering the output. This will be
 converted to a keyword and used to look up the form in the model.  Valid values
-are 'list-form', 'update-form', and 'add-form'."
+are 'list-form', 'update-form', and 'add-form'.
+
+GET /api/column"
   (let* ((type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
@@ -677,14 +801,20 @@ will containe the UUID of the new or existing record.
 If the record already exists, this endpoint will not update the existing
 record in any way. It will simply return the ID of the existing record.
 
-The POST must include a header of 'Content-Type: application/json'."
+The POST must include the header 'Content-Type: application/json'.
+
+POST /api/insert"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
           (data (getf tree :data))
           (roles (getf tree :roles))
           (type-key (parse-type type))
           (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles)))
+          (user (require-auth type-roles))
+          (path-field (path-field type-key))
+          (logical-path (when path-field (getf data path-field))))
+    (when logical-path
+      (store-directory type-key logical-path user roles))
     (multiple-value-bind (id inserted)
       (handler-case
         (be-insert type-key data user :roles roles)
@@ -694,6 +824,48 @@ The POST must include a header of 'Content-Type: application/json'."
         (error (e)
           (abort-error e :type type :data data :roles roles :user user)))
       (render-output (list :id id :inserted (if inserted :true :false))))))
+
+(h:define-easy-handler (rest-upload :uri "/api/upload")
+  ()
+  ":public: Endpoint for uploading a file. Uploads work as follows. If, for the
+given user-defined type, the frontend detects a field with input-type :file, it
+submits the record with 2 calls. First, it calls this endpoint, to upload the
+file. Then, it calls the /api/insert endpoint, to submit the rest of the fields
+associated with the user-defined type. This endpoint returns the new logical
+path for the file, but the front end shouldn't need it because it submitted
+that path when it called this endpoint. The JSON that this endpoint returns
+looks like this:
+
+    {
+      \"status\": \"success\",
+      \"result\": {
+        \"path\": \"/a/b/c.txt\"
+    }
+
+This endpoint will return failure if any of these conditions arise:
+  - The file already exists
+  - The user doesn't have create permissions on the parent directory
+  - The parent directory doesn't exist
+  - The user doesn't have create permission on the given type
+
+The POST must include the header 'Content-Type: application/json'.
+
+POST /api/upload"
+  (unless (search "multiplart/form-data" (h:header-in* :content-type))
+    (abort-bad-request "Content-Type header must be multipart/form-data"
+      :content-type (h:header-in* :content-type)))
+  (let* ((type (h:post-parameter "type" h:*request*))
+          (type-key (parse-type type))
+          (file-field (file-field type-key))
+          (file (h:post-parameter file-field h:*request*))
+          (target-field (format nil "~(~a~)" (path-field type-key)))
+          (logical-path (h:post-parameter target-field h:*request*))
+          (roles (h:post-parameter "roles" h:*request*))
+          (temp-path (first file))
+          (type-roles (get-type-roles type-key))
+          (user (require-auth type-roles))
+          (path (store-file type-key temp-path logical-path user roles)))
+    (render-output (list :path path))))
 
 (h:define-easy-handler (rest-update :uri "/api/update"
                           :default-request-type :post)
@@ -735,7 +907,9 @@ the record should have. The system will add and remove roles as necessary to
 match the list you provide. You can only specify roles that you have youself.
 If you don't specify any roles, the record will keep the same roles it had.
 
-The POST must include a header of 'Content-Type: application/json'."
+The POST must include the header 'Content-Type: application/json'.
+
+POST /api/update"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
           (type-key (parse-type type))
@@ -782,7 +956,9 @@ identify a single record. Alternatively, instead of a list of filters, you can
 specify a single ID as the filter, in which case the 'filters' value consists of
 a single string instead of a list of lists.
 
-The POST must include a header of 'Content-Type: application/json'."
+The POST must include the header 'Content-Type: application/json'.
+
+POST /api/delete"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
           (type-key (parse-type type))
@@ -842,7 +1018,9 @@ The response will be a JSON object with the following structure:
 If the value is valid, the 'valid' field in the result will be true and the
 'errors' field will be an empty list. If the value is invalid, the 'valid' field
 will be false and the 'errors' field will contain a list of error messages
-explaining why the value is invalid."
+explaining why the value is invalid.
+
+POST /api/validate-field"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
           (field (getf tree :field))
@@ -914,7 +1092,9 @@ If the form is valid, the 'valid' field in the result will be true and the
 'errors' field will be an empty object. If the form is invalid, the 'valid'
 field will be false and the 'errors' field will be an object where the keys
 are the names of the fields that have errors and the values are lists of
-error messages explaining what is wrong with the value in that field."
+error messages explaining what is wrong with the value in that field.
+
+POST /api/validate-form"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
           (data (getf tree :data))
@@ -932,7 +1112,9 @@ error messages explaining what is wrong with the value in that field."
 (h:define-easy-handler (rest-types :uri "/api/types" :default-request-type :get)
   ()
   ":public: Endpoint for getting a list of all the defined types. This is useful
-for dynamically creating a menu in the frontend."
+for dynamically creating a menu in the frontend.
+
+GET /api/types"
   (let* ((user (require-auth '("logged-in"))))
     (render-output
       (mapcar
@@ -941,7 +1123,9 @@ for dynamically creating a menu in the frontend."
 
 (h:define-easy-handler (rest-login :uri "/api/login" :default-request-type :post)
   ()
-  ":public: Endpoint for logging in and getting a JWT token."
+  ":public: Endpoint for logging in and getting a JWT token.
+
+POST /api/login"
   (let* ((tree (parse-posted-json))
           (username (getf tree :username))
           (password (getf tree :password))
@@ -959,7 +1143,9 @@ for dynamically creating a menu in the frontend."
   ()
   ":public: Endpoint for refreshing a JWT token. This is useful for getting a
 new short-lived token using a long-lived token, without requiring the user to
-log in again with their username and password."
+log in again with their username and password.
+
+POST /api/refresh"
   (let* ((token (get-bearer-token))
           (user (when token (validate-refresh-token token)))
           (user-id (when user (a:get-id *rbac* "users" user)))
@@ -978,7 +1164,7 @@ log in again with their username and password."
 (defun start-web-server ()
   (setf *http-server* (make-instance 'fs-acceptor
                         :port *http-port*
-                        :document-root *document-root*))
+                        :document-root *doc-root*))
   (setf
     h:*show-lisp-errors-p* t
     (h:acceptor-persistent-connections-p *http-server*) nil)

@@ -129,3 +129,6 @@ function."
   (loop with keys = (set-difference list-1 list-2 :test test)
     for key in list-1
     when (u:has keys key) collect key))
+
+(defun fs-path (type-key path)
+  (u:join-paths *doc-root* (format nil "~(~a~)" type-key) path))

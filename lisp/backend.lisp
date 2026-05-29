@@ -516,6 +516,7 @@ all the right fields when we perform inserts or updates."
         for field-key in fields by #'cddr
         for field-def in (cdr fields) by #'cddr
         for default = (getf field-def :default)
+        for path = (getf field-def :path :false)
         for non-base-roles-field = (and (not base) (equal field-key :roles))
         for ui = (getf field-def :ui)
         when (and
@@ -526,7 +527,7 @@ all the right fields when we perform inserts or updates."
                (or (getf ui :input-type) non-base-roles-field)
                (not (equal (getf ui :input-type) :hidden)))
         append (list field-key
-                 (add-to-plist (list :default default) ui))))))
+                 (add-to-plist (list :default default :path path) ui))))))
 
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))

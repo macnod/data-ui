@@ -13,7 +13,14 @@
 ;; Environment
 (defparameter *version* (u:getenv "DATAUI_VERSION" :default "0.0"))
 (defparameter *environment*
-  (u:getenv "DATAUI_ENVIRONMENT" :default "unknown"))
+  (u:getenv "DATAUI_ENVIRONMENT" :default "dev"))
+(defparameter *doc-root*
+  (let* ((dir (u:getenv "DOCUMENT_ROOT"
+               :default "/app/shared-files/"))
+          (normalized (probe-file dir)))
+    (format nil "~a" normalized)))
+(defparameter *temp-directory* (u:getenv "FS_TEMP_DIRECTORY"
+                                 :default "/app/temp-files/"))
 
 ;; Other
 (defparameter *large-page-size* 10000)

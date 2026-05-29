@@ -127,8 +127,71 @@ function App() {
   }
 
   const submitForm = async () => {
+    // Find file field if present
+    const formDef = isEditMode ? data!.result['update-form'] : data!.result['add-form']
+    const fileField = Object.keys(formDef).find(f => formDef[f]['input-type'] === 'file')
+    const fileValue = fileField ? formValues[fileField] : null
+    const pathField = Object.keys(formDef).find(f => formDef[f].path === true)
+
+    if (fileField && fileValue instanceof File && pathField) {
+      // Two-phase upload
+      const formData = new FormData()
+      formData.append('type', type)
+      formData.append(pathField, formValues[pathField] || '')
+      formData.append(fileField, fileValue)
+      if (formValues.roles) {
+        // roles may be array or single value; send as-is
+        const roles = formValues.roles
+        if (Array.isArray(roles)) {
+          roles.forEach(r => formData.append('roles', r))
+        } else {
+          formData.append('roles', roles)
+        }
+      }
+
+      const uploadRes = await apiFetch('/api/upload', {
+        method: 'POST',
+        body: formData
+      })
+
+      if (!uploadRes.ok) {
+        alert('File upload failed')
+        return
+      }
+
+      // Build payload without the file field
+      const { roles, [fileField]: _omit, ...rest } = formValues
+      const filteredRest = Object.fromEntries(
+        Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
+      )
+      const payload: any = { type, data: filteredRest }
+      if (roles) payload.roles = roles
+
+      let res
+      if (isEditMode) {
+        payload.filters = editRecord.id
+        res = await apiFetch('/api/update', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        })
+      } else {
+        res = await apiFetch('/api/insert', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        })
+      }
+
+      if (res.ok) {
+        closeForm()
+        fetchList()
+      } else {
+        alert(isEditMode ? 'Failed to update' : 'Failed to insert')
+      }
+      return
+    }
+
+    // Normal (no file) path
     const { roles, ...rest } = formValues
-    // Omit empty or whitespace-only string values from POST
     const filteredRest = Object.fromEntries(
       Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
     )
@@ -374,6 +437,21 @@ function App() {
                     />
                     {' '}{fieldMeta.label}
                   </label>
+                </div>
+              )
+            }
+
+            if (fieldMeta['input-type'] === 'file') {
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <input
+                    type="file"
+                    onChange={e => {
+                      const file = e.target.files?.[0] || null
+                      setFormValues({ ...formValues, [f]: file })
+                    }}
+                  />
                 </div>
               )
             }

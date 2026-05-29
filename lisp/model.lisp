@@ -429,6 +429,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("todo-users")
        :fields (:name (:type :text
+                        ;; TODO: Add checks for :input-type value
                         :ui (:label "Tag" :input-type :line)
                         :validations (:required)
                         :source (:view :main :table :tags :column :name :agg :first)
@@ -888,7 +889,7 @@ fields that have non-NIL values for all HAVE-KEYS."
                        (member f-key (default-fields :keys-only t)))))
           (error "Unknown field at ~(~s~) :fields ~(~s~) :source ~(~s~)"
             type-key field-key f-key))
-        (when (and t-key (not f-key))
+        (when (and source t-key (not f-key))
                 (error ":column spec missing from field ~(~s~) ~(~s~) :source"
                   type-key field-key))
         source))))
@@ -960,8 +961,7 @@ fields that have non-NIL values for all HAVE-KEYS."
                                    (getf field-def :not-null))
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
-    with attrs = '(:base-field :ui :unique :primary-key :fs-backed :target
-                    :join-table)
+    with attrs = '(:base-field :ui :unique :primary-key :target :join-table)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
@@ -1119,6 +1119,65 @@ fields that have non-NIL values for all HAVE-KEYS."
     ((null fn) nil)
     (t (error "Invalid :create function definitions: ~a" fn))))
 
+(defun validate-tree (model type-key tree is-leaf parent-type fs-backed)
+  ;; Ensure that if :is-leaf or :fs-backed is true, then :tree is true and
+  ;; :parent-type is set to a non-base type in the model.
+  (when tree
+    (unless parent-type
+      (error "~(~s~) :parent-type must be set because :tree is T" type-key))
+    (when (loop
+            with types = (remove-if #'base-type-p (u:plist-keys model))
+            for type-key in types
+            never (equal parent-type type-key))
+      (error "~(~s~) :parent-type ~(~s~) must be an existing model key"
+        type-key parent-type)))
+  (when (and (not tree) (or is-leaf parent-type fs-backed))
+    (error "~(~s~) :is-leaf, :parent-type, and :fs-backed require :tree t"
+      type-key)))
+
+(defun mark-path-field (type-key fs-backed fields)
+  ":private: Adds :path t to one of the fields if the type is fs-backed."
+  (if fs-backed
+    (let* (;; Determine if there's a field marked :path
+            (pf-1 (loop for field-key in fields by #'cddr
+                    for field-def in (cdr fields) by #'cddr
+                    for path = (getf field-def :path)
+                    when path collect field-key into path-fields
+                    finally
+                    (if (> (length path-fields) 1)
+                      (error "Multiple :path fields in ~(~s~): ~s" type-key path-fields)
+                      (return (car path-fields)))))
+            ;; Otherwise, find the :name field with field type :text
+            (pf-2 (if pf-1 pf-1
+                    (loop for field-key in fields by #'cddr
+                      for field-def in (cdr fields) by #'cddr
+                      for field-type = (getf field-def :type)
+                      when (and (equal field-key :name)
+                             (equal field-type :text))
+                      do (return field-key))))
+            ;; Otherwise, determine if the count of non-base fields
+            ;; is exactly 1...
+            (user-fields (loop for field-key in (u:plist-keys fields)
+                           unless (member field-key
+                                    (default-fields :keys-only t))
+                           collect field-key))
+            ;; and, if so, check that the single field is of type :text
+            (pf-3 (if pf-2 pf-2
+                    (when (and (= (length user-fields) 1)
+                            (equal (u:tree-get fields (car user-fields) :type)
+                              :text))
+                      (car user-fields)))))
+      (unless pf-3
+        (error "~(~s~) For :fs-backed types, at least one field must be :path t"
+          type-key))
+      (loop for field-key in fields by #'cddr
+        for field-def in (cdr fields) by #'cddr
+        append (list field-key
+                 (if (equal field-key pf-3)
+                   (add-to-plist field-def (list :path t))
+                   field-def))))
+    fields))
+
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (base (getf type-def :base))
@@ -1127,6 +1186,10 @@ fields that have non-NIL values for all HAVE-KEYS."
           (create (compile-create (getf type-def :create)))
           (fields (compile-fields type-key model))
           (table-name (table-name type-key base))
+          (tree (getf type-def :tree))
+          (is-leaf (getf type-def :is-leaf))
+          (parent-type (getf type-def :parent-type))
+          (fs-backed (getf type-def :fs-backed))
           (roles (when (type-has-roles type-def)
                    (getf type-def :type-roles '("admin")))))
     ;; TODO: Documentation. Be very careful when explicitly adding roles to a
@@ -1136,14 +1199,20 @@ fields that have non-NIL values for all HAVE-KEYS."
       when (not (a:get-id *rbac* "roles" role))
       do (a:add-role *rbac* role
            :permissions '("create" "read" "update" "delete")))
-    (add-to-plist
-      type-def
-      (list
-        :internal internal
-        :create create
-        :type-roles roles
-        :table-name table-name
-        :fields fields))))
+    (validate-tree model type-key tree is-leaf parent-type fs-backed)
+    (let ((fields-with-path (mark-path-field type-key fs-backed fields)))
+      (add-to-plist
+        type-def
+        (list
+          :internal internal
+          :create create
+          :type-roles roles
+          :table-name table-name
+          :fields fields-with-path
+          :tree tree
+          :is-leaf is-leaf
+          :parent-type parent-type
+          :fs-backed fs-backed)))))
 
 (defun preliminary-model-check (&optional def key-path)
   (loop with current = (apply #'u:tree-get (cons def key-path))
