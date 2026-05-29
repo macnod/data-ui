@@ -1,33 +1,52 @@
+# Set variables
 :host = http://localhost:8081
-:access-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJiZjI4YzllYS01NGZmLTRjYjgtOGZmZi0yZTg3Y2NiZGQ0NDciLCJleHAiOjE3ODAwMjQ1NDYsInR5cGUiOiJhY2Nlc3MifQ.cYJTfqOXjvRcb-31kbCjIk6PO-aqNQG8eECbxe9m7QE
+:access-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxODlmNDI4OS1iYTFkLTRhNzgtYjgyYS1mOGU0NWM2M2RjNjAiLCJleHAiOjE3ODAwMzM2NzcsInR5cGUiOiJhY2Nlc3MifQ.DpKgVc1hdul25d6uuY5PQErn75j_YfaQglsLqVo641s
 
-#
-# /api/list
-#
+# Login
+POST :host/api/login
+Content-Type: application/json
+-> jq-set-var :access-token .result["access-token"]
+-> jq-set-var :refresh-token .result["refresh-token"]
+{
+  "username": "admin",
+  "password": "admin-password-1"
+}
+
+# Refresh
+POST :host/api/refresh
+Authorization: Bearer :access-token
 
 # Roles 1
 GET :host/api/list?type=roles
+Authorization: Bearer :access-token
 
 # Roles w/delete permission
 GET :host/api/list?type=roles&filters=[["permissions","name","eq","delete"]]
+Authorization: Bearer :access-token
 
 # Roles, non-existent permission
 GET :host/api/list?type=roles&filters=[["permissions","name","eq","del"]]
+Authorization: Bearer :access-token
 
 # Roles, with mispelled type
 GET :host/api/list?type=rols
+Authorization: Bearer :access-token
 
 # Users
 GET :host/api/list?type=users
+Authorization: Bearer :access-token
 
 # Todos
 GET :host/api/list?type=todos
+Authorization: Bearer :access-token
 
 # Users with admin role
 GET :host/api/list?type=users&filters=[["roles","name","eq","admin"]]
+Authorization: Bearer :access-token
 
 # All users (no filter)
 GET :host/api/list?type=users
+Authorization: Bearer :access-token
 
 #
 # /api/rec
@@ -35,6 +54,7 @@ GET :host/api/list?type=users
 
 # Get a user a record
 GET :host/api/item?id=0c2daa90-2ce8-47a6-a3d1-d172242d8cb0&type=roles
+Authorization: Bearer :access-token
 
 #
 # /api/id
@@ -42,17 +62,20 @@ GET :host/api/item?id=0c2daa90-2ce8-47a6-a3d1-d172242d8cb0&type=roles
 
 # Get the ID of a role record
 GET :host/api/id?type=roles&filters=[["roles","name","eq","admin"]]
+Authorization: Bearer :access-token
 
 
 #
 # Permissions /api/column
 #
 GET :host/api/column?type=permissions&field=name
+Authorization: Bearer :access-token
 
 #
 # /api/insert
 #
 POST :host/api/insert
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -65,18 +88,23 @@ Content-Type: application/json
 
 # List permission with name p-10
 GET :host/api/list?type=permissions&filters=[["permissions","name","eq","p-12"]]
+Authorization: Bearer :access-token
 
 # Get the ID of permission with name p-10
 GET :host/api/value-id?type=permissions&field=name&value=p-11
+Authorization: Bearer :access-token
 
 # Get the record for the p-10/p-11 permission
 GET :host/api/item?type=permissions&id=00a2c305-e731-4467-9c8f-c88bed433b88
+Authorization: Bearer :access-token
 
 # LIst permissions
 GET :host/api/list?type=permissions
+Authorization: Bearer :access-token
 
 # Update the name of the p-10 permission
 POST :host/api/update
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -89,6 +117,7 @@ Content-Type: application/json
 
 # Delete permission p-12
 POST :host/api/delete
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -98,18 +127,23 @@ Content-Type: application/json
 
 # List tags
 GET :host/api/list?type=tags
+Authorization: Bearer :access-token
 
 # List roles
 GET :host/api/column?type=roles&field=name
+Authorization: Bearer :access-token
 
 # List users
 GET :host/api/list?type=users
+Authorization: Bearer :access-token
 
 # List user names
 GET :host/api/column?type=users&field=name
+Authorization: Bearer :access-token
 
 # Add role
 POST :host/api/insert
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -122,6 +156,7 @@ Content-Type: application/json
 
 # Add user
 POST :host/api/insert
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -136,6 +171,7 @@ Content-Type: application/json
 
 # Add user
 POST :host/api/insert
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -150,6 +186,7 @@ Content-Type: application/json
 
 # Get user
 GET :host/api/list?type=users&filters=[["users","name","eq","user-2"]]
+Authorization: Bearer :access-token
 
 # Insert a todo item
 POST :host/api/insert
@@ -166,18 +203,22 @@ Content-Type: application/json
 
 # Insert like React
 POST :host/api/insert
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {"type":"todos","data":{"name":"todo-1","points":"10","tags":["one"]}}
 
 # List todos
 GET :host/api/list?type=todos
+Authorization: Bearer :access-token
 
 # List users
 GET :host/api/list?type=users
+Authorization: Bearer :access-token
 
 # List types
 GET :host/api/types
+Authorization: Bearer :access-token
 
 # List settings
 GET :host/api/list?type=settings
@@ -185,6 +226,7 @@ Authorization: Bearer :access-token
 
 # Update todo roles
 POST :host/api/update
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -211,18 +253,23 @@ Content-Type: application/json
 
 # List widgets
 GET :host/api/list?type=widgets
+Authorization: Bearer :access-token
 
 # List roles
 GET :host/api/list?type=roles&filters=[["roles","name","eq","role-2"]]
+Authorization: Bearer :access-token
 
 # List role names
 GET :host/api/column?type=roles&field=name
+Authorization: Bearer :access-token
 
 # List user names
 GET :host/api/column?type=users&field=name
+Authorization: Bearer :access-token
 
 # Insert role-1
 POST :host/api/insert
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -236,6 +283,7 @@ Content-Type: application/json
 # Insert user
 :user = user-2
 POST :host/api/insert
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -258,6 +306,7 @@ Authorization: Bearer :access-token
 
 # Update settings
 POST :host/api/update
+Authorization: Bearer :access-token
 Content-Type: application/json
 
 {
@@ -268,19 +317,6 @@ Content-Type: application/json
   },
   "filters": [["users","name","eq","admin"]]
 }
-
-# Login
-POST :host/api/login
-Content-Type: application/json
-
-{
-  "username": "admin",
-  "password": "admin-password-1"
-}
-
-# Refresh
-POST :host/api/refresh
-Authorization: Bearer :access-token
 
 # Permissions
 GET :host/api/list?type=permissions
