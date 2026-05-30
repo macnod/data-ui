@@ -107,10 +107,13 @@ SIGNAL-VALIDATION-ERROR function."
     :params params :log log :condition #'signal-validation-error))
 
 (defmacro report-ve (function-name format-string &rest var-specs)
-  "Report a validation error with automatic param and log construction.
-
-   Symbols starting with ~ are included in :params (without the ~).
-   All symbols go into :log (without the ~)."
+  "Report a validation error. FUNCTION-NAME is the name of the function where
+REPORT-VE is called. FORMAT-STRING is a format string like the ones that the
+FORMAT function accepts. VAR-SPECS is a list of variable names. If a variable
+name in this list is prefixed with a tilde (~), it forms part of the list of
+variables to be passed to FORMAT-STRING. The variables are passed to
+FORMAT-STRING without the tilde. All variables, prefixed by a tilde or not
+are passed to the logger, stripped of any tilde."
   (let* ((cleaned (mapcar (lambda (spec)
                             (if (and (symbolp spec)
                                   (char= (char (symbol-name spec) 0) #\~))
