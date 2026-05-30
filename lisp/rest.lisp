@@ -365,55 +365,6 @@ validates and user exists. Otherwise, logs a message and returns NIL."
     do (return form-key)
     finally (abort-bad-request "Form not found" :form form-string)))
 
-(defun store-file (type-key temp-path logical-path user roles)
-  (let* ((logical-parent (u:path-parent logical-path))
-          (target-path (fs-path type-key logical-path))
-          (target-parent (u:path-parent target-path))
-          (name-field (path-field type-key))
-          (target-name (find-resource-name
-                         type-key
-                         `((,type-key ,name-field :eq ,target-path))))
-          (parent-name (find-resource-name
-                         type-key
-                         `((,type-key ,name-field :eq ,target-parent))))
-          (parent-roles (a:list-resource-role-names *rbac* parent-name))
-          (req-roles (if roles roles parent-roles))
-          (user-roles (a:list-user-role-names *rbac* user))
-          (non-parent-roles (set-difference req-roles parent-roles
-                              :test #'equal))
-          (non-user-roles (set-difference req-roles user-roles
-                            :test #'equal)))
-    ;; Ensure the file or directory doesn't already exist
-    (when target-name
-      (abort-bad-request "File already exists."
-        :file logical-path :resource-name target-name))
-    ;; Ensure the parent directory already exists
-    (unless parent-name
-      (abort-bad-request "Directory doesn't exist." :directory logical-parent))
-    ;; Check user access to parent directory
-    (unless (a:user-allowed *rbac* user "create" parent-name)
-      (abort-bad-request "User does not have access to directory."
-        :user user :directory logical-parent))
-    ;; Check the roles the user is assigning to this file
-    (when non-parent-roles
-      (abort-bad-request "Can't specify roles that parent doesn't have."
-        :directory logical-parent
-        :bad-roles non-parent-roles
-        :parent-roles parent-roles
-        :requested-roles req-roles
-        :user-roles user-roles))
-    (when non-user-roles
-      (abort-bad-request "Can't specify roles that user doesn't have."
-        :user user
-        :non-user-roles non-user-roles
-        :requested-roles req-roles
-        :parent-roles parent-roles
-        :user-roles user-roles))
-    ;; Create the filesystem thing
-    (u:copy-file temp-path target-path :if-exists :error)
-    ;; Return the filesystem path of the new file or directory
-    logical-path))
-
 (h:define-easy-handler (health :uri "/health") ()
   (format nil "OK~%"))
 
@@ -738,6 +689,7 @@ POST /api/insert"
           (type (getf tree :type))
           (data (getf tree :data))
           (roles (getf tree :roles))
+          (token (getf tree :token))
           (type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
@@ -760,45 +712,102 @@ POST /api/insert"
 
 (h:define-easy-handler (rest-upload :uri "/api/upload")
   ()
-  ":public: Endpoint for uploading a file. Uploads work as follows. If, for the
-given user-defined type, the frontend detects a field with input-type :file, it
-submits the record with 2 calls. First, it calls this endpoint, to upload the
-file. Then, it calls the /api/insert endpoint, to submit the rest of the fields
-associated with the user-defined type. This endpoint returns the new logical
-path for the file, but the front end shouldn't need it because it submitted
-that path when it called this endpoint. The JSON that this endpoint returns
-looks like this:
+  ":public: Accepts a file upload and returns a path to the temporary location
+of the uploaded file. A POST to this endpoint should occur immediately prior
+to a POST to /api/insert. Unlike regular POSTs to /api/insert, the POST that
+follows the upload should include an additional top-level field called `file`.
+
+The POST to this endpoing must be in the format multipart/form-data, and it must
+include the same fields, in that format, as the later POST to /api/insert:
+
+'type' (required)
+
+    String denoting the user-defined type for this upload. The string must match
+    one of the user-defined types in the model, and that type must include a
+    file field (`:type :file`) and a path field (`:path t`).
+
+{path} (required)
+
+    The name of this field must be the name of the field tagged with `:path t`
+    in the definition of the given type. The value must be the path where you
+    want the file to be stored in Data UI. This is not the path to the file in
+    the client's computer. The path must be a valid absolute Linux path that
+    ends with a file name. The directory portion of the path (up to the file
+    name) must point to a directory that already exists in Data UI.
+
+'roles' (optional)
+
+    If this field is not provided, the system will assign the same roles to the
+    file as currently exist for the parent directory. Otherwise, these roles
+    will be assigned to the file. However, you cannot assign roles to the file
+    that the parent directory doesn't already have. And, you cannot assign
+    roles that you yourself don't have.
+
+{file} (required)
+
+    The name of this field must correspond to the field tagged with `:type
+    :file` in the definition of the given type. The value must be the uploaded
+    file.
+
+This POST returns JSOn that looks like this:
 
     {
       \"status\": \"success\",
       \"result\": {
-        \"path\": \"/a/b/c.txt\"
+        \"token\": \"/a/b/c.txt\"
     }
 
-This endpoint will return failure if any of these conditions arise:
-  - The file already exists
-  - The user doesn't have create permissions on the parent directory
-  - The parent directory doesn't exist
-  - The user doesn't have create permission on the given type
+The `token` key and value must be submitted at the top level of the JSON POST
+to /api/insert, which should follow this post immediately.
 
-The POST must include the header 'Content-Type: application/json'.
+This endpoint will return failure if any of these conditions arise:
+
+  - The file already exists.
+  - The user doesn't have create permissions on the parent directory.
+  - The parent directory doesn't exist.
+  - The user doesn't have create permission on the given type.
+  - The user tries to assign roles that the parent directory or the user doesn't
+    have.
+
+The POST must include the header 'Content-Type: multipart/form-data'.
 
 POST /api/upload"
-  (unless (search "multiplart/form-data" (h:header-in* :content-type))
+  (unless (search "multipart/form-data" (h:header-in* :content-type))
     (abort-bad-request "Content-Type header must be multipart/form-data"
       :content-type (h:header-in* :content-type)))
   (let* ((type (h:post-parameter "type" h:*request*))
           (type-key (parse-type type))
-          (file-field (file-field type-key))
-          (file (h:post-parameter file-field h:*request*))
+          (file (h:post-parameter (file-field type-key) h:*request*))
           (target-field (format nil "~(~a~)" (path-field type-key)))
           (logical-path (h:post-parameter target-field h:*request*))
           (roles (h:post-parameter "roles" h:*request*))
           (temp-path (first file))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
-          (path (store-file type-key temp-path logical-path user roles)))
-    (render-output (list :path path))))
+          (token (u:safe-encode temp-path)))
+    (handler-case
+      (progn
+        ;; TODO: Check file size and available disk space?
+        (valid-file-meta type-key logical-path user roles)
+        (render-output (list :token token)))
+      (validation-error (e)
+        (abort-bad-request e
+          :type type
+          :type-key type-key
+          :path-field target-field
+          :logical-path logical-path
+          :roles roles
+          :user user
+          :token token))
+      (error (e)
+        (abort-error e
+          :type type
+          :type-key type-key
+          :path-field target-field
+          :logical-path logical-path
+          :roles roles
+          :user user
+          :token token)))))
 
 (h:define-easy-handler (rest-update :uri "/api/update"
                           :default-request-type :post)

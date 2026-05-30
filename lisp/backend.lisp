@@ -619,11 +619,60 @@ all the right fields when we perform inserts or updates."
         (ensure-directories-exist fs-path)
         logical-path))))
 
-(defun fs-insert (type-key data user roles)
+(defun valid-file-meta (type-key logical-path user roles)
+  (let* ((logical-parent (u:path-parent logical-path))
+          (name-field (path-field type-key))
+          (resource (find-resource-name
+                      type-key
+                      `((,type-key ,name-field :eq ,logical-path))))
+          (parent-resource (find-resource-name
+                             type-key
+                             `((,type-key ,name-field :eq ,logical-parent))))
+          (parent-roles (a:list-resource-role-names *rbac* parent-resource))
+          (req-roles (if roles roles parent-roles))
+          (user-roles (a:list-user-role-names *rbac* user))
+          (non-parent-roles (set-difference req-roles parent-roles
+                              :test #'equal))
+          (non-user-roles (set-difference req-roles user-roles
+                            :test #'equal)))
+    ;; Ensure the file or directory doesn't already exist
+    (when resource
+      (report-ve "check-file" "File already exists: ~a."
+        ~logical-path resource))
+    ;; Ensure the parent directory already exists
+    (unless parent-resource
+      (report-ve "check-file" "Parent directory doesn't exist: ~a"
+        ~logical-parent parent-resource))
+    ;; Check user access to parent directory
+    (unless (a:user-allowed *rbac* user "create" parent-resource)
+      (report-ve "check-file"
+        "User ~a does not have the create permission on directory ~a."
+        ~user ~logical-parent))
+    ;; Check the roles the user is assigning to this file
+    (when non-parent-roles
+      (report-ve "check-file" "Can't specify roles that parent doesn't have."
+        logical-parent parent-roles non-parent-roles req-roles user-roles))
+    (when non-user-roles
+      (report-ve "check-file" "Can't specify roles that user doesn't have."
+        req-roles user user-roles non-user-roles parent-roles))))
+        
+(defun store-file (type-key file-token logical-path user roles)
+  (let* ((temp-path (u:safe-decode file-token))
+          (fs-path (fs-path type-key logical-path)))
+    (valid-file-meta type-key logical-path user roles)
+    ;; Create the file (copy it from its temp location to its permanent
+    ;; location)
+    (u:copy-file temp-path fs-path :if-exists :error)
+    ;; Return the file's logical path
+    logical-path))
+
+(defun fs-insert (type-key file-token data user roles)
   (let* ((path-field (path-field type-key))
           (logical-path (when path-field (getf data path-field))))
     (when logical-path
-      (store-directory type-key logical-path user roles))))
+      (if file-token
+        (store-file type-key file-token logical-path user roles)
+        (store-directory type-key logical-path user roles)))))
 
 ;;
 ;; END Filesystem functions
@@ -1474,14 +1523,19 @@ like BE-LIST, but it returns a list of values instead of a list of records."
           (u:tree-get (fe-fields type-key user) form field-key))))))
 
 ;; TODO: Transaction!
-(defun be-insert (type-key data user &key roles)
+(defun be-insert (type-key data user &key roles file-token)
   ":public: Inserts a record of type TYPE-KEY with the given DATA, provided
 USER has `create` permissions in TYPE-KEY. DATA is a plist where the keys are
-field keys and the values are the values to be inserted. This function returns
-two values: The ID of the record and T if the record this function inserted the
-record or NIL if the error already exists.  This function does not perform an
-update if a record with the same unique fields already exists. The following
-example inserts a todo with the name \"clean the kitchen\":
+field keys and the values are the values to be inserted. ROLES is a list of
+roles that you want to associate with the new resource. FILE-TOKEN is a token
+that the /api/upload endpoint returns when you upload a file. It represents the
+temporary uploaded file. 
+
+This function returns two values: The ID of the record and T if the record this
+function inserted the record or NIL if the error already exists.  This function
+does not perform an update if a record with the same unique fields already
+exists. The following example inserts a todo with the name \"clean the
+kitchen\":
 
     `(be-insert :todos
                 '(:name \"clean the kitchen\"
@@ -1509,7 +1563,7 @@ example inserts a todo with the name \"clean the kitchen\":
             (when pre-create
               (funcall pre-create type-key data roles user))
             (pl:pdebug :in "be-insert" :step 2 :user user)
-            (fs-insert type-key data user roles)
+            (fs-insert type-key file-token data user roles)
             (let ((new-id (cond
                             ((and (equal f :auto) (not base) (not internal))
                               (insert-normal type-key data roles user))

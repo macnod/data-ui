@@ -182,8 +182,8 @@ function."
     for key in list-1
     when (u:has keys key) collect key))
 
-(defun fs-path (type-key path)
-  (u:join-paths *doc-root* (scoped-path type-key path)))
-
 (defun scoped-path (type-key path)
   (u:join-paths (format nil "~(~a~)" type-key) path))
+
+(defun fs-path (type-key path)
+  (u:join-paths *doc-root* (scoped-path type-key path)))
