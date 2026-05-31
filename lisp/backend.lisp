@@ -560,11 +560,17 @@ all the right fields when we perform inserts or updates."
     when (getf field-def :path) do (return field-key)))
 
 (defun file-field (type-key)
-  (loop with fields = (u:tree-get type-key :fields)
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
     when (equal (getf field-def :type) :file)
     do (return field-key)))
+
+(defun parent-type (type-key)
+  (when (u:tree-get *compiled-model* type-key :tree)
+    (or
+      (u:tree-get *compiled-model* type-key :parent-type)
+      type-key)))
 
 (defun store-directory (type-key logical-path user roles)
   (pl:pdebug :in "store-directory" :step 1
@@ -620,15 +626,30 @@ all the right fields when we perform inserts or updates."
         logical-path))))
 
 (defun valid-file-meta (type-key logical-path user roles)
+  (pl:pdebug :in "valid-file-meta" :step 1
+    :type-key type-key
+    :logical-path logical-path
+    :user user
+    :roles roles)
   (let* ((logical-parent (u:path-parent logical-path))
           (name-field (path-field type-key))
           (resource (find-resource-name
                       type-key
                       `((,type-key ,name-field :eq ,logical-path))))
+          (parent-type-key (parent-type type-key))
+          (parent-name-field (path-field parent-type-key))
+          (debug2 (pl:pdebug :in "valid-file-meta" :step 2
+                    :resource resource
+                    :parent-type-key parent-type-key
+                    :parent-name-field parent-name-field))
           (parent-resource (find-resource-name
-                             type-key
-                             `((,type-key ,name-field :eq ,logical-parent))))
-          (parent-roles (a:list-resource-role-names *rbac* parent-resource))
+                             parent-type-key
+                             `((,parent-type-key 
+                                 ,parent-name-field :eq ,logical-parent))))
+          (debug3 (pl:pdebug :in "valid-file-meta" :step 3
+                    :parent-resource parent-resource))
+          (parent-roles (when parent-resource
+                          (a:list-resource-role-names *rbac* parent-resource)))
           (req-roles (if roles roles parent-roles))
           (user-roles (a:list-user-role-names *rbac* user))
           (non-parent-roles (set-difference req-roles parent-roles

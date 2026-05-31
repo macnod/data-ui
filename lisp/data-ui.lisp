@@ -20,7 +20,7 @@
           (normalized (probe-file dir)))
     (if normalized
       (format nil "~a" normalized)
-      (error "Document root not found: ~a" normalized))))
+      (error "Document root not found: ~a" dir))))
 (defparameter *temp-directory* (u:getenv "FS_TEMP_DIRECTORY"
                                  :default "/app/temp-files/"))
 

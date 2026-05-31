@@ -1,5 +1,7 @@
 # Set variables
 :host = http://localhost:8081
+:refresh-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmMmQ2YTdhYi1kOGJhLTRjYmYtYjI1OC02NWNhM2M4NDYzYmQiLCJleHAiOjE3ODA4NTYxMzQsInR5cGUiOiJyZWZyZXNoIn0.FvN2dnu2RsLZRk4G4K_hGWxDL8hCLcl7lmpClCsoqBc
+:access-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmMmQ2YTdhYi1kOGJhLTRjYmYtYjI1OC02NWNhM2M4NDYzYmQiLCJleHAiOjE3ODAyNTQ5MzQsInR5cGUiOiJhY2Nlc3MifQ.Gb_u9OgdbnzgpR6TKX4P1MqFFSLET5Gkw3jSpAPhJ2Q
 
 # Login
 POST :host/api/login
@@ -341,10 +343,18 @@ Authorization: Bearer :access-token
 {
   "type": "directories",
   "data": {
-    "name": "/c/a-1/"
+    "name": "/a/"
   }
 }
 
 # List directories
 GET :host/api/list?type=directories
 Authorization: Bearer :access-token
+
+# Add a file
+POST :host/api/insert
+Authorization: Bearer :access-token
+
+{
+  "name": "/a/bogus.png",
+  "temp

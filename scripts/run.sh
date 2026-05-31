@@ -13,6 +13,7 @@ export DB_USER="dataui"
 export DB_PASSWORD="dataui-password"
 export PGPASSWORD="$DB_PASSWORD"
 export DOCUMENT_ROOT="tests/shared-files/"
+export FS_TEMP_DIRECTORY="tests/temp-uploads/"
 
 TIMEOUT=60
 SLEEP_INTERVAL=1

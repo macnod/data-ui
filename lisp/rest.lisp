@@ -785,6 +785,9 @@ POST /api/upload"
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
           (token (u:safe-encode temp-path)))
+    (pl:pdebug :in "rest-upload" :type type :type-key type-key
+      :target-field target-field :logical-path logical-path
+      :temp-path temp-path :type-roles type-roles)
     (handler-case
       (progn
         ;; TODO: Check file size and available disk space?
