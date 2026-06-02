@@ -698,11 +698,12 @@ POST /api/insert"
     (pl:pdebug :in "rest-insert" :endpoint "/api/insert"
       :type type-key :path-field path-field :logical-path logical-path
       :user user :roles roles :type-roles type-roles)
-    (when (and logical-path (not file-token))
-      (store-directory type-key logical-path user roles))
     (multiple-value-bind (id inserted)
       (handler-case
-        (be-insert type-key data user :roles roles)
+        (progn
+          (when (and logical-path (not file-token))
+            (store-directory type-key logical-path user roles))
+          (be-insert type-key data user :roles roles))
         (validation-error (e)
           (abort-bad-request
             e :type type :data data :roles roles :user user))
@@ -783,7 +784,8 @@ POST /api/upload"
           (target-field (format nil "~(~a~)" (path-field type-key)))
           (logical-path (h:post-parameter target-field h:*request*))
           (fs-path (fs-path (parent-type type-key) logical-path))
-          (roles (h:post-parameter "roles" h:*request*))
+          (roles (let ((r (h:post-parameter "roles" h:*request*)))
+                   (if (listp r) (list r))))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
           (file-token (u:safe-encode fs-path)))

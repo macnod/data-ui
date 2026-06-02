@@ -1,6 +1,18 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, setTokens, clearTokens, isAuthenticated } from './api'
 
+// Extract the backend's error message from a failed response, falling back
+// to a generic message if the body can't be parsed.
+async function errorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json()
+    if (body?.error) return body.error
+  } catch {
+    /* keep fallback */
+  }
+  return fallback
+}
+
 interface Field {
   label: string
   'input-type': string
@@ -82,7 +94,7 @@ function App() {
       setFormValues({})
       fetchList()
     } else {
-      alert('Failed to insert')
+      alert(await errorMessage(res, 'Failed to insert'))
     }
   }
 
@@ -205,7 +217,7 @@ function App() {
         Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
       )
       const payload: any = { type, 'file-token': fileToken, data: filteredRest }
-      if (roles) payload.roles = roles
+      if (roles) payload.roles = Array.isArray(roles) ? roles : [roles]
 
       const res = await apiFetch('/api/insert', {
         method: 'POST',
@@ -216,7 +228,7 @@ function App() {
         closeForm()
         fetchList()
       } else {
-        alert('Failed to insert')
+        alert(await errorMessage(res, 'Failed to insert'))
       }
       return
     }
@@ -247,7 +259,7 @@ function App() {
       closeForm()
       fetchList()
     } else {
-      alert(isEditMode ? 'Failed to update' : 'Failed to insert')
+      alert(await errorMessage(res, isEditMode ? 'Failed to update' : 'Failed to insert'))
     }
   }
 

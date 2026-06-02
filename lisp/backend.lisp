@@ -608,7 +608,9 @@ all the right fields when we perform inserts or updates."
       (let* ((parent-roles (when parent-resource
                              (a:list-resource-role-names
                                *rbac* parent-resource)))
-              (user-roles (a:list-user-role-names *rbac* user))
+              (user-roles (if (equal user "admin")
+                            (a:list-role-names *rbac*)
+                            (a:list-user-role-names *rbac* user)))
               (req-roles (if roles roles parent-roles))
               (non-parent-roles (set-difference req-roles parent-roles
                                   :test #'equal))
@@ -619,8 +621,8 @@ all the right fields when we perform inserts or updates."
           (report-ve "store-directory" "Directory already exists."
             logical-path fs-path resource))
         (unless parent-resource
-          (report-ve "store-directory" "Parent directory doesn't exist."
-            logical-path fs-path logical-parent fs-parent-path))
+          (report-ve "store-directory" "Parent directory doesn't exist: ~a"
+            logical-path fs-path ~logical-parent fs-parent-path))
         (unless (a:user-allowed *rbac* user "create" parent-resource)
           (report-ve "store-directory"
             "User does not have access to parent directory."
@@ -628,12 +630,21 @@ all the right fields when we perform inserts or updates."
             parent-resource))
         (when non-parent-roles
           (report-ve "store-directory"
-            "Can't assign roles that parent doesn't have."
-            logical-path non-parent-roles parent-roles req-roles user-roles))
+            "
+Can't assign roles that parent doesn't have.
+  - Parent directory: ~a
+  - Parent roles: ~{~a^~, ~}
+  - Requested roles: ~{~a~^, ~}"
+            logical-path ~logical-parent non-parent-roles ~parent-roles
+            ~req-roles user-roles))
         (when non-user-roles
           (report-ve "store-directory"
-            "Can't assign roles that user doesn't have."
-            user user-roles non-user-roles req-roles parent-roles))
+            "
+Can't assign roles that user doesn't have.
+  - User: ~a
+  - User roles: ~{~a~^, ~}
+  - Requested roles: ~{~a~^, ~}"
+            ~user ~user-roles non-user-roles ~req-roles parent-roles))
         (ensure-directories-exist fs-path)
         logical-path))))
 
@@ -650,23 +661,19 @@ all the right fields when we perform inserts or updates."
                       `((,type-key ,name-field :eq ,logical-path))))
           (parent-type-key (parent-type type-key))
           (parent-name-field (path-field parent-type-key))
-          (debug2 (pl:pdebug :in "valid-file-meta" :step 2
-                    :resource resource
-                    :parent-type-key parent-type-key
-                    :parent-name-field parent-name-field))
           (parent-resource (find-resource-name
                              parent-type-key
                              `((,parent-type-key
                                  ,parent-name-field :eq ,logical-parent))))
-          (debug3 (pl:pdebug :in "valid-file-meta" :step 3
-                    :parent-resource parent-resource))
           (parent-roles (when parent-resource
                           (a:list-resource-role-names *rbac* parent-resource)))
           (req-roles (if roles roles parent-roles))
           (user-roles (a:list-user-role-names *rbac* user))
           (non-parent-roles (set-difference req-roles parent-roles
                               :test #'equal))
-          (non-user-roles (set-difference req-roles user-roles
+          (non-user-roles (set-difference 
+                            req-roles
+                            (append '("admin" "admin:exclusive") user-roles)
                             :test #'equal)))
     ;; Ensure the file or directory doesn't already exist
     (when resource
@@ -686,8 +693,14 @@ all the right fields when we perform inserts or updates."
       (report-ve "check-file" "Can't specify roles that parent doesn't have."
         logical-parent parent-roles non-parent-roles req-roles user-roles))
     (when non-user-roles
-      (report-ve "check-file" "Can't specify roles that user doesn't have."
-        req-roles user user-roles non-user-roles parent-roles))))
+      (report-ve "check-file"
+        "
+Can't specify roles that user doesn't have.
+  - User: ~a
+  - User roles: ~{~a~^, ~}
+  - Parent roles: ~{~a~^, ~}
+  - Requested roles: ~{~a~^, ~}"
+        ~user ~user-roles ~req-roles ~parent-roles non-user-roles))))
 
 ;;
 ;; END Filesystem functions
