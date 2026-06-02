@@ -261,11 +261,12 @@ React (or any frontend) can fetch the schema once and render forms/lists automat
 
 The project is still in active development. Recent progress includes:
 
-- Basic CRUD operations are operational via the backend, REST API, and frontend React code
+- Full CRUD operations work via the backend, REST API, and frontend React code, across **all** types — both the built-in RBAC types (users, roles, permissions, resources, etc.) and user-defined types
+- File handling is partially in place: uploading and listing files and directories works end-to-end. Uploads use a two-phase flow (a `multipart/form-data` POST to `/api/upload`, followed by a JSON `/api/insert` carrying the returned `file-token`). File **delete** and **update** are still to come.
 - Comprehensive tests for compilation, predicates, and backend code are in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (using FiveAM).
-- Preliminary React code basics are in place in the `web/` directory. Rudimentary functionality is there and one can already log in and navigate the app as a user, with basic CRUD and RBAC support.
+- React code in the `web/` directory is functional: one can log in, navigate the app as a user, and perform CRUD with RBAC support. The UI is currently rough and is the focus of ongoing refinement.
 
-Model compilation, SQL generation for tables/views/triggers, basic RBAC integration, validation, and basic CRUD are implemented and tested. Work continues on fully solidifying the REST API, completing the React frontend, producing Kubernetes manifests, and achieving the full end-to-end vision.
+Model compilation, SQL generation for tables/views/triggers, RBAC integration, validation, and CRUD are implemented and tested. Work continues on completing file delete/update, polishing the React frontend, fully solidifying the REST API, producing Kubernetes manifests, and achieving the full end-to-end vision.
 
 See `lisp/model.lisp` for the current `*model*` and `*base-model*`, `lisp/backend.lisp` for the `be-*` API, and the `tests/` directory for usage examples. Ignore outdated references in older files. Contributions welcome — this is early stage!
 

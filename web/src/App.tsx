@@ -4,6 +4,7 @@ import { apiFetch, setTokens, clearTokens, isAuthenticated } from './api'
 interface Field {
   label: string
   'input-type': string
+  path?: boolean
 }
 
 interface ListResponse {
@@ -131,14 +132,26 @@ function App() {
     const formDef = isEditMode ? data!.result['update-form'] : data!.result['add-form']
     const fileField = Object.keys(formDef).find(f => formDef[f]['input-type'] === 'file')
     const fileValue = fileField ? formValues[fileField] : null
-    const pathField = Object.keys(formDef).find(f => formDef[f].path === true)
 
-    if (fileField && fileValue instanceof File && pathField) {
-      // Two-phase upload
+    if (fileField && fileValue instanceof File) {
+      // Two-phase upload.
+      //
+      // POST 1: multipart/form-data to /api/upload with all add-form
+      // fields, including the file field. The browser sets the
+      // multipart boundary automatically (see apiFetch).
       const formData = new FormData()
       formData.append('type', type)
-      formData.append(pathField, formValues[pathField] || '')
-      formData.append(fileField, fileValue)
+      for (const f of Object.keys(formDef)) {
+        const value = formValues[f]
+        if (value === undefined || value === null) continue
+        if (f === fileField) {
+          formData.append(f, value)
+        } else if (Array.isArray(value)) {
+          value.forEach(v => formData.append(f, v))
+        } else {
+          formData.append(f, value)
+        }
+      }
       if (formValues.roles) {
         // roles may be array or single value; send as-is
         const roles = formValues.roles
@@ -155,37 +168,55 @@ function App() {
       })
 
       if (!uploadRes.ok) {
-        alert('File upload failed')
+        let detail = `${uploadRes.status} ${uploadRes.statusText}`.trim()
+        const errText = await uploadRes.text().catch(() => '')
+        if (errText) {
+          try {
+            const errJson = JSON.parse(errText)
+            detail =
+              errJson?.result?.message ||
+              errJson?.message ||
+              errJson?.error ||
+              detail
+          } catch {
+            // Body wasn't JSON; use the raw text.
+            detail = errText
+          }
+        }
+        alert(`File upload failed: ${detail}`)
         return
       }
 
-      // Build payload without the file field
+      // Extract the file-token returned by the upload.
+      const uploadJson = await uploadRes.json()
+      const fileToken =
+        uploadJson?.['file-token'] ?? uploadJson?.result?.['file-token']
+
+      if (!fileToken) {
+        alert('File upload did not return a file-token')
+        return
+      }
+
+      // POST 2: JSON to /api/insert with the add-form fields plus a
+      // top-level file-token (sibling of type). The file field itself
+      // is omitted from the metadata payload.
       const { roles, [fileField]: _omit, ...rest } = formValues
       const filteredRest = Object.fromEntries(
         Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
       )
-      const payload: any = { type, data: filteredRest }
+      const payload: any = { type, 'file-token': fileToken, data: filteredRest }
       if (roles) payload.roles = roles
 
-      let res
-      if (isEditMode) {
-        payload.filters = editRecord.id
-        res = await apiFetch('/api/update', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        })
-      } else {
-        res = await apiFetch('/api/insert', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        })
-      }
+      const res = await apiFetch('/api/insert', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
 
       if (res.ok) {
         closeForm()
         fetchList()
       } else {
-        alert(isEditMode ? 'Failed to update' : 'Failed to insert')
+        alert('Failed to insert')
       }
       return
     }

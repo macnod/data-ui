@@ -47,7 +47,13 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
   const headers = new Headers(options.headers)
   headers.set('Authorization', `Bearer ${accessToken}`)
 
-  if (!headers.has('Content-Type') && options.body) {
+  // Do not set Content-Type for FormData: the browser must set the
+  // multipart/form-data boundary automatically.
+  if (
+    !headers.has('Content-Type') &&
+    options.body &&
+    !(options.body instanceof FormData)
+  ) {
     headers.set('Content-Type', 'application/json')
   }
 
@@ -59,7 +65,11 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
       // Retry with new access token
       const retryHeaders = new Headers(options.headers)
       retryHeaders.set('Authorization', `Bearer ${accessToken}`)
-      if (!retryHeaders.has('Content-Type') && options.body) {
+      if (
+        !retryHeaders.has('Content-Type') &&
+        options.body &&
+        !(options.body instanceof FormData)
+      ) {
         retryHeaders.set('Content-Type', 'application/json')
       }
       return fetch(url, { ...options, headers: retryHeaders })

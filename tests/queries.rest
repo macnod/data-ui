@@ -1,7 +1,7 @@
 # Set variables
 :host = http://localhost:8081
-:refresh-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmMmQ2YTdhYi1kOGJhLTRjYmYtYjI1OC02NWNhM2M4NDYzYmQiLCJleHAiOjE3ODA4NTYxMzQsInR5cGUiOiJyZWZyZXNoIn0.FvN2dnu2RsLZRk4G4K_hGWxDL8hCLcl7lmpClCsoqBc
-:access-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmMmQ2YTdhYi1kOGJhLTRjYmYtYjI1OC02NWNhM2M4NDYzYmQiLCJleHAiOjE3ODAyNTQ5MzQsInR5cGUiOiJhY2Nlc3MifQ.Gb_u9OgdbnzgpR6TKX4P1MqFFSLET5Gkw3jSpAPhJ2Q
+:refresh-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4MGFkNWM1ZS0xOThjLTQzZTUtODM5Yi0yMzhlOGUxYjBhZWEiLCJleHAiOjE3ODAzNTIyMDksInR5cGUiOiJhY2Nlc3MifQ.kxsWrerwsZmhgIGuSLf-3OG0mtyTMhZH-eZ4jYoju6Y
+:access-token = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI4MGFkNWM1ZS0xOThjLTQzZTUtODM5Yi0yMzhlOGUxYjBhZWEiLCJleHAiOjE3ODAzNTU5MjMsInR5cGUiOiJhY2Nlc3MifQ.BGaZvMSujGxkBb1sq2okT5eVUg-Nr_tfIolripJ_ON4
 
 # Login
 POST :host/api/login
@@ -349,6 +349,10 @@ Authorization: Bearer :access-token
 
 # List directories
 GET :host/api/list?type=directories
+Authorization: Bearer :access-token
+
+# List files
+GET :host/api/list?type=files
 Authorization: Bearer :access-token
 
 # Add a file

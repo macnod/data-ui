@@ -687,9 +687,9 @@ The POST must include the header 'Content-Type: application/json'.
 POST /api/insert"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
+          (file-token (getf tree :file-token))
           (data (getf tree :data))
           (roles (getf tree :roles))
-          (token (getf tree :token))
           (type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
@@ -698,7 +698,7 @@ POST /api/insert"
     (pl:pdebug :in "rest-insert" :endpoint "/api/insert"
       :type type-key :path-field path-field :logical-path logical-path
       :user user :roles roles :type-roles type-roles)
-    (when logical-path
+    (when (and logical-path (not file-token))
       (store-directory type-key logical-path user roles))
     (multiple-value-bind (id inserted)
       (handler-case
@@ -777,22 +777,28 @@ POST /api/upload"
       :content-type (h:header-in* :content-type)))
   (let* ((type (h:post-parameter "type" h:*request*))
           (type-key (parse-type type))
-          (file (h:post-parameter (file-field type-key) h:*request*))
+          (file-field (format nil "~(~a~)" (file-field type-key)))
+          (file (h:post-parameter file-field h:*request*))
+          (temp-path (format nil "~a" (first file)))
           (target-field (format nil "~(~a~)" (path-field type-key)))
           (logical-path (h:post-parameter target-field h:*request*))
+          (fs-path (fs-path (parent-type type-key) logical-path))
           (roles (h:post-parameter "roles" h:*request*))
-          (temp-path (first file))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
-          (token (u:safe-encode temp-path)))
+          (file-token (u:safe-encode fs-path)))
     (pl:pdebug :in "rest-upload" :type type :type-key type-key
       :target-field target-field :logical-path logical-path
-      :temp-path temp-path :type-roles type-roles)
+      :temp-path temp-path :type-roles type-roles 
+      :file-field file-field
+      :file-token file-token
+      :fs-path fs-path)
     (handler-case
       (progn
         ;; TODO: Check file size and available disk space?
         (valid-file-meta type-key logical-path user roles)
-        (render-output (list :token token)))
+        (u:copy-file temp-path fs-path)
+        (render-output (list :file-token file-token)))
       (validation-error (e)
         (abort-bad-request e
           :type type
@@ -801,7 +807,7 @@ POST /api/upload"
           :logical-path logical-path
           :roles roles
           :user user
-          :token token))
+          :file-token file-token))
       (error (e)
         (abort-error e
           :type type
@@ -810,7 +816,7 @@ POST /api/upload"
           :logical-path logical-path
           :roles roles
           :user user
-          :token token)))))
+          :file-token file-token)))))
 
 (h:define-easy-handler (rest-update :uri "/api/update"
                           :default-request-type :post)

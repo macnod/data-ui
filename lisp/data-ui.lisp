@@ -21,8 +21,13 @@
     (if normalized
       (format nil "~a" normalized)
       (error "Document root not found: ~a" dir))))
-(defparameter *temp-directory* (u:getenv "FS_TEMP_DIRECTORY"
-                                 :default "/app/temp-files/"))
+(defparameter *temp-directory*
+  (let* ((dir (u:getenv "FS_TEMP_DIRECTORY"
+                :default "/app/temp-files/"))
+          (normalized (probe-file dir)))
+    (if normalized
+      (format nil "~a" normalized)
+      (error "Temporary directory not found: ~a" dir))))
 
 ;; Other
 (defparameter *large-page-size* 10000)

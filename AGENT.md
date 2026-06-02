@@ -44,6 +44,8 @@ The frontend is intentionally minimal and schema-driven. It consumes `list-form`
 
 - Backend compilation, SQL generation, RBAC, and generic endpoints are working
 - `*model*`, defined in `lisp/model.lisp`, contains an example model for a To Do list
+- Full CRUD works on **all** types — both the built-in RBAC types (users, roles,
+  permissions, resources, etc.) and user-defined types
 - React frontend has:
   - Type selector (`/api/types`)
   - Dynamic list with conditional Add / Delete Selected buttons and per-row Edit buttons
@@ -51,7 +53,14 @@ The frontend is intentionally minimal and schema-driven. It consumes `list-form`
   - Expandable Add/Edit form (uses `add-form` / `update-form`)
   - Role management via injected `roles` field (filtered `allowed-values`)
   - The `/api/list` response now includes `create`/`delete`/`update` booleans to control which action buttons are shown
-- Focus is on proving the end-to-end loop before polish
+- File handling: uploading and listing files and directories works. The upload
+  flow does a two-phase POST (`multipart/form-data` to `/api/upload`, then a JSON
+  `/api/insert` carrying the returned `file-token`)
+
+### Known gaps / next up
+
+- File **delete** and **update** are not yet implemented (only upload + list)
+- The UI is functional but rough and needs significant refinement/polish
 
 ## Important Design Decisions
 

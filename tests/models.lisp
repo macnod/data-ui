@@ -79,12 +79,12 @@
        :type-roles ("file-users")
        :views (:main (:tables (:files)))
        :fields (:name (:type :text :path t
-                        :ui (:label "Directory" :input-type :line)
+                        :ui (:label "File" :input-type :line)
                         :validations (:required)
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
                  :file (:type :file
-                         :ui (:label "File" :input-type :file)
+                         :ui (:label "Select File" :input-type :file)
                          :validations (:required)))
        :list-form (:fields t)
        :update-form (:fields t)

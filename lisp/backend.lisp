@@ -209,9 +209,14 @@ If there is no such FORM node or if the value associated with FORM is not a list
 but rather T, then this function returns a list of all the field keys associated
 with TYPE-KEY. The result always starts with :ID, even when FORM doesn't include
 the :ID field key."
-  (let ((form-field-keys (u:tree-get *compiled-model* type-key form :fields))
-         (all-field-keys (u:plist-keys
-                           (u:tree-get *compiled-model* type-key :fields))))
+  (let* ((type-def (u:tree-get *compiled-model* type-key))
+          (form-field-keys (u:tree-get type-def form :fields))
+          (all-field-keys (remove-if
+                            (lambda (k) 
+                              (equal 
+                                (u:tree-get type-def :fields k :type)
+                                :file))
+                            (u:plist-keys (u:tree-get type-def :fields)))))
     (cond
       ((equal form-field-keys t)
         all-field-keys)
@@ -239,6 +244,7 @@ actual column in the associated table, such as fields that have a non-nil
     unless (or
              (getf field-def :join-table)
              (getf field-def :base-field)
+             (not (getf field-def :column))
              (member field-key exclude))
     collect field-key))
 
@@ -281,6 +287,8 @@ given in ID is used."
     for default-value = (getf field-def :default)
     for id-value = (when (equal field-key :id) id)
     for field-value = (or data-value record-value default-value id-value)
+    for column = (getf field-def :column)
+    when column
     collect (db-value type-key field-key user field-value)))
 
 (defun user-fields (type-key)
@@ -513,6 +521,7 @@ all the right fields when we perform inserts or updates."
         and form-fields = (u:tree-get *compiled-model* type-key form :fields)
         for field-key in fields by #'cddr
         for field-def in (cdr fields) by #'cddr
+        for field-type = (getf field-def :type)
         for default = (getf field-def :default)
         for path = (getf field-def :path :false)
         for non-base-roles-field = (and (not base) (equal field-key :roles))
@@ -523,7 +532,10 @@ all the right fields when we perform inserts or updates."
                  (member field-key form-fields)
                  non-base-roles-field)
                (or (getf ui :input-type) non-base-roles-field)
-               (not (equal (getf ui :input-type) :hidden)))
+               (not (equal (getf ui :input-type) :hidden))
+               (not (and
+                      (equal form :list-form)
+                      (equal field-type :file))))
         append (list field-key
                  (add-to-plist (list :default default :path path) ui))))))
 
@@ -644,7 +656,7 @@ all the right fields when we perform inserts or updates."
                     :parent-name-field parent-name-field))
           (parent-resource (find-resource-name
                              parent-type-key
-                             `((,parent-type-key 
+                             `((,parent-type-key
                                  ,parent-name-field :eq ,logical-parent))))
           (debug3 (pl:pdebug :in "valid-file-meta" :step 3
                     :parent-resource parent-resource))
@@ -676,24 +688,6 @@ all the right fields when we perform inserts or updates."
     (when non-user-roles
       (report-ve "check-file" "Can't specify roles that user doesn't have."
         req-roles user user-roles non-user-roles parent-roles))))
-        
-(defun store-file (type-key file-token logical-path user roles)
-  (let* ((temp-path (u:safe-decode file-token))
-          (fs-path (fs-path type-key logical-path)))
-    (valid-file-meta type-key logical-path user roles)
-    ;; Create the file (copy it from its temp location to its permanent
-    ;; location)
-    (u:copy-file temp-path fs-path :if-exists :error)
-    ;; Return the file's logical path
-    logical-path))
-
-(defun fs-insert (type-key file-token data user roles)
-  (let* ((path-field (path-field type-key))
-          (logical-path (when path-field (getf data path-field))))
-    (when logical-path
-      (if file-token
-        (store-file type-key file-token logical-path user roles)
-        (store-directory type-key logical-path user roles)))))
 
 ;;
 ;; END Filesystem functions
@@ -959,6 +953,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
                    (valid-type-key type-key)))
   (let ((type-key (if type-key type-key (id-to-type-key id))))
     (when (and (user-allowed-resource user id "read") (uuid-exists-p id))
+      (pl:pdebug :in "rec" :filters (list type-key :id :eq id))
       (let* ((m *compiled-model*)
               (type-key (if type-key type-key (id-to-type-key id)))
               (sql (u:tree-get m type-key :views :main :sql))
@@ -1132,6 +1127,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
                          :column))))
                  (user-read-type-ids user type-key))))
     (when ids
+      (pl:pdebug :in "list-sql-for" :filters filters)
       (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
               (sql (u:tree-get m type-key :views :main :sql))
               (where (add-where-clause sql all-filters user))
@@ -1354,6 +1350,15 @@ error."
     (report-ve "valid-values-list"
       "Expected a list of atomic values, but got ~s." ~values)))
 
+(defun valid-file-token (file-token)
+  (when file-token
+    (let ((path (u:safe-decode file-token)))
+      (unless (probe-file path)
+        (report-ve "valid-file-token"
+          "Referenced file does not exist."
+          file-token
+          path)))))
+
 (defun id-key (type-key)
   (valid-type-key type-key)
   (u:make-keyword (format nil "~a-id" (u:singular (format nil "~a" type-key)))))
@@ -1399,6 +1404,7 @@ error:
   (if (stringp filters)
     (valid-uuid filters)
     (valid-filters filters :required t))
+  (pl:pdebug :in "be-id" :filters filters)
   (let* ((m *compiled-model*)
           (internal (u:tree-get m type-key :internal))
           (is-base (u:tree-get m type-key :base))
@@ -1503,6 +1509,7 @@ following example returns a list of all the :todos records that have the tag
                        (db:query (format nil "select id from ~a" table)
                          :column))))
                  (user-read-type-ids user type-key))))
+    (pl:pdebug :in "be-list" :filters filters)
     (if ids
       (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
               (sql (u:tree-get m type-key :views :main :sql))
@@ -1550,7 +1557,7 @@ USER has `create` permissions in TYPE-KEY. DATA is a plist where the keys are
 field keys and the values are the values to be inserted. ROLES is a list of
 roles that you want to associate with the new resource. FILE-TOKEN is a token
 that the /api/upload endpoint returns when you upload a file. It represents the
-temporary uploaded file. 
+temporary uploaded file.
 
 This function returns two values: The ID of the record and T if the record this
 function inserted the record or NIL if the error already exists.  This function
@@ -1567,6 +1574,7 @@ kitchen\":
   (valid-type-key type-key)
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
+  (valid-file-token file-token)
   (let ((data (full-data type-key data)))
     (valid-data type-key data)
     (let ((id (id-from-data type-key data)))
@@ -1583,8 +1591,6 @@ kitchen\":
                   (post-create (u:tree-get m type-key :post-create)))
             (when pre-create
               (funcall pre-create type-key data roles user))
-            (pl:pdebug :in "be-insert" :step 2 :user user)
-            (fs-insert type-key file-token data user roles)
             (let ((new-id (cond
                             ((and (equal f :auto) (not base) (not internal))
                               (insert-normal type-key data roles user))
