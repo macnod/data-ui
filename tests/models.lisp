@@ -154,6 +154,10 @@
              :source (:view :main :column :name :agg :first)
              :column t :not-null t :unique t)
            :file 
+           ;; TODO: For :type :file, the validation :valid-file should exist
+           ;;       The validation should allow for NIL, but should otherwise
+           ;;       check that the file path is correct, that the directory
+           ;;       exists, and that the file doesn't already exist.
            (:type :file
              :ui (:label "Select File" :input-type :file)
              :validations (:required)))

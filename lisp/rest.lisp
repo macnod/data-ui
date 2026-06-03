@@ -696,14 +696,13 @@ POST /api/insert"
           (path-field (path-field type-key))
           (logical-path (when path-field (getf data path-field))))
     (pl:pdebug :in "rest-insert" :endpoint "/api/insert"
-      :type type-key :path-field path-field :logical-path logical-path
-      :user user :roles roles :type-roles type-roles)
+      :path-field path-field :logical-path logical-path
+      :type type-key :user user :roles roles :type-roles type-roles)
     (multiple-value-bind (id inserted)
       (handler-case
         (progn
-          (when (and logical-path (not file-token))
-            (store-directory type-key logical-path user roles))
-          (be-insert type-key data user :roles roles))
+          (valid-new-directory type-key logical-path file-token user roles)
+          (be-insert type-key data user :roles roles :file-token file-token))
         (validation-error (e)
           (abort-bad-request
             e :type type :data data :roles roles :user user))

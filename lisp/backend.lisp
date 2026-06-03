@@ -584,69 +584,75 @@ all the right fields when we perform inserts or updates."
       (u:tree-get *compiled-model* type-key :parent-type)
       type-key)))
 
-(defun store-directory (type-key logical-path user roles)
-  (pl:pdebug :in "store-directory" :step 1
-    :type-key type-key :logical-path logical-path :user user :roles roles)
-  (let* ((logical-parent (u:path-parent logical-path))
-          (fs-path (fs-path type-key logical-path))
-          (fs-parent-path (fs-path type-key logical-parent))
-          (name-field (path-field type-key)))
-    (pl:pdebug :in "store-directory" :step 2
-      :logical-parent logical-parent
-      :fs-path fs-path
-      :fs-parent-path fs-parent-path
-      :name-field name-field)
-    (let* ((resource (find-resource-name
-                       type-key
-                       `((,type-key ,name-field :eq ,logical-path))))
-            (parent-resource (find-resource-name
-                               type-key
-                               `((,type-key ,name-field :eq ,logical-parent)))))
-      (pl:pdebug :in "store-directory" :step 3
-        :resource resource
-        :parent-resource parent-resource)
-      (let* ((parent-roles (when parent-resource
-                             (a:list-resource-role-names
-                               *rbac* parent-resource)))
-              (user-roles (if (equal user "admin")
-                            (a:list-role-names *rbac*)
-                            (a:list-user-role-names *rbac* user)))
-              (req-roles (if roles roles parent-roles))
-              (non-parent-roles (set-difference req-roles parent-roles
-                                  :test #'equal))
-              (non-user-roles (set-difference req-roles user-roles
-                                :test #'equal)))
-        (pl:pdebug :in "store-directory" :step 2)
-        (when resource
-          (report-ve "store-directory" "Directory already exists."
-            logical-path fs-path resource))
-        (unless parent-resource
-          (report-ve "store-directory" "Parent directory doesn't exist: ~a"
-            logical-path fs-path ~logical-parent fs-parent-path))
-        (unless (a:user-allowed *rbac* user "create" parent-resource)
-          (report-ve "store-directory"
-            "User does not have access to parent directory."
-            user logical-path fs-path logical-parent fs-parent-path
-            parent-resource))
-        (when non-parent-roles
-          (report-ve "store-directory"
-            "
+(defun valid-new-directory (type-key logical-path file-token user roles)
+  (when (and logical-path (not file-token))
+    (let* ((logical-parent (u:path-parent logical-path))
+            (fs-path (fs-path type-key logical-path))
+            (fs-parent-path (fs-path type-key logical-parent))
+            (name-field (path-field type-key)))
+      (pl:pdebug :in "validate-new-directory" :step 2
+        :logical-parent logical-parent
+        :fs-path fs-path
+        :fs-parent-path fs-parent-path
+        :name-field name-field)
+      (let* ((resource (find-resource-name
+                         type-key
+                         `((,type-key ,name-field :eq ,logical-path))))
+              (parent-resource (find-resource-name
+                                 type-key
+                                 `((,type-key ,name-field :eq ,logical-parent)))))
+        (pl:pdebug :in "validate-new-directory" :step 3
+          :resource resource
+          :parent-resource parent-resource)
+        (let* ((parent-roles (when parent-resource
+                               (a:list-resource-role-names
+                                 *rbac* parent-resource)))
+                (user-roles (if (equal user "admin")
+                              (a:list-role-names *rbac*)
+                              (a:list-user-role-names *rbac* user)))
+                (req-roles (if roles roles parent-roles))
+                (non-parent-roles (set-difference req-roles parent-roles
+                                    :test #'equal))
+                (non-user-roles (set-difference req-roles user-roles
+                                  :test #'equal)))
+          (pl:pdebug :in "validate-new-directory" :step 2)
+          (when resource
+            (report-ve "validate-new-directory" "Directory already exists."
+              logical-path fs-path resource))
+          (unless parent-resource
+            (report-ve "validate-new-directory" "Parent directory doesn't exist: ~a"
+              logical-path fs-path ~logical-parent fs-parent-path))
+          (unless (a:user-allowed *rbac* user "create" parent-resource)
+            (report-ve "validate-new-directory"
+              "User does not have access to parent directory."
+              user logical-path fs-path logical-parent fs-parent-path
+              parent-resource))
+          (when non-parent-roles
+            (report-ve "validate-new-directory"
+              "
 Can't assign roles that parent doesn't have.
   - Parent directory: ~a
   - Parent roles: ~{~a^~, ~}
   - Requested roles: ~{~a~^, ~}"
-            logical-path ~logical-parent non-parent-roles ~parent-roles
-            ~req-roles user-roles))
-        (when non-user-roles
-          (report-ve "store-directory"
-            "
+              logical-path ~logical-parent non-parent-roles ~parent-roles
+              ~req-roles user-roles))
+          (when non-user-roles
+            (report-ve "validate-new-directory"
+              "
 Can't assign roles that user doesn't have.
   - User: ~a
   - User roles: ~{~a~^, ~}
   - Requested roles: ~{~a~^, ~}"
-            ~user ~user-roles non-user-roles ~req-roles parent-roles))
-        (ensure-directories-exist fs-path)
-        logical-path))))
+              ~user ~user-roles non-user-roles ~req-roles parent-roles)))))))
+  
+
+(defun store-directory (type-key logical-path user roles)
+  (let ((fs-path (fs-path type-key logical-path)))
+    (pl:pdebug :in "store-directory" :step 1
+      :type-key type-key :logical-path logical-path :fs-path fs-path
+      :user user :roles roles)
+    (ensure-directories-exist fs-path)
+    logical-path))
 
 (defun valid-file-meta (type-key logical-path user roles)
   (pl:pdebug :in "valid-file-meta" :step 1
@@ -1600,10 +1606,15 @@ kitchen\":
                   (f (u:tree-get m type-key :create))
                   (base (u:tree-get m type-key :base))
                   (internal (u:tree-get m type-key :internal))
+                  (path-field (path-field type-key))
+                  (logical-path (when path-field (getf data path-field)))
                   (pre-create (u:tree-get m type-key :pre-create))
                   (post-create (u:tree-get m type-key :post-create)))
+            (valid-new-directory type-key logical-path file-token user roles)
             (when pre-create
               (funcall pre-create type-key data roles user))
+            (when (and logical-path (not file-token))
+              (store-directory type-key logical-path user roles))
             (let ((new-id (cond
                             ((and (equal f :auto) (not base) (not internal))
                               (insert-normal type-key data roles user))
@@ -1742,6 +1753,10 @@ treated as the UUID of the record to be deleted."
   (let* ((m *compiled-model*)
           (uuid (be-id type-key filters "admin"))
           (record (when uuid (rec uuid "admin" :type-key type-key)))
+          (path-field (path-field type-key))
+          (logical-path (when path-field (getf record path-field)))
+          (is-leaf (u:tree-get *compiled-model* type-key :is-leaf))
+          (fs-path (when logical-path (fs-path type-key logical-path)))
           (f (u:tree-get m type-key :delete))
           (pre-delete (u:tree-get m type-key :pre-delete))
           (post-delete (u:tree-get m type-key :post-delete)))
@@ -1766,6 +1781,16 @@ treated as the UUID of the record to be deleted."
              "Invalid delete function for type ~s: ~s" ~type-key ~f)))
       (pl:pdebug :in "be-delete" :step 1
         :post-delete (princ-to-string post-delete))
+      (when logical-path
+        (if is-leaf
+          (progn
+            (pl:pinfo :in "be-delete" :status "deleting file"
+              :type-key type-key :logical-path logical-path :fs-path fs-path)
+            (uiop:delete-file-if-exists fs-path))
+          (progn
+            (pl:pinfo :in "be-delete" :status "deleting directory"
+              :note "not implemented"
+              :type-key type-key :logical-path logical-path :fs-path fs-path))))
       (when post-delete
         (pl:pdebug :in "be-delete" :step 2)
         (funcall post-delete type-key uuid record user)

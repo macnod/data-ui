@@ -4,6 +4,9 @@
 
 (in-suite backend-suite)
 
+;; TODO: Make sure all tests clean up after themselves. No test records of any
+;;       kind should remain after the tests are done.
+
 (test placeholders
   (is (equal (placeholders (list "a" "b" "c")) '("$1" "$2" "$3")))
   (let ((count 10))
