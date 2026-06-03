@@ -76,7 +76,10 @@
      (:directories
        (:table t
          :create :auto :update :auto :delete :auto :display t
-         :tree t :is-leaf nil :parent-type :directories :fs-backed t
+         :tree t :is-leaf nil
+         ;; TODO: Ensure that parent-type is present in types with :tree t
+         :parent-type :directories
+         :fs-backed t
          :type-roles ("file-users")
          :views (:main (:tables (:directories)))
          :fields

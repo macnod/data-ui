@@ -782,7 +782,7 @@ POST /api/upload"
           (temp-path (format nil "~a" (first file)))
           (target-field (format nil "~(~a~)" (path-field type-key)))
           (logical-path (h:post-parameter target-field h:*request*))
-          (fs-path (fs-path (parent-type type-key) logical-path))
+          (fs-path (fs-path type-key logical-path))
           (roles (let ((r (h:post-parameter "roles" h:*request*)))
                    (if (listp r) (list r))))
           (type-roles (get-type-roles type-key))

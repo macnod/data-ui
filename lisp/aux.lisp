@@ -184,6 +184,3 @@ function."
 
 (defun scoped-path (type-key path)
   (u:join-paths (format nil "~(~a~)" type-key) path))
-
-(defun fs-path (type-key path)
-  (u:join-paths *doc-root* (scoped-path type-key path)))

@@ -584,6 +584,9 @@ all the right fields when we perform inserts or updates."
       (u:tree-get *compiled-model* type-key :parent-type)
       type-key)))
 
+(defun fs-path (type-key path)
+  (u:join-paths *doc-root* (scoped-path (parent-type type-key) path)))
+
 (defun valid-new-directory (type-key logical-path file-token user roles)
   (when (and logical-path (not file-token))
     (let* ((logical-parent (u:path-parent logical-path))
@@ -1752,7 +1755,8 @@ treated as the UUID of the record to be deleted."
   (valid-existing-user user)
   (let* ((m *compiled-model*)
           (uuid (be-id type-key filters "admin"))
-          (record (when uuid (rec uuid "admin" :type-key type-key)))
+          (record (when uuid 
+                    (getf (rec uuid "admin" :type-key type-key) :record)))
           (path-field (path-field type-key))
           (logical-path (when path-field (getf record path-field)))
           (is-leaf (u:tree-get *compiled-model* type-key :is-leaf))
@@ -1760,6 +1764,13 @@ treated as the UUID of the record to be deleted."
           (f (u:tree-get m type-key :delete))
           (pre-delete (u:tree-get m type-key :pre-delete))
           (post-delete (u:tree-get m type-key :post-delete)))
+    (pl:pdebug :in "be-delete" :step 1 :type-key type-key
+      :uuid uuid
+      :record record
+      :path-field path-field
+      :logical-path logical-path
+      :fs-path fs-path
+      :is-leaf t)
     (when (and uuid (user-allowed-resource user uuid "delete"))
       (when pre-delete
         (funcall pre-delete type-key uuid record user))
@@ -1775,12 +1786,9 @@ treated as the UUID of the record to be deleted."
                 "Can't delete ~s (~a) with :delete function ~s"
                 type-key uuid f))))
         ((functionp f)
-          (let* ((record (getf (rec uuid user :type-key type-key) :record)))
-            (funcall f type-key record user)))
+          (funcall f type-key record user))
         (t (report-ve "be-delete"
              "Invalid delete function for type ~s: ~s" ~type-key ~f)))
-      (pl:pdebug :in "be-delete" :step 1
-        :post-delete (princ-to-string post-delete))
       (when logical-path
         (if is-leaf
           (progn
