@@ -1,6 +1,6 @@
 (in-package :data-ui)
 
-(defparameter *app-title* nil)
+(defparameter *title* nil)
 
 (defparameter *max-value-length* 1000)
 
@@ -1283,7 +1283,7 @@ fields that have non-NIL values for all HAVE-KEYS."
   (loop
     initially
     (setf *compiled-model* nil)
-    (setf *app-title* (getf model :app-title "Untitled"))
+    (setf *title* (getf model :title "Untitled"))
     with compiled-model = (compile-model (getf model :types))
     for type-key in (u:plist-keys compiled-model)
     for type-def in (u:plist-values compiled-model)
