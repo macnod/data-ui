@@ -2,7 +2,8 @@
 
 **Your whole app, in an email.**
 
-Describe your data and permissions once. Get a deployed, RBAC-backed application — deterministically.
+Describe your data once. Get a deployed, RBAC-backed application —
+deterministically. Manage roles and permissions live, in the running app.
 
 Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
@@ -36,14 +37,17 @@ part that is genuinely hard, and it is the part that breaks under iteration,
 whether the iteration is done by a human or by an AI.
 
 Data UI lets you express the **entire** application as a small, reviewable
-artifact that fits comfortably in an email, and **guarantees** that the
-expansion of that artifact into a running system is correct. You describe your
-entities, relationships, UI hints, and access rules once. The compiler produces
-the database, the API, the RBAC enforcement, the frontend, and the deployment —
-deterministically, with no per-type boilerplate and no hidden permission bugs.
+artifact that fits comfortably in the body of an email, and **guarantees** that
+the expansion of that artifact into a running system is correct. You describe
+your application (entities, relationships, UI hints, etc.) once. The compiler
+produces the database, the API, the RBAC enforcement, the frontend, and the
+deployment — deterministically, with no per-type boilerplate and no hidden
+permission bugs.
 
 Change the model, recompile, and everything updates consistently. The model is
-the DNA of the application.
+the DNA of the application. At less than a page of code for many applications,
+that DNA is tiny compared to the many thousands of lines that would otherwise
+be needed to describe such an application.
 
 
 ## Why AI Needs Data UI
@@ -58,11 +62,11 @@ evolves, because it pattern-matches locally and drifts globally — it has no
 enforcement mechanism. A smarter model does not close this gap; it just drifts
 more eloquently.
 
-Data UI closes the gap by reducing the dimensionality of the thing that has to be
-gotten right. The AI operates in the regime where it is strong — producing a
-small, structured model — and the compiler handles the regime where the AI is
-weak — expanding that model into a system with globally consistent RBAC and
-relational integrity.
+Data UI closes the gap by reducing the dimensionality of the thing that has to
+be gotten right. With Data UI, the AI operates in the regime where it is strong
+— producing a small, structured model — and the compiler handles the regime
+where the AI is weak — expanding that model into a system with globally
+consistent RBAC and relational integrity.
 
 This is the same relationship a programmer has with a type checker: even a
 superhuman programmer benefits from offloading invariant-enforcement to a
@@ -83,7 +87,7 @@ process (no countless iterations with an AI only to have to fix the difficult
 problems yourself in the end), then Data UI is your friend.
 
 Data UI is a Common Lisp system that takes a simple nested plist model and
-**will compile it** into a full production-ready data application:
+**compiles it** into a full, production-ready data application:
 
 - PostgreSQL tables (with defaults, constraints, triggers)
 - Smart joined views for lists and forms
@@ -493,7 +497,7 @@ maintained. The result is slow iteration, hidden permission bugs, and painful
 refactoring when requirements change.
 
 Data UI takes a different approach. You describe your data model, relationships,
-UI hints, and RBAC rules in one small, reviewable plist. The system compiles this
+and UI hints in one small, reviewable plist. The system compiles this
 into:
 
 - PostgreSQL tables, views, and triggers
