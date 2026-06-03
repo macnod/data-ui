@@ -1350,6 +1350,7 @@ fields that have non-NIL values for all HAVE-KEYS."
     (add-type-roles)
     (add-system-user-settings)
     (add-root-fs-resources)
+    (unless *http-server* (start-web-server))
     (return summary)))
 
 (defun drop-non-base-tables ()
