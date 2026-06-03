@@ -1262,9 +1262,10 @@ fields that have non-NIL values for all HAVE-KEYS."
     for type-key in *compiled-model* by #'cddr
     for type-def in (cdr *compiled-model*) by #'cddr
     for roles = (getf type-def :type-roles)
+    for tree = (getf type-def :tree)
     for path-field = (path-field type-key)
     for is-leaf = (getf type-def :is-leaf)
-    when (and (not is-leaf) path-field) do
+    when (and tree (not is-leaf) path-field) do
     (let* ((logical-path "/")
             (type-path (format nil "/~(~a~)/" type-key))
             (fs-path (u:join-paths *doc-root* type-path))
