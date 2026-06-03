@@ -100,7 +100,7 @@ Data UI is a Common Lisp system that takes a simple nested plist model and
 - Kubernetes manifests for deployment
 
 No manual migrations. No per-type boilerplate. Change the model, call
-`(set-model *model*)`, and everything updates deterministically. Data UI aims to
+`(set-model *model-1*)`, and everything updates deterministically. Data UI aims to
 let you write the model, compile it into an application, and deploy the
 application in a half hour.
 
@@ -141,9 +141,9 @@ never special-cases one against the other.
 
 ## Example Model
 
-This example is from the `*model*` definition in `lisp/model.lisp`.
+This example is from the `*model-1*` definition in `tests/models.lisp`.
 
-    (defparameter *model*
+    (defparameter *model-1*
       `(:todos
          (:table t
            :create :auto :update :auto :delete :auto :display t
@@ -217,7 +217,7 @@ included.
 ### Example Compilation Results
 
 This section presents some tiny pieces of the resulting enriched model, after
-compilation with `(set-model *model*)`.
+compilation with `(set-model *model-1*)`.
 
 #### Create Table SQL for `:todos`
 
@@ -448,7 +448,7 @@ React (or any frontend) can items with their schema and render forms/lists autom
     - Host: localhost
     - Port: 4010, or whatever the repl-environment terminal says
 - Compile a model
-  - In Slime: `(set-model *model*)`
+  - In Slime: `(set-model *model-1*)`
   - Optionally, run tests with: `(run-tests)`
 - Start a web environment terminal
 
@@ -476,7 +476,8 @@ producing Kubernetes manifests, and achieving the full end-to-end vision.
 Deliberately deferred to post-MVP: transactions and rollback. See
 [Hooks and the Registry](#hooks-and-the-registry).
 
-See `lisp/model.lisp` for the current `*model*` and `*base-model*`,
+See `lisp/model.lisp` for the current `*base-model*` and `tests/models.lisp` for
+the example `*model-1*`,
 `lisp/backend.lisp` for the `be-*` API, `lisp/rest.lisp` for HTTP endpoints, and
 the `tests/` directory for usage examples. Ignore outdated references in older
 files. Contributions welcome — this is early stage!

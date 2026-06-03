@@ -39,7 +39,8 @@ The goal is deterministic, repeatable development: change the model, recompile, 
 
 ## Key Architecture
 
-- `lisp/model.lisp` – Model definition (`*model*`, `*base-model*`) and compilation
+- `lisp/model.lisp` – Model compilation and the RBAC base model (`*base-model*`)
+- `tests/models.lisp` – Example models (`*model-1*`, etc.) used by the tests
 - `lisp/backend.lisp` – Backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, etc.)
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
 - `web/` – React frontend (Vite + TypeScript)
@@ -88,7 +89,7 @@ not modified without human permission.
 ## Current Status (MVP)
 
 - Backend compilation, SQL generation, RBAC, and generic endpoints are working
-- `*model*`, defined in `lisp/model.lisp`, contains an example model for a To Do list
+- `*model-1*`, defined in `tests/models.lisp`, contains an example model for a To Do list
 - Full CRUD works on **all** types — both the built-in RBAC types (users, roles,
   permissions, resources, etc.) and user-defined types
 - React frontend has:

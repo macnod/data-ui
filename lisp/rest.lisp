@@ -1114,18 +1114,22 @@ POST /api/refresh"
       (render-output `(:access-token ,(issue-access-token user-id)))
       (abort-auth "Invalid or expired token"))))
 
-(defun start-web-server ()
-  (setf *http-server* (make-instance 'fs-acceptor
-                        :port *http-port*
-                        :document-root *doc-root*))
-  (setf
-    h:*show-lisp-errors-p* t
-    (h:acceptor-persistent-connections-p *http-server*) nil)
-  (pl:pinfo :in "start-web-server"
-    :status "server started"
-    :endpoint (format nil "http://localhost:~d" *http-port*))
-  (h:start *http-server*))
+(defun start-web-server (&optional restart)
+  (when (and restart *http-server*) (stop-web-server))
+  (unless *http-server*
+    (setf *http-server* (make-instance 'fs-acceptor
+                          :port *http-port*
+                          :document-root *doc-root*))
+    (setf
+      h:*show-lisp-errors-p* t
+      (h:acceptor-persistent-connections-p *http-server*) nil)
+    (pl:pinfo :in "start-web-server"
+      :status "web server started"
+      :endpoint (format nil "http://localhost:~d" *http-port*))
+    (h:start *http-server*)))
 
 (defun stop-web-server ()
   (h:stop *http-server*)
-  (setf *http-server* nil))
+  (setf *http-server* nil)
+  (pl:pinfo :in "start-web-server" :status "web server stopped"))
+

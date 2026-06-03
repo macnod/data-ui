@@ -29,7 +29,8 @@
                                (:file "backend")
                                (:file "rest")))
                 (:module "tests"
-                  :components ((:file "helpers")
+                  :components ((:file "models")
+                                (:file "helpers")
                                 (:file "predicate-tests")
                                 (:file "backend-tests")
                                 (:file "rest-tests")))))

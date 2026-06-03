@@ -1,5 +1,13 @@
+(in-package :data-ui)
+
+;; TODO: Ensure tables are created in the right order. The :todo-tags table
+;;       references the :todos and :tags tables, so those tables should
+;;       already exist before the :todo-tags table is created.
+
 (defparameter *model-1*
-`(:todos
+`(:app-title "To Do List"
+   :types   
+   (:todos
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("todo-users")
@@ -12,8 +20,8 @@
                                          (declare (ignore user))
                                          (unless (< (length value) 20)
                                            (validation-error-string
-                                              type-key field-key value
-                                              "must be less than 20 characters."))))
+                                             type-key field-key value
+                                             "must be less than 20 characters."))))
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
                  :points (:type :integer :default 0
@@ -40,6 +48,7 @@
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("todo-users")
        :fields (:name (:type :text
+                        ;; TODO: Add checks for :input-type value
                         :ui (:label "Tag" :input-type :line)
                         :validations (:required)
                         :source (:view :main :table :tags :column :name :agg :first)
@@ -51,7 +60,7 @@
      :todo-tags
      (:table t :is-joiner t :internal t
        :fields (:reference (:target :todos)
-                 :reference (:target :tags)))))
+                 :reference (:target :tags))))))
 
 (defparameter *model-2*
   `(:directories

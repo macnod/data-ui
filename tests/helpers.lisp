@@ -19,7 +19,5 @@
   (query "delete from roles where role_name not in ($1, $2, $3, $4, $5)"
     :params '("admin" "logged-in" "public"
                "admin:exclusive" "guest:exclusive"))
-  (set-model *model*)
-  (unless *http-server*
-    (start-web-server))
+  (set-model *model-1*)
   (run-all-tests))
