@@ -214,7 +214,13 @@ returns S. If S is not a string or a number, this function returns NIL."
        :update :auto
        :delete ,#'rbac-remove-user
        :display t
-       :type-roles ("logged-in")
+       ;; Role logged-in already exists, with only read permission.  Role
+       ;; user-creator does not exist, and is created with default permissions
+       ;; create, read, update, and delete. If you want more specific
+       ;; permissions, just pass a list instead of a role string. The first
+       ;; element of the role string must be the role. The remaining elements,
+       ;; of which there must be at least one, must be existing permissions.
+       :type-roles ("logged-in" "user-creator")
        ;; TODO: Add processing for the :post-create key.
        :post-create ,#'add-user-settings
        :pre-delete ,#'remove-user-settings
@@ -279,7 +285,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :update :auto
        :delete ,#'rbac-remove-permission
        :display t
-       :type-roles ("logged-in")
+       :type-roles ("logged-in" "permission-creator")
        :fields (:name (:type :text
                         :ui (:label "Permission" :input-type :line)
                         :source (:view :main :column :name :agg :first)
@@ -294,7 +300,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :update :auto
        :delete ,#'rbac-remove-role
        :display t
-       :type-roles ("logged-in")
+       :type-roles ("logged-in" "role-creator")
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
        :fields (:name (:type :text
@@ -1138,10 +1144,15 @@ fields that have non-NIL values for all HAVE-KEYS."
     ;; TODO: Documentation. Be very careful when explicitly adding roles to a
     ;;       type, because if the role doesn't exist, it will be created here
     ;;       with full permissions and associated with the type.
-    (loop for role in roles
+    (loop
+      with default-permissions = '("create" "read" "update" "delete")
+      for role-spec in roles
+      for role = (if (stringp role-spec) role-spec (car role-spec))
+      for permissions = (if (stringp role-spec)
+                          default-permissions
+                          (cdr role-spec))
       when (not (a:get-id *rbac* "roles" role))
-      do (a:add-role *rbac* role
-           :permissions '("create" "read" "update" "delete")))
+      do (a:add-role *rbac* role :permissions permissions))
     (validate-tree model type-key tree is-leaf parent-type fs-backed)
     (let ((fields-with-path (mark-path-field type-key fs-backed fields)))
       (add-to-plist

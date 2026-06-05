@@ -54,18 +54,6 @@
 
 (setf a:*default-page-size* 10000)
 
-(defun delete-directory-recursively (path)
-  (loop for descriptor in (list-directory-recursively path)
-    for resource-name = (u:tree-get descriptor :resource-name)
-    for is-file = (u:tree-get descriptor :fs-storage :is-file)
-    for physical-path = (u:tree-get descriptor
-                          :fs-storage :physical-path)
-    do (a:remove-resource *rbac* resource-name)
-    when is-file do (delete-file physical-path)
-    else do (cl-fad:delete-directory-and-files
-              physical-path
-              :if-does-not-exist :ignore)))
-
 (defun start-swank-server ()
   (when (and *swank-port* (not *swank-server*))
     (pl:pinfo :in "run" :status "starting swank")
