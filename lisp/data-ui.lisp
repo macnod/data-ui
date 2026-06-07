@@ -14,6 +14,9 @@
 (defparameter *version* (u:getenv "DATAUI_VERSION" :default "0.0"))
 (defparameter *environment*
   (u:getenv "DATAUI_ENVIRONMENT" :default "dev"))
+
+;; Directories
+(defparameter *package-root* (asdf:system-relative-pathname :data-ui #P""))
 (defparameter *doc-root*
   (let* ((dir (u:getenv "DOCUMENT_ROOT"
                :default "/app/shared-files/"))

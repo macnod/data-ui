@@ -1291,24 +1291,42 @@ fields that have non-NIL values for all HAVE-KEYS."
           "admin"
           :roles roles)))))
 
-(defun set-model (model)
-  (loop
-    initially
-    (setf *compiled-model* nil)
-    (setf *title* (getf model :title "Untitled"))
-    with compiled-model = (compile-model (getf model :types))
-    for type-key in (u:plist-keys compiled-model)
-    for type-def in (u:plist-values compiled-model)
-    for table-name = (getf type-def :table-name)
-    appending (list type-key table-name) into summary
-    finally
-    (setf *compiled-model* compiled-model)
-    (create-tables)
-    (add-type-roles)
-    (add-system-user-settings)
-    (add-root-fs-resources)
-    (start-web-server)
-    (return summary)))
+(defgeneric set-model (model)
+  (:method ((model list))
+    (loop
+      initially
+      (setf *compiled-model* nil)
+      (setf *title* (getf model :title "Untitled"))
+      with compiled-model = (compile-model (getf model :types))
+      for type-key in (u:plist-keys compiled-model)
+      for type-def in (u:plist-values compiled-model)
+      for table-name = (getf type-def :table-name)
+      appending (list type-key table-name) into summary
+      finally
+      (setf *compiled-model* compiled-model)
+      (create-tables)
+      (add-type-roles)
+      (add-system-user-settings)
+      (add-root-fs-resources)
+      (start-web-server)
+      (return summary)))
+  (:method ((file string))
+    "Accepts a file name (no path and no extension), computes the path of the
+file by prepending the model directory path to the file name, adds the extension
+'.lisp', reads the model from that file, and sets that model with SET-MODEL. For
+example, for the string `todos`, this function will compute the file path
+`/path/to/app/models/todos.lisp`, read that file, and set the model to the value
+of that file."
+    (let ((path (u:join-paths *package-root* "models" file)))
+      (with-open-file (in path)
+        (set-model (read in)))))
+  (:documentation ":public: Sets the model to the given plist. If given a
+string instead of a plist, resolves the string to a file in the `models`
+directory, loads the plist from there, and then sets the model that
+plist. Setting the model involves compiling the model into an enriched model
+that includes compiled functions (machine code), generated parameterized SQL, as
+well as maps, other data structures, and settings that Data UI can use to
+efficiently instantiate and support the application described by MODEL."))
 
 (defun drop-non-base-tables ()
   (loop with m = *compiled-model*

@@ -1,8 +1,5 @@
 (in-package :data-ui)
 
-;; Other
-(defparameter *package-root* (asdf:system-relative-pathname :data-ui #P""))
-
 ;; Improved error checking
 (defmacro error-matches (expr regex failure-text)
   `(handler-case
