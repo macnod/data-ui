@@ -1,9 +1,9 @@
 (:title "To Do List"
-  :name "todo"
+  :name "test-model-1"
   :version "0.1"
-  :domain "todo.demo.data-ui.com"
+  :domain ""
   :repl t
-  :types
+  :types   
   (:todos
     (:table t
       :create :auto :update :auto :delete :auto :display t

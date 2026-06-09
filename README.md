@@ -100,7 +100,7 @@ Data UI is a Common Lisp system that takes a simple nested plist model and
 - Kubernetes manifests for deployment
 
 No manual migrations. No per-type boilerplate. Change the model, call
-`(set-model *model-1*)`, and everything updates deterministically. Data UI aims to
+`(set-model "todos")`, and everything updates deterministically. Data UI aims to
 let you write the model, compile it into an application, and deploy the
 application in a half hour.
 
@@ -141,64 +141,82 @@ never special-cases one against the other.
 
 ## Example Model
 
-This example is from the `*model-1*` definition in `tests/models.lisp`.
+This example is the full contents of `models/todos.lisp`. Each file in the
+`models/` directory holds a bare model plist (no `defparameter` and no wrapping
+variable). The top-level keys (`:title`, `:name`, `:version`, `:domain`, `:repl`)
+carry the model's identity, and `:types` holds the type definitions. Load the
+model with `(set-model "todos")` — pass just the file name, with no path and no
+`.lisp` extension.
 
-    (defparameter *model-1*
-      `(:todos
-         (:table t
-           :create :auto :update :auto :delete :auto :display t
-           :type-roles ("todo-users")
-           :views (:main (:tables (:todos :todo-tags :tags))
-                    :tags (:tables (:tags)))
-           :fields (:name (:type :text
-                            :ui (:label "To Do" :input-type :line)
-                            :validations (:required
-                                           (lambda (type-key field-key value user)
-                                             (declare (ignore user))
-                                             (unless (< (length value) 20)
-                                               (validation-error-string
-                                                  type-key field-key value
-                                                  "must be less than 20 characters."))))
-                            :source (:view :main :column :name :agg :first)
-                            :column t :not-null t :unique t)
-                     :points (:type :integer :default 0
-                               :ui (:label "Points" :input-type :line)
-                               :validations (:required)
-                               :source (:view :main :column :points :agg :first)
-                               :column t :not-null t)
-                     :done (:type :boolean :default :false
-                             :ui (:label "Done" :input-type :check-box)
-                             :source (:view :main :column :done :agg :first)
-                             :column t :not-null t)
-                     :tags (:type :list
-                             :ui (:label "Tags" :input-type :checkbox-list)
-                             :validations (:join-items-exist)
-                             :source (:view :main :table :tags :column :name :agg :list)
-                             :source-all (:view :tags :table :tags :column :name :agg :list)
-                             :join-table :todo-tags))
-           :list-form (:fields t)
-           :update-form (:fields t)
-           :add-form (:fields t))
-    
-         :tags
-         (:table t
-           :create :auto :update :auto :delete :auto :display t
-           :type-roles ("todo-users")
-           :fields (:name (:type :text
-                            ;; TODO: Add checks for :input-type value
-                            :ui (:label "Tag" :input-type :line)
-                            :validations (:required)
-                            :source (:view :main :table :tags :column :name :agg :first)
-                            :column t :not-null t :unique t))
-           :list-form (:fields t)
-           :update-form (:fields t)
-           :add-form (:fields t))
-    
-         :todo-tags
-         (:table t :is-joiner t :internal t
-           :fields (:reference (:target :todos)
-                     :reference (:target :tags)))))
-                     
+    (:title "To Do List"
+      :name "todo"
+      :version "0.1"
+      :domain "todo.demo.data-ui.com"
+      :repl t
+      :types
+      (:todos
+        (:table t
+          :create :auto :update :auto :delete :auto :display t
+          :type-roles ("todo-users")
+          :views (:main (:tables (:todos :todo-tags :tags))
+                   :tags (:tables (:tags)))
+          :fields
+          (:name
+            (:type :text
+              :ui (:label "To Do" :input-type :line)
+              :validations (:required
+                             (lambda (type-key field-key value user)
+                               (declare (ignore user))
+                               (unless (< (length value) 20)
+                                 (validation-error-string
+                                   type-key field-key value
+                                   "must be less than 20 characters."))))
+              :source (:view :main :column :name :agg :first)
+              :column t :not-null t :unique t)
+            :points
+            (:type :integer :default 0
+              :ui (:label "Points" :input-type :line)
+              :validations (:required)
+              :source (:view :main :column :points :agg :first)
+              :column t :not-null t)
+            :done
+            (:type :boolean :default :false
+              :ui (:label "Done" :input-type :check-box)
+              :source (:view :main :column :done :agg :first)
+              :column t :not-null t)
+            :tags
+            (:type :list
+              :ui (:label "Tags" :input-type :checkbox-list)
+              :validations (:join-items-exist)
+              :source (:view :main :table :tags :column :name :agg :list)
+              :source-all (:view :tags :table :tags :column :name :agg :list)
+              :join-table :todo-tags))
+          :list-form (:fields t)
+          :update-form (:fields t)
+          :add-form (:fields t))
+
+        :tags
+        (:table t
+          :create :auto :update :auto :delete :auto :display t
+          :type-roles ("todo-users")
+          :fields
+          (:name
+            (:type :text
+              ;; TODO: Add checks for :input-type value
+              :ui (:label "Tag" :input-type :line)
+              :validations (:required)
+              :source (:view :main :table :tags :column :name :agg :first)
+              :column t :not-null t :unique t))
+          :list-form (:fields t)
+          :update-form (:fields t)
+          :add-form (:fields t))
+
+        :todo-tags
+        (:table t :is-joiner t :internal t
+          :fields
+          (:reference (:target :todos)
+            :reference (:target :tags)))))
+
 This single definition aims to give you:
 
 - Complete PostgreSQL tables with UUID primary keys, audit timestamps, and automatic `updated_at` triggers
@@ -217,7 +235,7 @@ included.
 ### Example Compilation Results
 
 This section presents some tiny pieces of the resulting enriched model, after
-compilation with `(set-model *model-1*)`.
+compilation with `(set-model "todos")`.
 
 #### Create Table SQL for `:todos`
 
@@ -448,7 +466,7 @@ React (or any frontend) can items with their schema and render forms/lists autom
     - Host: localhost
     - Port: 4010, or whatever the repl-environment terminal says
 - Compile a model
-  - In Slime: `(set-model *model-1*)`
+  - In Slime: `(set-model "todos")`
   - Optionally, run tests with: `(run-tests)`
 - Start a web environment terminal
 
@@ -476,8 +494,9 @@ producing Kubernetes manifests, and achieving the full end-to-end vision.
 Deliberately deferred to post-MVP: transactions and rollback. See
 [Hooks and the Registry](#hooks-and-the-registry).
 
-See `lisp/model.lisp` for the current `*base-model*` and `tests/models.lisp` for
-the example `*model-1*`,
+See `lisp/model.lisp` for the current `*base-model*` and the `models/` directory
+for example models (one per file, e.g. `todos.lisp`), each loadable with
+`(set-model "todos")`,
 `lisp/backend.lisp` for the `be-*` API, `lisp/rest.lisp` for HTTP endpoints, and
 the `tests/` directory for usage examples. Ignore outdated references in older
 files. Contributions welcome — this is early stage!

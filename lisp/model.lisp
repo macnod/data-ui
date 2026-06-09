@@ -1317,7 +1317,10 @@ file by prepending the model directory path to the file name, adds the extension
 example, for the string `todos`, this function will compute the file path
 `/path/to/app/models/todos.lisp`, read that file, and set the model to the value
 of that file."
-    (let ((path (u:join-paths *package-root* "models" file)))
+    (let ((path (u:join-paths 
+                  *package-root* 
+                  "models" 
+                  (format nil "~a.lisp" file))))
       (with-open-file (in path)
         (set-model (read in)))))
   (:documentation ":public: Sets the model to the given plist. If given a

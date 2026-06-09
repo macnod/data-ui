@@ -35,7 +35,7 @@
                  (:permissions :name :eq "create")))))
 
 (test type-key-p
-  (set-model *model-1*)
+  (set-model "test-model-1")
   (is-true (type-key-p :users))
   (is-true (type-key-p :roles))
   (is-true (type-key-p :resources))
@@ -49,7 +49,7 @@
   (is-false (type-key-p :role-resources)))
 
 (test field-type-key-p
-  (set-model *model-1*)
+  (set-model "test-model-1")
   (is-true (field-key-p :users :id))
   (is-true (field-key-p :users :name))
   (is-true (field-key-p :users :password))
@@ -98,7 +98,7 @@
   (is-false (filter-p '(:users))))
 
 (test value-type-p
-  (set-model *model-1*)
+  (set-model "test-model-1")
   (is-true (value-type-p :users :name "alice"))
   (is-true (value-type-p :users :roles '("admin" "editor")))
   (is-false (value-type-p :users :name 123))
