@@ -2,21 +2,20 @@
   :description "Data Apps in 1 Hour"
   :author "Donnie Cameron <macnod@gmail.com>"
   :licence "MIT License"
-  :depends-on (:cl-ppcre
-                :postmodern
-                :cl-fad
+  :depends-on (:babel
+                :cl-ppcre
+                :dc-ds
+                :dc-eclectic
+                :dc-time
                 :drakma
-                :yason
                 :fiveam
-                :swank
                 :hunchentoot
                 :jose
-                :babel
-                :dc-ds
-                :dc-time
                 :p-log
+                :postmodern
                 :rbac
-                :dc-eclectic)
+                :swank
+                :yason)
   :serial t
   :components ((:module "lisp"
                  :components ((:file "data-ui-package")

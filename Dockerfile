@@ -30,22 +30,39 @@ RUN curl -fsSL "${url}" -o roswell.deb || { echo "Failed to download Roswell $ro
 RUN sudo dpkg -i roswell.deb
 RUN rm roswell.deb
 
-# 3rd-party packages
-RUN ros install postmodern
-RUN ros install uiop
-RUN ros install cl-ppcre
-RUN ros install hunchentoot
-RUN ros install swank
-RUN ros install spinneret
-RUN ros install trivial-utf-8
-RUN ros install ironclad
+# 3rd-party packages (any order ok, so alphabetical)
 RUN ros install babel
-RUN ros install jose
+RUN ros install cl-base64
 RUN ros install cl-csv
+RUN ros install cl-ppcre
 RUN ros install cl-unicode
+RUN ros install drakma
+RUN ros install fiveam
+RUN ros install hunchentoot
+RUN ros install ironclad
+RUN ros install jose
+RUN ros install mgl-pax
+RUN ros install postmodern
+RUN ros install swank
+RUN ros install trivial-utf-8
+RUN ros install uiop
+RUN ros install yason
 
-# macnod packages
-RUN ros install macnod/dc-ds
+# macnod packages (specific order important here)
 RUN ros install macnod/dc-dlist
-RUN ros install macnod/dc-eclectic
+RUN ros install macnod/dc-ds
+RUN ros install macnod/dc-time
+RUN ros install macnod/p-log
 RUN ros install macnod/rbac
+RUN ros install macnod/dc-eclectic
+
+# data-ui package
+COPY . /root/.roswell/local-projects/data-ui/
+RUN ros run -- --eval "(ql:register-local-projects)" --quit
+
+ENTRYPOINT [ \
+    "ros", "run", "--", \
+    "--eval", "(require :data-ui)", \
+    "--eval", "(in-package :data-ui)", \
+    "--eval", "(set-model \"default-model\")" \
+]
