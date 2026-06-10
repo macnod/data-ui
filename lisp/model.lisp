@@ -1,6 +1,7 @@
 (in-package :data-ui)
 
-(defparameter *title* nil)
+(defparameter *top-level-settings* nil)
+(defparameter *top-level-keys* '(:title :name :version :domain :repl))
 
 (defparameter *max-value-length* 1000)
 
@@ -1294,9 +1295,9 @@ fields that have non-NIL values for all HAVE-KEYS."
 (defgeneric set-model (model)
   (:method ((model list))
     (loop
-      initially
-      (setf *compiled-model* nil)
-      (setf *title* (getf model :title "Untitled"))
+      initially (setf
+                  *compiled-model* nil
+                  *top-level-settings* (top-level-settings model))
       with compiled-model = (compile-model (getf model :types))
       for type-key in (u:plist-keys compiled-model)
       for type-def in (u:plist-values compiled-model)
@@ -1423,3 +1424,34 @@ efficiently instantiate and support the application described by MODEL."))
     for field-def in (cdr fields) by #'cddr
     for attr-value = (getf field-def attribute)
     append (list field-key attr-value)))
+
+(defun top-level-settings (model)
+  (loop
+    with required = (set-difference *top-level-keys* '(:repl :types))
+    for k in *top-level-keys*
+    when (and (member k required) (not (getf model k)))
+    do (error "~(~s~) required in model." k)
+    append (list k (getf model k))))
+
+(defun top-level-model-field (key &key
+                               (top-level *top-level-settings*)
+                               default)
+  (unless top-level
+    (error "Model has not been compiled."))
+  (or (getf top-level key default)
+    (error "~(~s~) missing from model." key)))
+
+(defun model-title ()
+  (top-level-model-field :title))
+
+(defun model-name ()
+  (top-level-model-field :name))
+
+(defun model-version ()
+  (top-level-model-field :version))
+
+(defun model-domain ()
+  (top-level-model-field :domain))
+
+(defun model-repl ()
+  (top-level-model-field :repl :default nil))

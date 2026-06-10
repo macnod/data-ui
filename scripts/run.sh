@@ -1,7 +1,7 @@
 #!/bin/bash
 
 SCRIPT_NAME=$(basename $0)
-ACTION="$1"
+ACTION=$1
 
 export ADMIN_PASSWORD="admin-password-1"
 export HTTP_HOST="127.0.0.1"
@@ -36,6 +36,7 @@ function usage {
     echo "docs     Generates the REAME file."
     echo "stop     Stops the database container and removes it. This is"
     echo "         normally not necessary."
+    echo "title    Get the default model's title"
     echo "debug    Runs the tests, printing all output from postgres and"
     echo "         docker compose."
     echo "help     Displays this help text."
@@ -200,6 +201,14 @@ function export_docs_environment {
     export RUN_TESTS="false"
 }
 
+function get_model_field {
+    ros run -- \
+        --load "lisp/deployment.lisp" \
+        --eval '(in-package :deployment)' \
+        --eval "(top-level-model-field \"${FIELD_NAME}\")" \
+        --quit
+}
+
 case "$ACTION" in
     repl)
         export_repl_environment
@@ -246,6 +255,14 @@ case "$ACTION" in
     stop)
         export_test_environment
         stop_database
+        ;;
+    field)
+        FIELD_NAME=$2
+        if [[ -z "$FIELD_NAME" ]]; then
+            echo "Field name required."
+            exit 1
+        fi
+        get_model_field
         ;;
     help)
         usage

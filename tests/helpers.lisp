@@ -1,5 +1,7 @@
 (in-package :data-ui)
 
+(defparameter *test-model* "test-model")
+
 ;; Improved error checking
 (defmacro error-matches (expr regex failure-text)
   `(handler-case
@@ -16,5 +18,5 @@
   (query "delete from roles where role_name not in ($1, $2, $3, $4, $5)"
     :params '("admin" "logged-in" "public"
                "admin:exclusive" "guest:exclusive"))
-  (set-model "test-model-1")
+  (set-model *test-model*)
   (run-all-tests))

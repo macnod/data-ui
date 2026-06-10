@@ -1,7 +1,8 @@
-(:title "To Do List"
+(:Title "To Do List"
   :name "todo"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
+  ;; WARNING: :repl must be nil in production
   :repl t
   :types
   (:todos

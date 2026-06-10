@@ -1,4 +1,9 @@
 (:title "File Server"
+  :name "files"
+  :version "0.1"
+  :domain "files.demo.data-ui.com"
+  ;; WARNING: :repl must be nil in production
+  :repl t
   :types
   (:directories
     (:table t

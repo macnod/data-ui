@@ -1,7 +1,8 @@
 (:title "To Do List"
-  :name "test-model-1"
+  :name "test-model"
   :version "0.1"
   :domain ""
+  ;; WARNING: :repl must be nil in production
   :repl t
   :types   
   (:todos

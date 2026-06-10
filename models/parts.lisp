@@ -1,4 +1,9 @@
 (:title "Parts Tracker"
+  :name "parts"
+  :version "0.1"
+  :domain "parts.demo.data-ui.com"
+  ;; WARNING: :repl must be nil in production
+  :repl t
   :types
   (:directories
     (:table t

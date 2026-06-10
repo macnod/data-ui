@@ -1073,6 +1073,17 @@ GET /api/types"
         (lambda (x) (format nil "~(~a~)" x))
         (be-types user)))))
 
+(h:define-easy-handler (rest-info :uri "/api/info" :default-request-type :get)
+  ()
+  ":public: Endpoint for retrieving information about the deployed app,
+including title, name, version, domain, and repl (which indicates if the app
+provides a Common Lisp REPL.
+
+GET /api/info"
+  (let* ((user (require-auth '("logged-in"))))
+    (when user
+      (render-output *top-level-settings*))))
+
 (h:define-easy-handler (rest-login :uri "/api/login" :default-request-type :post)
   ()
   ":public: Endpoint for logging in and getting a JWT token.
