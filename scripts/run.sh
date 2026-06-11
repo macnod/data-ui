@@ -123,7 +123,10 @@ function start_psql {
 function start_repl {
     echo
     echo "Loading data-ui and starting Swank server on port $SWANK_PORT."
-    ros run -- --eval "(progn (require :data-ui) (in-package :data-ui))"
+    ros run -- \
+        --eval "(require :data-ui)" \
+        --eval "(in-package :data-ui)" \
+        --eval "(init)"
 }
 
 function run_tests {

@@ -1,13 +1,27 @@
 # macnod/data-ui
 
+#
+# Stage 1: frontend build
+#
+FROM node:22-slim AS web-build
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+# Build output is now in /web/dist
+
+#
+# Stage 2: runtime
+#
 FROM ubuntu:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-ROSWELL_VERSION="23.10.14.114"
-SBCL_VERSION="2.5.10"
-
-ROSWELL_URL_PREFIX="https://github.com/roswell/roswell/releases/download"
+ARG ROSWELL_VERSION="v23.10.14.114"
+ARG SBCL_VERSION="2.5.10"
+ARG ROSWELL_URL_PREFIX="https://github.com/roswell/roswell/releases/download"
 
 RUN apt update && apt upgrade -y && apt install -y \
     ack \
@@ -26,9 +40,14 @@ RUN apt update && apt upgrade -y && apt install -y \
     zlib1g-dev
 
 # Install Roswell
-RUN curl -fsSL "${url}" -o roswell.deb || { echo "Failed to download Roswell $roswell_version"; exit 1; }
-RUN sudo dpkg -i roswell.deb
-RUN rm roswell.deb
+RUN url="${ROSWELL_URL_PREFIX}/${ROSWELL_VERSION}/roswell_${ROSWELL_VERSION#v}-1_amd64.deb" \
+    && curl -fsSL "${url}" -o roswell.deb \
+       || { echo "Failed to download Roswell ${ROSWELL_VERSION}"; exit 1; } \
+    && dpkg -i roswell.deb \
+    && rm roswell.deb
+
+# Install SBCL
+RUN ros install "sbcl-bin/${SBCL_VERSION}" && ros use "sbcl-bin/${SBCL_VERSION}"
 
 # 3rd-party packages (any order ok, so alphabetical)
 RUN ros install babel
@@ -60,9 +79,11 @@ RUN ros install macnod/dc-eclectic
 COPY . /root/.roswell/local-projects/data-ui/
 RUN ros run -- --eval "(ql:register-local-projects)" --quit
 
+# Frontend (served by the Lisp server; see WEB_DIRECTORY, default /app/web)
+COPY --from=web-build /web/dist /app/web
+
 ENTRYPOINT [ \
     "ros", "run", "--", \
     "--eval", "(require :data-ui)", \
-    "--eval", "(in-package :data-ui)", \
-    "--eval", "(set-model \"default-model\")" \
+    "--eval", "(data-ui::main \"default-model\")" \
 ]

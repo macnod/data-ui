@@ -1124,6 +1124,18 @@ POST /api/refresh"
       (render-output `(:access-token ,(issue-access-token user-id)))
       (abort-auth "Invalid or expired token"))))
 
+(defun serve-frontend ()
+  "Serve a real file from *web-directory* if it exists; otherwise serve
+index.html so client-side routing can take over."
+  (let* ((web-root (uiop:ensure-directory-pathname *web-directory*))
+          (rel-path (h:request-pathname h:*request* "/"))
+          (file (and rel-path
+                  (probe-file (merge-pathnames rel-path web-root)))))
+    (h:handle-static-file
+      (if (and file (not (uiop:directory-pathname-p file)))
+        file
+        (merge-pathnames "index.html" web-root)))))
+
 (defun start-web-server (&optional restart)
   (when (and restart *http-server*) (stop-web-server))
   (unless *http-server*
@@ -1132,7 +1144,12 @@ POST /api/refresh"
                           :document-root *doc-root*))
     (setf
       h:*show-lisp-errors-p* t
-      (h:acceptor-persistent-connections-p *http-server*) nil)
+      (h:acceptor-persistent-connections-p *http-server*) nil
+      h:*dispatch-table* (list
+                           ;; /api/*, /health
+                           'h:dispatch-easy-handlers
+                           ;; everything else
+                           (h:create-prefix-dispatcher "/" 'serve-frontend)))
     (pl:pinfo :in "start-web-server"
       :status "web server started"
       :endpoint (format nil "http://localhost:~d" *http-port*))

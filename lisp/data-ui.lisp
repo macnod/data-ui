@@ -1,8 +1,5 @@
 (in-package :data-ui)
 
-(defparameter *swank-port* (u:getenv "SWANK_PORT" :type :integer))
-(defparameter *swank-server* nil)
-
 ;; Logs
 (defparameter *log-file* (or (u:getenv "LOG_FILE") *standard-output*))
 (defparameter *log-severity-threshold*
@@ -56,39 +53,3 @@
         "[0-9a-fA-F]{12}"))))
 
 (setf a:*default-page-size* 10000)
-
-(defun start-swank-server ()
-  (when (and *swank-port* (not *swank-server*))
-    (pl:pinfo :in "run" :status "starting swank")
-    (setf *swank-server*
-      (swank:create-server
-        :interface "0.0.0.0"
-        :port *swank-port*
-        :style :spawn
-        :dont-close t))))
-
-;;
-;; BEGIN Init
-;;
-
-;; Start logging
-(when *log-file*
-  (pl:make-log-stream "data-ui" *log-file*))
-
-(start-swank-server)
-(init-database)
-
-;; (defun create-resource-tables (types)
-;;   (pl:pdebug :in "create-resource-tables"
-;;     :types (mapcar #'to-sql-identifier (u:plist-keys (non-base-types types))))
-;;   (loop for sql in (create-resource-tables-sql types)
-;;     do (a:with-rbac (*rbac*) (db:query sql))))
-
-;; (defun start-web-server ()
-;;   (setf h:*tmp-directory* *temp-directory*)
-
-;;
-;; END Init
-;;
-
-;; TODO: README needs updating!
