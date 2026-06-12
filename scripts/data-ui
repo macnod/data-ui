@@ -51,6 +51,12 @@ function usage {
     echo "         Deployment state (manifests, ports.lock, secrets) lives"
     echo "         outside the repo in \$DEPLOY_STATE_DIR (default"
     echo "         ~/.local/state/data-ui-deploy)."
+    echo "delete   Undeploys the default model's app: deletes its Kubernetes"
+    echo "         namespace and PVs, wipes its data on the host, removes its"
+    echo "         HAProxy backend and map entry, and removes its deploy"
+    echo "         state (including secrets). Asks for confirmation unless"
+    echo "         FORCE=1 is set. Requires sudo (for HAProxy). Docker"
+    echo "         images and git release tags are left in place."
     echo "help     Displays this help text."
 }
 
@@ -601,10 +607,85 @@ function deploy {
     echo "Deployed ${RELEASE_NAME}."
     echo "  Domain:   https://${DOMAIN}"
     echo "  NodePort: http://${NODE_IP}:${NODE_PORT}"
+    # Convenience during MVP development; remove before this is used for
+    # anything sensitive. The password also lives in $SECRETS_ENV and in
+    # the cluster Secret (see docs/deployment.md).
+    echo "  Admin:    admin / ${ADMIN_PASSWORD}"
     if [[ "$REPL" == "true" ]]; then
         echo "  Swank:    kubectl -n ${NAMESPACE} port-forward" \
              "deploy/dataui-${NAME} 4005:4005"
     fi
+}
+
+function undeploy {
+    export_deploy_environment
+    if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
+        echo "Not on ${DEPLOY_HOST}; deleting remotely via ssh."
+        # -t so the HAProxy step's sudo and the confirmation prompt work.
+        ssh -t "$DEPLOY_HOST" "
+            set -e
+            cd \"$DEPLOY_CHECKOUT\"
+            FORCE='$FORCE' scripts/data-ui delete
+        " || die "Remote delete failed."
+        return
+    fi
+    # Identity comes from the model, exactly as in deploy.
+    NAME=$(model_field name)
+    DOMAIN=$(model_field domain)
+    [[ -n "$NAME" && "$NAME" != "NIL" ]] || die "Model has no :name."
+    [[ -n "$DOMAIN" && "$DOMAIN" != "NIL" ]] || die "Model has no :domain."
+    NAMESPACE="dataui-${NAME}"
+    local node="k3d-${K3D_CLUSTER}-server-0"
+    local data_dir="/data/dataui/${NAME}-${DEPLOY_ENV}"
+    local state_dir="${DEPLOY_STATE_DIR}/${NAME}"
+    echo "About to delete instance '${NAME}' (${DEPLOY_ENV}):"
+    echo "  - Kubernetes namespace ${NAMESPACE} and its PVs"
+    echo "  - Application data in ${node}:${data_dir}"
+    echo "  - HAProxy backend and map entry for ${DOMAIN}"
+    echo "  - Deploy state in ${state_dir} (including secrets)"
+    echo
+    echo "This destroys the instance's database and uploaded files."
+    if [[ -z "$FORCE" ]]; then
+        local reply
+        read -r -p "Type the instance name ('${NAME}') to confirm: " reply
+        [[ "$reply" == "$NAME" ]] || die "Confirmation did not match; aborting."
+    fi
+    # Every step tolerates already-deleted resources, so a delete that
+    # fails partway can simply be re-run.
+    echo
+    echo "Deleting namespace ${NAMESPACE}..."
+    kubectl delete namespace "$NAMESPACE" --ignore-not-found --timeout=120s
+    echo "Deleting persistent volumes..."
+    kubectl delete pv --ignore-not-found \
+            "dataui-${NAME}-${DEPLOY_ENV}-db-pv" \
+            "dataui-${NAME}-${DEPLOY_ENV}-files-pv"
+    echo "Deleting application data in ${node}:${data_dir}..."
+    if docker inspect "$node" &>/dev/null; then
+        docker exec "$node" rm -rf "$data_dir"
+    else
+        echo "  Node container ${node} not found; skipping."
+    fi
+    echo "Removing HAProxy backend and map entry (requires sudo)..."
+    sudo rm -f "${HAPROXY_CONF_D}/dataui-${NAME}.cfg"
+    if [[ -f "$HAPROXY_MAP" ]] && grep -q "^${DOMAIN} " "$HAPROXY_MAP"; then
+        sudo sed -i "\\|^${DOMAIN} |d" "$HAPROXY_MAP"
+    fi
+    if sudo haproxy -c -f "$HAPROXY_CFG" -f "$HAPROXY_CONF_D" >/dev/null; then
+        sudo systemctl reload haproxy
+        echo "HAProxy reloaded."
+    else
+        die "HAProxy configuration validation failed; not reloading."
+    fi
+    echo "Removing deploy state in ${state_dir}..."
+    rm -rf "$state_dir"
+    if [[ -f "$PORTS_LOCK" ]]; then
+        sed -i "/^${NAME} ${DEPLOY_ENV} /d" "$PORTS_LOCK"
+    fi
+    echo
+    echo "Deleted instance '${NAME}' (${DEPLOY_ENV})."
+    echo "Not removed (housekeeping, see docs/deployment.md):"
+    echo "  - Docker images macnod/data-ui:${NAME}-* (daemon and k3d node)"
+    echo "  - Git release tags ${NAME}-*"
 }
 
 case "$ACTION" in
@@ -664,6 +745,9 @@ case "$ACTION" in
         ;;
     deploy)
         deploy
+        ;;
+    delete)
+        undeploy
         ;;
     help)
         usage

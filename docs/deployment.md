@@ -560,8 +560,20 @@ exits (`--disable-debugger`), so the evidence is always in `--previous`.
 
 ## Starting Over: the Clean-Slate Procedure
 
-For a demo instance, the fastest fix for a wedged deployment is a clean
-rebuild. This destroys the instance's data; that is the point.
+The fast path — delete the whole instance with one command:
+
+    scripts/data-ui delete
+
+It deletes the namespace and PVs, wipes the instance's data on the host,
+removes the HAProxy backend and map entry, and removes the deploy state
+(including secrets), then prompts you to type the instance name before
+doing any of it (set `FORCE=1` to skip the prompt, e.g. in a
+deploy/record/delete rehearsal loop). Docker images and git release tags
+are left alone. A failed delete can simply be re-run; every step
+tolerates already-deleted resources.
+
+The manual equivalent, if you want to do it piecewise (or only partway —
+steps 1–3 are enough for a clean redeploy of the same instance):
 
     # 1. Remove the app and its namespace
     kubectl delete namespace dataui-todo
@@ -580,7 +592,8 @@ rebuild. This destroys the instance's data; that is the point.
 
 Steps 2 and 3 are the ones people forget. A Released PV refuses to bind
 to a new claim, and stale postgres data under `/data/dataui` will be
-happily adopted by the new instance — old password and all.
+happily adopted by the new instance — old password and all. (Or skip the
+list entirely and use `scripts/data-ui delete`, which forgets nothing.)
 
 ---
 
