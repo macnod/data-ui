@@ -159,74 +159,76 @@ carry the model's identity, and `:types` holds the type definitions. Load the
 model with `(set-model "todos")` — pass just the file name, with no path and no
 `.lisp` extension.
 
-    (:title "To Do List"
-      :name "todo"
-      :version "0.1"
-      :domain "todo.demo.data-ui.com"
-      :repl t
-      :types
-      (:todos
-        (:table t
-          :create :auto :update :auto :delete :auto :display t
-          :type-roles ("todo-users")
-          :views (:main (:tables (:todos :todo-tags :tags))
-                   :tags (:tables (:tags)))
-          :fields
-          (:name
-            (:type :text
-              :ui (:label "To Do" :input-type :line)
-              :validations (:required
-                             (lambda (type-key field-key value user)
-                               (declare (ignore user))
-                               (unless (< (length value) 20)
-                                 (validation-error-string
-                                   type-key field-key value
-                                   "must be less than 20 characters."))))
-              :source (:view :main :column :name :agg :first)
-              :column t :not-null t :unique t)
-            :points
-            (:type :integer :default 0
-              :ui (:label "Points" :input-type :line)
-              :validations (:required)
-              :source (:view :main :column :points :agg :first)
-              :column t :not-null t)
-            :done
-            (:type :boolean :default :false
-              :ui (:label "Done" :input-type :check-box)
-              :source (:view :main :column :done :agg :first)
-              :column t :not-null t)
-            :tags
-            (:type :list
-              :ui (:label "Tags" :input-type :checkbox-list)
-              :validations (:join-items-exist)
-              :source (:view :main :table :tags :column :name :agg :list)
-              :source-all (:view :tags :table :tags :column :name :agg :list)
-              :join-table :todo-tags))
-          :list-form (:fields t)
-          :update-form (:fields t)
-          :add-form (:fields t))
-
+```lisp
+(:title "To Do List"
+  :name "todo"
+  :version "0.1"
+  :domain "todo.demo.data-ui.com"
+  :repl t
+  :types
+  (:todos
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users")
+      :views (:main (:tables (:todos :todo-tags :tags))
+               :tags (:tables (:tags)))
+      :fields
+      (:name
+        (:type :text
+          :ui (:label "To Do" :input-type :line)
+          :validations (:required
+                         (lambda (type-key field-key value user)
+                           (declare (ignore user))
+                           (unless (< (length value) 20)
+                             (validation-error-string
+                               type-key field-key value
+                               "must be less than 20 characters."))))
+          :source (:view :main :column :name :agg :first)
+          :column t :not-null t :unique t)
+        :points
+        (:type :integer :default 0
+          :ui (:label "Points" :input-type :line)
+          :validations (:required)
+          :source (:view :main :column :points :agg :first)
+          :column t :not-null t)
+        :done
+        (:type :boolean :default :false
+          :ui (:label "Done" :input-type :check-box)
+          :source (:view :main :column :done :agg :first)
+          :column t :not-null t)
         :tags
-        (:table t
-          :create :auto :update :auto :delete :auto :display t
-          :type-roles ("todo-users")
-          :fields
-          (:name
-            (:type :text
-              ;; TODO: Add checks for :input-type value
-              :ui (:label "Tag" :input-type :line)
-              :validations (:required)
-              :source (:view :main :table :tags :column :name :agg :first)
-              :column t :not-null t :unique t))
-          :list-form (:fields t)
-          :update-form (:fields t)
-          :add-form (:fields t))
+        (:type :list
+          :ui (:label "Tags" :input-type :checkbox-list)
+          :validations (:join-items-exist)
+          :source (:view :main :table :tags :column :name :agg :list)
+          :source-all (:view :tags :table :tags :column :name :agg :list)
+          :join-table :todo-tags))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
 
-        :todo-tags
-        (:table t :is-joiner t :internal t
-          :fields
-          (:reference (:target :todos)
-            :reference (:target :tags)))))
+    :tags
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users")
+      :fields
+      (:name
+        (:type :text
+          ;; TODO: Add checks for :input-type value
+          :ui (:label "Tag" :input-type :line)
+          :validations (:required)
+          :source (:view :main :table :tags :column :name :agg :first)
+          :column t :not-null t :unique t))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+
+    :todo-tags
+    (:table t :is-joiner t :internal t
+      :fields
+      (:reference (:target :todos)
+        :reference (:target :tags)))))
+```
 
 This single definition aims to give you:
 
@@ -421,23 +423,29 @@ supplied as data** and returns a contract-conforming closure.
 
 For example, a maximum-length validation written as pure data:
 
-    :validations (:required (:max-length 20))
+```lisp
+:validations (:required (:max-length 20))
+```lisp
 
 is backed by a registry entry whose Lisp lives in the engine, written once:
 
-    (register-validation :max-length
-      (lambda (max)                                   ; parameter from the model
-        (lambda (type-key field-key value user)       ; conforms to the contract
-          (unless (< (length value) max)
-            (validation-error-string type-key field-key value
-              (format nil "must be less than ~d characters." max))))))
+```lisp
+(register-validation :max-length
+  (lambda (max)                                   ; parameter from the model
+    (lambda (type-key field-key value user)       ; conforms to the contract
+      (unless (< (length value) max)
+        (validation-error-string type-key field-key value
+          (format nil "must be less than ~d characters." max))))))
+```
 
 The model author wrote only data — `(:max-length 20)` — which serializes cleanly
 to YAML or JSON. The same pattern applies to lifecycle hooks:
 
-    :post-create (:add-user-settings)                       ; zero-arg entry
-    :post-create ((:send-webhook :url "https://...") )      ; parameterized entry
-    :post-create ((:shell "thumbnail.sh"))                  ; shell adapter
+```lisp
+:post-create (:add-user-settings)                       ; zero-arg entry
+:post-create ((:send-webhook :url "https://...") )      ; parameterized entry
+:post-create ((:shell "thumbnail.sh"))                  ; shell adapter
+```
 
 ### Why the registry matters
 
@@ -505,16 +513,20 @@ React (or any frontend) can items with their schema and render forms/lists autom
 Deployment is part of the compiler's promise, not an afterthought. The
 model itself declares the application's identity:
 
-    (:title "To Do List"
-      :name "todo"
-      :version "0.1"
-      :domain "todo.demo.data-ui.com"
-      :repl t
-      :types ...)
+```lisp
+(:title "To Do List"
+  :name "todo"
+  :version "0.1"
+  :domain "todo.demo.data-ui.com"
+  :repl t
+  :types ...)
+```
 
 and one command turns that into a running, public application:
 
-    scripts/data-ui deploy
+```sh
+scripts/data-ui deploy
+```
 
 Behind that command: the model is compile-checked against a throwaway
 database, the release is tagged from the model's version plus the git
