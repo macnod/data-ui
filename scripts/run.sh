@@ -287,10 +287,16 @@ function compile_default_model {
     # COMPILE-MODEL merges in *base-model* itself, but its stage-1 needs
     # *rbac* initialized, hence the database and INIT-DATABASE.
     export_deploy_db_environment
+    # Gitignored runtime directories; absent in a fresh deploy clone.
+    mkdir -p "$DOCUMENT_ROOT" "$FS_TEMP_DIRECTORY"
     start_postgres_quietly
     initialize_database_quietly
     local status=0
+    # Pin ASDF to this checkout so the deploy clone compiles its own
+    # source rather than whatever other data-ui checkout is registered
+    # in local-projects.
     ros run -- --disable-debugger \
+        --eval "(push (uiop:getcwd) asdf:*central-registry*)" \
         --eval "(require :data-ui)" \
         --eval "(in-package :data-ui)" \
         --eval "(init-database)" \
