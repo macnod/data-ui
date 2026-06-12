@@ -72,8 +72,8 @@ RUN ros install macnod/dc-dlist
 RUN ros install macnod/dc-ds
 RUN ros install macnod/dc-time
 RUN ros install macnod/p-log
-RUN ros install macnod/rbac
 RUN ros install macnod/dc-eclectic
+RUN ros install macnod/rbac
 
 # data-ui package
 COPY . /root/.roswell/local-projects/data-ui/
