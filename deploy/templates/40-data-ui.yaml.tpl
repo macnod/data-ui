@@ -105,17 +105,25 @@ spec:
               name: http
             - containerPort: 4005 #@repl
               name: swank #@repl
+          # First boot initializes the database; give it up to 5 minutes
+          # before liveness applies. A mid-init kill must never happen:
+          # initialization is not idempotent, so partial state wedges
+          # the instance.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 10
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 30
             periodSeconds: 15
           volumeMounts:
             - name: files

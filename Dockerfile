@@ -78,12 +78,20 @@ RUN ros install macnod/rbac
 # data-ui package
 COPY . /root/.roswell/local-projects/data-ui/
 RUN ros run -- --eval "(ql:register-local-projects)" --quit
+# Pre-compile at build time so container start is fast. Without this,
+# every container start recompiles the system, which is slow enough to
+# trip the liveness probe during first-boot database initialization.
+RUN ros run -- --eval "(require :data-ui)" --quit
 
 # Frontend (served by the Lisp server; see WEB_DIRECTORY, default /app/web)
 COPY --from=web-build /web/dist /app/web
 
+# --disable-debugger: on unhandled error, print a backtrace and exit
+# instead of hanging at an interactive debugger prompt until the
+# liveness probe kills the container.
 ENTRYPOINT [ \
     "ros", "run", "--", \
+    "--disable-debugger", \
     "--eval", "(require :data-ui)", \
     "--eval", "(data-ui::main \"default-model\")" \
 ]
