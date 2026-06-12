@@ -21,8 +21,8 @@ this in mind whenever reasoning about how features should be expressed.
 
 Tagline: **"Your whole app, in an email."**
 
-See README-2.md for the full framing (Big Idea, Why AI Needs Data UI, Hooks and
-the Registry, the Marketplace). README-2.md supersedes README.md.
+See README.md for the full framing (Big Idea, Why AI Needs Data UI, Hooks and
+the Registry, the Marketplace).
 
 ## Core Concept
 
@@ -88,8 +88,11 @@ not modified without human permission.
 
 ## Current Status (MVP)
 
+- **End-to-end pipeline proven (June 2026): model → compile → deploy →
+  live app.** The to-do model is deployed and working at
+  https://todo.demo.data-ui.com via `scripts/data-ui deploy`.
 - Backend compilation, SQL generation, RBAC, and generic endpoints are working
-- `models/todos.lisp` contains an example model for a To Do list; load it with `(set-model "todos")`
+- `models/todos.lisp` contains an example model for a To Do list; load it with `(set-model "todos")`. The deploy pipeline deploys `models/default-model.lisp`.
 - Full CRUD works on **all** types — both the built-in RBAC types (users, roles,
   permissions, resources, etc.) and user-defined types
 - React frontend has:
@@ -99,14 +102,60 @@ not modified without human permission.
   - Expandable Add/Edit form (uses `add-form` / `update-form`)
   - Role management via injected `roles` field (filtered `allowed-values`)
   - The `/api/list` response now includes `create`/`delete`/`update` booleans to control which action buttons are shown
-- File handling: uploading and listing files and directories works. The upload
-  flow does a two-phase POST (`multipart/form-data` to `/api/upload`, then a JSON
-  `/api/insert` carrying the returned `file-token`)
+- File handling: upload, list, and **delete** (including recursive directory
+  delete) work. The upload flow does a two-phase POST (`multipart/form-data`
+  to `/api/upload`, then a JSON `/api/insert` carrying the returned
+  `file-token`)
 
 ### Known gaps / next up
 
-- File **delete** and **update** are not yet implemented (only upload + list)
-- The UI is functional but rough and needs significant refinement/polish
+- File **update** is not implemented; may be deferred past the MVP
+- UI polish — important, a current focus
+- More example models (prove generality) — important, a current focus
+- The 30-second create-model→deployed-app video (MVP deliverable,
+  deadline end of December 2026)
+
+## Deployment (working; read this before touching it)
+
+`scripts/data-ui deploy` (renamed from `scripts/run.sh`) deploys
+`models/default-model.lisp` to a k3d cluster on the deploy host
+(`evo-x2`) behind HAProxy + TLS. Full detail in **docs/deployment.md**;
+session-by-session history of how it was built (with every bug and fix)
+in **~/.debug/deployment-work.md**. Key facts:
+
+- The model's top-level keys (`:name`, `:version`, `:domain`, `:repl`)
+  drive everything: tag `<name>-<version>-<githash>`, namespace
+  `dataui-<name>`, HAProxy map entry for `:domain`, Swank port iff
+  `:repl t`.
+- Deploy state (rendered manifests, ports.lock, secrets.env) lives
+  outside the repo in `~/.local/state/data-ui-deploy/`. ports.lock and
+  secrets.env are caches; the live cluster is the source of truth.
+  Admin password: `grep ADMIN_PASSWORD
+  ~/.local/state/data-ui-deploy/todo/secrets.env`.
+- App data is durable on the host: `~/k3d/volumes/dataui` is mounted
+  into the k3d node at `/data/dataui`; instance PVs use
+  `/data/dataui/<name>-<env>/`.
+- TLS: wildcard cert for `*.demo.data-ui.com` (certbot + Route 53
+  DNS-01), auto-renewing via certbot.timer + the hook in
+  `deploy/letsencrypt-haproxy-hook.sh`. One-time host setup:
+  `deploy/setup-tls.sh`.
+- `DRY_RUN=1 scripts/data-ui deploy` renders manifests and stops —
+  use it before any template change.
+- **Trap 1:** rbac's `initialize-database` is NOT idempotent. If first
+  boot dies mid-init, the instance wedges ("permission 'create' already
+  exists" crash loop). Recovery = clean-slate procedure in
+  docs/deployment.md (delete namespace + PVs + host data + optionally
+  secrets.env, redeploy). Transactional init is deliberately post-MVP.
+- **Trap 2:** `systemctl reload haproxy` does not pick up newly added
+  EXTRAOPTS (`-f conf.d`); only a full restart does. The script handles
+  this; don't "simplify" it away.
+- **Trap 3:** generated admin passwords must satisfy rbac's policy
+  (letter + digit + punctuation) — hence the `-a1` suffix in
+  `ensure_instance_secrets`.
+- `vite dev` does not typecheck; `npm run build` runs `tsc` first. Run
+  a build before deploying frontend changes.
+- The model's `:repl` key has a TODO — it is "not taking effect yet"
+  and must be `nil` in production once it does.
 
 ## Two Tiers, One Engine
 
@@ -182,8 +231,15 @@ application logic; the closed product adds operational concerns (hosting, AI fro
 door, billing) that are infrastructure, not application.
 
 ## Current Focus / To Do (MVP)
-See TODO.md for the live prioritized list. Key items include:
-- Model/compiler extensions: password hashing, read-only types, :fs-backed support
-- JWT auth, schema endpoints, validation
-- React: auth context, dynamic forms/menus, file handling UI
-- Tests, deployment manifests, model input formats, demo video
+See TODO.md for the live prioritized list. Deadline: complete MVP,
+including the demo video, by end of December 2026. Priorities now:
+1. **UI polish** — the video shows the UI; it must look clean
+2. **More example models** — prove the compiler generalizes
+   (`models/parts.lisp`, `models/file-server.lisp` are candidates)
+3. **The 30-second video** — nothing → deployed app
+4. File update (only if time permits; otherwise post-MVP)
+
+Frontend known weaknesses (from deployment testing, good first UI
+tasks): failed token refresh leaves the app rendering as logged-in
+instead of returning to the login form; "No records" is shown for both
+empty results and failed requests.

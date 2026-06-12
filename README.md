@@ -3,7 +3,14 @@
 **Your whole app, in an email.**
 
 Describe your data once. Get a deployed, RBAC-backed application —
-deterministically. Manage roles and permissions live, in the running app.
+deterministically. Manage users, roles, and permissions live, in the running
+app.
+
+This is no longer just a thesis. As of June 2026, the full pipeline works
+end to end: a one-page model compiles into a complete application —
+PostgreSQL, REST API, RBAC, React frontend — and **one command deploys it
+to Kubernetes behind TLS at its own domain**. The first deployed instance
+is a to-do app whose entire description fits on a napkin.
 
 Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
@@ -20,7 +27,9 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 - [Hooks and the Registry](#hooks-and-the-registry)
 - [API Approach](#api-approach)
 - [Development](#development)
-- [Current Status (May 2026)](#current-status-may-2026)
+- [Deployment](#deployment)
+- [Current Status (June 2026)](#current-status-june-2026)
+- [Road to MVP](#road-to-mvp)
 - [Goals & Vision](#goals--vision)
 - [The Marketplace](#the-marketplace)
 - [Business & Monetization](#business--monetization)
@@ -100,9 +109,11 @@ Data UI is a Common Lisp system that takes a simple nested plist model and
 - Kubernetes manifests for deployment
 
 No manual migrations. No per-type boilerplate. Change the model, call
-`(set-model "todos")`, and everything updates deterministically. Data UI aims to
-let you write the model, compile it into an application, and deploy the
-application in a half hour.
+`(set-model "todos")`, and everything updates deterministically. And this
+is not a half-built promise: write the model, compile it, run
+`scripts/data-ui deploy`, and minutes later your application is serving
+real users over TLS at its own domain. We know because that is exactly
+how the [live demo](#deployment) got there.
 
 
 ## Core Philosophy
@@ -239,100 +250,112 @@ compilation with `(set-model "todos")`.
 
 #### Create Table SQL for `:todos`
 
-    (:TODOS
-     (:CREATE-TABLE-SQL
-      (:TABLE
-         "
-           create table if not exists rt_todos (
-               id uuid primary key default uuid_generate_v4(),
-               created_at timestamp not null default now(),
-               updated_at timestamp not null default now(),
-               rt_todo_name text not null unique
-           )
-         "
-       :TRIGGER
-         "
-           do $$
-           begin
-               if not exists (
-                   select 1 from pg_trigger
-                   where tgname = 'set_rt_todos_updated_at'
-                   and tgrelid = 'rt_todos'::regclass::oid
-               ) then
-                   create trigger set_rt_todos_updated_at
-                       before update on rt_todos
-                       for each row
-                       execute function set_updated_at_column();
-               end if;
-           end $$;
-         "
-      )
-    &#8942;
+```lisp
+(:TODOS
+ (:CREATE-TABLE-SQL
+  (:TABLE "
+create table if not exists rt_todos (
+    id uuid primary key not null references resources(id) on delete cascade,
+    created_at timestamp not null default now(),
+    updated_at timestamp not null default now(),
+    todo_name text not null unique,
+    todo_points integer not null default 0,
+    todo_done boolean not null default 'false'
+)
+"
+   :TRIGGER "
+do $$
+begin
+    if not exists (
+        select 1 from pg_trigger
+        where tgname = 'set_rt_todos_updated_at'
+        and tgrelid = 'rt_todos'::regclass::oid
+    ) then
+        create trigger set_rt_todos_updated_at
+            before update on rt_todos
+            for each row
+            execute function set_updated_at_column();
+    end if;
+end $$;
+")
+```
 
 #### View SQL for `:todos`
 
-    (:VIEWS
-     (:MAIN
-      (:TABLES (:TODOS :TODO-TAGS :TAGS) :SQL "
-    select
-      rt_todos.id         rt_todos_id,
-      rt_todos.created_at rt_todos_created_at,
-      rt_todos.updated_at rt_todos_updated_at,
-      rt_todos.todo_name  rt_todos_todo_name,
-      rt_tags.id          rt_tags_id,
-      rt_tags.created_at  rt_tags_created_at,
-      rt_tags.updated_at  rt_tags_updated_at,
-      rt_tags.tag_name    rt_tags_tag_name
-    from rt_todos
-      join rt_todo_tags on rt_todos.id = rt_todo_tags.todo_id
-      join rt_tags on rt_todo_tags.tag_id = rt_tags.id
-    "
-       :ALIASES
-       (:TODOS
-        (:ID :RT-TODOS-ID :CREATED-AT :RT-TODOS-CREATED-AT :UPDATED-AT
-         :RT-TODOS-UPDATED-AT :NAME :RT-TODOS-TODO-NAME)
-        :TAGS
-        (:ID :RT-TAGS-ID :CREATED-AT :RT-TAGS-CREATED-AT :UPDATED-AT
-         :RT-TAGS-UPDATED-AT :NAME :RT-TAGS-TAG-NAME))
-       :COLUMNS
-       (:TODOS
-        (:ID "rt_todos.id" :CREATED-AT "rt_todos.created_at" :UPDATED-AT
-         "rt_todos.updated_at" :NAME "rt_todos.todo_name")
-        :TAGS
-        (:ID "rt_tags.id" :CREATED-AT "rt_tags.created_at" :UPDATED-AT
-         "rt_tags.updated_at" :NAME "rt_tags.tag_name")))
-      :TAGS
-      (:TABLES (:TAGS) :SQL "
-    select
-      rt_tags.id         rt_tags_id,
-      rt_tags.created_at rt_tags_created_at,
-      rt_tags.updated_at rt_tags_updated_at,
-      rt_tags.tag_name   rt_tags_tag_name
-    from rt_tags
-    "
-       :ALIASES
-       (:TAGS
-        (:ID :RT-TAGS-ID :CREATED-AT :RT-TAGS-CREATED-AT :UPDATED-AT
-         :RT-TAGS-UPDATED-AT :NAME :RT-TAGS-TAG-NAME))
-       :COLUMNS
-       (:TAGS
-        (:ID "rt_tags.id" :CREATED-AT "rt_tags.created_at" :UPDATED-AT
-         "rt_tags.updated_at" :NAME "rt_tags.tag_name")))))
+```lisp
+(:VIEWS
+ (:MAIN
+  (:TABLES (:TODOS :TODO-TAGS :TAGS) :SQL "
+select
+  rt_todos.id             rt_todos_id,
+  rt_todos.created_at     rt_todos_created_at,
+  rt_todos.updated_at     rt_todos_updated_at,
+  rt_todos.todo_name      rt_todos_todo_name,
+  rt_todos.todo_points    rt_todos_todo_points,
+  rt_todos.todo_done      rt_todos_todo_done,
+  rt_todo_tags.id         rt_todo_tags_id,
+  rt_todo_tags.created_at rt_todo_tags_created_at,
+  rt_todo_tags.updated_at rt_todo_tags_updated_at,
+  rt_todo_tags.todo_id    rt_todo_tags_todo_id,
+  rt_todo_tags.tag_id     rt_todo_tags_tag_id,
+  rt_tags.id              rt_tags_id,
+  rt_tags.created_at      rt_tags_created_at,
+  rt_tags.updated_at      rt_tags_updated_at,
+  rt_tags.tag_name        rt_tags_tag_name
+from rt_todos
+  left join rt_todo_tags on rt_todos.id = rt_todo_tags.todo_id
+  left join rt_tags on rt_tags.id = rt_todo_tags.tag_id"
+   :ALIASES
+   (:TODOS
+    (:ID :RT-TODOS-ID :CREATED-AT :RT-TODOS-CREATED-AT :UPDATED-AT
+     :RT-TODOS-UPDATED-AT :NAME :RT-TODOS-TODO-NAME :POINTS
+     :RT-TODOS-TODO-POINTS :DONE :RT-TODOS-TODO-DONE)
+    :TAGS
+    (:ID :RT-TAGS-ID :CREATED-AT :RT-TAGS-CREATED-AT :UPDATED-AT
+     :RT-TAGS-UPDATED-AT :NAME :RT-TAGS-TAG-NAME))
+   :COLUMNS
+   (:TODOS
+    (:ID "rt_todos.id" :CREATED-AT "rt_todos.created_at" :UPDATED-AT
+     "rt_todos.updated_at" :NAME "rt_todos.todo_name" :POINTS
+     "rt_todos.todo_points" :DONE "rt_todos.todo_done")
+    :TAGS
+    (:ID "rt_tags.id" :CREATED-AT "rt_tags.created_at" :UPDATED-AT
+     "rt_tags.updated_at" :NAME "rt_tags.tag_name")))
+  :TAGS
+  (:TABLES (:TAGS) :SQL "
+select
+  rt_tags.id         rt_tags_id,
+  rt_tags.created_at rt_tags_created_at,
+  rt_tags.updated_at rt_tags_updated_at,
+  rt_tags.tag_name   rt_tags_tag_name
+from rt_tags"
+   :ALIASES
+   (:TAGS
+    (:ID :RT-TAGS-ID :CREATED-AT :RT-TAGS-CREATED-AT :UPDATED-AT
+     :RT-TAGS-UPDATED-AT :NAME :RT-TAGS-TAG-NAME))
+   :COLUMNS
+   (:TAGS
+    (:ID "rt_tags.id" :CREATED-AT "rt_tags.created_at" :UPDATED-AT
+     "rt_tags.updated_at" :NAME "rt_tags.tag_name")))))
+```
 
 #### Fields Enrichment for `:todos :fields :name`
 
-    (:TODOS
-     (:FIELDS
-      (:NAME
-       (:BASE-FIELD NIL :CHECKED NIL :UNCHECKED NIL :UI
-        (:LABEL "To Do" :INPUT-TYPE :LINE) :UNIQUE T :PRIMARY-KEY NIL :FS-BACKED
-        NIL :TARGET NIL :IDS-TABLE NIL :JOIN-TABLE NIL :FORCE-SQL-NAME NIL
-        :NAME-SQL "todo_name" :TYPE-SQL "text" :CREATE-SQL
-        "todo_name text not null unique" :SOURCE
-        (:VIEW :MAIN :COLUMN :NAME :AGG :FIRST :ALIAS-KEY :RT-TODOS-TODO-NAME
-         :COLUMN-NAME "rt_todos.todo_name")
-        :SOURCE-SEL NIL :SOURCE-ALL NIL :TYPE :TEXT :COLUMN T :NOT-NULL T
-        :REFERENCE NIL))))
+```lisp
+(:TODOS
+ (:FIELDS
+  (:NAME
+   (:BASE-FIELD NIL :UI (:LABEL "To Do" :INPUT-TYPE :LINE) :UNIQUE T
+    :PRIMARY-KEY NIL :TARGET NIL :JOIN-TABLE NIL :VALIDATIONS
+    (#<FUNCTION V-TYPE> #<FUNCTION V-REQUIRED>
+     #<FUNCTION (LAMBDA (TYPE-KEY FIELD-KEY VALUE USER)) {B80133ADAB}>)
+    :FORCE-SQL-NAME NIL :NAME-SQL "todo_name" :TYPE-SQL "text" :CREATE-SQL
+    "todo_name text not null unique" :SOURCE
+    (:VIEW :MAIN :COLUMN :NAME :AGG :FIRST :ALIAS-KEY :RT-TODOS-TODO-NAME
+     :COLUMN-NAME "rt_todos.todo_name")
+    :SOURCE-ALL NIL :TYPE :TEXT :COLUMN T :NOT-NULL T :REFERENCE NIL :DEFAULT
+    :NULL))))
+```
 
 ## How It Works
 
@@ -459,7 +482,7 @@ React (or any frontend) can items with their schema and render forms/lists autom
 - Start a repl-environment terminal
 
     cd data-ui
-    scripts/run.sh repl
+    scripts/data-ui repl
 
 - Connect Slime to the Data UI Swank server.
   - In Emacs: `M-x slime-connect RET localhost RET 4010`
@@ -477,29 +500,103 @@ React (or any frontend) can items with their schema and render forms/lists autom
 - Navigate to http://localhost:3000
 
 
-## Current Status (May 2026)
+## Deployment
 
-The project is still in active development. Recent progress includes:
+Deployment is part of the compiler's promise, not an afterthought. The
+model itself declares the application's identity:
 
-- Full CRUD operations work via the backend, REST API, and frontend React code, across **all** types — both the built-in RBAC types (users, roles, permissions, resources, etc.) and user-defined types
-- File handling is partially in place: uploading and listing files and directories works end-to-end. Uploads use a two-phase flow (a `multipart/form-data` POST to `/api/upload`, followed by a JSON `/api/insert` carrying the returned `file-token`). File **delete** and **update** are still to come.
-- Comprehensive tests for compilation, predicates, and backend code are in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (using FiveAM).
-- React code in the `web/` directory is functional: one can log in, navigate the app as a user, and perform CRUD with RBAC support. The UI is currently rough and is the focus of ongoing refinement.
+    (:title "To Do List"
+      :name "todo"
+      :version "0.1"
+      :domain "todo.demo.data-ui.com"
+      :repl t
+      :types ...)
 
-Model compilation, SQL generation for tables/views/triggers, RBAC integration,
-validation, and CRUD are implemented and tested. Work continues on completing
-file delete/update, polishing the React frontend, fully solidifying the REST API,
-producing Kubernetes manifests, and achieving the full end-to-end vision.
+and one command turns that into a running, public application:
 
-Deliberately deferred to post-MVP: transactions and rollback. See
+    scripts/data-ui deploy
+
+Behind that command: the model is compile-checked against a throwaway
+database, the release is tagged from the model's version plus the git
+hash, a Docker image is built (React frontend compiled in one stage,
+precompiled SBCL runtime in another), Kubernetes manifests are rendered
+from templates and applied to a k3d cluster (each instance in its own
+namespace, with its own PostgreSQL and persistent volumes), and HAProxy
+routing is updated so the model's `:domain` serves the app over TLS — a
+wildcard Let's Encrypt certificate that renews itself.
+
+The deploy is deterministic and repeatable: every fact is derived from
+the model and the git commit. Secrets and port assignments are generated
+once and thereafter recovered from the live cluster, so a deploy can be
+re-run from a fresh machine without breaking a running instance.
+
+The full story — every step, every file, where the admin password lives,
+how cert renewal works, troubleshooting — is in
+[docs/deployment.md](docs/deployment.md).
+
+
+## Current Status (June 2026)
+
+The project is in active development, and the core claim is now
+demonstrated end to end:
+
+- **The full pipeline works: model → compiled application → deployed,
+  TLS-terminated, RBAC-backed app at its own domain.** The example to-do
+  model is live in production on a k3d cluster, deployed with a single
+  command.
+- Full CRUD operations work via the backend, REST API, and frontend React
+  code, across **all** types — both the built-in RBAC types (users, roles,
+  permissions, resources, etc.) and user-defined types.
+- JWT-based authentication (access + refresh tokens) protects the API.
+- File handling: uploading, listing, and deleting files and directories
+  works end-to-end (uploads use a two-phase flow: `multipart/form-data`
+  POST to `/api/upload`, then a JSON `/api/insert` carrying the returned
+  `file-token`). File **update** is not yet implemented and may be
+  deferred past the MVP.
+- Comprehensive tests for compilation, predicates, and backend code are
+  in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (FiveAM).
+- React code in the `web/` directory is functional: log in, navigate as a
+  user, perform CRUD with RBAC enforcement. The UI works but needs polish
+  — this is a current focus.
+
+Model compilation, SQL generation for tables/views/triggers, RBAC
+integration, validation, CRUD, and Kubernetes deployment are implemented
+and exercised in production. Work continues on UI refinement and
+additional example models.
+
+Deliberately deferred to post-MVP: transactions and rollback (including
+idempotent database initialization). See
 [Hooks and the Registry](#hooks-and-the-registry).
 
-See `lisp/model.lisp` for the current `*base-model*` and the `models/` directory
-for example models (one per file, e.g. `todos.lisp`), each loadable with
-`(set-model "todos")`,
-`lisp/backend.lisp` for the `be-*` API, `lisp/rest.lisp` for HTTP endpoints, and
-the `tests/` directory for usage examples. Ignore outdated references in older
-files. Contributions welcome — this is early stage!
+See `lisp/model.lisp` for the current `*base-model*` and the `models/`
+directory for example models (one per file, e.g. `todos.lisp`), each
+loadable with `(set-model "todos")`, `lisp/backend.lisp` for the `be-*`
+API, `lisp/rest.lisp` for HTTP endpoints, and the `tests/` directory for
+usage examples. Ignore outdated references in older files. Contributions
+welcome — this is early stage!
+
+
+## Road to MVP
+
+**Target: a complete MVP by the end of December 2026, including a
+30-second video that goes from nothing — no database, no code — to a
+deployed, working application.**
+
+Odds of hitting the date: **strong.** The reasoning, plainly:
+
+- The riskiest milestones are already behind us. The compiler, RBAC
+  integration, generic API, and — as of June — the entire deployment
+  pipeline are working in production. These were the make-or-break
+  items; everything that could have invalidated the core thesis has
+  instead confirmed it.
+- What remains is effort-bounded, not research-bounded: UI polish,
+  additional example models to prove generality, and the video itself.
+  None of it requires solving an open problem; six months remain for
+  work measured in weeks.
+- The main schedule risks are scope creep and polish perfectionism. The
+  mitigations are written down: file update may ship after MVP,
+  transactions are explicitly post-MVP, and the UI bar is "clean and
+  demo-ready," not "design award."
 
 
 ## Goals & Vision
@@ -545,7 +642,9 @@ platforms.
 **MVP target: December 2026.** A minimal but production-capable system that
 delivers a complete RBAC-protected application (database, React frontend, and
 Kubernetes deployment) from a small model in under 30 minutes. The MVP ships with
-a 30-second video that goes from nothing to a deployed app.
+a 30-second video that goes from nothing to a deployed app. The deployment
+pipeline — historically the riskiest part of such a promise — is already
+working in production; see [Road to MVP](#road-to-mvp).
 
 After the MVP, planned work includes a hosted service with JSON/YAML model input
 and AI prompts, a curated hook registry as the AI-and-no-code escape hatch, the

@@ -503,10 +503,14 @@ function update_haproxy {
     [[ -f "$HAPROXY_MAP" ]] || sudo touch "$HAPROXY_MAP"
     # One-time: load conf.d in addition to the main config. EXTRAOPTS in
     # /etc/default/haproxy overrides the unit's, so keep the -S option.
+    # A newly added EXTRAOPTS requires a full restart (reload re-execs
+    # the master with its original command line, without -f conf.d).
+    local need_restart=""
     if ! grep -q 'conf\.d' "$HAPROXY_DEFAULTS"; then
         echo 'EXTRAOPTS="-S /run/haproxy-master.sock -f /etc/haproxy/conf.d"' \
             | sudo tee -a "$HAPROXY_DEFAULTS" >/dev/null
         echo "Enabled ${HAPROXY_CONF_D} via EXTRAOPTS in ${HAPROXY_DEFAULTS}."
+        need_restart=1
     fi
     # One-time: map-based routing rule in the https frontend.
     if ! grep -q 'data-ui\.map' "$HAPROXY_CFG"; then
@@ -522,10 +526,15 @@ function update_haproxy {
     else
         echo "${DOMAIN} dataui-${NAME}" | sudo tee -a "$HAPROXY_MAP" >/dev/null
     fi
-    # Validate, then reload.
+    # Validate, then reload (restart if conf.d was just enabled).
     if sudo haproxy -c -f "$HAPROXY_CFG" -f "$HAPROXY_CONF_D" >/dev/null; then
-        sudo systemctl reload haproxy
-        echo "HAProxy reloaded."
+        if [[ -n "$need_restart" ]]; then
+            sudo systemctl restart haproxy
+            echo "HAProxy restarted (conf.d newly enabled)."
+        else
+            sudo systemctl reload haproxy
+            echo "HAProxy reloaded."
+        fi
     else
         die "HAProxy configuration validation failed; not reloading."
     fi
@@ -560,7 +569,7 @@ function remote_deploy {
         cd \"$DEPLOY_CHECKOUT\"
         git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --force
         git checkout --detach $sha
-        DRY_RUN='$DRY_RUN' scripts/run.sh deploy
+        DRY_RUN='$DRY_RUN' scripts/data-ui deploy
     " || die "Remote deploy failed."
 }
 
