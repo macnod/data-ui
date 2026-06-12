@@ -28,9 +28,11 @@
 
 *.log
 
-# Deployment secrets (plaintext credentials; never commit)
-/deploy/*/secrets.env
-/deploy/*/*/05-secrets.yaml
+# Deployment state (manifests, ports.lock, secrets) lives outside the
+# repo in $DEPLOY_STATE_DIR (default ~/.local/state/data-ui-deploy).
+# Only deploy/templates/ is tracked. Guard against strays:
+/deploy/*
+!/deploy/templates
 
 # Miscellaneous
 TODO.md

@@ -43,7 +43,14 @@ function usage {
     echo "         Kubernetes manifests, deploys the app to k3d, and routes"
     echo "         the model's domain to the app via HAProxy. Requires a"
     echo "         clean git tree and sudo (for HAProxy). Set DRY_RUN=1 to"
-    echo "         stop after generating the manifests."
+    echo "         stop after generating the manifests. When run on a"
+    echo "         machine other than \$DEPLOY_HOST (default evo-x2), pushes"
+    echo "         the current branch and tag to origin and re-runs the"
+    echo "         deploy on \$DEPLOY_HOST over ssh, in the deploy clone at"
+    echo "         \$DEPLOY_CHECKOUT (default \$HOME/deploy/data-ui)."
+    echo "         Deployment state (manifests, ports.lock, secrets) lives"
+    echo "         outside the repo in \$DEPLOY_STATE_DIR (default"
+    echo "         ~/.local/state/data-ui-deploy)."
     echo "help     Displays this help text."
 }
 
@@ -223,10 +230,22 @@ function get_model_field {
 
 function export_deploy_environment {
     export DEPLOY_ENV="demo"
+    # The machine that hosts the k3d cluster and HAProxy. Must be both a
+    # valid ssh destination (see ~/.ssh/config) and the machine's hostname,
+    # since the latter decides local vs remote deploy.
+    export DEPLOY_HOST="${DEPLOY_HOST:-evo-x2}"
+    # Deploy clone on DEPLOY_HOST used by remote deploys; kept separate
+    # from any development checkout so a remote deploy never disturbs
+    # work in progress. $HOME is escaped so it expands on the remote.
+    export DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-\$HOME/deploy/data-ui}"
+    # Machine-local deployment state (rendered manifests, ports.lock,
+    # per-instance secrets). Deliberately outside the repository: it is
+    # derived output and cluster-state cache, not source.
+    export DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-$HOME/.local/state/data-ui-deploy}"
     export K3D_CLUSTER="${K3D_CLUSTER:-evo-x2}"
     export IMAGE_REPO="macnod/data-ui"
     export TEMPLATES_DIR="deploy/templates"
-    export PORTS_LOCK="deploy/ports.lock"
+    export PORTS_LOCK="${DEPLOY_STATE_DIR}/ports.lock"
     export PORT_MIN=30300
     export HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
     export HAPROXY_CONF_D="/etc/haproxy/conf.d"
@@ -300,8 +319,8 @@ function gather_deploy_facts {
     IMAGE="${IMAGE_REPO}:${TAG}"
     RELEASE_NAME="${TITLE} ${TAG}"
     NAMESPACE="dataui-${NAME}"
-    OUT_DIR="deploy/${NAME}/${VERSION}-${SHORT_HASH}"
-    SECRETS_ENV="deploy/${NAME}/secrets.env"
+    OUT_DIR="${DEPLOY_STATE_DIR}/${NAME}/releases/${VERSION}-${SHORT_HASH}"
+    SECRETS_ENV="${DEPLOY_STATE_DIR}/${NAME}/secrets.env"
     echo "  name:      $NAME"
     echo "  title:     $TITLE"
     echo "  version:   $VERSION"
@@ -335,32 +354,66 @@ function build_image {
 }
 
 function assign_node_port {
-    mkdir -p deploy
+    mkdir -p "$DEPLOY_STATE_DIR"
     touch "$PORTS_LOCK"
     NODE_PORT=$(awk -v n="$NAME" -v e="$DEPLOY_ENV" \
                     '$1==n && $2==e {print $3}' "$PORTS_LOCK")
-    if [[ -z "$NODE_PORT" ]]; then
-        local used_lock used_k8s port
-        used_lock=$(awk '{print $3}' "$PORTS_LOCK")
-        used_k8s=$(kubectl get svc -A \
-                       -o jsonpath='{.items[*].spec.ports[*].nodePort}' \
-                       2>/dev/null | tr ' ' '\n')
-        port=$PORT_MIN
-        while printf '%s\n%s\n' "$used_lock" "$used_k8s" \
-                | grep -qx "$port"; do
-            port=$(( port + 1 ))
-        done
-        NODE_PORT=$port
-        echo "$NAME $DEPLOY_ENV $NODE_PORT" >> "$PORTS_LOCK"
-        echo "Assigned new NodePort ${NODE_PORT} (recorded in ${PORTS_LOCK})."
-    else
+    if [[ -n "$NODE_PORT" ]]; then
         echo "Reusing NodePort ${NODE_PORT} from ${PORTS_LOCK}."
+        return
     fi
+    # The lock file is only a cache; the live Service is the source of
+    # truth. If the instance is already deployed, recover its NodePort
+    # rather than assigning a new one.
+    NODE_PORT=$(kubectl get svc -n "$NAMESPACE" "dataui-${NAME}" \
+                    -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    if [[ -n "$NODE_PORT" ]]; then
+        echo "$NAME $DEPLOY_ENV $NODE_PORT" >> "$PORTS_LOCK"
+        echo "Recovered NodePort ${NODE_PORT} from the live Service" \
+             "(recorded in ${PORTS_LOCK})."
+        return
+    fi
+    local used_lock used_k8s port
+    used_lock=$(awk '{print $3}' "$PORTS_LOCK")
+    used_k8s=$(kubectl get svc -A \
+                   -o jsonpath='{.items[*].spec.ports[*].nodePort}' \
+                   2>/dev/null | tr ' ' '\n')
+    port=$PORT_MIN
+    while printf '%s\n%s\n' "$used_lock" "$used_k8s" \
+            | grep -qx "$port"; do
+        port=$(( port + 1 ))
+    done
+    NODE_PORT=$port
+    echo "$NAME $DEPLOY_ENV $NODE_PORT" >> "$PORTS_LOCK"
+    echo "Assigned new NodePort ${NODE_PORT} (recorded in ${PORTS_LOCK})."
+}
+
+function get_cluster_secret {
+    kubectl get secret -n "$NAMESPACE" "dataui-${NAME}-secrets" \
+            -o jsonpath="{.data.$1}" | base64 -d
 }
 
 function ensure_instance_secrets {
-    if [[ ! -f "$SECRETS_ENV" ]]; then
-        mkdir -p "$(dirname "$SECRETS_ENV")"
+    if [[ -f "$SECRETS_ENV" ]]; then
+        echo "Reusing instance secrets from ${SECRETS_ENV}."
+        source "$SECRETS_ENV"
+        return
+    fi
+    mkdir -p "$(dirname "$SECRETS_ENV")"
+    # The secrets file is only a cache; the live Secret is the source of
+    # truth. Never generate fresh credentials for an existing instance:
+    # the PostgreSQL volume keeps the old password, and new credentials
+    # would break database auth.
+    if kubectl get secret -n "$NAMESPACE" "dataui-${NAME}-secrets" \
+               &>/dev/null; then
+        {
+            echo "DB_PASSWORD=$(get_cluster_secret db-password)"
+            echo "ADMIN_PASSWORD=$(get_cluster_secret admin-password)"
+            echo "JWT_SECRET=$(get_cluster_secret jwt-secret)"
+        } > "$SECRETS_ENV"
+        chmod 600 "$SECRETS_ENV"
+        echo "Recovered instance secrets from the cluster into ${SECRETS_ENV}."
+    else
         {
             echo "DB_PASSWORD=$(openssl rand -hex 16)"
             echo "ADMIN_PASSWORD=$(openssl rand -hex 8)"
@@ -368,8 +421,6 @@ function ensure_instance_secrets {
         } > "$SECRETS_ENV"
         chmod 600 "$SECRETS_ENV"
         echo "Generated new instance secrets in ${SECRETS_ENV}."
-    else
-        echo "Reusing instance secrets from ${SECRETS_ENV}."
     fi
     source "$SECRETS_ENV"
 }
@@ -472,8 +523,45 @@ function update_haproxy {
     fi
 }
 
+function remote_deploy {
+    echo "Not on ${DEPLOY_HOST}; deploying remotely via ssh."
+    require_clean_tree
+    local branch sha origin_url
+    branch=$(git branch --show-current)
+    sha=$(git rev-parse HEAD)
+    origin_url=$(git remote get-url origin)
+    [[ -n "$branch" ]] || die "Detached HEAD; check out a branch to deploy."
+    # Create the tag here, so its provenance is the machine the deploy
+    # was run from, and push it along with the branch. The remote side
+    # finds the tag already present and reuses it.
+    if [[ -z "$DRY_RUN" ]]; then
+        gather_deploy_facts
+        create_deploy_tag
+        git push origin "$branch" "refs/tags/${TAG}" || die "git push failed."
+    else
+        git push origin "$branch" || die "git push failed."
+    fi
+    # -t allocates a tty so the HAProxy step's sudo can prompt. Note that
+    # $DEPLOY_CHECKOUT contains a literal \$HOME, expanded on the remote.
+    ssh -t "$DEPLOY_HOST" "
+        set -e
+        if [[ ! -d \"$DEPLOY_CHECKOUT/.git\" ]]; then
+            echo \"Creating deploy clone at $DEPLOY_CHECKOUT\"
+            git clone '$origin_url' \"$DEPLOY_CHECKOUT\"
+        fi
+        cd \"$DEPLOY_CHECKOUT\"
+        git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --force
+        git checkout --detach $sha
+        DRY_RUN='$DRY_RUN' scripts/run.sh deploy
+    " || die "Remote deploy failed."
+}
+
 function deploy {
     export_deploy_environment
+    if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
+        remote_deploy
+        return
+    fi
     [[ -n "$DRY_RUN" ]] || require_clean_tree
     compile_default_model
     gather_deploy_facts
