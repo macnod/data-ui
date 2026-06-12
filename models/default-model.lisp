@@ -3,6 +3,7 @@
   :version "0.1"
   :domain "todo.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
+  ;; TODO: :repl is not taking effect yet
   :repl t
   :types   
   (:todos

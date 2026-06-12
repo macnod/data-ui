@@ -1324,6 +1324,8 @@ of that file."
                   (format nil "~a.lisp" file))))
       (with-open-file (in path)
         (set-model (read in)))))
+  (:method ((file null))
+    (set-model "default-model"))
   (:documentation ":public: Sets the model to the given plist. If given a
 string instead of a plist, resolves the string to a file in the `models`
 directory, loads the plist from there, and then sets the model that
@@ -1425,12 +1427,52 @@ efficiently instantiate and support the application described by MODEL."))
     for attr-value = (getf field-def attribute)
     append (list field-key attr-value)))
 
+(defun booleanp (x)
+  (when (member x '(t nil)) t))
+
+(defun valid-top-level-value (key value regex &key
+                               (required t)
+                               (predicates (list #'stringp)))
+  (let ((regexes (if (stringp regex) (list regex) regex)))
+    (unless (if required value t)
+      (error "Value for ~(~s~) is required." key))
+    (loop for p in predicates
+      unless (funcall p value)
+      do (error "~(~s~) value ~s looks fishy, doesn't pass ~{~a~}."
+           key value predicates))
+    (loop for r in regexes
+      unless (re:scan r value)
+      do (error "~(~s~) value ~s does not look like a ~(~a~)."
+           key value key))))
+
+(defun valid-top-level-field (model key)
+  (let ((value (getf model key)))
+    (case key
+      (:title
+        (valid-top-level-value
+          key value
+          "^[a-zA-Z0-9][-a-zA-Z0-9+_',.?/`~!@#$%^&*()+=\\[\\]\\{\\}]*"))
+      (:name
+        (valid-top-level-value key value "^[a-z][-a-z0-9]*"))
+      (:version
+        (valid-top-level-value key value
+          "^[a-z0-9.](?:[a-z0-9]|[._+-][a-z0-9])*$"))
+      (:domain
+        (valid-top-level-value key value
+          (format nil "~a~a"
+            "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
+            "[a-zA-Z]{2,}$")))
+      (:repl
+        (valid-top-level-value key value nil
+          :required nil :predicates (list #'booleanp)))
+      (:types
+        (valid-top-level-value key value nil
+          :predicates (list #'u:plistp))))))
+
 (defun top-level-settings (model)
-  (loop
-    with required = (set-difference *top-level-keys* '(:repl :types))
-    for k in *top-level-keys*
-    when (and (member k required) (not (getf model k)))
-    do (error "~(~s~) required in model." k)
+  (loop for k in *top-level-keys*
+    do (valid-top-level-field model k)
+    unless (equal k :types)
     append (list k (getf model k))))
 
 (defun top-level-model-field (key &key

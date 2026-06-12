@@ -26,8 +26,11 @@
 *.wx64fsl
 *.wx32fsl
 
-# Helm
 *.log
+
+# Deployment secrets (plaintext credentials; never commit)
+/deploy/*/secrets.env
+/deploy/*/*/05-secrets.yaml
 
 # Miscellaneous
 TODO.md
