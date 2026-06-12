@@ -3,3 +3,7 @@ web/node_modules
 web/dist
 Dockerfile
 *.fasl
+*.log
+tests/shared-files
+tests/temp-uploads
+.debug

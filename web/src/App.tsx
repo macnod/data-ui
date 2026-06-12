@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiFetch, setTokens, clearTokens, isAuthenticated } from './api'
+import { apiFetch, setTokens, clearTokens } from './api'
 
 // Extract the backend's error message from a failed response, falling back
 // to a generic message if the body can't be parsed.
@@ -70,32 +70,6 @@ function App() {
     setType(newType)
     setShowAddForm(false)
     setFormValues({})
-  }
-
-  const submitAddForm = async () => {
-    const { roles, ...rest } = formValues
-    // Omit empty or whitespace-only string values from POST
-    const filteredRest = Object.fromEntries(
-      Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
-    )
-    const payload: any = {
-      type,
-      data: filteredRest
-    }
-    if (roles) payload.roles = roles
-
-    const res = await apiFetch('/api/insert', {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    })
-
-    if (res.ok) {
-      setShowAddForm(false)
-      setFormValues({})
-      fetchList()
-    } else {
-      alert(await errorMessage(res, 'Failed to insert'))
-    }
   }
 
   const openEditForm = (record: any) => {
