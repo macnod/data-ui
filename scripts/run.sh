@@ -422,7 +422,9 @@ function ensure_instance_secrets {
     else
         {
             echo "DB_PASSWORD=$(openssl rand -hex 16)"
-            echo "ADMIN_PASSWORD=$(openssl rand -hex 8)"
+            # rbac's password policy requires a letter, a digit, and a
+            # punctuation character; the suffix guarantees all three.
+            echo "ADMIN_PASSWORD=$(openssl rand -hex 8)-a1"
             echo "JWT_SECRET=$(openssl rand -hex 16)"
         } > "$SECRETS_ENV"
         chmod 600 "$SECRETS_ENV"
