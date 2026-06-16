@@ -766,6 +766,21 @@ fields that have non-NIL values for all HAVE-KEYS."
       (otherwise
         (error "Views with more than 3 tables are not currently supported")))))
 
+(defun xrefs (model table view-tables)
+  (loop with fields = (u:tree-get model table)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for ref = (getf field-def :reference)
+    for target = (getf field-def :target)
+    when (and ref (member target view-tables))
+    collect field-key))
+
+(defun view-sql-1 (model view-def)
+  (loop with view-tables = (getf view-def :tables)
+    for view-table in view-tables
+    for xrefs = (xrefs model table tables)
+    
+
 (defun keyword-matches (keyword regex)
   (re:scan (format nil "(?i)~a" regex) (format nil "~s" keyword)))
 
@@ -1050,11 +1065,13 @@ fields that have non-NIL values for all HAVE-KEYS."
                      (if j nil `(:main (:tables (,type-key))))))
     for view-key in views by #'cddr
     for view-def in (cdr views) by #'cddr
-    for view-def-new = (list
-                         :tables (getf view-def :tables)
-                         :sql (view-sql model view-def)
-                         :aliases (view-aliases model view-def)
-                         :columns (view-columns model view-def))
+    for view-def-new = (progn
+                         (break)
+                         (list
+                           :tables (getf view-def :tables)
+                           :sql (view-sql model view-def)
+                           :aliases (view-aliases model view-def)
+                           :columns (view-columns model view-def)))
     appending (list view-key view-def-new)))
 
 (defun type-has-roles (type-def)

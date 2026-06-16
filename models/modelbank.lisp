@@ -66,13 +66,14 @@
           :ui (:label "Model Description" :input-type :textbox)
           :source (:view :main :column :description :agg :first)
           :column t :not-null nil :unique nil)
-        :rating
+        :my-rating
+        (:type :integer
+          :ui (:label "My Rating" :input-type :line)
+          :source (:views :ratings :table :model-ratings :column :rating :agg :first))
+        :average-rating
         (:type :real
-          :ui (:label "Rating" :input-type :read-only)
-          :source (:views :ratings :table :model-ratings :column :rating :agg :average)
-          :column nil)
-        ;; TODO: This field should be able to have a different
-        ;; name.
+          :ui (:label "Average Rating" :input-type :read-only)
+          :source (:views :ratings :table :model-ratings :column :rating :agg :average))
         :images
         (:type :list
           :ui (:label "Images" :input-type :checkbox-list)
@@ -88,10 +89,20 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("model-ratings-user")
-      :views (:main (:tables (:model-ratings :users
+      :views (:main (:tables (:model-ratings :models :users))
+               :models (:tables (:models))
+               :users (:tables (:users)))
+      :fields
+      (:rating
+        (:type :integer :default 0
+          :ui (:label "Model Rating" :input-type :line)
+          :source (:view :main :column :rating :agg :first)
+          :column t :not-null t)
+        :reference (:target :models)
+        :reference (:target :users)))
 
     :model-images
     (:table t :is-joiner t :internal t
       :fields
       (:reference (:target :models)
-        :reference (:target :images)))
+        :reference (:target :images)))))
