@@ -1,10 +1,10 @@
-(:title "To Do List"
-  :name "test-model"
+(:Title "To Do List"
+  :name "todo"
   :version "0.1"
-  :domain ""
+  :domain "todo.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
   :repl t
-  :types   
+  :types
   (:todos
     (:table t
       :create :auto :update :auto :delete :auto :display t

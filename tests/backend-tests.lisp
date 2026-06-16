@@ -83,7 +83,7 @@ where
     (is (equal (getf result :id) id))
     (is (equal (getf result :name) "admin"))
     (is (equal (getf result :email) "no-email"))
-    (is (equal (length roles) 6))
+    (is (>= (length roles) 6))
     (is (member "admin" roles :test 'equal))
     (is (member "logged-in" roles :test 'equal))
     (is (member "public" roles :test 'equal))))

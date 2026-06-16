@@ -757,29 +757,69 @@ fields that have non-NIL values for all HAVE-KEYS."
       select-cols
       (list from-1 from-2 from-3))))
 
+;; TODO: Remove
+(defparameter *model-at-view-sql* nil)
+(defparameter *view-def-at-view-sql* nil)
 (defun view-sql (model view-def)
+  ;; TODO: Remove
+  (setf
+    *model-at-view-sql* (u:deep-copy model)
+    *view-def-at-view-sql* (u:deep-copy view-def))
   (let ((tables (getf view-def :tables)))
     (case (length tables)
       (1 (single-table-view model view-def))
       (2 (double-table-view model view-def))
       (3 (triple-table-view model view-def))
+      ;; TODO: Fix
+      ;; (3 (view-sql-1 model view-def))
       (otherwise
         (error "Views with more than 3 tables are not currently supported")))))
 
-(defun xrefs (model table view-tables)
-  (loop with fields = (u:tree-get model table)
+(defun xrefs (model table tables)
+  "Returns a plist where the key is TABLE and the value is a foreign key plist,
+where the keys are fields of TABLE that reference tables that are listed in
+TABLES, and the values are the target tables. For example, for the :todos
+model (table). For example:
+
+   (xrefs model :todos '(:todos :todo-tags :tags))
+     ;; => ((:source :todo-tags :source-field :todo-id :target :todos)
+     ;;     (:source :todo-tags :source-field :tag-id :target :tags))
+"
+  (loop with fields = (u:tree-get model table :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
     for ref = (getf field-def :reference)
     for target = (getf field-def :target)
-    when (and ref (member target view-tables))
-    collect field-key))
+    when (and ref target (member target tables))
+    collect (list :source table :source-field field-key :target target)))
 
 (defun view-sql-1 (model view-def)
-  (loop with view-tables = (getf view-def :tables)
-    for view-table in view-tables
-    for xrefs = (xrefs model table tables)
-    
+  (loop
+    with view-tables = (u:deep-copy (getf view-def :tables))
+    with xrefs = (loop for view-table in view-tables
+                   append (xrefs model view-table view-tables))
+    with from = (pop view-tables)
+    for xref in xrefs
+    for source = (getf xref :source)
+    for source-sql = (u:tree-get model source :table-name)
+    for source-field = (getf xref :source-field)
+    for source-field-sql = (u:tree-get model source :fields source-field :name-sql)
+    for target = (getf xref :target)
+    for target-sql = (u:tree-get model target :table-name)
+    for join-table = (pop view-tables)
+    for join-table-sql = (u:tree-get model join-table :table-name)
+    for join = (format nil "left join ~a on ~a.~a = ~a.id"
+                 join-table-sql source-sql source-field-sql target-sql)
+    collect join into lines
+    finally
+    (return
+      (format nil "~%select~%~{  ~a~^,~%~}~%from ~{~a~^~%  ~}"
+        (formatted-table-columns model (getf view-def :tables))
+        (u:tree-get model from :table-name)
+        lines))))
+
+
+
 
 (defun keyword-matches (keyword regex)
   (re:scan (format nil "(?i)~a" regex) (format nil "~s" keyword)))
@@ -1065,13 +1105,11 @@ fields that have non-NIL values for all HAVE-KEYS."
                      (if j nil `(:main (:tables (,type-key))))))
     for view-key in views by #'cddr
     for view-def in (cdr views) by #'cddr
-    for view-def-new = (progn
-                         (break)
-                         (list
-                           :tables (getf view-def :tables)
-                           :sql (view-sql model view-def)
-                           :aliases (view-aliases model view-def)
-                           :columns (view-columns model view-def)))
+    for view-def-new = (list
+                         :tables (getf view-def :tables)
+                         :sql (view-sql model view-def)
+                         :aliases (view-aliases model view-def)
+                         :columns (view-columns model view-def))
     appending (list view-key view-def-new)))
 
 (defun type-has-roles (type-def)
@@ -1335,9 +1373,9 @@ file by prepending the model directory path to the file name, adds the extension
 example, for the string `todos`, this function will compute the file path
 `/path/to/app/models/todos.lisp`, read that file, and set the model to the value
 of that file."
-    (let ((path (u:join-paths 
-                  *package-root* 
-                  "models" 
+    (let ((path (u:join-paths
+                  *package-root*
+                  "models"
                   (format nil "~a.lisp" file))))
       (with-open-file (in path)
         (set-model (read in)))))
