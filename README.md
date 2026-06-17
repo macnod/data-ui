@@ -425,7 +425,7 @@ For example, a maximum-length validation written as pure data:
 
 ```lisp
 :validations (:required (:max-length 20))
-```lisp
+```
 
 is backed by a registry entry whose Lisp lives in the engine, written once:
 
