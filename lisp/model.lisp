@@ -757,191 +757,109 @@ fields that have non-NIL values for all HAVE-KEYS."
       select-cols
       (list from-1 from-2 from-3))))
 
-;; TODO: Remove
-(defparameter *model-at-view-sql* nil)
-(defparameter *view-def-at-view-sql* nil)
-(defparameter *view-sql-map* nil)
-(defun view-sql (model view-def)
-  ;; TODO: Remove
-  (setf
-    *model-at-view-sql* (u:deep-copy model)
-    *view-def-at-view-sql* (u:deep-copy view-def))
-  (let ((tables (getf view-def :tables)))
-    (case (length tables)
-      (1 (single-table-view model view-def))
-      ;; (2 (double-table-view model view-def))
-      (2 (view-sql-1 model view-def))
-      (3 (view-sql-1 model view-def))
-      (otherwise
-        (error "Views with more than 3 tables are not currently supported")))))
-
-;; (defun view-sql (model view-def)
-;;   (view-sql-1 model view-def))
-
-(defun xrefs (model table tables)
-  "Returns a plist where the key is TABLE and the value is a foreign key plist,
-where the keys are fields of TABLE that reference tables that are listed in
-TABLES, and the values are the target tables."
+(defun xrefs-1 (model view-tables table)
+  ":private: Returns a list of xrefs that connect TABLE to any table in
+VIEW_TABLES. An xref describes a connection between two tables and looks like
+this:
+    (:source source-table-key
+     :source-field source-field-key
+     :target target-table-key)"
   (loop with fields = (u:tree-get model table :fields)
-        for field-key in fields by #'cddr
-        for field-def in (cdr fields) by #'cddr
-        for target = (getf field-def :target)
-        when (and target (member target tables))
-        collect (list :source table
-                      :source-field field-key
-                      :source-field-sql (getf field-def :name-sql)
-                      :target target)))
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for target = (getf field-def :target)
+    when (and target (member target view-tables))
+    collect (list
+              :source table
+              :source-field field-key
+              :target target)))
 
-;; (defun find-next-join (model all-xrefs joined remaining)
-;;   (loop for table in remaining
-;;     do (loop for xref in all-xrefs
-;;          for source = (getf xref :source)
-;;          for source-field = (getf xref :source-field)
-;;          for target = (getf xref :target)
-;;          for table-name = (u:tree-get model table :table-name)
-;;          for source-name = (u:tree-get model source :table-name)
-;;          for target-name = (u:tree-get model target :table-name)
-;;          for table-field-sql = (u:tree-get model table
-;;                                  :fields source-field :name-sql)
-;;          for source-field-sql = (u:tree-get model source 
-;;                                   :fields source-field :name-sql)
-;;          do (cond
-;;               ((and (eq source table) (member target joined))
-;;                 (return-from find-next-join
-;;                   (values table
-;;                     (format nil "left join ~a on ~a.~a = ~a.id"
-;;                       table-name table-name table-field-sql target-name))))
-;;               ((and (eq target table) (member source joined))
-;;                 (return-from find-next-join
-;;                   (values table
-;;                     (format nil "left join ~a on ~a.~a = ~a.id"
-;;                       table-name source-name source-field-sql table-name))))))
-;;     finally (return nil)))
+(defun xrefs-2 (table xrefs)
+  ":private: Selects the xref from XREFS where the value of :target equals
+TABLE. If no xref meets that condition, this function returns NIL. An xref
+identifies a connection between tables and looks like this:
+    (:source source-table-key
+     :source-field source-field-key
+     :target target-table-key)"
+  (loop
+    for xref in xrefs
+    for target = (getf xref :target)
+    for xref-copy = (u:deep-copy xref)
+    when (equal table target) do (return xref-copy)))
 
-(defun find-next-join (model all-xrefs joined remaining)
-  (loop for table in remaining
-    do (loop for xref in all-xrefs
-         for source = (getf xref :source)
-         for source-field = (getf xref :source-field)
-         for target = (getf xref :target)
-         for table-name = (u:tree-get model table :table-name)
-         for source-name = (u:tree-get model source :table-name)
-         for target-name = (u:tree-get model target :table-name)
-         for source-field-sql = (u:tree-get model source :fields source-field :name-sql)
-         for table-field-sql = (u:tree-get model table :fields source-field :name-sql)
-         do (cond
-              ;; Case 1: table references an already-joined table
-              ((and (eq source table) (member target joined))
-                (return-from find-next-join
-                  (values table
-                    (format nil "left join ~a on ~a.~a = ~a.id"
-                      table-name table-name table-field-sql target-name))))
-              ;; Case 2: an already-joined table references table
-              ((and (eq target table) (member source joined))
-                (return-from find-next-join
-                  (values table
-                    (format nil "left join ~a on ~a.~a = ~a.id"
-                      table-name source-name source-field-sql table-name))))))
-    finally (return nil)))
+(defun xrefs (model view-tables)
+  ":private: Returns a list of xrefs in the context of VIEW-TABLES. The xrefs
+are returned in the proper order, such that when they're used serially to create
+join clauses, any external references point to tables that have already been
+joined."
+  (loop for table in view-tables
+    append (xrefs-1 model view-tables table) into xrefs
+    finally
+    (return
+      (loop
+        with remaining-xrefs = (u:deep-copy xrefs)
+        for j-table in view-tables
+        for j-xref = (xrefs-2 j-table remaining-xrefs)
+        when j-xref
+        do (setf remaining-xrefs (remove j-xref remaining-xrefs :test #'equal))
+        and collect j-xref))))
 
-;; (defun view-sql-1 (model view-def)
-;;   (handler-case
-;;     (loop with view-tables = (getf view-def :tables)
-;;       with from-table = (first view-tables)
-;;       with all-xrefs = (loop for vt in view-tables
-;;                          append (xrefs model vt view-tables))
-;;       with joined = (list from-table)
-;;       with remaining = (copy-list (rest view-tables))
-;;       with join-lines = nil
-;;       while remaining
-;;       do (multiple-value-bind (join-table join-sql)
-;;            (find-next-join model all-xrefs joined remaining)
-;;            (unless join-table
-;;              (error "Cannot find join path for tables: ~a" remaining))
-;;            (push join-sql join-lines)
-;;            (setf joined (append joined (list join-table)))
-;;            (setf remaining (remove join-table remaining)))
-;;       finally (return
-;;                 (format nil "~%select~%~{ ~a~^,~%~}~%from ~{~a~^~% ~}"
-;;                   (formatted-table-columns model view-tables)
-;;                   (cons (u:tree-get model from-table :table-name)
-;;                     (nreverse join-lines)))))
-;;     (error (e) (format nil "~a" e))))
-
-;; Latest
-;; (defun view-sql-1 (model view-def)
-;;   (handler-case
-;;     (loop with view-tables = (getf view-def :tables)
-;;       with from-table = (first view-tables)
-;;       with all-xrefs = (loop for vt in view-tables
-;;                          append (xrefs model vt view-tables))
-;;       with joined = (list from-table)
-;;       with remaining = (copy-list (rest view-tables))
-;;       with join-lines = nil
-;;       while remaining
-;;       do (multiple-value-bind (join-table join-sql)
-;;            (find-next-join model all-xrefs joined remaining)
-;;            (when join-table
-;;              (progn
-;;                (push join-sql join-lines)
-;;                (setf joined (append joined (list join-table)))
-;;                (setf remaining (remove join-table remaining)))))
-;;       finally (return
-;;                 (format nil "~%select~%~{ ~a~^,~%~}~%from ~{~a~^~% ~}"
-;;                   (formatted-table-columns model view-tables)
-;;                   (cons (u:tree-get model from-table :table-name)
-;;                     (nreverse join-lines)))))
-;;     (error (e) (format nil "~a" e))))
-
-(defun view-sql-1 (model view-def)
-  (handler-case
-    (loop with view-tables = (getf view-def :tables)
-          with from-table = (first view-tables)
-          with all-xrefs = (loop for vt in view-tables
-                                 append (xrefs model vt view-tables))
-          with joined = (list from-table)
-          with remaining = (copy-list (rest view-tables))
-          while remaining
-          for join-result = (multiple-value-list
-                              (find-next-join model all-xrefs joined remaining))
-          for join-table = (first join-result)
-          for join-sql = (second join-result)
-          unless join-table do (error "Cannot find join path for tables: ~a" remaining)
-          collect join-sql into join-lines
-          do (setf joined (append joined (list join-table))
-                   remaining (remove join-table remaining))
-          finally (return
-                    (format nil "~%select~%~{ ~a~^,~%~}~%from ~{~a~^~% ~}"
-                            (formatted-table-columns model view-tables)
-                            (cons (u:tree-get model from-table :table-name)
-                                  (nreverse (remove nil join-lines))))))
-    (error (e) (format nil "~a" e))))
-
-;; (defun view-sql-1 (model view-def)
-;;   (handler-case
-;;     (loop
-;;       with view-tables = (u:deep-copy (getf view-def :tables))
-;;       with xrefs = (loop for view-table in view-tables
-;;                      append (xrefs model view-table view-tables))
-;;       with from = (pop view-tables)
-;;       for xref in xrefs
-;;       for source = (getf xref :source)
-;;       for source-sql = (u:tree-get model source :table-name)
-;;       for source-field = (getf xref :source-field)
-;;       for source-field-sql = (u:tree-get model source :fields source-field :name-sql)
-;;       for target = (getf xref :target)
-;;       for target-sql = (u:tree-get model target :table-name)
-;;       for join-table = (pop view-tables)
-;;       for join-table-sql = (u:tree-get model join-table :table-name)
-;;       for join = (format nil "left join ~a on ~a.~a = ~a.id"
-;;                    join-table-sql source-sql source-field-sql target-sql)
-;;       collect join into lines
-;;       finally
-;;       (return
-;;         (format nil "~%select~%~{  ~a~^,~%~}~%from ~{~a~^~%  ~}"
-;;           (formatted-table-columns model (getf view-def :tables))
-;;           (cons (u:tree-get model from :table-name) lines))))
-;;     (error (e) (format nil "~a" e))))
+(defun xref-reversed (source target joined-tables)
+  ":private: Sometimes, when creating a join clause from xrefs, the source table
+is joined. Other times, the source table has already been joined and instead the
+target table must be joined. This function returns a boolean value that
+indicates if the xref's source and target tables should be reversed. SOURCE is
+the source table from the xref. TARGET is the target table from the xref.
+JOINED-TABLES is a list of tables that have already been joined."
+  (cond
+    ((and 
+       (member source joined-tables)
+       (not (member target joined-tables)))
+      t)
+    ((and
+       (not (member source joined-tables))
+       (member target joined-tables))
+      nil)
+    (t (error "Can't find joined table."))))
+      
+(defun view-sql (model view-def)
+  ":private: Returns an SQL query that selects all the fields associated with
+the tables in VIEW-DEF (a list of type/table keys). If more than one table
+is provided in VIEW-DEF, then the SQL query will necessarily include joins,
+which this code assembles automatically. This code also aliases the fields as
+necessary."
+  (defparameter *x-model* model)
+  (defparameter *x-view-def* view-def)
+  (loop
+    with view-tables = (u:deep-copy (getf view-def :tables))
+    with joined-tables = (list (car view-tables))
+    for xref in (xrefs model view-tables)
+    for source = (getf xref :source)
+    for target = (getf xref :target)
+    for source-field = (getf xref :source-field)
+    for reversed = (xref-reversed source target joined-tables)
+    for join-table = (if reversed
+                       (u:tree-get model target :table-name)
+                       (u:tree-get model source :table-name))
+    for join-field = (if reversed
+                       "id"
+                       (u:tree-get model source :fields source-field :name-sql))
+    for target-table = (if reversed
+                         (u:tree-get model source :table-name)
+                         (u:tree-get model target :table-name))
+    for target-field = (if reversed
+                         (u:tree-get model source :fields source-field :name-sql)
+                         "id")
+    for join = (format nil "left join ~a on ~a.~a = ~a.~a"
+                 join-table join-table join-field target-table target-field)
+    collect join into joins
+    do (push (if reversed target source) joined-tables)
+    finally
+    (let ((format-string "~%select~%~{  ~a~^,~%~}~%from ~{~a~^~%  ~}")
+           (first-table (u:tree-get model (car view-tables) :table-name))
+           (columns (formatted-table-columns model (getf view-def :tables))))
+      (return
+        (format nil format-string columns (cons first-table joins))))))
 
 (defun keyword-matches (keyword regex)
   (re:scan (format nil "(?i)~a" regex) (format nil "~s" keyword)))
