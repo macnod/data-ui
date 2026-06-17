@@ -57,6 +57,9 @@ function usage {
     echo "         state (including secrets). Asks for confirmation unless"
     echo "         FORCE=1 is set. Requires sudo (for HAProxy). Docker"
     echo "         images and git release tags are left in place."
+    echo "traffic  Shows HAProxy's per-IP rate-limit counters (concurrent"
+    echo "         connections, connection rate, request rate) and flags"
+    echo "         clients near or over the limits. Requires sudo."
     echo "help     Displays this help text."
 }
 
@@ -617,6 +620,57 @@ function deploy {
     fi
 }
 
+function traffic {
+    # Show the HAProxy per-IP rate-limit counters (stick-table in the
+    # https frontend) and flag clients near or over the limits. Requires
+    # sudo for the admin socket.
+    local sock="/run/haproxy/admin.sock"
+    local cfg="/etc/haproxy/haproxy.cfg"
+    [[ -S "$sock" ]] || die "HAProxy admin socket not found at ${sock}."
+    # Read the live thresholds from the config so this report never
+    # drifts from the rules it describes.
+    local lim_cur lim_rate lim_req
+    lim_cur=$(grep -oP 'sc_conn_cur\(0\) gt \K[0-9]+' "$cfg")
+    lim_rate=$(grep -oP 'sc_conn_rate\(0\) gt \K[0-9]+' "$cfg")
+    lim_req=$(grep -oP 'sc_http_req_rate\(0\) gt \K[0-9]+' "$cfg")
+    echo "Limits: conn_cur > ${lim_cur:-?} reject," \
+         "conn_rate > ${lim_rate:-?}/min reject," \
+         "http_req_rate > ${lim_req:-?}/min tarpit"
+    echo
+    echo "show table https" \
+        | sudo socat "$sock" stdio \
+        | awk -v lim_cur="${lim_cur:-100}" \
+              -v lim_rate="${lim_rate:-200}" \
+              -v lim_req="${lim_req:-1000}" '
+        BEGIN {
+            fmt = "%-40s %9s %10s %13s  %s\n"
+            printf fmt, "client", "conn_cur", "conn_rate", "http_req_rate", "status"
+        }
+        /key=/ {
+            ip = ""; cur = 0; rate = 0; req = 0
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^key=/)                 { sub("key=", "", $i); ip = $i }
+                if ($i ~ /^conn_cur=/)            { sub(".*=", "", $i); cur = $i }
+                if ($i ~ /^conn_rate\(/)          { sub(".*=", "", $i); rate = $i }
+                if ($i ~ /^http_req_rate\(/)      { sub(".*=", "", $i); req = $i }
+            }
+            status = "ok"
+            if (cur > lim_cur * 0.8 || rate > lim_rate * 0.8 || req > lim_req * 0.8)
+                status = "WARN (>80% of a limit)"
+            if (cur > lim_cur)   status = "REJECTING (conn_cur)"
+            if (rate > lim_rate) status = "REJECTING (conn_rate)"
+            if (req > lim_req)   status = "TARPITTED (http_req_rate)"
+            printf fmt, ip, cur, rate, req, status
+            n++
+        }
+        END {
+            if (n == 0) print "(no tracked clients; table is empty)"
+        }'
+    echo
+    echo "Note: counters are per source IP; whitelisted IPs are tracked"
+    echo "but never rejected. Entries expire after 10 minutes idle."
+}
+
 function undeploy {
     export_deploy_environment
     if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
@@ -748,6 +802,9 @@ case "$ACTION" in
         ;;
     delete)
         undeploy
+        ;;
+    traffic)
+        traffic
         ;;
     help)
         usage
