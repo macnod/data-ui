@@ -35,7 +35,7 @@
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
-        :file 
+        :file
         ;; TODO: For :type :file, the validation :valid-file should exist
         ;;       The validation should allow for NIL, but should otherwise
         ;;       check that the file path is correct, that the directory
@@ -46,7 +46,7 @@
       :list-form (:fields t)
       :update-form (:fields t)
       :add-form (:fields t))
-    
+
     :models
     (:table t
       :create :auto :update :auto :delete :auto :display t
@@ -54,8 +54,8 @@
       :views (:main (:tables (:models :model-images :images))
                :images (:tables (:images))
                :ratings (:tables (:model-ratings)))
-      :fields 
-      (:name 
+      :fields
+      (:name
         (:type :text
           :ui (:label "Model Name" :input-type :line)
           :validations (:required)

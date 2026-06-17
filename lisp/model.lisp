@@ -812,7 +812,7 @@ indicates if the xref's source and target tables should be reversed. SOURCE is
 the source table from the xref. TARGET is the target table from the xref.
 JOINED-TABLES is a list of tables that have already been joined."
   (cond
-    ((and 
+    ((and
        (member source joined-tables)
        (not (member target joined-tables)))
       t)
@@ -821,7 +821,7 @@ JOINED-TABLES is a list of tables that have already been joined."
        (member target joined-tables))
       nil)
     (t (error "Can't find joined table."))))
-      
+
 (defun view-sql (model view-def)
   ":private: Returns an SQL query that selects all the fields associated with
 the tables in VIEW-DEF (a list of type/table keys). If more than one table
