@@ -67,6 +67,15 @@ Example:
     ;; => ("admin" "admin:exclusive" "guest:exclusive" "logged-in"
     ;;     "parts" "public" "settings")
 
+When you have modified a Lisp source file and want to test the changes, you must
+reload the file into the live image before running tests or introspecting. For
+example, after editing `lisp/model.lisp`:
+
+    (eval-in-data-ui "(load \"~/common-lisp/data-ui/lisp/model.lisp\")")
+
+Without this step, the running image still holds the old code and tests will pass
+(or fail) against the stale version.
+
 This is read-most: prefer it for verification and introspection. It runs real
 Lisp against the live image, so treat state-mutating forms with the same care you
 would in a REPL, and remember the project rule that Lisp source outside `web/` is

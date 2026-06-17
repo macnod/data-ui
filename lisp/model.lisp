@@ -684,80 +684,7 @@ fields that have non-NIL values for all HAVE-KEYS."
                   (lambda (a b) (format nil "~a ~b" a b))
                   fcolumns aliases)))))
 
-(defun single-table-view (model view-def)
-  (let* ((tables (getf view-def :tables))
-          (table-key (car tables))
-          (table-name (table-name table-key
-                        (u:tree-get model table-key :base)))
-          (select-cols (formatted-table-columns
-                         model
-                         (getf view-def :tables))))
-    (format nil "~%select~%~{  ~a~^,~%~}~%from ~a"
-      select-cols table-name)))
-
-(defun xref-field (model from-table-key to-table-key)
-  (loop with from-fields = (u:tree-get model from-table-key :fields)
-    for field-key in from-fields by #'cddr
-    for field-def in (cdr from-fields) by #'cddr
-    when (equal (getf field-def :target) to-table-key)
-    do (return (getf field-def :name-sql))))
-
-(defun double-table-view (model view-def)
-  (let* ((tables (getf view-def :tables))
-          (pri-table-key (car tables))
-          (pri-table-name (table-name pri-table-key
-                            (u:tree-get model pri-table-key
-                              :base)))
-          (sec-table-key (cadr tables))
-          (sec-table-name (table-name sec-table-key
-                            (u:tree-get model sec-table-key
-                              :base)))
-          (from-1 pri-table-name)
-          (from-2 (format nil "left join ~a on ~a.id = ~a.~a"
-                    sec-table-name
-                    sec-table-name
-                    pri-table-name
-                    (xref-field model pri-table-key sec-table-key)))
-          (select-cols (formatted-table-columns
-                         model
-                         (getf view-def :tables))))
-    (format nil "~%select~%~{  ~a~^,~%~}~%from ~{~a~^~%  ~}"
-      select-cols
-      (list from-1 from-2))))
-
-(defun triple-table-view (model view-def)
-  (let* ((tables (getf view-def :tables))
-          (pri-table-key (car tables))
-          (pri-table-name (table-name pri-table-key
-                            (u:tree-get model pri-table-key
-                              :base)))
-          (join-table-key (cadr tables))
-          (join-table-name (table-name join-table-key
-                             (u:tree-get model join-table-key
-                               :base)))
-          (sec-table-key (caddr tables))
-          (sec-table-name (table-name sec-table-key
-                            (u:tree-get model sec-table-key
-                              :base)))
-          (from-1 pri-table-name)
-          (from-2 (format nil "left join ~a on ~a.id = ~a.~a"
-                    join-table-name
-                    pri-table-name
-                    join-table-name
-                    (to-sql-identifier (table-reference pri-table-key))))
-          (from-3 (format nil "left join ~a on ~a.id = ~a.~a"
-                    sec-table-name
-                    sec-table-name
-                    join-table-name
-                    (to-sql-identifier (table-reference sec-table-key))))
-          (select-cols (formatted-table-columns
-                         model
-                         (getf view-def :tables))))
-    (format nil "~%select~%~{  ~a~^,~%~}~%from ~{~a~^~%  ~}"
-      select-cols
-      (list from-1 from-2 from-3))))
-
-(defun xrefs-1 (model view-tables table)
+(defun find-table-xrefs (model view-tables table)
   ":private: Returns a list of xrefs that connect TABLE to any table in
 VIEW_TABLES. An xref describes a connection between two tables and looks like
 this:
@@ -774,7 +701,7 @@ this:
               :source-field field-key
               :target target)))
 
-(defun xrefs-2 (table xrefs)
+(defun find-xref-for-target (table xrefs)
   ":private: Selects the xref from XREFS where the value of :target equals
 TABLE. If no xref meets that condition, this function returns NIL. An xref
 identifies a connection between tables and looks like this:
@@ -787,19 +714,23 @@ identifies a connection between tables and looks like this:
     for xref-copy = (u:deep-copy xref)
     when (equal table target) do (return xref-copy)))
 
-(defun xrefs (model view-tables)
+(defun ordered-xrefs (model view-tables)
   ":private: Returns a list of xrefs in the context of VIEW-TABLES. The xrefs
 are returned in the proper order, such that when they're used serially to create
 join clauses, any external references point to tables that have already been
-joined."
+joined.
+
+MVP limitation: this ordering works for linear chains (A->B->C) and star
+patterns (A<-B, A<-C). It will break on diamond patterns (A->B, A->C, B->D,
+C->D) where a table is reachable via two paths. This is acceptable for the MVP."
   (loop for table in view-tables
-    append (xrefs-1 model view-tables table) into xrefs
+    append (find-table-xrefs model view-tables table) into xrefs
     finally
     (return
       (loop
         with remaining-xrefs = (u:deep-copy xrefs)
         for j-table in view-tables
-        for j-xref = (xrefs-2 j-table remaining-xrefs)
+        for j-xref = (find-xref-for-target j-table remaining-xrefs)
         when j-xref
         do (setf remaining-xrefs (remove j-xref remaining-xrefs :test #'equal))
         and collect j-xref))))
@@ -820,7 +751,9 @@ JOINED-TABLES is a list of tables that have already been joined."
        (not (member source joined-tables))
        (member target joined-tables))
       nil)
-    (t (error "Can't find joined table."))))
+    (t (error "Cannot determine join direction: neither or both of source ~
+(~s) and target (~s) are in the already-joined tables ~s"
+         source target joined-tables))))
 
 (defun view-sql (model view-def)
   ":private: Returns an SQL query that selects all the fields associated with
@@ -828,12 +761,10 @@ the tables in VIEW-DEF (a list of type/table keys). If more than one table
 is provided in VIEW-DEF, then the SQL query will necessarily include joins,
 which this code assembles automatically. This code also aliases the fields as
 necessary."
-  (defparameter *x-model* model)
-  (defparameter *x-view-def* view-def)
   (loop
     with view-tables = (u:deep-copy (getf view-def :tables))
     with joined-tables = (list (car view-tables))
-    for xref in (xrefs model view-tables)
+    for xref in (ordered-xrefs model view-tables)
     for source = (getf xref :source)
     for target = (getf xref :target)
     for source-field = (getf xref :source-field)

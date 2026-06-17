@@ -69,7 +69,7 @@
         :my-rating
         (:type :integer
           :ui (:label "My Rating" :input-type :line)
-          :source (:views :ratings :table :model-ratings :column :rating :agg :first))
+          :source (:view :ratings :table :model-ratings :column :rating :agg :first))
         :average-rating
         (:type :real
           :ui (:label "Average Rating" :input-type :read-only)
@@ -79,7 +79,7 @@
           :ui (:label "Images" :input-type :checkbox-list)
           :validations (:join-items-exist)
           :source (:view :main :table :images :column :name :agg :list)
-          :source-all (:view :images :table :files :column :name :agg :list)
+          :source-all (:view :images :table :images :column :name :agg :list)
           :join-table :model-images))
       :list-form (:fields t)
       :update-form (:fields t)
