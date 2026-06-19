@@ -438,7 +438,7 @@ above methods, it returns NIL."
     (and base (not internal) (not (equal type-key :resources)))))
 
 (defun base-resource-type-keys ()
-  ":private: Returns a list of type keys for which are base types in the model,
+  ":private: Returns a list of type keys which are base types in the model,
 excluding types that are marked as joiners and the :resources type."
   (loop for type-key in *compiled-model* by #'cddr
     when (base-resource-type-key-p type-key)

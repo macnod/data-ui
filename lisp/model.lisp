@@ -1331,6 +1331,7 @@ necessary."
       appending (list type-key table-name) into summary
       finally
       (setf *compiled-model* compiled-model)
+      (drop-tables)
       (create-tables)
       (add-type-roles)
       (add-system-user-settings)
@@ -1368,6 +1369,29 @@ efficiently instantiate and support the application described by MODEL."))
     for table-name = (table-name type-key base)
     for query = (list (format nil sql table-name))
     unless base do (a:with-rbac (*rbac*) (a:rbac-query query))))
+
+(defun drop-tables ()
+  (loop with m = *compiled-model*
+    and sql = (format nil "drop table if exists ~a cascade" table-name)
+    for type-key in m by #'cddr
+    for is-table = (u:tree-get m type-key :table)
+    for is-base = (u:tree-get m type-key :base)
+    for table-name = (when is-table (u:tree-get m type-key :table-name))
+    for exists = (when table-name
+                   (a:with-rbac (*rbac*)
+                     (a:rbac-query
+                       (list
+                         (format nil
+                           "select 1 from information_schema.tables ~
+                            where table_name = $1"
+                         table-name)
+                       :single))))
+    when exists do
+    (a:with-rbac (*rbac*)
+      (db:query
+        ))
+    (pl:info :in "drop-tables" :status "dropped table"
+      :type-key type-key :table table-name)))
 
 (defun create-tables ()
   (loop with m = *compiled-model*

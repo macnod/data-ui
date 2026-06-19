@@ -39,7 +39,7 @@
         ;; TODO: For :type :file, the validation :valid-file should exist
         ;;       The validation should allow for NIL, but should otherwise
         ;;       check that the file path is correct, that the directory
-        ;;       exists, and that the file doesn't already exist.
+        ;;       exists, and that the file does not already exist.
         (:type :file
           :ui (:label "Select File" :input-type :file)
           :validations (:required)))
@@ -51,7 +51,7 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("models-user")
-      :views (:main (:tables (:models :model-images :images))
+      :views (:main (:tables (:models :model-images :model-ratings :images))
                :images (:tables (:images))
                :ratings (:tables (:model-ratings)))
       :fields
@@ -66,6 +66,11 @@
           :ui (:label "Model Description" :input-type :textbox)
           :source (:view :main :column :description :agg :first)
           :column t :not-null nil :unique nil)
+        :model
+        (:type :text
+          :ui (:label "Model Code" :input-type :textbox)
+          :source (:view :main :column :model :agg :first)
+          :column t :not-null t :unique nil)
         :my-rating
         (:type :integer
           :ui (:label "My Rating" :input-type :line)
@@ -73,7 +78,7 @@
         :average-rating
         (:type :real
           :ui (:label "Average Rating" :input-type :read-only)
-          :source (:views :ratings :table :model-ratings :column :rating :agg :average))
+          :source (:view :ratings :table :model-ratings :column :rating :agg :average))
         :images
         (:type :list
           :ui (:label "Images" :input-type :checkbox-list)
