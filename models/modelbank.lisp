@@ -104,10 +104,4 @@
           :source (:view :main :column :rating :agg :first)
           :column t :not-null t)
         :reference (:target :models)
-        :reference (:target :users)))
-
-    :model-images
-    (:table t :is-joiner t :internal t
-      :fields
-      (:reference (:target :models)
-        :reference (:target :images)))))
+        :reference (:target :users)))))
