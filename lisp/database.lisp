@@ -41,6 +41,37 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 ;; Database handle
 (defparameter *rbac* nil)
 
+(defun table-exists (table)
+  (when (and
+          table
+          (a:with-rbac (*rbac*)
+            (a:rbac-query
+              (list
+                "select 1 from information_schema.tables where table_name = $1"
+                table)
+              :single)))
+          t))
+
+(defun drop-table (table)
+  (when (table-exists table)
+    (let ((sql (format nil "drop table ~a cascade" table)))
+      (a:with-rbac (*rbac*) (a:rbac-query (list sql)))
+      t)))
+
+(defun reset-tables (compiled-model)
+  (loop with m = compiled-model
+    for type-key in m by #'cddr
+    for type-def in (cdr m) by #'cddr
+    for table-name = (u:tree-get m type-key :table-name)
+    for is-table = (u:tree-get m type-key :table)
+    for is-base = (u:tree-get m type-key :base)
+    when (and is-table (not is-base))
+    do (drop-table table-name)
+    finally (initialize-tables)))
+
+(defun initialize-tables ()
+  (a:initialize-database *rbac* *admin-password*))
+
 (defun admin-user-present ()
   (When (a:get-id *rbac* *users-table* *admin-user*) t))
 
@@ -60,10 +91,10 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
                  :resource-regex "^.+$"))
   (pl:pdebug :in "init-database" :status "set *rbac*"
     :rbac *rbac*)
-  (unless (admin-user-present)
-    (a:initialize-database *rbac* *admin-password*))
+  (unless (admin-user-present) (initialize-tables))
   *rbac*)
 
+;; TODO: Dead?
 (defun immutable-user-roles (user-name)
   (let ((roles (list "public" (a:exclusive-role-for user-name))))
     (unless (equal user-name *guest-user*)

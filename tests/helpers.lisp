@@ -2,6 +2,7 @@
 
 (defparameter *test-model* "test-model")
 
+;; TODO: Dead?
 ;; Improved error checking
 (defmacro error-matches (expr regex failure-text)
   `(handler-case

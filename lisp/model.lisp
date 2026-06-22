@@ -31,14 +31,6 @@ returns S. If S is not a string or a number, this function returns NIL."
                           type-key :fields field-key :type)))
     (u:tree-get *field-types* field-type-key :general)))
 
-(defun bad-string (type-key field-key value)
-  (let* ((value-a (format nil "~s" value))
-          (value-b (if (> (length value-a) 20)
-                     (format nil "~a..." (subseq value-a 0 20))
-                     value-a)))
-    (validation-result type-key field-key value-b nil
-      "is not a valid string.")))
-
 (defun valid-value-string (value)
   (and (or (null value) (stringp value))
     (<= (length value) *max-value-length*)))
@@ -393,11 +385,6 @@ returns S. If S is not a string or a number, this function returns NIL."
                           :source (:view :main :column :value :agg :first)
                           :column t :not-null t :unique t)))))
 
-(defun base-model-types (&optional keys-only)
-  (if keys-only
-    (u:plist-keys *base-model*)
-    *base-model*))
-
 (defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
   (let ((s (format nil "~(~a~)" keyword)))
     (format nil format-string
@@ -410,12 +397,6 @@ returns S. If S is not a string or a number, this function returns NIL."
           (otherwise (error "Unsupported value for FORM: ~a" form)))
         "_"))))
 
-(defun filter-types (types predicate)
-  (loop for type in (u:plist-keys types)
-    for type-definition = (getf types type)
-    for flag = (funcall predicate type-definition)
-    when flag append (list type type-definition)))
-
 (defun table-name (keyword base)
   (let ((format-string (if base "~a" "rt_~a")))
     (to-sql-identifier keyword :format-string format-string)))
@@ -424,10 +405,6 @@ returns S. If S is not a string or a number, this function returns NIL."
   (when keyword
     (u:make-keyword
       (format nil "~a-id" (u:singular (format nil "~a" keyword))))))
-
-(defun table-reference-sql (keyword)
-  (when keyword
-    (format nil "~(~a_id~)" (u:singular (format nil "~a" keyword)))))
 
 (defun column-name (model type-key field-key field-def)
   (when (or (getf field-def :column) (getf field-def :target))
@@ -443,19 +420,6 @@ returns S. If S is not a string or a number, this function returns NIL."
         ((member field-key (default-fields :keys-only t))
           (to-sql-identifier field-key))
         (t (format nil "~a_~a" singular-table-name field-name))))))
-
-(defun column-alias (model type-key field-key field-def)
-  (let* ((table-name (table-name type-key (u:tree-get model type-key :base)))
-          (singular-table-name (u:singular table-name))
-          (force-sql-name (getf field-def :force-sql-name))
-          (target (getf field-def :target))
-          (field-name (to-sql-identifier field-key)))
-    (cond
-      (target (to-sql-identifier field-key))
-      (force-sql-name (format nil "~a_~a" singular-table-name force-sql-name))
-      ((member field-key (default-fields :keys-only t))
-        (format nil "~a_~a" singular-table-name field-name))
-      (t (format nil "~a_~a" singular-table-name field-name)))))
 
 (defun updated-at-trigger-sql (table)
   (format nil
@@ -564,16 +528,6 @@ fields that have non-NIL values for all HAVE-KEYS."
                          (mapcar #'cdr table-cols)
                          (placeholders table-cols))
                        (mapcar #'car table-cols)))))
-
-(defun insert-key (key)
-  (u:make-keyword (format nil "~a-insert" key)))
-
-(defun delete-key (key)
-  (u:make-keyword (format nil "~a-delete" key)))
-
-(defun original-key (key)
-  (u:make-keyword
-    (re:regex-replace "-(insert|delete)$" (format nil "~(~a~)" key) "")))
 
 (defun update-keys (model type-key)
   (loop
@@ -792,20 +746,12 @@ necessary."
       (return
         (format nil format-string columns (cons first-table joins))))))
 
-(defun keyword-matches (keyword regex)
-  (re:scan (format nil "(?i)~a" regex) (format nil "~s" keyword)))
-
 (defun delete-sql (model type-key)
   (let* ((base (u:tree-get model type-key :base))
           (table-name (table-name type-key base)))
     (if base
       (list (format nil "delete from ~a where id = $1" table-name) :id)
       (list "delete from resources where id = $1" :id))))
-
-(defun field-type (field-def)
-  (if (getf field-def :target)
-    :uuid
-    (or (getf field-def :type) :text)))
 
 (defun value-sql (value field-type-key &key quote)
   (case field-type-key
@@ -1342,9 +1288,11 @@ necessary."
 (defgeneric set-model (model)
   (:method ((model list))
     (loop
-      initially (setf
-                  *compiled-model* nil
-                  *top-level-settings* (top-level-settings model))
+      initially
+      (when *compiled-model* (reset-tables *compiled-model*))
+      (setf
+        *compiled-model* nil
+        *top-level-settings* (top-level-settings model))
       with compiled-model = (compile-model (getf model :types))
       for type-key in (u:plist-keys compiled-model)
       for type-def in (u:plist-values compiled-model)
@@ -1352,7 +1300,6 @@ necessary."
       appending (list type-key table-name) into summary
       finally
       (setf *compiled-model* compiled-model)
-      (drop-tables)
       (create-tables)
       (add-type-roles)
       (add-system-user-settings)
@@ -1381,38 +1328,6 @@ plist. Setting the model involves compiling the model into an enriched model
 that includes compiled functions (machine code), generated parameterized SQL, as
 well as maps, other data structures, and settings that Data UI can use to
 efficiently instantiate and support the application described by MODEL."))
-
-(defun drop-non-base-tables ()
-  (loop with m = *compiled-model*
-    and sql = "drop table if exists ~a cascade"
-    for type-key in m by #'cddr
-    for base = (u:tree-get m type-key :base)
-    for table-name = (table-name type-key base)
-    for query = (list (format nil sql table-name))
-    unless base do (a:with-rbac (*rbac*) (a:rbac-query query))))
-
-(defun drop-tables ()
-  (loop with m = *compiled-model*
-    and sql = (format nil "drop table if exists ~a cascade" table-name)
-    for type-key in m by #'cddr
-    for is-table = (u:tree-get m type-key :table)
-    for is-base = (u:tree-get m type-key :base)
-    for table-name = (when is-table (u:tree-get m type-key :table-name))
-    for exists = (when table-name
-                   (a:with-rbac (*rbac*)
-                     (a:rbac-query
-                       (list
-                         (format nil
-                           "select 1 from information_schema.tables ~
-                            where table_name = $1"
-                         table-name)
-                       :single))))
-    when exists do
-    (a:with-rbac (*rbac*)
-      (db:query
-        ))
-    (pl:info :in "drop-tables" :status "dropped table"
-      :type-key type-key :table table-name)))
 
 (defun create-tables ()
   (loop with m = *compiled-model*

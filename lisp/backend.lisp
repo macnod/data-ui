@@ -476,6 +476,7 @@ all the right fields when we perform inserts or updates."
   (when (type-key-p type-key)
     (a:list-resource-role-names *rbac* (type-resource-name type-key))))
 
+;; TODO: Is this dead?
 (defun set-type-roles (type-key roles)
   (let* ((existing (get-type-roles type-key))
           (to-add (set-difference roles existing :test 'equal))
@@ -1096,31 +1097,6 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
                         (a:list-resource-role-names *rbac* resource-name))
           collect (add-to-plist record (list :roles roles)))
         view))))
-
-(defun list-sql-for (type-key user &key (form :list-form) filters)
-  (declare (ignore form))
-  (valid-compiled-model)
-  (valid-be-type-key type-key)
-  (valid-user-permissions user type-key "read")
-  (valid-filters filters)
-  (let* ((m *compiled-model*)
-          (user-roles (a:list-user-role-names *rbac* user))
-          (type-roles (u:tree-get m type-key :type-roles))
-          (ids (if (base-resource-type-key-p type-key)
-                 (when (u:has-some user-roles type-roles)
-                   (let ((table (table-name type-key
-                                  (u:tree-get m type-key :base))))
-                     (a:with-rbac (*rbac*)
-                       (db:query (format nil "select id from ~a" table)
-                         :column))))
-                 (user-read-type-ids user type-key))))
-    (when ids
-      (pl:pdebug :in "list-sql-for" :filters filters)
-      (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
-              (sql (u:tree-get m type-key :views :main :sql))
-              (where (add-where-clause sql all-filters user))
-              (view-result (view-result type-key where)))
-        (list :sql where :view-result view-result)))))
 
 (defun remove-existing-non-user-roles (user roles)
   (let* ((existing-roles (a:list-role-names *rbac*))

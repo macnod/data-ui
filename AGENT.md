@@ -94,6 +94,7 @@ not modified without human permission.
 - The React frontend in `web/` was built with AI assistance. Future frontend work will also involve AI.
 - Do not refactor, clean up, or "improve" Lisp code unless explicitly instructed.
 - Before any code is written, a thorough discussion of the goals must happen.
+- Some functions have no in-codebase callers but are intentionally retained (REPL debugging, external scripts). See `docs/model-accessors.md` before removing "dead" code.
 
 ## Current Status (MVP)
 

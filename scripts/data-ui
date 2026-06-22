@@ -143,6 +143,11 @@ function start_psql {
 
 function start_repl {
     echo
+    echo "Building frontend."
+    CURRENT=$(pwd)
+    cd web && npm install && npm run build
+    cd $CURRENT
+    echo
     echo "Loading data-ui and starting Swank server on port $SWANK_PORT."
     ros run -- \
         --eval "(require :data-ui)" \
