@@ -499,13 +499,17 @@ React (or any frontend) can items with their schema and render forms/lists autom
 - Compile a model
   - In Slime: `(set-model "todos")`
   - Optionally, run tests with: `(run-tests)`
-- Start a web environment terminal
+- Build the frontend (one-time, or after frontend changes)
 
       cd data-ui/web
       npm install
-      npm run dev
+      npm run build
 
-- Navigate to http://localhost:3000
+- Start the web server
+  - In Slime: `(start-web-server)`
+  - The server serves both the API and the frontend
+
+- Navigate to http://localhost:8080
 
 
 ## Deployment

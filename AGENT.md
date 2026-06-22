@@ -241,12 +241,28 @@ door, billing) that are infrastructure, not application.
 
 ## Current Focus / To Do (MVP)
 See TODO.md for the live prioritized list. Deadline: complete MVP,
-including the demo video, by end of December 2026. Priorities now:
-1. **UI polish** — the video shows the UI; it must look clean
-2. **More example models** — prove the compiler generalizes
-   (`models/parts.lisp`, `models/file-server.lisp` are candidates)
-3. **The 30-second video** — nothing → deployed app
-4. File update (only if time permits; otherwise post-MVP)
+including the demo video, by end of December 2026.
+
+**Model Bank is the priority function.** The MVP must prove that real,
+non-trivial applications can be built on Data UI significantly faster
+than any alternative — and the way to prove that is to build one.
+Model Bank (a model-sharing application with relationships, ownership,
+image association, and ratings) is that application. It is no longer
+just another example model; it is the fitness function for the MVP.
+Gaps surfaced by building Model Bank are, by definition, the
+highest-priority work. Polish and rough edges can wait; capability
+gaps that block building real apps cannot.
+
+Priorities now:
+1. **Build Model Bank** — the live priority function; gaps it surfaces
+   drive everything below
+2. **Scoping** (`:scope`) — type-level and field-level; unblocks
+   per-user filtering (settings isolation, image association, ratings)
+3. **Write-through** — writing values to related tables (not just
+   associations); unblocks ratings
+4. **UI polish** — the video shows the UI; it must look clean
+5. **The 30-second video** — nothing → deployed app
+6. File update (only if time permits; otherwise post-MVP)
 
 Frontend known weaknesses (from deployment testing, good first UI
 tasks): failed token refresh leaves the app rendering as logged-in

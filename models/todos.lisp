@@ -1,5 +1,5 @@
 (:Title "To Do List"
-  :name "todo"
+  :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production

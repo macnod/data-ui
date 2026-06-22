@@ -204,6 +204,7 @@ function export_repl_environment {
     export LOG_SEVERITY="DEBUG"
     export SWANK_PORT="4010"
     export HTTP_PORT="8081"
+    export WEB_DIRECTORY="web/dist"
     export RUN_TESTS="false"
 }
 
