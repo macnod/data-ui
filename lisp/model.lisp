@@ -1066,6 +1066,25 @@ necessary."
       (loop for column in (table-columns model table-key)
         append (list (getf column :field-key) (getf column :column))))))
 
+(defun valid-view-scope (model type-key view-scope)
+  (when view-scope
+    (let ((scope-types '(:record :user))
+           (scope-details '(:table :field)))
+      (unless (u:plistp view-scope)
+        (error "View :scope for ~s must be a plist, got ~s" type-key view-scope))
+      (unless (u:has scope-types (u:plist-keys view-scope))
+        (error "View :scope for ~s has an invalid key: ~s"
+          type-key (u:plist-keys view-scope)))
+      (loop for scope-type in scope-types
+        for scope-def = (getf view-scope scope-type)
+        unless (or
+                 (null scope-def)
+                 (u:has (u:plist-keys scope-def) scope-details))
+        do (error "View :scope for ~s ~s has an invalid key: ~a"
+             type-key scope-type (u:plist-keys scope-def)))
+      view-scope)))
+
+
 (defun enrich-views (model type-key)
   (loop
     with type-def = (getf model type-key)
@@ -1076,8 +1095,10 @@ necessary."
                      (if j nil `(:main (:tables (,type-key))))))
     for view-key in views by #'cddr
     for view-def in (cdr views) by #'cddr
+    for scope-def = (getf view-def :scope)
     for view-def-new = (list
                          :tables (getf view-def :tables)
+                         :scope (valid-view-scope model type-key scope-def)
                          :sql (view-sql model view-def)
                          :aliases (view-aliases model view-def)
                          :columns (view-columns model view-def))
