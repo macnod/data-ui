@@ -54,8 +54,13 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 
 (defun drop-table (table)
   (when (table-exists table)
-    (let ((sql (format nil "drop table ~a cascade" table)))
-      (a:with-rbac (*rbac*) (a:rbac-query (list sql)))
+    (let ((sql (format nil "drop table if exists ~a cascade" table)))
+      (a:with-rbac (*rbac*)
+        (handler-bind
+          ((warning (lambda (w)
+                      (when (search "drop cascades" (format nil "~a" w))
+                        (muffle-warning)))))
+          (a:rbac-query (list sql))))
       t)))
 
 (defun reset-tables (compiled-model)
@@ -70,14 +75,13 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     finally (initialize-tables)))
 
 (defun reset-database ()
-  (loop 
+  (loop
     with sql-tables = (format nil
                         "select table_name from information_schema.tables ~
                          where table_name like 'rt_%'")
     with tables = (query sql-tables :result-type :column)
-    and sql-drop = "drop table if exists ~a cascade"
     for table in tables
-    do (query (format nil sql-drop table)))
+    do (drop-table table))
   (loop with sql = "truncate ~{~a~^, ~} cascade"
     for table-key in *base-model* by #'cddr
     for table-def in (cdr *base-model*) by #'cddr
