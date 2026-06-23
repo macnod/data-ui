@@ -69,6 +69,25 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     do (drop-table table-name)
     finally (initialize-tables)))
 
+(defun reset-database ()
+  (loop 
+    with sql-tables = (format nil
+                        "select table_name from information_schema.tables ~
+                         where table_name like 'rt_%'")
+    with tables = (query sql-tables :result-type :column)
+    and sql-drop = "drop table if exists ~a cascade"
+    for table in tables
+    do (query (format nil sql-drop table)))
+  (loop with sql = "truncate ~{~a~^, ~} cascade"
+    for table-key in *base-model* by #'cddr
+    for table-def in (cdr *base-model*) by #'cddr
+    for is-base = (u:tree-get *base-model* table-key :base)
+    for table-name = (table-name table-key is-base)
+    when is-base collect table-name into tables
+    finally
+    (query (format nil sql tables)))
+  (a:initialize-database *rbac* *admin-password*))
+
 (defun initialize-tables ()
   (a:initialize-database *rbac* *admin-password*))
 

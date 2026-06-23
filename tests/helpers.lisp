@@ -1,6 +1,7 @@
 (in-package :data-ui)
 
 (defparameter *test-model* "test-model")
+(defparameter *fixture* nil)
 
 ;; TODO: Dead?
 ;; Improved error checking
@@ -12,12 +13,28 @@
      (error (e)
        (is (re:scan ,regex (format nil "~a" e))))))
 
+(defmacro with-model (model-name seeding-fn &body body)
+  (let ((fixture (gensym "fixture")))
+    `(let ((,fixture (progn
+                       (reset-database)
+                       (set-model ,model-name)
+                       (funcall ,seeding-fn))))
+       (let ((*fixture* ,fixture))
+         ,@body))))
+
+(defun seed-scoping-fixture ())
+
 (defun run-tests ()
-  (query "delete from resources")
-  (query "delete from users where user_name not in ($1, $2)"
-    :params '("admin" "guest"))
-  (query "delete from roles where role_name not in ($1, $2, $3, $4, $5)"
-    :params '("admin" "logged-in" "public"
-               "admin:exclusive" "guest:exclusive"))
-  (set-model *test-model*)
-  (run-all-tests))
+  (with-model "test-model" (lambda ())
+    (run! 'backend-suite)
+    (run! 'predicates-suite)
+    (run! 'rest-suite))
+  (with-model "modelbank" #'seed-scoping-fixture
+    (run! 'scoping-suite)))
+
+;; TODO: Remove after all modelbank tests are in place. After that, use
+;; RUN-TESTS to run all the tests.
+(defun run-modelbank-tests ()
+  (with-model "modelbank" #'seed-scoping-fixture
+    (run! 'scoping-suite)))
+
