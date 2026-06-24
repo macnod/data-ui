@@ -397,9 +397,10 @@ returns S. If S is not a string or a number, this function returns NIL."
           (otherwise (error "Unsupported value for FORM: ~a" form)))
         "_"))))
 
-(defun table-name (keyword base)
+(defun table-name (type-key &optional
+                    (base (u:tree-get *compiled-model* type-key :base)))
   (let ((format-string (if base "~a" "rt_~a")))
-    (to-sql-identifier keyword :format-string format-string)))
+    (to-sql-identifier type-key :format-string format-string)))
 
 (defun table-reference (keyword)
   (when keyword

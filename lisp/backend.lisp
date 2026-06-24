@@ -464,7 +464,7 @@ all the right fields when we perform inserts or updates."
   (valid-uuid uuid)
   (when
     (loop for type-key in (cons :resources (base-resource-type-keys))
-      for type = (table-name type-key t)
+      for type = (table-name type-key)
       for sql = (format nil "select 1 from ~a where id = $1" type)
       for query = (list sql uuid)
       thereis (a:with-rbac (*rbac*) (a:rbac-query query :single)))
@@ -829,7 +829,7 @@ If DATA points to multiple records, then this function raises an error."
                                     (u:plist-keys *compiled-model*))
         and sql-template = "select 1 from ~a where id = $1"
         for type-key in base-type-keys
-        for table = (table-name type-key t)
+        for table = (table-name type-key)
         for sql = (format nil sql-template table)
         for query = (list sql id)
         for exists = (a:with-rbac (*rbac*) (a:rbac-query query :single))
@@ -1610,8 +1610,7 @@ following example returns a list of all the :todos records that have the tag
           (type-roles (u:tree-get m type-key :type-roles))
           (ids (if (base-resource-type-key-p type-key)
                  (when (u:has-some user-roles type-roles)
-                   (let ((table (table-name type-key
-                                  (u:tree-get m type-key :base))))
+                   (let ((table (table-name type-key)))
                      (a:with-rbac (*rbac*)
                        (db:query (format nil "select id from ~a" table)
                          :column))))
