@@ -22,39 +22,11 @@
       :update-form (:fields t)
       :add-form (:fields t))
 
-    :images
-    (:table t
-      :create :auto :update :auto :delete :auto :display t
-      :tree t :is-leaf t :parent-type :directories :fs-backed t
-      :type-roles ("images-user")
-      :views (:main (:tables (:images)
-                      :scope (:user (:table :images :field :user))))
-      :fields
-      (:name
-        (:type :text :path t
-          :ui (:label "File" :input-type :line)
-          :validations (:required)
-          :source (:view :main :column :name :agg :first)
-          :column t :not-null t :unique t)
-        :file
-        ;; TODO: For :type :file, the validation :valid-file should exist
-        ;;       The validation should allow for NIL, but should otherwise
-        ;;       check that the file path is correct, that the directory
-        ;;       exists, and that the file does not already exist.
-        (:type :file
-          :ui (:label "Select File" :input-type :file)
-          :validations (:required)))
-      :list-form (:fields t)
-      :update-form (:fields t)
-      :add-form (:fields t))
-
     :models
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("models-user")
-      :views (:main (:tables (:models :model-images :model-ratings :images))
-               :images (:tables (:images))
-               :ratings (:tables (:model-ratings)))
+      :views (:main (:tables (:models)))
       :fields
       (:name
         (:type :text
@@ -71,38 +43,55 @@
         (:type :text
           :ui (:label "Model Code" :input-type :textbox)
           :source (:view :main :column :model :agg :first)
-          :column t :not-null t :unique nil)
-        :my-rating
-        (:type :integer
-          :ui (:label "My Rating" :input-type :line)
-          :source (:view :ratings :table :model-ratings :column :rating :agg :first))
-        :average-rating
-        (:type :real
-          :ui (:label "Average Rating" :input-type :read-only)
-          :source (:view :ratings :table :model-ratings :column :rating :agg :average))
-        :images
-        (:type :list
-          :ui (:label "Images" :input-type :checkbox-list)
-          :validations (:join-items-exist)
-          :source (:view :main :table :images :column :name :agg :list)
-          :source-all (:view :images :table :images :column :name :agg :list)
-          :join-table :model-images))
+          :column t :not-null t :unique nil))
       :list-form (:fields t)
       :update-form (:fields t)
       :add-form (:fields t))
 
-    :model-ratings
+    :images
     (:table t
       :create :auto :update :auto :delete :auto :display t
-      :type-roles ("model-ratings-user")
-      :views (:main (:tables (:model-ratings :models :users))
-               :models (:tables (:models))
-               :users (:tables (:users)))
+      :tree t :is-leaf t :parent-type :directories :fs-backed t
+      :type-roles ("images-user")
+      :views (:main (:tables (:images :users :models)
+                      :scope (:user (:table :users :field :id)))
+               :users (:tables (:users)
+                        :scope (:user (:table :users :field :id)))
+               :models (:tables (:models)
+                         :scope (:user (:table :models :field :id))))
       :fields
-      (:rating
-        (:type :integer :default 0
-          :ui (:label "Model Rating" :input-type :line)
-          :source (:view :main :column :rating :agg :first)
+      (:name
+        (:type :text :path t
+          :ui (:label "File" :input-type :line)
+          :validations (:required)
+          :source (:view :main :column :name :agg :first)
+          :column t :not-null t :unique t)
+        :file
+        ;; TODO: For :type :file, the validation :valid-file should exist
+        ;;       The validation should allow for NIL, but should otherwise
+        ;;       check that the file path is correct, that the directory
+        ;;       exists, and that the file does not already exist.
+        (:type :file
+          :ui (:label "Select File" :input-type :file)
+          :validations (:required))
+        :user 
+        (:type :text
+          :force-sql-name "image_user"
+          :ui (:label "Owner" :input-type :read-only)
+          :target :users
+          :source (:view :main :table :users :column :name :agg :first)
+          :source-all (:view :users :table :users :column :name :agg :list)
           :column t :not-null t)
-        :reference (:target :models)
-        :reference (:target :users)))))
+        :model
+        (:type :text
+          :force-sql-name "image_model"
+          :ui (:label "Model" :input-type :read-only)
+          :target :models
+          :source (:view :main :table :models :column :name :agg :first)
+          :source-all (:view :models :table :models :column :name :agg :list)
+          :column t :not-null t))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))))
+
+
