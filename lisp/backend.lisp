@@ -1106,6 +1106,17 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
              (not (u:has existing-roles role)))
       collect role)))
 
+(defun filters-for-be-list (type-key ids user-filters user)
+  (let* ((m *compiled-model*)
+          (user-scope (equal (u:tree-get m type-key :views :main :scope) :user))
+          (user-id (when user-scope (a:get-id *rbac* "users" user)))
+          (scope-filter (when user-scope `(:users :id :eq ,user-id)))
+          (ids-filter `(,type-key :id :in ,ids)))
+    (append
+      user-filters
+      (list ids-filter)
+      (when scope-filter (list scope-filter)))))
+
 ;;
 ;; END Internal database helper functions
 ;;
@@ -1617,7 +1628,7 @@ following example returns a list of all the :todos records that have the tag
                  (user-read-type-ids user type-key))))
     (pl:pdebug :in "be-list" :filters filters)
     (if ids
-      (let* ((all-filters (append filters `((,type-key :id :in ,ids))))
+      (let* ((all-filters (filters-for-be-list type-key ids filters user))
               (sql (u:tree-get m type-key :views :main :sql))
               (where (add-where-clause sql all-filters user))
               (view-result (view-result type-key where))

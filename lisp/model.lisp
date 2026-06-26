@@ -1017,18 +1017,22 @@ necessary."
   (when view-scope
     (let ((scope-types '(:record :user))
            (scope-details '(:table :field)))
-      (unless (u:plistp view-scope)
+      (unless (or (keywordp view-scope) (u:plistp view-scope))
         (error "View :scope for ~s must be a plist, got ~s" type-key view-scope))
-      (unless (u:has scope-types (u:plist-keys view-scope))
+      (unless (or
+                (keywordp view-scope)
+                (u:has scope-types (u:plist-keys view-scope)))
         (error "View :scope for ~s has an invalid key: ~s"
           type-key (u:plist-keys view-scope)))
-      (loop for scope-type in scope-types
-        for scope-def = (getf view-scope scope-type)
-        unless (or
-                 (null scope-def)
-                 (u:has (u:plist-keys scope-def) scope-details))
-        do (error "View :scope for ~s ~s has an invalid key: ~a"
-             type-key scope-type (u:plist-keys scope-def)))
+      (when (u:plistp view-scope)
+        (loop for scope-type in scope-types
+          for scope-def = (getf view-scope scope-type)
+          unless (or
+                   (keywordp scope-def)
+                   (null scope-def)
+                   (u:has (u:plist-keys scope-def) scope-details))
+          do (error "View :scope for ~s ~s has an invalid key: ~a"
+               type-key scope-type (u:plist-keys scope-def))))
       view-scope)))
 
 

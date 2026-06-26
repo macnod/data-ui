@@ -6,6 +6,6 @@
 
 (test view-scope
   (is (equal
-        '(:user (:table :users :field :id))
+        ':user
         (u:tree-get *compiled-model* :images :views :main :scope))))
 

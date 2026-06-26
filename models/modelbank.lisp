@@ -53,12 +53,9 @@
       :create :auto :update :auto :delete :auto :display t
       :tree t :is-leaf t :parent-type :directories :fs-backed t
       :type-roles ("images-user")
-      :views (:main (:tables (:images :users :models)
-                      :scope (:user (:table :users :field :id)))
-               :users (:tables (:users)
-                        :scope (:user (:table :users :field :id)))
-               :models (:tables (:models)
-                         :scope (:user (:table :models :field :id))))
+      :views (:main (:tables (:images :users :models) :scope :user)
+               :users (:tables (:users) :scope :user)
+               :models (:tables (:models) :scope :user))
       :fields
       (:name
         (:type :text :path t
