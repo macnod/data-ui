@@ -101,8 +101,54 @@ Returns a file token that is just like the one that the ReST endpoint
       (u:spew data-string fs-path))
     (u:safe-encode fs-path)))
 
+(defun th-make-image (type-key target-type-key target-name logical-path user
+                       &key
+                       (roles (u:tree-get *compiled-model* 
+                                type-key :type-roles))
+                       (source-data "bogus image data")
+                       source-file)
+  (let ((type-resource (type-resource-name type-key))
+         (target-type-resource (type-resource-name target-type-key)))
+    (unless (a:user-allowed *rbac* user "create" type-resource)
+      (error "User ~s does not have ~s permission on resource ~s."
+        user "create" type-resource))
+    (unless (a:user-allowed *rbac* user "create" target-type-resource)
+      (error "User ~s does not have ~s permission on reosurce ~s."
+        user "create" target-type-resource))
+    (let ((file-token (th-make-file 
+                        :images logical-path 
+                        :data-string source-data
+                        :source-file source-file))
+           (path-field (path-field type-key)))
+      ;; Insert image
+      (be-insert type-key (list
+                            path-field logical-path
+                            :user user
+                            target-type-key target-name)
+        user
+        :roles roles
+        :file-token file-token))))
 
-
+(defun th-make-directory (type-key logical-path &key
+                           (roles '("directories-user")))
+  "Insert a directory record. Returns the directory record ID."
+  (let* ((path-field (path-field type-key))
+          (id (be-id type-key `((,type-key ,path-field :eq ,logical-path)))))
+    (unless id
+      (let* ((fs-path (fs-path type-key logical-path))
+              (path-parent (u:path-parent logical-path))
+              (fs-path-parent (u:path-parent fs-path))
+              (is-dir (and (u:starts-with logical-path "/")
+                        (u:ends-with logical-path "/"))))
+        (unless (u:directory-exists-p fs-path-parent)
+          (error "Parent directory does not exist: ~a." fs-path-parent))
+        (unless is-dir
+          (error "Directory must start and end with a /."))
+        (ensure-directories-exist fs-path)
+        (a:add-resource *rbac*
+          (make-resource-name type-key `(,path-field ,logical-path))
+          :roles roles
+          :description (format nil "Test directory ~a" logical-path))))))
 ;;
 ;; END Test Helpers
 ;;
