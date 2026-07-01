@@ -199,7 +199,7 @@ returns S. If S is not a string or a number, this function returns NIL."
 
 (defparameter *forms* '(:list-form :add-form :update-form))
 
-(defparameter *base-model*
+(setq *base-model*
   `(:users
      (:table t :base t
        :create ,#'rbac-add-user

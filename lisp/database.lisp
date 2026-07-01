@@ -41,6 +41,10 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
 ;; Database handle
 (defparameter *rbac* nil)
 
+;; This will be redefined later, in the model module. Defining here for now to
+;; avoid compilation warnings
+(defparameter *base-model* nil)
+
 (defun table-exists (table)
   (when (and
           table
