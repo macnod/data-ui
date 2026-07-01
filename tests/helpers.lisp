@@ -53,15 +53,20 @@ depending on success."
   user)
 
 (defun th-slurp-model (name)
-  "Slurps the file with file name NAME and extension .lisp from the models
-directory. Returns the file as a string."
-  (u:slurp (u:join-paths *package-root* "models" (format nil "~a.lisp" name))))
+  "Slurps the file with file name tests/model-template.lisp, replaces the
+place-holders in the file with NAME, and returns the resulting model as a
+string. This is useful for creating test models when the attributes of the
+model don't matter."
+  (let* ((template-file (u:join-paths *package-root*
+                          "tests" "model-template.lisp"))
+          (template (u:slurp template-file)))
+    (re:regex-replace-all ":model:" template name)))
 
 (defun th-make-model (model-name user &key roles)
   "Insert a :models record via be-insert. Returns the record ID."
   (be-insert :models
     `(:name ,model-name
-       :description (format nil "Test model ~s" model-name)
+       :description ,(format nil "Test model ~s" model-name)
        :model ,(th-slurp-model "widgets"))
     user
     :roles roles))
@@ -76,7 +81,7 @@ already exists in the file system and that is already tracked as a resource.
 Returns a file token that is just like the one that the ReST endpoint
 /api/upload returns, This file token can be used with BE-INSERT. "
   (unless (u:starts-with logical-path "/")
-    (error "LOGICAL-PATH ~s must start with `/`" logial-path))
+    (error "LOGICAL-PATH ~s must start with `/`" logical-path))
   (unless (getf *compiled-model* type-key)
     (error "UNKNOWN type key ~(~s~)" type-key))
   (unless (path-field type-key)
@@ -95,17 +100,18 @@ Returns a file token that is just like the one that the ReST endpoint
     (unless (u:directory-exists-p fs-parent)
       (error "Parent directory does not exist in file system: ~s" fs-parent))
     (unless parent-rn
-      (error "Parent not in database: ~(s) ~s" parent-type-key logical-parent))
+      (error "Parent not in database: ~(~s) ~s" parent-type-key logical-parent))
     (if source-file
       (u:copy-file source-file fs-path)
-      (u:spew data-string fs-path))
+      (u:spew (format nil "~a~%" data-string) fs-path))
     (u:safe-encode fs-path)))
 
 (defun th-make-mb-image (logical-path user model-name
                           &key
                           (roles (u:tree-get *compiled-model* 
                                    :images :type-roles))
-                          (source-data "bogus image data")
+                          (source-data (format nil "bogus image data for ~a"
+                                         logical-path))
                           source-file)
   "Creates an image by simulating an upload. This function creates the file in
 the correct directory and creates the associated resource in the database,

@@ -7,7 +7,7 @@
   (::model:
     (:table t
       :create :auto :update :auto :delete :auto :display t
-      :type-roles (":model:-users")
+      :type-roles (":model:-user")
       :views (:main (:tables (::model:)))
       :fields
       (:name
