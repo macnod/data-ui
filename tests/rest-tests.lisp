@@ -41,6 +41,8 @@
 
 (in-suite rest-suite)
 
+;; TODO: ReST tests
+
 ;; (test rest-list
 ;;   (let ((response (http-get (make-url "/api/list" :type :permissions))))
 ;;     (is (equal (getf response :code) 200))

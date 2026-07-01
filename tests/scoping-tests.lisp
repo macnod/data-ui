@@ -9,3 +9,32 @@
         ':user
         (u:tree-get *compiled-model* :images :views :main :scope))))
 
+;; TODO: Fix. Not working, likely because of write-thru issues.
+(test images-scoped-by-user
+  (let ((user-1 "user-1")
+         (user-2 "user-2")
+         (model-1 "model-1")
+         (model-2 "model-2")
+         (roles '("images-user" "models-user" "role-1")))
+    ;; Create 2 users
+    (th-make-user user-1 :roles roles)
+    (th-make-user user-2 :roles roles)
+    ;; Create 2 models
+    (th-make-model model-1 user-1 :roles '("role-1"))
+    (th-make-model model-2 user-2 :roles '("role-1"))
+    (loop for a from 1 to 2
+      for user = user-1 then user-2
+      for model = model-1 then model-2
+      do
+      ;; Each user adds 3 images
+      (loop for b from 1 to 3
+        for image-name = (format nil "image-~d-~d.png" a b)
+        for image-path = (format nil "/~a" image-name)
+        do (th-make-mb-image image-path user model :roles '("role-1"))))
+    ;; user-1 can see the images user-1 added, and no others, because the main
+    ;; image view is scoped to the user.
+    (let ((image-names (mapcar
+                         (lambda (x) (u:tree-get x :records :name))
+                         (be-list :images user-1))))
+      (is (= 3 (length names)))
+      (is-true (every (lambda (x) (u:starts-with x "/image-1-" x)) names)))))
