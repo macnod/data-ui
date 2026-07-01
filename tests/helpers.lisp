@@ -76,7 +76,7 @@ already exists in the file system and that is already tracked as a resource.
 Returns a file token that is just like the one that the ReST endpoint
 /api/upload returns, This file token can be used with BE-INSERT. "
   (unless (u:starts-with logical-path "/")
-    (error "LOGICAL-PATH ~s must start with `/`"))
+    (error "LOGICAL-PATH ~s must start with `/`" logial-path))
   (unless (getf *compiled-model* type-key)
     (error "UNKNOWN type key ~(~s~)" type-key))
   (unless (path-field type-key)
@@ -149,6 +149,15 @@ Returns a file token that is just like the one that the ReST endpoint
           (make-resource-name type-key `(,path-field ,logical-path))
           :roles roles
           :description (format nil "Test directory ~a" logical-path))))))
+
+(defun th-seed-scoping-fixture ()
+  "Seed shared state for the scoping test suite. Creates 2 users (user-1,
+user-2), with appropriate roles and one model. Returns a plist, bound to 
+*fixture*, that looks like this:
+  (:users (\"user-1\" \"user-2\") :models (\"test-model\"))"
+)
+  
+  
 ;;
 ;; END Test Helpers
 ;;
