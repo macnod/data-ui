@@ -90,7 +90,8 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     for table-key in *base-model* by #'cddr
     for table-def in (cdr *base-model*) by #'cddr
     for is-base = (u:tree-get *base-model* table-key :base)
-    for table-name = (table-name table-key is-base)
+    for built-in = (u:tree-get *base-model* table-key :built-in)
+    for table-name = (table-name table-key built-in)
     when is-base collect table-name into tables
     finally
     (query (format nil sql tables)))

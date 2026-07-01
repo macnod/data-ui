@@ -117,5 +117,8 @@ TYPE-KEY"
      :list (:general :list :sql "" :test ,#'listp)
      :file (:general :text :sql "" :test ,#'identity)))
 
-(defun base-type-p (type-key)
-  (u:tree-get *compiled-model* type-key :base))
+(defun base-type-p (type-key &optional (model *compiled-model*))
+  (u:tree-get model type-key :base))
+
+(defun built-in-p (type-key &optional (model *compiled-model*))
+  (u:tree-get model type-key :built-in))

@@ -201,7 +201,7 @@ returns S. If S is not a string or a number, this function returns NIL."
 
 (setq *base-model*
   `(:users
-     (:table t :base t
+     (:table t :base t :built-in t
        :create ,#'rbac-add-user
        ;; RBAC API doesn't include an update function, so just use :auto here
        :update :auto
@@ -250,7 +250,7 @@ returns S. If S is not a string or a number, this function returns NIL."
      ;; TODO: Mark as internal. User should not be able to interact with this table
      ;; via the UI or the backend functions.
      :resources
-     (:table t :base t :internal t
+     (:table t :base t :built-in t :internal t
        :create nil :update nil :delete nil :display nil
        :views (:main (:tables (:resources :resource-roles :roles))
                 :roles (:tables (:roles)))
@@ -273,7 +273,7 @@ returns S. If S is not a string or a number, this function returns NIL."
      ;; TODO: Currently, a default list such as ("create" "read" ...) doesn't work
      ;; because of some kind of validation issue. Fix.
      :permissions
-     (:table t :base t
+     (:table t :base t :built-in t
        :create ,#'rbac-add-permission
        :update :auto
        :delete ,#'rbac-remove-permission
@@ -288,7 +288,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :add-form (:fields t))
 
      :roles
-     (:table t :base t
+     (:table t :base t :built-in t
        :create ,#'rbac-add-role
        :update :auto
        :delete ,#'rbac-remove-role
@@ -316,22 +316,22 @@ returns S. If S is not a string or a number, this function returns NIL."
        :add-form (:fields t))
 
      :role-permissions
-     (:table t :base t :is-joiner t :internal t
+     (:table t :base t :built-in t :is-joiner t :internal t
        :fields (:reference (:target :roles)
                  :reference (:target :permissions)))
 
      :resource-roles
-     (:table t :base t :is-joiner t :internal t
+     (:table t :base t :built-in t :is-joiner t :internal t
        :fields (:reference (:target :resources)
                  :reference (:target :roles)))
 
      :role-users
-     (:table t :base t :is-joiner t :internal t
+     (:table t :base t :built-in t :is-joiner t :internal t
        :fields (:reference (:target :roles)
                  :reference (:target :users)))
 
      :settings
-     (:table t
+     (:table t :built-in t
        ;; Here, base is set to nil because we want settings to have roles. That
        ;; is how we restrict users to their own settings row.
        :base nil
@@ -368,7 +368,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :add-form (:fields t))
 
      :tokens
-     (:table t :base nil
+     (:table t :base nil :built-in t
        :create nil :update nil :delete nil :display nil
        :views (:main (:tables (:tokens)))
        :fields (:user (:type :text
@@ -398,8 +398,8 @@ returns S. If S is not a string or a number, this function returns NIL."
         "_"))))
 
 (defun table-name (type-key &optional
-                    (base (u:tree-get *compiled-model* type-key :base)))
-  (let ((format-string (if base "~a" "rt_~a")))
+                    (built-in (built-in-p type-key)))
+  (let ((format-string (if built-in "~a" "rt_~a")))
     (to-sql-identifier type-key :format-string format-string)))
 
 (defun table-reference (keyword)
@@ -409,7 +409,7 @@ returns S. If S is not a string or a number, this function returns NIL."
 
 (defun column-name (model type-key field-key field-def)
   (when (or (getf field-def :column) (getf field-def :target))
-    (let* ((table-name (table-name type-key (u:tree-get model type-key :base)))
+    (let* ((table-name (table-name type-key (built-in-p type-key model)))
             (singular-table-name (re:regex-replace "^rt_" (u:singular table-name) ""))
             (force-sql-name (getf field-def :force-sql-name))
             (simple (and (u:tree-get model type-key :is-joiner)
@@ -516,7 +516,7 @@ fields that have non-NIL values for all HAVE-KEYS."
                       (:resource :resources)
                       (:main type-key)
                       (otherwise (u:tree-get fields key :join-table)))
-    for table-name = (table-name table-key (u:tree-get model table-key :base))
+    for table-name = (table-name table-key (built-in-p type-key model))
     for table-cols = (case key
                        (:resource res-columns)
                        (:main (if (u:tree-get model table-key :base)
@@ -553,7 +553,7 @@ fields that have non-NIL values for all HAVE-KEYS."
     with insert-sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
     for key in update-keys by #'cddr
     for table in (cdr update-keys) by #'cddr
-    for table-name = (table-name table (u:tree-get model table :base))
+    for table-name = (table-name table (built-in-p table model))
     for table-cols = (case key (:main columns) (otherwise fk-columns))
     for sql = (case key
                 (:main main-sql)
@@ -588,9 +588,9 @@ fields that have non-NIL values for all HAVE-KEYS."
 
 (defun table-column (model type-key field-key)
   (let* ((type-def (u:tree-get model type-key))
-          (base (u:tree-get type-def :base))
+          (built-in (u:tree-get type-def :built-in))
           (field-def (u:tree-get type-def :fields field-key))
-          (table-name (table-name type-key base))
+          (table-name (table-name type-key built-in))
           (column-name (column-name model type-key field-key field-def))
           (column-list (list table-name column-name))
           (column-string (format nil "~{~a~^.~}" column-list))
@@ -600,8 +600,7 @@ fields that have non-NIL values for all HAVE-KEYS."
 
 (defun table-columns (model type-key)
   (loop
-    with base = (u:tree-get model type-key :base)
-    and fields = (u:tree-get model type-key :fields)
+    with fields = (u:tree-get model type-key :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
     for (column alias) = (multiple-value-bind (c a)
@@ -749,7 +748,7 @@ necessary."
 
 (defun delete-sql (model type-key)
   (let* ((base (u:tree-get model type-key :base))
-          (table-name (table-name type-key base)))
+          (table-name (table-name type-key (built-in-p type-key model))))
     (if base
       (list (format nil "delete from ~a where id = $1" table-name) :id)
       (list "delete from resources where id = $1" :id))))
@@ -851,9 +850,7 @@ necessary."
     with target = (getf field-def :target)
     with references = (when target
                         (format nil "references ~a(id) on delete cascade"
-                          (table-name
-                            target
-                            (u:tree-get model target :base))))
+                          (table-name target (built-in-p target model))))
     and unique = (when (getf field-def :unique) "unique")
     and default = (when (getf field-def :default)
                     (format nil "default ~a"
@@ -1128,12 +1125,12 @@ necessary."
 
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
-          (base (getf type-def :base))
+          (built-in (getf type-def :built-in))
           (is-joiner (getf type-def :is-joiner))
           (internal (getf type-def :internal is-joiner))
           (create (compile-create (getf type-def :create)))
           (fields (compile-fields type-key model))
-          (table-name (table-name type-key base))
+          (table-name (table-name type-key built-in))
           (tree (getf type-def :tree))
           (is-leaf (getf type-def :is-leaf))
           (parent-type (getf type-def :parent-type))
@@ -1221,10 +1218,10 @@ necessary."
   (loop
     for type-key in model by #'cddr
     for type-def in (cdr model) by #'cddr
-    for base = (getf type-def :base)
+    for built-in = (getf type-def :built-in)
     for fields = (getf type-def :fields)
     for joiner = (getf type-def :is-joiner)
-    for table-name = (table-name type-key base)
+    for table-name = (table-name type-key built-in)
     for views = (enrich-views model type-key)
     for insert-sql = (unless joiner (insert-sql model type-key))
     for update-sql = (unless joiner (update-sql model type-key))
