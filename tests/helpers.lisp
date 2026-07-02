@@ -34,18 +34,20 @@
                       (password "password-1")
                       (email "no-email")
                       roles)
-  "Create a user via a:add-user, with name USER and PASSWORD. The a:add-user
-function assigns default roles to the new user. Beyond that, this function
-assigns each role in ROLES to the user, it the role hasn't been assigned yet. If
-a role in ROLES does not exist, this function creates it. Returns USER or NIL,
-depending on success."
+  "Create a user via be-insert, with name USER and PASSWORD. Using be-insert
+ensures that :post-create hooks (e.g., creating a settings row) fire.
+Beyond that, this function assigns each role in ROLES to the user, if the
+role hasn't been assigned yet. If a role in ROLES does not exist, this
+function creates it. Returns USER or NIL, depending on success."
   ;; Create any roles in ROLES that don't already exist
   (loop for role in roles
     unless (a:get-id *rbac* "roles" role)
     do (a:add-role *rbac* role
          :description (format nil "Test role created for user ~a" user)))
-  ;; Create a user with default roles
-  (a:add-user *rbac* user email password)
+  ;; Create a user via be-insert so :post-create hooks fire
+  (be-insert :users
+    `(:name ,user :password ,password :email ,email)
+    "admin")
   ;; Associate user with any roles in ROLES that the user doesn't already have
   (loop for role in roles
     unless (a:user-has-role *rbac* user role)

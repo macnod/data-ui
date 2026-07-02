@@ -1092,9 +1092,12 @@ POST /api/login"
   (let* ((tree (parse-posted-json))
           (username (getf tree :username))
           (password (getf tree :password))
-          (user-id (handler-case
-                     (a:login *rbac* username password)
-                     (error (e) (abort-error e :reason "Error during login"))))
+          (user-id (let ((id (handler-case
+                               (a:login *rbac* username password)
+                               (error (e) (abort-error e
+                                            :reason "Error during login")))))
+                     (unless id (abort-auth "Invalid username or password"))
+                     id))
           (refresh-token (issue-refresh-token user-id))
           (access-token (issue-access-token user-id))
           (result `(:access-token ,access-token
@@ -1123,6 +1126,22 @@ POST /api/refresh"
     (if token-exists
       (render-output `(:access-token ,(issue-access-token user-id)))
       (abort-auth "Invalid or expired token"))))
+
+(h:define-easy-handler (rest-file :uri "/api/file" :default-request-type :get)
+  (type path)
+  (let* ((type-key (parse-type type))
+          (type-roles (get-type-roles type-key))
+          (user (require-auth type-roles))
+          (fs-path (fs-path type-key path))
+          (path-field (path-field type-key))
+          (resource (find-resource-name type-key
+                      `((,type-key ,path-field :eq ,path)))))
+    (unless (and (u:file-exists-p fs-path) resource)
+      (abort-not-found "File not found" :file path))
+    (unless (a:user-allowed *rbac* user "read" resource)
+      (abort-forbidden "User lacks read permission on this file." 
+        :user user :type type :file path))
+    (h:handle-static-file fs-path)))
 
 (defun serve-frontend ()
   "Serve a real file from *web-directory* if it exists; otherwise serve

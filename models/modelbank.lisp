@@ -26,7 +26,7 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("models-user")
-      :views (:main (:tables (:models)))
+      :views (:main (:tables (:models :images)))
       :fields
       (:name
         (:type :text
@@ -41,9 +41,13 @@
           :column t :not-null nil :unique nil)
         :model
         (:type :text
-          :ui (:label "Model Code" :input-type :textbox)
+          :ui (:label "Model Code" :input-type :textbox :render-as :code)
           :source (:view :main :column :model :agg :first)
-          :column t :not-null t :unique nil))
+          :column t :not-null t :unique nil)
+        :images
+        (:type :list
+          :ui (:label "Images" :input-type :read-only :render-as :image-list)
+          :source (:view :main :table :images :column :name :agg :list)))
       :list-form (:fields t)
       :update-form (:fields t)
       :add-form (:fields t))

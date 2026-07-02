@@ -162,8 +162,10 @@ in **~/.debug/deployment-work.md**. Key facts:
 - **Trap 3:** generated admin passwords must satisfy rbac's policy
   (letter + digit + punctuation) — hence the `-a1` suffix in
   `ensure_instance_secrets`.
-- `vite dev` does not typecheck; `npm run build` runs `tsc` first. Run
-  a build before deploying frontend changes.
+- **Always run `npm run build` after making frontend changes.**
+  Hunchentoot serves the built files from `web/dist/`; there is no dev
+  server. `npm run build` runs `tsc` first (typecheck) then `vite build`
+  (bundle). Without this step, changes are invisible.
 - The model's `:repl` key has a TODO — it is "not taking effect yet"
   and must be `nil` in production once it does.
 
@@ -220,7 +222,7 @@ the eventual boundary is intended to wrap a whole hook list as a unit.
 ## Working with the Frontend
 
 - Location: `web/`
-- Run: `npm install && npm run dev` (proxies `/api` to backend on port 8081)
+- Build: `npm install && npm run build` (Hunchentoot serves `web/dist/` — there is no dev server)
 - The app is intentionally simple — avoid adding heavy routing, state libraries, or styling until MVP is proven
 - All forms render from the schema returned by `/api/list`
 - Permission flags (`create`/`delete`/`update`) returned by `/api/list` control visibility of Add, Delete, and Edit controls

@@ -17,6 +17,7 @@ interface Field {
   label: string
   'input-type': string
   path?: boolean
+  'render-as'?: string
 }
 
 interface ListResponse {
@@ -32,6 +33,69 @@ interface ListResponse {
     delete?: boolean
     update?: boolean
   }
+}
+
+// --- Render-as dispatch ---
+//
+// Each function handles one rendering context (list cell vs form).
+// To add a new render-as value, add a case here. 'text' is the default.
+
+function renderCellValue(
+  val: any, field: Field
+): React.ReactNode {
+  const renderAs = field['render-as'] || 'text'
+  const text = Array.isArray(val) ? val.join(', ')
+    : (val !== null && val !== undefined ? String(val) : '')
+
+  switch (renderAs) {
+    case 'code':
+      return (
+        <pre style={{
+          margin: 0,
+          maxHeight: '4.5em',
+          overflow: 'hidden',
+          whiteSpace: 'pre-wrap',
+          fontSize: '0.85em',
+          fontFamily: 'monospace'
+        }}>
+          {text}
+        </pre>
+      )
+    default:
+      return text
+  }
+}
+
+function renderFormField(
+  field: Field, value: any,
+  onChange: (v: string) => void
+): React.ReactNode {
+  const renderAs = field['render-as'] || 'text'
+
+  // For now only 'code' gets special form treatment.
+  // Future render-as values (rating, image, etc.) will add cases.
+  if (renderAs === 'code') {
+    return (
+      <textarea
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        rows={12}
+        style={{
+          width: '100%',
+          fontFamily: 'monospace',
+          fontSize: '0.95em'
+        }}
+      />
+    )
+  }
+
+  return (
+    <input
+      type="text"
+      value={value || ''}
+      onChange={e => onChange(e.target.value)}
+    />
+  )
 }
 
 function App() {
@@ -106,7 +170,7 @@ function App() {
           setLoginError('Invalid response from server')
         }
       } else {
-        setLoginError(json.result?.message || 'Login failed')
+        setLoginError(json.error || 'Login failed')
       }
     } catch (e) {
       setLoginError('Network error')
@@ -476,11 +540,9 @@ function App() {
             return (
               <div key={f} style={{ marginBottom: '0.5rem' }}>
                 <label>{fieldMeta.label}</label><br />
-                <input
-                  type="text"
-                  value={formValues[f] || ''}
-                  onChange={e => setFormValues({ ...formValues, [f]: e.target.value })}
-                />
+                {renderFormField(fieldMeta, formValues[f], v =>
+                  setFormValues({ ...formValues, [f]: v })
+                )}
               </div>
             )
           })}
@@ -526,14 +588,12 @@ function App() {
                 </td>
               )}
               {listFields.map(f => {
-                const val = rec[f]
-                let display = ''
-                if (Array.isArray(val)) {
-                  display = val.join(', ')
-                } else if (val !== null && val !== undefined) {
-                  display = String(val)
-                }
-                return <td key={f}>{display}</td>
+                const field = data.result['list-form'][f]
+                return (
+                  <td key={f}>
+                    {renderCellValue(rec[f], field)}
+                  </td>
+                )
               })}
             </tr>
           ))}
