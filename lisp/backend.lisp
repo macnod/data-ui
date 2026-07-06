@@ -527,6 +527,7 @@ all the right fields when we perform inserts or updates."
         for path = (getf field-def :path :false)
         for non-base-roles-field = (and (not base) (equal field-key :roles))
         for ui = (getf field-def :ui)
+        for table = (or (u:tree-get field-def :source :table) type-key)
         when (and
                (or
                  (equal form-fields t)
@@ -537,8 +538,11 @@ all the right fields when we perform inserts or updates."
                (not (and
                       (equal form :list-form)
                       (equal field-type :file))))
-        append (list field-key
-                 (add-to-plist (list :default default :path path) ui))))))
+        append (list field-key (add-to-plist (list
+                                               :default default
+                                               :path path
+                                               :table table)
+                                 ui))))))
 
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
@@ -696,24 +700,33 @@ the update fails."
   (if (uuid-p filters)
     (valid-existing-uuid filters)
     (valid-filters filters :required t))
-  ;; Compute the existing roles for the resource
-  (let* ((roles (add-to-list roles "admin" (a:exclusive-role-for user)))
-          (resource-name (find-resource-name type-key filters))
-          (existing-roles (progn
-                            (pl:pdebug :in "update-roles"
-                              :step 1
-                              :type-key type-key
-                              :resource-name resource-name)
-                            (a:list-resource-role-names *rbac* resource-name)))
-          (to-add (set-difference roles existing-roles :test 'equal))
-          (to-remove (set-difference existing-roles roles :test 'equal)))
-    ;; Add new roles
-    (loop for role in to-add
-      do (a:add-resource-role *rbac* resource-name role))
-    ;; Remove old roles
-    (loop for role in to-remove
-      do (a:remove-resource-role *rbac* resource-name role))
-    resource-name))
+  ;; The update-roles function should work for changing the roles associated
+  ;; with a user or with a resource.
+  (case type-key
+    (:users
+      (let* ((user-id (be-id :users filters user))
+              (user-name (a:get-value *rbac* "users" "user_name" "id" user-id))
+              (exclusive-roles (a:exclusive-role-for user-name))
+              (roles (add-to-list roles "logged-in" exclusive-roles))
+              (existing-roles (a:list-user-role-names *rbac* user-name))
+              (to-add (set-difference roles existing-roles :test 'equal))
+              (to-remove (set-difference existing-roles roles :test 'equal)))
+        (loop for role in to-add
+          do (a:add-user-role *rbac* user-name role))
+        (loop for role in to-remove
+          do (a:remove-user-role *rbac* user-name role))))
+      (otherwise
+        (let* ((exclusive-role (a:exclusive-role-for user))
+                (roles (add-to-list roles "admin" exclusive-role))
+                (resource-name (find-resource-name type-key filters))
+                (existing-roles (a:list-resource-role-names *rbac* resource-name))
+                (to-add (set-difference roles existing-roles :test 'equal))
+                (to-remove (set-difference existing-roles roles :test 'equal)))
+          (loop for role in to-add
+            do (a:add-resource-role *rbac* resource-name role))
+          (loop for role in to-remove
+            do (a:remove-resource-role *rbac* resource-name role))
+          resource-name))))
 
 (defun update-resource-name (type-key record)
   ":internal: Updates the resource name for the given record. DATA must include
@@ -1779,6 +1792,8 @@ not.
             (funcall post-create nil nil data nil nil))
           (values new-id t))))))
 
+(defparameter *be-update-call* nil)
+
 ;; TODO:
 ;;   - Transaction
 ;;   - Don't update if there are no changes
@@ -1798,6 +1813,8 @@ for those fields.
 This function returns the ID of the updated record, or a list of errors if the
 update fails.
 "
+  (setf *be-update-call*
+    (lambda () (be-update type-key filters data user :roles roles)))
   (valid-compiled-model)
   (valid-type-key type-key)
   (if (stringp filters)
@@ -1824,7 +1841,8 @@ update fails.
           type-key update-row-count))
       update-row-count)
     ;; Update resource name (update resources record)
-    (update-resource-name type-key full-data)
+    (unless (base-type-p type-key)
+      (update-resource-name type-key full-data))
     ;; Update join tables
     (update-join-tables type-key uuid full-data record)
     ;; Update roles

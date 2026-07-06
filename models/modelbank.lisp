@@ -63,7 +63,7 @@
       :fields
       (:name
         (:type :text :path t
-          :ui (:label "File" :input-type :line)
+          :ui (:label "File" :input-type :line :render-as :image)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)

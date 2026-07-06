@@ -154,6 +154,12 @@ validates and user exists. Otherwise, logs a message and returns NIL."
         (pl:pdebug :in "get-bearer-token" :token token)
         token))))
 
+(defun get-access-token ()
+  "Extract JWT from Bearer header or ?token= query parameter.
+  Returns the token string or NIL."
+  (or (get-bearer-token)
+      (h:get-parameter "token")))
+
 (defun current-user (&optional required-roles)
   "Returns (VALUES USER ALLOWED REQUIRED-ROLES).
   - USER is the authenticated user or *GUEST* if no valid token.
@@ -219,6 +225,37 @@ validates and user exists. Otherwise, logs a message and returns NIL."
       (pl:pdebug :in "require-auth" :user user :allowed allowed :required required)
       (cond
         ((not (stringp (get-bearer-token)))
+          (abort-auth "Missing or invalid token"))
+        ((not allowed)
+          (abort-auth "User does not have required roles"
+            :user user :required-roles required-roles))
+        ((not user)
+          (abort-auth "User not found"
+            :user user :required-roles required-roles))
+        (t user)))
+    (error (e)
+      (abort-auth e :reason "error during authentication"
+        :required-roles required-roles))))
+
+(defun require-auth-with-query-token (&optional required-roles)
+  "Like require-auth, but also accepts JWT via ?token= query param.
+  For endpoints that need browser-native loading (e.g. <img src>)."
+  (handler-case
+    (multiple-value-bind (user allowed required)
+      (let* ((token (get-access-token))
+             (user (if token
+                     (validate-access-token token)
+                     *guest*))
+             (user-roles (when user
+                          (a:list-user-role-names *rbac* user)))
+             (allowed (if required-roles
+                        (u:has-some required-roles user-roles)
+                        t)))
+        (unless user
+          (abort-auth "Invalid or expired token."))
+        (values user allowed required))
+      (cond
+        ((not (get-access-token))
           (abort-auth "Missing or invalid token"))
         ((not allowed)
           (abort-auth "User does not have required roles"
@@ -1131,7 +1168,7 @@ POST /api/refresh"
   (type path)
   (let* ((type-key (parse-type type))
           (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth-with-query-token type-roles))
           (fs-path (fs-path type-key path))
           (path-field (path-field type-key))
           (resource (find-resource-name type-key

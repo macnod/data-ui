@@ -88,15 +88,15 @@ generated with the function name (converted into a 6-digit hexadecimal hash) and
 a random hexadecimal number with 3 digits. The format of the Guru Meditation
 Number is XXXXXX-XXX. The function name can be extracted from that number with
 the GMN-FNAME funcition."
-  (let* ((number (format nil "~a-~a"
-                   (u:hash-string function-name :size 6)
-                   (u:random-hex-number 3)))
+  (let* ((fname-hash (u:hash-string function-name :size 6))
+          (number (format nil "~a-~a" fname-hash (u:random-hex-number 3)))
           (in (getf log :in function-name))
           (text (apply #'format (append (list nil format-string) params)))
           (text-gmn (format nil "~a [Guru Meditation Number ~a]" text number))
           (logpl (add-to-plist
                    log
                    (list :in in :error text :guru-meditation-number number))))
+    (setf (gethash fname-hash *guru-meditation-number-function*) function-name)
     (pl:plog :error logpl)
     (funcall condition text-gmn)))
 

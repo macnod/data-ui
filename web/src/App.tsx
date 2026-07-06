@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiFetch, setTokens, clearTokens } from './api'
+import { apiFetch, setTokens, clearTokens, getAccessToken } from './api'
 
 // Extract the backend's error message from a failed response, falling back
 // to a generic message if the body can't be parsed.
@@ -18,12 +18,13 @@ interface Field {
   'input-type': string
   path?: boolean
   'render-as'?: string
+  table?: string
 }
 
 interface ListResponse {
   status: string
   result: {
-    type: string
+    'type-key': string
     'list-form': Record<string, Field>
     'add-form': Record<string, Field>
     'update-form': Record<string, Field>
@@ -61,9 +62,67 @@ function renderCellValue(
           {text}
         </pre>
       )
+    case 'image-list': {
+      const paths: string[] = Array.isArray(val) ? val : []
+      if (paths.length === 0) return text || ''
+      return (
+        <ThumbnailGrid
+          type={field.table || ''} paths={paths} size={40}
+        />
+      )
+    }
+    case 'image': {
+      const path = typeof val === 'string' ? val : ''
+      if (!path) return text || ''
+      return (
+        <ThumbnailGrid
+          type={field.table || ''} paths={[path]} size={40}
+        />
+      )
+    }
     default:
       return text
   }
+}
+
+function ImagePreview({
+  type, path
+}: {
+  type: string
+  path: string
+}) {
+  const [open, setOpen] = useState(false)
+  const name = path.split('/').pop() || path
+  const src = fileUrl(type, path)
+
+  return (
+    <>
+      <img
+        src={src}
+        alt={name}
+        onClick={() => setOpen(true)}
+        onError={e => {
+          (e.target as HTMLImageElement).style
+            .display = 'none'
+        }}
+        style={{
+          width: '60px',
+          height: '60px',
+          objectFit: 'cover',
+          flexShrink: 0,
+          cursor: 'pointer'
+        }}
+      />
+      {open && (
+        <ImageModal
+          images={[{ src, filename: name }]}
+          index={0}
+          onClose={() => setOpen(false)}
+          onNavigate={() => {}}
+        />
+      )}
+    </>
+  )
 }
 
 function renderFormField(
@@ -89,12 +148,242 @@ function renderFormField(
     )
   }
 
+  if (renderAs === 'image' && field.table) {
+    return (
+      <div style={{ display: 'flex', gap: '0.5rem',
+        alignItems: 'flex-start' }}>
+        <input
+          type="text"
+          value={value || ''}
+          onChange={e => onChange(e.target.value)}
+        />
+        {value && (
+          <ImagePreview
+            type={field.table}
+            path={String(value)}
+          />
+        )}
+      </div>
+    )
+  }
+
   return (
     <input
       type="text"
       value={value || ''}
       onChange={e => onChange(e.target.value)}
     />
+  )
+}
+
+// --- Image helpers ---
+
+function fileUrl(type: string, path: string): string {
+  const token = getAccessToken()
+  const base = `/api/file?type=${encodeURIComponent(type)}`
+    + `&path=${encodeURIComponent(path)}`
+  return token ? `${base}&token=${encodeURIComponent(token)}` : base
+}
+
+function ImageModal({
+  images, index, onClose, onNavigate
+}: {
+  images: { src: string; filename: string }[]
+  index: number
+  onClose: () => void
+  onNavigate: (index: number) => void
+}) {
+  const current = images[index]
+  const hasPrev = images.length > 1
+  const hasNext = images.length > 1
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.8)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+        cursor: 'pointer'
+      }}
+    >
+      <div style={{
+        display: 'flex',
+        gap: '1rem',
+        marginBottom: '1rem',
+        alignItems: 'center',
+        cursor: 'default'
+      }}>
+        <button
+          onClick={e => {
+            e.stopPropagation()
+            onNavigate(
+              (index - 1 + images.length) % images.length
+            )
+          }}
+          disabled={!hasPrev}
+        >
+          ‹ Prev
+        </button>
+        <span style={{ color: '#ccc', fontSize: '0.85rem' }}>
+          {index + 1} / {images.length}
+        </span>
+        <button
+          onClick={e => {
+            e.stopPropagation()
+            onNavigate((index + 1) % images.length)
+          }}
+          disabled={!hasNext}
+        >
+          Next ›
+        </button>
+        <span style={{ width: '1rem' }} />
+        <a
+          href={current.src}
+          download={current.filename}
+          onClick={e => e.stopPropagation()}
+          style={modalLinkStyle}
+        >
+          Download
+        </a>
+        <a
+          href={current.src}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          style={modalLinkStyle}
+        >
+          Open in new tab
+        </a>
+        <button onClick={onClose}>Close</button>
+      </div>
+      <img
+        src={current.src}
+        alt={current.filename}
+        onClick={e => e.stopPropagation()}
+        style={{
+          maxWidth: '90vw',
+          maxHeight: '80vh',
+          objectFit: 'contain',
+          cursor: 'default'
+        }}
+      />
+    </div>
+  )
+}
+
+const modalLinkStyle: React.CSSProperties = {
+  color: '#6cf',
+  textDecoration: 'underline',
+  cursor: 'pointer'
+}
+
+function ThumbnailGrid({
+  type, paths, size
+}: {
+  type: string
+  paths: string[]
+  size?: number
+}) {
+  const [modalIndex, setModalIndex] = useState<number | null>(
+    null
+  )
+  const thumbSize = size || 80
+
+  if (!paths || paths.length === 0)
+    return <span style={{ color: '#999' }}>—</span>
+
+  const modalImages = paths.map(p => ({
+    src: fileUrl(type, p),
+    filename: p.split('/').pop() || p
+  }))
+
+  return (
+    <>
+      <div style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '0.5rem'
+      }}>
+        {paths.map((p, i) => {
+          const name = p.split('/').pop() || p
+          return (
+            <div
+              key={p}
+              onClick={() => setModalIndex(i)}
+              style={{
+                cursor: 'pointer',
+                textAlign: 'center',
+                width: `${thumbSize}px`
+              }}
+            >
+              <img
+                src={fileUrl(type, p)}
+                alt={name}
+                style={{
+                  width: `${thumbSize}px`,
+                  height: `${thumbSize}px`,
+                  objectFit: 'cover',
+                  display: 'block'
+                }}
+              />
+              <div style={{
+                fontSize: '0.7rem',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+              }}>
+                {name}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {modalIndex !== null && (
+        <ImageModal
+          images={modalImages}
+          index={modalIndex}
+          onClose={() => setModalIndex(null)}
+          onNavigate={setModalIndex}
+        />
+      )}
+    </>
+  )
+}
+
+// --- Read-only field rendering ---
+
+function renderReadOnlyField(
+  field: Field,
+  value: any
+): React.ReactNode {
+  const renderAs = field['render-as'] || 'text'
+
+  if (renderAs === 'image-list') {
+    const paths: string[] = Array.isArray(value) ? value : []
+    return (
+      <ThumbnailGrid
+        type={field.table || ''} paths={paths}
+      />
+    )
+  }
+
+  // Default read-only: plain text display
+  const text = Array.isArray(value) ? value.join(', ')
+    : (value !== null && value !== undefined ? String(value) : '')
+  return (
+    <div style={{
+      padding: '0.3rem 0',
+      color: '#555',
+      minHeight: '1.2em'
+    }}>
+      {text || '—'}
+    </div>
   )
 }
 
@@ -472,7 +761,7 @@ function App() {
 
       {(showAddForm || isEditMode) && (
         <form style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
-          <h3>{isEditMode ? 'Edit' : 'Add'} {data.result.type}</h3>
+          <h3>{isEditMode ? 'Edit' : 'Add'} {data.result['type-key']}</h3>
 
           {(isEditMode ? Object.keys(data.result['update-form']) : addFields).map(f => {
             const fieldMeta = isEditMode
@@ -533,6 +822,17 @@ function App() {
                       setFormValues({ ...formValues, [f]: file })
                     }}
                   />
+                </div>
+              )
+            }
+
+            if (fieldMeta['input-type'] === 'read-only') {
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  {renderReadOnlyField(
+                    fieldMeta, formValues[f]
+                  )}
                 </div>
               )
             }

@@ -11,6 +11,10 @@ export function clearTokens() {
   refreshToken = null
 }
 
+export function getAccessToken(): string | null {
+  return accessToken
+}
+
 export function isAuthenticated(): boolean {
   return !!accessToken
 }

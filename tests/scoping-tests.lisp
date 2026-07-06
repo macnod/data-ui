@@ -30,7 +30,9 @@
       (loop for b from 1 to 3
         for image-name = (format nil "image-~d-~d.png" a b)
         for image-path = (format nil "/~a" image-name)
-        do (th-make-mb-image image-path user model :roles '("role-1"))))
+        for source-file = (format nil "tests/images/~a" image-name)
+        do (th-make-mb-image image-path user model
+             :roles '("role-1") :source-file source-file)))
     ;; user-1 can see the images user-1 added, and no others, because the main
     ;; image view is scoped to the user.
     (let ((image-names (mapcar
