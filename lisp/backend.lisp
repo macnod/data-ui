@@ -447,7 +447,7 @@ excluding types that are marked as joiners and the :resources type."
     when (base-resource-type-key-p type-key)
     collect type-key))
 
-(defun full-data (type-key data &key record local-only)
+(defun full-data (type-key data user &key record local-only)
   ":private: Returns a plist like DATA, but with any missing fields filled in
 with their defaults from the model. This is useful for ensuring that we have
 all the right fields when we perform inserts or updates."
@@ -461,7 +461,13 @@ all the right fields when we perform inserts or updates."
     for default-value = (getf field-def :default)
     for data-value = (getf data field-key)
     for record-value = (getf record field-key)
-    appending (list field-key (or data-value record-value default-value))))
+    for autofill = (getf field-def :autofill)
+    for autofill-value = (case autofill
+                           (:user user)
+                           (otherwise nil))
+    appending (list field-key
+                ;; Order is important here!
+                (or data-value record-value autofill-value default-value))))
 
 (defun uuid-exists-p (uuid)
   (valid-uuid uuid)
@@ -1708,7 +1714,7 @@ kitchen\":
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (valid-file-token file-token)
-  (let ((data (full-data type-key data)))
+  (let ((data (full-data type-key data user)))
     (valid-data type-key data)
     (let ((id (id-from-data type-key data)))
       (if id
@@ -1767,7 +1773,7 @@ not.
     :type-key type-key :data data :roles roles)
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
-  (let ((data (full-data type-key data)))
+  (let ((data (full-data type-key data user)))
     (valid-data type-key data)
     (let ((id (id-from-data type-key data)))
       (if id
@@ -1832,7 +1838,7 @@ update fails.
           (sql (car (u:tree-get m type-key :update-sql :main)))
           (values (local-values-for-update type-key data record user :id uuid))
           (update-query (cons sql values))
-          (full-data (full-data type-key data :record record)))
+          (full-data (full-data type-key data user :record record)))
     (valid-existing-join-data type-key full-data)
     ;; Update TYPE-KEY row (main update)
     (when (equal type-key :resources)

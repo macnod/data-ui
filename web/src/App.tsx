@@ -811,6 +811,25 @@ function App() {
               )
             }
 
+            if (fieldMeta['input-type'] === 'select') {
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <select
+                    value={formValues[f] || ''}
+                    onChange={e =>
+                      setFormValues({ ...formValues, [f]: e.target.value })
+                    }
+                  >
+                    <option value="" disabled>Select...</option>
+                    {allowed.map((val: string) => (
+                      <option key={val} value={val}>{val}</option>
+                    ))}
+                  </select>
+                </div>
+              )
+            }
+
             if (fieldMeta['input-type'] === 'file') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>

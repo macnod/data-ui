@@ -881,7 +881,8 @@ necessary."
                                    (getf field-def :not-null))
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
-    with attrs = '(:base-field :ui :unique :primary-key :target :join-table)
+    with attrs = '(:base-field :ui :unique :primary-key :target :join-table
+                    :autofill)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))

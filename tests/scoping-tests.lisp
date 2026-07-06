@@ -15,7 +15,7 @@
          (user-2 "user-2")
          (model-1 "model-1")
          (model-2 "model-2")
-         (roles '("images-user" "models-user" "role-1")))
+         (roles '("images-user" "models-user" "role-1" "directories-user")))
     ;; Create 2 users
     (th-make-user user-1 :roles roles)
     (th-make-user user-2 :roles roles)

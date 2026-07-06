@@ -77,6 +77,7 @@
            :validations (:required))
          :user 
          (:type :text
+           :autofill :user
            :force-sql-name "image_user"
            :ui (:label "Owner" :input-type :read-only)
            :target :users
@@ -86,7 +87,7 @@
          :model
          (:type :text
            :force-sql-name "image_model"
-           :ui (:label "Model" :input-type :read-only)
+           :ui (:label "Model" :input-type :select)
            :target :models
            :source (:view :main :table :models :column :name :agg :first)
            :source-all (:view :models :table :models :column :name :agg :list)
