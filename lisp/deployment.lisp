@@ -12,7 +12,7 @@
 
 (defun top-level-model-field (key-string &optional (model-file "default-model"))
   (let* ((path (format nil "~a/models/~a.lisp" *root* model-file))
-          (model (with-open-file (in path) (read in)))
+          (model (with-open-file (in path) (cadr (read in))))
           (key (intern (string-upcase key-string) :keyword))
           (raw-value (getf model key))
           (value (cond

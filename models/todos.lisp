@@ -1,4 +1,4 @@
-(:title "To Do List"
+'(:title "To Do List"
   :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"

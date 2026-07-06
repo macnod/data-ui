@@ -1,4 +1,4 @@
-(:title ":model:"
+'(:title ":model:"
   :name ":model:"
   :version "0.1"
   :domain ":model:.demo.data-ui.com"

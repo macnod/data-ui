@@ -1010,7 +1010,7 @@ necessary."
       (loop for column in (table-columns model table-key)
         append (list (getf column :field-key) (getf column :column))))))
 
-(defun valid-view-scope (model type-key view-scope)
+(defun valid-view-scope (type-key view-scope)
   (when view-scope
     (let ((scope-types '(:record :user))
            (scope-details '(:table :field)))
@@ -1046,7 +1046,7 @@ necessary."
     for scope-def = (getf view-def :scope)
     for view-def-new = (list
                          :tables (getf view-def :tables)
-                         :scope (valid-view-scope model type-key scope-def)
+                         :scope (valid-view-scope type-key scope-def)
                          :sql (view-sql model view-def)
                          :aliases (view-aliases model view-def)
                          :columns (view-columns model view-def))
@@ -1320,7 +1320,7 @@ of that file."
                   "models"
                   (format nil "~a.lisp" file))))
       (with-open-file (in path)
-        (set-model (subseq (read in) 1)))))
+        (set-model (cadr (read in))))))
   (:method ((file null))
     (set-model "default-model"))
   (:documentation ":public: Sets the model to the given plist. If given a

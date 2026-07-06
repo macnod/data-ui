@@ -1,4 +1,4 @@
-(:title "File Server"
+'(:title "File Server"
   :name "files"
   :version "0.1"
   :domain "files.demo.data-ui.com"
