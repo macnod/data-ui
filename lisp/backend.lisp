@@ -287,9 +287,12 @@ given in ID is used."
     for default-value = (getf field-def :default)
     for id-value = (when (equal field-key :id) id)
     for field-value = (or data-value record-value default-value id-value)
+    for field-type = (getf field-def :type)
     for column = (getf field-def :column)
     when column
-    collect (db-value type-key field-key user field-value)))
+    collect (if (and (eq field-type :password) (not data-value))
+              record-value
+              (db-value type-key field-key user field-value))))
 
 (defun user-fields (type-key)
   ":private: Returns a list of the field keys that should be validated for

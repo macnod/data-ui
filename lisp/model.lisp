@@ -1320,7 +1320,7 @@ of that file."
                   "models"
                   (format nil "~a.lisp" file))))
       (with-open-file (in path)
-        (set-model (read in)))))
+        (set-model (subseq (read in) 1)))))
   (:method ((file null))
     (set-model "default-model"))
   (:documentation ":public: Sets the model to the given plist. If given a
