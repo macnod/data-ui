@@ -105,6 +105,8 @@ Data UI is a Common Lisp system that takes a simple nested plist model and
 - Generic, model-driven backend functions and API endpoints
 - UI hints for dynamic React forms and lists
 - Per-field and per-form data validation endpoints
+- View-level scoping (`:scope :user`) for per-user data filtering
+- Tree-structured types with filesystem backing (directories, file storage)
 - Complete React frontend
 - Kubernetes manifests for deployment
 
@@ -161,7 +163,7 @@ model with `(set-model "todos")` — pass just the file name, with no path and n
 
 ```lisp
 (:title "To Do List"
-  :name "todo"
+  :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
   :repl t
@@ -214,7 +216,6 @@ model with `(set-model "todos")` — pass just the file name, with no path and n
       :fields
       (:name
         (:type :text
-          ;; TODO: Add checks for :input-type value
           :ui (:label "Tag" :input-type :line)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
@@ -371,11 +372,21 @@ from rt_tags"
 ## Key Model Features
 
 - `:reference` instead of manual IDs for clean relations
+- `:target` as a shorthand for `:reference` on non-joiner fields (sets up FK + UUID column)
 - `:views` to explicitly control joins (e.g., `:main (:tables (:todos :todo-tags :tags))`)
-- `:ui` hints (`:label`, `:input-type :checkbox-list`, etc.) for frontend rendering
+- `:scope :user` on a view to filter `be-list` results to records owned by the current user
+- `:ui` hints (`:label`, `:input-type`, `:render-as`) for frontend rendering
+- `:render-as` values: `:code`, `:image`, `:image-list` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview)
+- `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`
 - `:validations` common validation names, parameterized registry entries, or lambdas that validate form/field data
 - `:join-table` / `:ids-table` for many-to-many relationships
 - `:is-joiner t` for explicit join tables
+- `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` for tree-structured types with filesystem backing (directories, file storage)
+- `:path t` to mark the path field on fs-backed types
+- `:autofill :user` to auto-populate a field with the current username
+- `:per-user t` (type-level) to suppress the roles field (used by settings)
+- `:type-roles` to declare which roles can access a type
+- `:force-sql-name` to override the generated SQL column name
 - `:auto` for create/update/delete → generated SQL (or override with your own function)
 - Lifecycle hooks (`:create`, `:update`, `:delete`, `:post-create`, `:pre-delete`, etc.) that accept registry entries, shell calls, or raw functions
 - Non-base tables get an `rt_` prefix to avoid name collisions with RBAC tables
@@ -479,10 +490,20 @@ hook list as registry entries and raw lambdas.
 
 All endpoints stay **generic** — no per-type handler generation needed:
 
-- `GET /api/list?type=todos` → RBAC-gated results from the compiled view, including schema
-- `POST /api/validate`, `/api/insert`, `/api/update` → call validation first, then use compiled SQL
+- `GET /api/list?type=todos` → RBAC-gated results from the compiled view, including schema (`list-form`, `add-form`, `update-form`, `allowed-values`) and permission flags (`create`, `delete`, `update`)
+- `GET /api/item`, `/api/id`, `/api/value`, `/api/value-id`, `/api/column` → targeted data retrieval
+- `POST /api/insert`, `/api/update`, `/api/delete` → CRUD mutations (validation runs first)
+- `POST /api/upload` → file upload (multipart, returns `file-token`)
+- `POST /api/validate-field`, `/api/validate-form` → per-field and per-form validation
+- `GET /api/types`, `/api/info` → schema and metadata
+- `POST /api/login`, `/api/refresh` → JWT auth (access + refresh tokens)
+- `GET /api/file` → file serving (with token auth)
+- `GET /health` → health check
 
-React (or any frontend) can items with their schema and render forms/lists automatically.
+React (or any frontend) fetches items with their schema and renders
+forms/lists automatically. The `:ui` plist on each field is the extension
+point — `:render-as`, `:input-type`, and `:table` are consumed directly by
+the frontend components.
 
 
 ## Development
@@ -564,16 +585,27 @@ demonstrated end to end:
   code, across **all** types — both the built-in RBAC types (users, roles,
   permissions, resources, etc.) and user-defined types.
 - JWT-based authentication (access + refresh tokens) protects the API.
+- **Scoping** (`:scope :user` at the view level) is implemented in the
+  compiler and backend — `be-list` results are filtered to records owned
+  by the current user. Field-level scoping is not yet implemented.
+- **Model features in active use** (exercised by `models/modelbank.lisp`):
+  tree-structured types with filesystem backing (`:tree`, `:is-leaf`,
+  `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated
+  fields (`:autofill :user`), per-user types (`:per-user`), and UI hints
+  for code blocks, images, and image lists (`:render-as`).
 - File handling: uploading, listing, and deleting files and directories
   works end-to-end (uploads use a two-phase flow: `multipart/form-data`
   POST to `/api/upload`, then a JSON `/api/insert` carrying the returned
   `file-token`). File **update** is not yet implemented and may be
   deferred past the MVP.
-- Comprehensive tests for compilation, predicates, and backend code are
-  in `tests/predicate-tests.lisp` and `tests/backend-tests.lisp` (FiveAM).
-- React code in the `web/` directory is functional: log in, navigate as a
-  user, perform CRUD with RBAC enforcement. The UI works but needs polish
+- React frontend: log in, navigate as a user, perform CRUD with RBAC
+  enforcement, manage roles, upload and preview images (thumbnail grids
+  with modal/lightbox), inline edit mode. The UI works but needs polish
   — this is a current focus.
+- Tests for compilation, predicates, backend, REST, and scoping are in
+  `tests/` (FiveAM): `predicate-tests.lisp`, `backend-tests.lisp`,
+  `rest-tests.lisp`, `scoping-tests.lisp`, plus `helpers.lisp` and
+  `model-template.lisp`.
 
 Model compilation, SQL generation for tables/views/triggers, RBAC
 integration, validation, CRUD, and Kubernetes deployment are implemented
@@ -585,11 +617,11 @@ idempotent database initialization). See
 [Hooks and the Registry](#hooks-and-the-registry).
 
 See `lisp/model.lisp` for the current `*base-model*` and the `models/`
-directory for example models (one per file, e.g. `todos.lisp`), each
-loadable with `(set-model "todos")`, `lisp/backend.lisp` for the `be-*`
-API, `lisp/rest.lisp` for HTTP endpoints, and the `tests/` directory for
-usage examples. Ignore outdated references in older files. Contributions
-welcome — this is early stage!
+directory for example models (one per file, e.g. `todos.lisp`,
+`modelbank.lisp`, `widgets.lisp`), each loadable with
+`(set-model "todos")`, `lisp/backend.lisp` for the `be-*` API,
+`lisp/rest.lisp` for HTTP endpoints, and the `tests/` directory for
+usage examples. Contributions welcome — this is early stage!
 
 
 ## Road to MVP
@@ -605,14 +637,22 @@ Odds of hitting the date: **strong.** The reasoning, plainly:
   pipeline are working in production. These were the make-or-break
   items; everything that could have invalidated the core thesis has
   instead confirmed it.
-- What remains is effort-bounded, not research-bounded: UI polish,
-  additional example models to prove generality, and the video itself.
-  None of it requires solving an open problem; six months remain for
-  work measured in weeks.
+- What remains is effort-bounded, not research-bounded: building Model
+  Bank (the fitness function), write-through for related tables,
+  field-level scoping, UI polish, and the video itself. None of it
+  requires solving an open problem; six months remain for work measured
+  in weeks.
 - The main schedule risks are scope creep and polish perfectionism. The
   mitigations are written down: file update may ship after MVP,
   transactions are explicitly post-MVP, and the UI bar is "clean and
   demo-ready," not "design award."
+
+**Model Bank is the priority function.** The MVP must prove that real,
+non-trivial applications can be built on Data UI significantly faster
+than any alternative — and the way to prove that is to build one.
+Model Bank (a model-sharing application with relationships, ownership,
+image association, and ratings) is that application. Gaps surfaced by
+building Model Bank are, by definition, the highest-priority work.
 
 
 ## Goals & Vision

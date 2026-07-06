@@ -40,12 +40,19 @@ The goal is deterministic, repeatable development: change the model, recompile, 
 ## Key Architecture
 
 - `lisp/model.lisp` – Model compilation and the RBAC base model (`*base-model*`)
-- `models/` – Example models, one per file (e.g. `todos.lisp`, `parts.lisp`, `file-server.lisp`). Each file holds a bare model plist (no `defparameter`, no wrapping variable). Load one with `(set-model "todos")` — pass just the file name, with no path and no `.lisp` extension.
 - `lisp/backend.lisp` – Backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, etc.)
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
+- `lisp/predicates.lisp` – Type/field predicates (`table-p`, `base-type-p`, etc.)
+- `lisp/database.lisp` – Database initialization and table creation
+- `lisp/aux.lisp` – Auxiliary helpers (path utilities, scoped paths)
+- `lisp/plist-json.lisp` – Plist ↔ JSON serialization
+- `lisp/deployment.lisp` – Model field extraction for deploy scripts
+- `lisp/startup.lisp`, `lisp/data-ui.lisp`, `lisp/data-ui-package.lisp` – System startup and package definition
+- `models/` – Example models, one per file (e.g. `todos.lisp`, `parts.lisp`, `file-server.lisp`, `modelbank.lisp`, `widgets.lisp`). Each file holds a bare model plist (no `defparameter`, no wrapping variable). Load one with `(set-model "todos")` — pass just the file name, with no path and no `.lisp` extension.
 - `web/` – React frontend (Vite + TypeScript)
+- `tests/` – FiveAM test suites: `predicate-tests.lisp`, `backend-tests.lisp`, `rest-tests.lisp`, `scoping-tests.lisp`, plus `helpers.lisp` and `model-template.lisp`
 
-The non-frontend code is almost entirely Common Lisp (SBCL). Tests live in the `tests/` directory.
+The non-frontend code is almost entirely Common Lisp (SBCL).
 
 The frontend is intentionally minimal and schema-driven. It consumes `list-form`/`add-form`/`update-form`, `records`, and `allowed-values` from the API to render dynamic lists and forms.
 
@@ -105,13 +112,41 @@ not modified without human permission.
 - `models/todos.lisp` contains an example model for a To Do list; load it with `(set-model "todos")`. The deploy pipeline deploys `models/default-model.lisp`.
 - Full CRUD works on **all** types — both the built-in RBAC types (users, roles,
   permissions, resources, etc.) and user-defined types
+- **Scoping** (`:scope :user` at the view level) is implemented in the compiler
+  and backend. A view with `:scope :user` filters `be-list` results to records
+  owned by the current user. Tests in `tests/scoping-tests.lisp` (the behavioral
+  test is marked TODO, blocked on write-through). Field-level scoping is not yet
+  implemented.
+- **Model features now in use** (exercised by `models/modelbank.lisp`):
+  - `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` — tree-structured
+    types with filesystem backing (directories, file storage)
+  - `:path t` — marks the path field on fs-backed types
+  - `:autofill :user` — auto-populates a field with the current username
+  - `:per-user t` — type-level flag (used by settings); suppresses roles field
+  - `:render-as` UI hint (`:code`, `:image`, `:image-list`) — passed through the
+    `:ui` plist to the frontend for custom cell/form rendering
+  - `:input-type` values now include `:textbox`, `:select`, `:read-only`,
+    `:file`, `:check-box` (in addition to `:line`, `:checkbox-list`)
 - React frontend has:
   - Type selector (`/api/types`)
   - Dynamic list with conditional Add / Delete Selected buttons and per-row Edit buttons
   - Delete checkboxes (shown when `delete: true`)
   - Expandable Add/Edit form (uses `add-form` / `update-form`)
+  - Inline edit mode (per-row Edit button populates the form with record values)
   - Role management via injected `roles` field (filtered `allowed-values`)
+  - Image support: thumbnail grids, image preview modals/lightbox with
+    navigation and download
   - The `/api/list` response now includes `create`/`delete`/`update` booleans to control which action buttons are shown
+- REST API endpoints (all in `lisp/rest.lisp`):
+  - `/api/list`, `/api/item`, `/api/id`, `/api/value`, `/api/value-id`,
+    `/api/column` — data retrieval
+  - `/api/insert`, `/api/update`, `/api/delete` — CRUD mutations
+  - `/api/upload` — file upload (multipart, returns `file-token`)
+  - `/api/validate-field`, `/api/validate-form` — validation
+  - `/api/types`, `/api/info` — schema/metadata
+  - `/api/login`, `/api/refresh` — JWT auth (access + refresh tokens)
+  - `/api/file` — file serving (with token auth)
+  - `/health` — health check
 - File handling: upload, list, and **delete** (including recursive directory
   delete) work. The upload flow does a two-phase POST (`multipart/form-data`
   to `/api/upload`, then a JSON `/api/insert` carrying the returned
@@ -119,6 +154,8 @@ not modified without human permission.
 
 ### Known gaps / next up
 
+- **Write-through** — writing values to related tables (not just associations);
+  unblocks ratings. The scoping behavioral test is blocked on this.
 - File **update** is not implemented; may be deferred past the MVP
 - UI polish — important, a current focus
 - More example models (prove generality) — important, a current focus
@@ -213,9 +250,10 @@ the eventual boundary is intended to wrap a whole hook list as a unit.
 ## Important Design Decisions
 
 - RBAC types are treated exactly like user-defined types. Thus, you can add a role to a user in the same way that you would add a tag to a To Do item.
-- Non-base types automatically receive a `roles` field (checkbox-list) in all forms
+- Non-base types automatically receive a `roles` field (checkbox-list) in all forms, unless `:per-user t` is set on the type
 - The backend injects filtered `allowed-values.roles` so users only see roles they can assign
 - Forms are schema-driven; the frontend does not hard-code field lists
+- The `:ui` plist is passed through to the frontend verbatim — new UI hints (like `:render-as`) work without backend changes
 - Delete uses the existing single-record-delete endpoint in a loop (acceptable for MVP)
 - Keep models small; hide RBAC complexity from model authors
 
@@ -226,6 +264,8 @@ the eventual boundary is intended to wrap a whole hook list as a unit.
 - The app is intentionally simple — avoid adding heavy routing, state libraries, or styling until MVP is proven
 - All forms render from the schema returned by `/api/list`
 - Permission flags (`create`/`delete`/`update`) returned by `/api/list` control visibility of Add, Delete, and Edit controls
+- The `:ui` plist is the extension point for frontend rendering — `:render-as`, `:input-type`, and `:table` are consumed by the React components
+- Image rendering: `:render-as :image` and `:render-as :image-list` trigger thumbnail grids with modal/lightbox preview; the `:table` key on the field tells the frontend which type to use for `/api/file` URLs
 
 ## Goals
 
@@ -259,10 +299,11 @@ gaps that block building real apps cannot.
 Priorities now:
 1. **Build Model Bank** — the live priority function; gaps it surfaces
    drive everything below
-2. **Scoping** (`:scope`) — type-level and field-level; unblocks
-   per-user filtering (settings isolation, image association, ratings)
-3. **Write-through** — writing values to related tables (not just
-   associations); unblocks ratings
+2. **Write-through** — writing values to related tables (not just
+   associations); unblocks ratings. This is the current blocker for
+   the scoping behavioral test.
+3. **Field-level scoping** — view-level `:scope :user` is done;
+   field-level scope is not yet implemented
 4. **UI polish** — the video shows the UI; it must look clean
 5. **The 30-second video** — nothing → deployed app
 6. File update (only if time permits; otherwise post-MVP)
