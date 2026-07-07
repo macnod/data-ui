@@ -17,6 +17,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 ## Table of Contents
 
 - [The Big Idea](#the-big-idea)
+- [The Thesis in Six Lines](#the-thesis-in-six-lines)
 - [Why AI Needs Data UI](#why-ai-needs-data-ui)
 - [Overview](#overview)
 - [Core Philosophy](#core-philosophy)
@@ -57,6 +58,30 @@ Change the model, recompile, and everything updates consistently. The model is
 the DNA of the application. At less than a page of code for many applications,
 that DNA is tiny compared to the many thousands of lines that would otherwise
 be needed to describe such an application.
+
+
+## The Thesis in Six Lines
+
+> The 40,000-line application is dead. The 40-line model that compiles into
+> one just won.
+
+> Change one file. Recompile. Every schema, every endpoint, every permission
+> check, every UI form updates together — because they were never separate
+> things.
+
+> An application that once required a team, a quarter, and a budget now fits
+> in the body of an email and deploys in one command.
+
+> Before Data UI: "We'll need a backend engineer, a frontend engineer, a
+> DevOps person, and six weeks." After Data UI: "I just sent you the model."
+
+> You don't maintain a Data UI application. You maintain a 40-line
+> description, and the running system is a pure function of that description.
+> The concept of "maintenance" as we know it just disappeared.
+
+> AI can now ship production applications. Not suggest code. Not draft
+> migrations. Ship. The missing piece was never the AI — it was the invariant
+> engine that lets the AI's output be trusted.
 
 
 ## Why AI Needs Data UI

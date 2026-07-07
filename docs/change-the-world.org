@@ -246,6 +246,35 @@ compiler's job. When you internalize that, the implications are obvious. The
 question isn't whether this changes how software is built. The question is how
 fast.
 
+* The Thesis in Six Lines
+
+The argument of this document, compressed to its sharpest form:
+
+1. *The 40,000-line application is dead.* The 40-line model that
+   compiles into one just won.
+
+2. *Change one file. Recompile.* Every schema, every endpoint, every
+   permission check, every UI form updates together — because they
+   were never separate things.
+
+3. *Team, quarter, budget → email, one command.* An application that
+   once required a team, a quarter, and a budget now fits in the body
+   of an email and deploys in one command.
+
+4. *The before/after.* Before Data UI: "We'll need a backend engineer,
+   a frontend engineer, a DevOps person, and six weeks." After Data UI:
+   "I just sent you the model."
+
+5. *Maintenance disappears.* You don't maintain a Data UI application.
+   You maintain a 40-line description, and the running system is a pure
+   function of that description. The concept of "maintenance" as we
+   know it just disappeared.
+
+6. *AI ships production applications.* AI can now ship production
+   applications. Not suggest code. Not draft migrations. Ship. The
+   missing piece was never the AI — it was the invariant engine that
+   lets the AI's output be trusted.
+
 ---
 
 Repo: [[https://github.com/macnod/data-ui][github.com/macnod/data-ui]]

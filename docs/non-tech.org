@@ -2,6 +2,25 @@
 #+AUTHOR: Donnie
 #+DATE: 2026
 
+* The Big Picture
+
+Here's what has changed, in plain terms:
+
+- An application that used to require a team of developers, weeks of
+  work, and thousands of dollars now fits in a short file you could
+  email to someone, and deploys with a single command.
+
+- The old conversation was: "We'll need to hire a backend person, a
+  frontend person, someone to handle the servers, and give them a
+  month or two." The new conversation is: "I just sent you the
+  model."
+
+- You don't /maintain/ a Data UI application the way you used to. You
+  keep the short description up to date, and the running application
+  is always a perfect reflection of it. There's no separate pile of
+  code to keep in sync. The idea of "maintenance" — as a recurring
+  cost and a source of bugs — essentially disappears.
+
 * You Need an App. You Don't Need a Developer.
 
 You have an idea. A task tracker for your team. A shared inventory
