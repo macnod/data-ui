@@ -1,0 +1,377 @@
+#+TITLE: Data UI: Your Whole App, in an Email
+#+AUTHOR: Donnie
+#+DATE: 2026
+
+* The Pitch
+
+You know the drill. You need a CRUD app with user accounts, roles,
+permissions, a database, an API, and a frontend. So you scaffold a
+backend, wire up an ORM, write migrations, build auth, define RBAC
+middleware, create React components for each entity, write form
+validation, set up deployment, configure TLS, and pray you didn't
+leave a permission hole somewhere.
+
+Two weeks later, you have 40,000 lines of code to maintain — and the
+next feature request means touching a dozen files across the stack to
+keep everything consistent.
+
+Data UI replaces all of that with a single page of model
+description. You describe your data. The compiler produces the
+database, the API, the RBAC enforcement, the frontend, and the
+deployment. One command puts it on the internet behind TLS.
+
+No boilerplate. No per-type handlers. No hidden permission bugs.
+
+* The Problem (That You've Lived With So Long You Forgot It's a Problem)
+
+Building a data-backed application with proper role-based access
+control is not hard because of any single piece. It's hard because of
+the /combinatorial explosion/: every role × every resource × every
+operation, evolving over time. A 10-entity app with 5 roles has 150
+permission checks to get right. Add an entity? That's 15 more. Add a
+role? That's 10 more. And every one of them has to stay consistent
+across the database schema, the API layer, the frontend, and the
+authorization middleware — forever, as the app evolves.
+
+This is the part that breaks under iteration. Not because developers
+are careless, but because the invariant surface is too large for any
+human (or AI) to hold in their head at once. So permission bugs
+accumulate. Migrations drift. The frontend and backend fall out of
+sync. And every new feature is a multi-file archaeological dig before
+you write a single line of logic.
+
+Existing tools don't solve this. Low-code platforms bolt RBAC on as an
+afterthought. Scaffolding generators produce opaque code you then have
+to maintain by hand. Frameworks give you the pieces but leave the
+assembly — and the invariant enforcement — to you.
+
+* The Idea
+
+Express your /entire application/ as a small, reviewable artifact. Let
+a compiler guarantee the expansion is correct.
+
+The model is the DNA of the app. It's small — less than a page for
+many applications. It describes entities, relationships, UI hints, and
+validation rules. The compiler takes that model and produces:
+
+- **PostgreSQL** tables, views, and triggers (UUID keys, audit
+  timestamps, auto-updating =updated_at=)
+- **Parameterized CRUD SQL** — no string concatenation, no SQL
+  injection surface
+- **Full RBAC** — users, roles, permissions, resources, all enforced
+  on every operation, all manageable through the same UI as your data
+- **A generic REST API** — =/api/list=, =/api/insert=,
+  =api/update=, =/api/delete= work for /every/ type, including the
+  RBAC types themselves
+- **A schema-driven React frontend** — forms, lists, validation, image
+  handling, role management, all rendered from the model
+- **Kubernetes deployment** — one command, TLS, its own domain
+
+Change the model, recompile, redeploy. Everything stays
+consistent. The compiler is the enforcement mechanism you've been
+missing.
+
+* What It Looks Like
+
+Here's a complete to-do application — entities, relationships,
+validation, UI hints, RBAC roles:
+
+#+begin_src lisp
+(:title "To Do List"
+  :name "todos"
+  :version "0.1"
+  :domain "todo.demo.data-ui.com"
+  :types
+  (:todos
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users")
+      :views (:main (:tables (:todos :todo-tags :tags)))
+      :fields
+      (:name
+        (:type :text
+          :ui (:label "To Do" :input-type :line)
+          :validations (:required)
+          :column t :not-null t :unique t)
+        :points
+        (:type :integer :default 0
+          :ui (:label "Points" :input-type :line)
+          :validations (:required)
+          :column t :not-null t)
+        :done
+        (:type :boolean :default :false
+          :ui (:label "Done" :input-type :check-box)
+          :column t :not-null t)
+        :tags
+        (:type :list
+          :ui (:label "Tags" :input-type :checkbox-list)
+          :validations (:join-items-exist)
+          :join-table :todo-tags))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+    :tags
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users")
+      :fields
+      (:name
+        (:type :text
+          :ui (:label "Tag" :input-type :line)
+          :validations (:required)
+          :column t :not-null t :unique t))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+    :todo-tags
+    (:table t :is-joiner t :internal t
+      :fields
+      (:reference (:target :todos)
+        :reference (:target :tags)))))
+#+end_src
+
+That's it. That's the whole application. From that model, the compiler
+generates:
+
+- Three PostgreSQL tables with proper constraints and triggers
+- A joined view that pulls tags into to-do listings without extra
+  queries
+- A many-to-many relationship through =todo-tags=, fully automatic
+- CRUD SQL for every operation
+- RBAC enforcement on every endpoint
+- A React frontend with add/edit/delete, tag checkboxes, and inline
+  editing
+- JWT authentication
+- Kubernetes manifests ready to deploy
+
+And it's not a toy. This exact model is [[https://todo.demo.data-ui.com][live in production]] right now.
+
+* What You Get
+
+** A Real Database
+
+PostgreSQL with UUID primary keys, audit timestamps (=created_at=,
+=updated_at=), automatic =updated_at= triggers, constraints, unique
+indexes, and smart joined views. No manual migrations — the schema is
+derived from the model, deterministically, every time.
+
+** RBAC That's Actually Built In
+
+Users, roles, permissions, resources — all first-class types. You
+manage them through the same UI and API as your own data. Want to add
+a role to a user? Same operation as adding a tag to a to-do item. The
+RBAC library ([[https://github.com/macnod/rbac][macnod/rbac]]) is mature and battle-tested, and every
+single operation in Data UI passes through it.
+
+Users only see roles they can assign. Permission flags control which
+buttons appear in the UI. There is no separate admin layer — it's all
+the same system.
+
+** A Generic API
+
+No per-type handlers. No code generation that you then maintain. The
+endpoints are generic and model-driven:
+
+| Endpoint                   | Purpose                                    |
+|----------------------------+--------------------------------------------|
+| =GET /api/list=            | List records + schema + permission flags   |
+| =GET /api/item=            | Single record                              |
+| =POST /api/insert=         | Create (validation runs first)             |
+| =POST /api/update=         | Update (validation runs first)             |
+| =POST /api/delete=         | Delete                                     |
+| =POST /api/upload=         | File upload (returns file-token)           |
+| =POST /api/validate-field= | Per-field validation                       |
+| =POST /api/validate-form=  | Full-form validation                       |
+| =GET /api/types=           | Available types                            |
+| =POST /api/login=          | JWT auth (access + refresh tokens)         |
+
+** A Frontend That Renders From the Schema
+
+The React frontend doesn't hard-code field lists. It reads the schema
+from the API and renders forms, lists, and controls
+dynamically. Checkboxes for booleans, text lines for strings,
+checkbox-lists for many-to-many relationships, file pickers for
+uploads, thumbnail grids for images with lightbox preview.
+
+UI hints flow from the model through the API to the frontend without
+backend changes: =:render-as :image= triggers image rendering,
+=:render-as :code= renders code blocks, =:input-type :select= renders
+a dropdown. The =:ui= plist is the extension point.
+
+** One-Command Deployment
+
+#+begin_src sh
+scripts/data-ui deploy
+#+end_src
+
+That command: compile-checks the model, tags the release, builds a
+Docker image (React frontend in one stage, precompiled SBCL in
+another), renders Kubernetes manifests, applies them to a k3d cluster
+(each instance in its own namespace with its own PostgreSQL and
+persistent volumes), and updates HAProxy routing so your model's
+=:domain= serves the app over TLS.
+
+It's deterministic and repeatable. Every fact is derived from the
+model and the git commit. You can re-run it from a fresh machine
+without breaking a running instance.
+
+* What Makes It Different
+
+** It's a compiler, not a generator.
+
+Code generators produce code you have to read, understand, and
+maintain. Data UI /compiles/ your model into a running system. The
+generated artifacts (SQL, views, API behavior) are deterministic
+outputs of the model — you don't edit them, you change the model and
+recompile. This is the same relationship you have with a compiler:
+you don't hand-edit assembly.
+
+** The model is small enough to review.
+
+The entire application fits in a code review. You can read it in under
+a minute. You can email it to a colleague. You can diff it. This is
+not an accident — it's the core design constraint. The model stays
+small; the compiler does the heavy lifting.
+
+** RBAC is foundational, not bolted on.
+
+Most platforms treat permissions as a feature you add later. Data UI
+treats them as the substrate. The RBAC model is compiled in from the
+start, enforced on every operation, and manageable through the same
+interface as everything else. This means no permission bugs hiding in
+forgotten corners of the codebase.
+
+** Custom logic without rebuilding the architecture.
+
+Need validation beyond the built-ins? Attach hooks. Three forms
+coexist:
+
+- *Registry entries* (data-only): =(:max-length 20)= — parameterized,
+  serializable, AI-consumable
+- *Shell hooks* (data-only): =(:shell "thumbnail.sh")= — the compiler
+  generates the adapter, your script gets JSON on stdin
+- *Raw lambdas* (expert tier): full Lisp, for when you need complete
+  control
+
+All hooks conform to the same contract. The compiler treats them
+uniformly.
+
+* Who It's For
+
+- **Developers building internal tools.** Stop spending two weeks on
+  scaffolding. Describe your data, deploy, and get back to the actual
+  problem.
+
+- **Teams building client portals or multi-tenant apps.** RBAC is the
+  hard part, and it's already done. Every operation is gated. Every
+  role is enforceable. Every permission is consistent.
+
+- **Anyone who's been burned by permission bugs.** The compiler
+  guarantees consistency. No more "we forgot to check permissions on
+  that endpoint."
+
+- **AI-assisted development.** This is the interesting one. An AI can
+  produce a 40-line model. It /cannot/ produce a 40,000-line
+  application whose permissions remain globally consistent as the app
+  evolves. Data UI puts the AI in the regime where it's strong
+  (producing small structured models) and the compiler handles the
+  regime where the AI is weak (expanding that into a system with
+  globally consistent RBAC).
+
+* Two Tiers, One Engine
+
+Data UI serves two audiences through a single compiler:
+
+- *Expert / self-hosting tier* (open source, MIT). Full power. Raw
+  Lisp lambdas as hooks. Override any lifecycle operation. The
+  guardrail is your own judgment. This is a shotgun — it doesn't stop
+  you from doing what you want.
+
+- *AI / no-code / hosted tier* (coming post-MVP). Pure data models
+  (YAML/JSON). Hooks from a curated, parameterized registry. No
+  raw-code escape hatch. The constraint /is/ the product — it makes
+  the tier safe to operate and consumable by an AI.
+
+Both tiers reduce to the same contract before anything runs. The
+compiler never special-cases one against the other.
+
+* Current Status (June 2026)
+
+This is not a slide deck. It's a working system:
+
+- Full pipeline proven end to end: model → compile → deploy → live app
+- The to-do model is deployed and serving real users at
+  https://todo.demo.data-ui.com
+- Full CRUD on all types — user-defined and built-in RBAC
+- JWT authentication (access + refresh tokens)
+- View-level scoping (= :scope :user=) for per-user data filtering
+- Tree-structured types with filesystem backing (directories, file storage)
+- File upload, listing, and delete (including recursive directory delete)
+- Image support: thumbnail grids, modal/lightbox preview, download
+- Schema-driven React frontend with inline editing and role management
+- Kubernetes deployment with TLS, per-instance namespaces, persistent volumes
+- Test suites for compilation, predicates, backend, REST, and scoping
+
+The engine is written in Common Lisp (SBCL). The frontend is React +
+TypeScript (Vite). The database is PostgreSQL. The RBAC library is
+[[https://github.com/macnod/rbac][macnod/rbac]]. Everything is open source under MIT.
+
+* The Roadmap
+
+MVP target: **December 2026.** A 30-second video that goes from nothing
+— no database, no code — to a deployed, working application.
+
+The riskiest milestones are already behind us: the compiler, RBAC
+integration, the generic API, and the deployment pipeline are all
+working in production. What remains is effort-bounded, not
+research-bounded.
+
+The priority is **Model Bank** — a model-sharing application with
+relationships, ownership, image association, and ratings. It's the
+fitness function for the MVP: if Data UI can build Model Bank
+significantly faster than any alternative, the thesis is proven.
+
+Post-MVP: hosted service with YAML/JSON input and AI prompts, the
+curated hook registry, a marketplace of shareable models, and managed
+hosting.
+
+* Try It
+
+#+begin_src sh
+git clone https://github.com/macnod/data-ui.git
+cd data-ui
+scripts/data-ui repl
+#+end_src
+
+In Slime:
+
+#+begin_src lisp
+(set-model "todos")
+#+end_src
+
+Open http://localhost:8081. You have a running application.
+
+When you're ready to deploy:
+
+#+begin_src sh
+scripts/data-ui deploy
+#+end_src
+
+Minutes later, your app is on the internet, behind SSL, with its own domain name.
+
+* The Bottom Line
+
+Data UI is not another framework. It's not a low-code platform. It's a
+/compiler/ that turns a small, reviewable model into a complete,
+RBAC-backed, deployed application — deterministically, every time.
+
+The model is the whole app. The compiler guarantees it's correct. One
+command puts it on the internet.
+
+That's it. That's the pitch.
+
+---
+
+Repo: [[https://github.com/macnod/data-ui][github.com/macnod/data-ui]]
+License: MIT
+Live demo: [[https://todo.demo.data-ui.com][todo.demo.data-ui.com]]

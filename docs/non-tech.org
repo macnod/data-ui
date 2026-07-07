@@ -1,0 +1,257 @@
+#+TITLE: Data UI: Describe Your App, Click, and It's Live
+#+AUTHOR: Donnie
+#+DATE: 2026
+
+* You Need an App. You Don't Need a Developer.
+
+You have an idea. A task tracker for your team. A shared inventory
+for your business. A directory of members for your club. You know
+exactly what it should do — a list of items, a few fields, maybe
+categories, maybe the ability to upload photos.
+
+So you start looking into how to build it, and here's what you find:
+you need a database, a backend, an API, a frontend, user accounts,
+login, permissions, a server, a domain name, a security certificate,
+and someone who understands all of it. The quotes come back at
+$15,000. Or $40,000. Or "we can get you an MVP in eight weeks."
+
+Data UI does all of it. You describe what you want in a short file,
+run one command, and your application is live on the internet — with
+user accounts, with permissions, with a clean interface — in minutes.
+
+No developer required.
+
+* What Do You Mean, "Describe It"?
+
+Think of it like a recipe. A recipe doesn't build the cake — it
+/tells you/ what goes into the cake. Data UI works the same way. You
+write a short description of your data:
+
+- What things does your app track? (Tasks, products, members,
+  recipes, properties — whatever you need)
+- What fields does each thing have? (A name, a description, a
+  checkbox for "done," a category, a photo)
+- How do they relate? (A task can have tags, a product belongs to a
+  category)
+
+That description is called a /model/. It's a single file, usually
+shorter than this page. From that file, Data UI builds everything:
+the database, the user interface, the login system, the permissions,
+the web server, the security — all of it.
+
+* But I Don't Know How to Write Code
+
+Here's the part that surprises people: **you don't have to start from
+scratch.**
+
+Data UI has something called the **Model Bank** — a library of
+ready-made models that other people have created and shared. It works
+like an app store, but instead of downloading finished apps, you
+browse models: short descriptions of applications that are ready to
+deploy.
+
+**Here's what the process looks like:**
+
+1. *Browse the Model Bank.* You see a to-do list app, an inventory
+   tracker, a member directory, a recipe collection, a project
+   board. Each one is a working application, described in a small
+   file.
+
+2. *Find one that's close to what you need.* Maybe you want a task
+   tracker, but you also want a "priority" field. Or you want the
+   member directory, but you need to track membership expiration
+   dates.
+
+3. *Copy it.* One click. The model is now yours.
+
+4. *Make your changes.* This is the part that sounds scary but
+   isn't. The model is just a list of fields and their types. Adding
+   a field looks like this:
+
+   #+begin_src lisp
+   :priority
+   (:type :text
+     :ui (:label "Priority" :input-type :select))
+   #+end_src
+
+   That's it. You added a dropdown called "Priority" to your task
+   tracker. You didn't write a database migration. You didn't touch
+   the frontend. You didn't configure anything. You added five lines
+   to a file.
+
+5. *Deploy.* One command. Your customized app is live on the
+   internet, with its own address, behind encryption, ready to use.
+
+**From idea to live app, the whole thing can take ten minutes.** And
+most of that time is you deciding what fields you want.
+
+* What If I Get Stuck?
+
+The model format is designed to be readable. It's not code in the
+traditional sense — there are no functions, no logic, no control
+flow. It's a structured list of /what your data looks like/, written
+in a format that's mostly just keywords and values.
+
+If you can fill out a form, you can edit a model. And because models
+are small (often under a page), you can see the whole thing at once
+and understand what each part does.
+
+Post-MVP, Data UI will also accept models in YAML and JSON — formats
+that are even more approachable for non-technical users — and will
+offer an AI assistant that can generate or modify models from plain
+English descriptions. "I need an app to track book loans for my
+library, with borrower names, book titles, and due dates" will
+produce a model you can review, tweak, and deploy.
+
+* What You Actually Get
+
+Every Data UI app comes with these features, automatically, with no
+extra effort on your part:
+
+** User Accounts and Login
+
+People sign up, log in, and manage their own accounts. Secure
+passwords. Session management. Token-based authentication. You don't
+configure any of it — it's just there.
+
+** Permissions and Roles
+
+Not everyone should see everything. Data UI handles this from the
+start. You can have admins who can do anything, regular users who can
+only see their own data, or any role structure you need. And you
+manage roles through the same simple interface as everything else —
+assigning a role to a user is as easy as checking a box.
+
+** A Clean, Working Interface
+
+Lists of your data. Forms to add and edit items. Checkboxes for
+yes/no fields. Dropdowns for categories. Image upload with thumbnail
+previews. Delete buttons (only shown to people who have permission to
+delete). It's not flashy, but it's clean, functional, and works on
+any device with a browser.
+
+** Your Own Web Address
+
+When you deploy, your app gets its own URL. It's served over HTTPS
+(encrypted, secure). You can share the link with anyone and they can
+use your app immediately.
+
+** A Real Database
+
+Your data is stored in PostgreSQL — an industrial-strength database
+used by major companies worldwide. It's not a spreadsheet or a flat
+file. It's the real thing, with proper constraints, data integrity,
+and backup capability.
+
+* How Is This Possible?
+
+The secret is that most applications are mostly the same. A task
+tracker, an inventory system, a member directory — they all have the
+same bones: lists of things, fields on those things, relationships
+between things, user accounts, and permissions. What changes is the
+specifics: /which/ things, /which/ fields, /which/ relationships.
+
+Data UI captures the specifics in a small model and handles all the
+common machinery itself. It's a /compiler/ — the same kind of tool
+that turns source code into running software, but instead of
+translating programming instructions, it translates your data
+description into a complete, working application.
+
+This is why the model stays small: you only describe what's /unique/
+about your app. Everything else — the database setup, the API, the
+security, the deployment — is the compiler's job.
+
+* How Is This Different from [Other Tool]?
+
+You've maybe seen website builders, no-code platforms, or low-code
+tools. Here's what makes Data UI different:
+
+- *Website builders* (Wix, Squarespace) make beautiful /pages/. They
+  don't make data-driven applications with user accounts, permissions,
+  and complex relationships.
+
+- *No-code platforms* (Bubble, Glide) can build apps, but you build
+  them by dragging boxes on a canvas and clicking through menus. The
+  result is locked inside their platform. If they change their
+  pricing or shut down, your app is gone. And the logic is spread
+  across dozens of UI panels that are hard to review or share.
+
+- *Data UI* puts your entire application in a single, small,
+  human-readable file. You can email it. You can put it in version
+  control. You can hand it to someone else and they can understand
+  it. And because it's open source, you can run it anywhere — no
+  vendor lock-in.
+
+The model /is/ the application. There's nothing else to maintain.
+
+* A Concrete Example
+
+Let's say you run a small library and want to track book loans.
+
+You browse the Model Bank and find a "Member Directory" model. It
+tracks people with names, emails, and phone numbers. Close, but you
+need more.
+
+You copy the model and add:
+
+- A =books= section with title, author, and ISBN fields
+- A =loans= section that connects a member to a book, with a due-date
+  field
+- A =returned= checkbox on each loan
+
+That's maybe twenty lines of additions to a file you already
+understand. You deploy, and now you have:
+
+- A working web app at your own URL
+- Members who can log in
+- A list of books you can add to and edit
+- A loan tracker that shows who has what and when it's due
+- Admin controls so only you can mark loans as returned
+
+Total time: maybe thirty minutes, and most of that was you thinking
+about what fields you wanted.
+
+* What's Ready Right Now
+
+Data UI is in active development, with a target MVP date of December
+2026. Here's what's working today:
+
+- A live, deployed to-do application you can try at
+  [[https://todo.demo.data-ui.com][todo.demo.data-ui.com]]
+- Full create / read / update / delete on all data types
+- User accounts with secure login
+- Role-based permissions (admins, regular users, custom roles)
+- File and image upload with thumbnail previews
+- One-command deployment to a live server with TLS
+- A growing library of example models
+
+The Model Bank — the shared library of ready-to-use models — is the
+current focus, because it's the key to making Data UI useful for
+people who don't write code.
+
+* What's Coming
+
+- **YAML and JSON model input** — edit models in formats that are
+  even friendlier than the current Lisp syntax
+- **AI-assisted model creation** — describe your app in plain English
+  and get a model you can review and deploy
+- **The Model Bank marketplace** — browse, share, fork, and customize
+  models from a community library
+- **Managed hosting** — one-click deploy without setting up a server
+
+* The Bottom Line
+
+If you can describe what your app should track, you can have a
+running application. You don't need to hire a developer. You don't
+need to learn to code. You don't need to spend weeks or thousands of
+dollars.
+
+Find a model that's close. Copy it. Add your fields. Deploy.
+
+That's it.
+
+---
+
+Live demo: [[https://todo.demo.data-ui.com][todo.demo.data-ui.com]]
+Source code: [[https://github.com/macnod/data-ui][github.com/macnod/data-ui]]
+License: MIT
