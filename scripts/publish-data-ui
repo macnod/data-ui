@@ -1,0 +1,46 @@
+#!/bin/bash
+# publish-data-ui — squash private work into a clean commit and push
+# to public, then sync the squashed history back to private.
+#
+# Usage: publish-data-ui "commit message"
+
+set -euo pipefail
+
+COMMIT_MSG="${1:-Update}"
+
+# Ensure we're on master
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$BRANCH" != "master" ]; then
+  echo "Not on master (on $BRANCH). Switch first."
+  exit 1
+fi
+
+# Check for uncommitted changes
+if ! git diff-index --quiet HEAD --; then
+  echo "Uncommitted changes. Commit to private first."
+  exit 1
+fi
+
+# Check that we're ahead of public/master
+REMOTE_REF=$(git rev-parse --short public/master 2>/dev/null || echo "none")
+LOCAL_REF=$(git rev-parse --short HEAD)
+if [ "$REMOTE_REF" = "$LOCAL_REF" ]; then
+  echo "Nothing to publish."
+  exit 0
+fi
+
+# Count commits to squash
+COUNT=$(git rev-list --count public/master..HEAD)
+echo "Squashing $COUNT commit(s) into one."
+
+# Soft reset to public/master, then recommit with current time
+git reset --soft public/master
+git commit -m "$COMMIT_MSG"
+
+echo "Pushing to public..."
+git push public master
+
+echo "Syncing squashed history to private..."
+git push private master --force
+
+echo "Done. Published at $(date '+%Y-%m-%d %H:%M')."
