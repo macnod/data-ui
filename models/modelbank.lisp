@@ -55,7 +55,7 @@
            :write-to (:table :ratings
                        :model :this
                        :user :user
-                       :rating :value))
+                       :rating :value)))
        :list-form (:fields t)
        :update-form (:fields t)
        :add-form (:fields t))
@@ -133,7 +133,7 @@
          (:type :integer
            :ui (:label "Rating" :input-type :line)
            :source (:view :main :table :ratings :column :rating :agg :first)
-           :column t :not-null t))
+           :column t))
        :list-form (:fields t)
        :update-form (:fields t)
        :add-form (:fields t))))

@@ -830,6 +830,37 @@ necessary."
       (push #'v-required vfs))
     vfs))
 
+(defun write-to (model type-key field-key field-def)
+  (let ((wt (getf field-def :write-to)))
+    (when wt
+      (unless (u:plistp wt)
+        (error "The ~s ~s :write-to value must be a proper plist"
+          type-key field-key))
+      (unless (u:has (u:plist-keys wt) :table)
+        (error "The ~s ~s :write-to value must include a :table key"
+          type-key field-key))
+      (let ((to-table (getf wt :table)))
+        (unless (and
+                  (u:tree-get model to-table)
+                  (not (u:tree-get model to-table :internal)))
+          (error "The ~s ~s :write-to :table value must be an existing type ~
+                  and not :internal" type-key field-key))
+        (unless (u:has (u:plist-values wt) :value)
+          (error "The ~s ~s :write-to value must include a field with with ~
+                :value as its value tag." type-key field-key))
+        (loop for k in wt by #'cddr
+          unless (or (equal k :table) (u:tree-get model to-table :fields k))
+          do (error "The ~s ~s :write-to key ~s doesn't exist in :write-to ~
+                     :table ~s" type-key field-key k to-table))
+        (loop
+          for k in wt by #'cddr
+          for v in (cdr wt) by #'cddr
+          unless (or (equal k :table) (u:has '(:this :user :value) v))
+          do (error "The ~s ~s :write-to key ~s must have a value of ~
+                     :this, :user, or :value. Unknown value ~s"
+               type-key field-key k v)))
+      wt)))
+
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
     with force-sql-name = (getf field-def :force-sql-name)
@@ -874,6 +905,8 @@ necessary."
                        :source (field-source model type-key new-field-key
                                  field-def name-key)
                        :source-all (getf field-def :source-all)
+                       :write-to (write-to model type-key
+                                   new-field-key field-def)
                        :type (or (getf field-def :type) :text)
                        :column column
                        :not-null (if (getf field-def :target)
