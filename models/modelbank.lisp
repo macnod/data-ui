@@ -26,7 +26,7 @@
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("models-user")
-       :views (:main (:tables (:models :images)))
+       :views (:main (:tables (:models :images :ratings)))
        :fields
        (:name
          (:type :text
@@ -47,7 +47,15 @@
          :images
          (:type :list
            :ui (:label "Images" :input-type :read-only :render-as :image-list)
-           :source (:view :main :table :images :column :name :agg :list)))
+           :source (:view :main :table :images :column :name :agg :list))
+         :rating
+         (:type :integer
+           :ui (:label "Rating" :input-type :line)
+           :source (:view :main :table :ratings :column :rating :agg :first)
+           :write-to (:table :ratings
+                       :model :this
+                       :user :user
+                       :rating :value))
        :list-form (:fields t)
        :update-form (:fields t)
        :add-form (:fields t))
@@ -91,6 +99,40 @@
            :target :models
            :source (:view :main :table :models :column :name :agg :first)
            :source-all (:view :models :table :models :column :name :agg :list)
+           :column t :not-null t))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))
+
+     :ratings
+     (:table t
+       :create :auto :update :auto :delete :auto :display t
+       :type-roles ("ratings-user")
+       :views (:main (:tables (:ratings :models :users) :scope :user)
+                :models (:tables (:models))
+                :users (:tables (:users) :scope :user))
+       :fields
+       (:model
+         (:type :text 
+           :force-sql-name "rating_model"
+           :ui (:label "Model" :input-type :select)
+           :target :models
+           :source (:view :main :table :models :column :name :agg :first)
+           :source-all (:view :models :table :models :column :name :agg :list)
+           :column t :not-null t)
+         :user
+         (:type :text
+           :autofill :user
+           :force-sql-name "rating_user"
+           :ui (:label "User" :input-type :read-only)
+           :target :users
+           :source (:view :main :table :users :column :name :agg :first)
+           :source-all (:view :users :table :users :column :name :agg :list)
+           :column t :not-null t)
+         :rating
+         (:type :integer
+           :ui (:label "Rating" :input-type :line)
+           :source (:view :main :table :ratings :column :rating :agg :first)
            :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
