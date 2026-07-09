@@ -219,7 +219,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :pre-delete ,#'remove-user-settings
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
-       :fields (:name (:type :text
+       :fields (:name (:type :text :identity t
                         :source (:view :main :column :name :agg :first)
                         :ui (:label "Username" :input-type :line)
                         :validations (:required :user-name)
@@ -254,7 +254,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :create nil :update nil :delete nil :display nil
        :views (:main (:tables (:resources :resource-roles :roles))
                 :roles (:tables (:roles)))
-       :fields (:name (:type :text
+       :fields (:name (:type :text :identity t
                         :ui (:label "Resource" :input-type :line)
                         :source (:view :main :column :name :agg :first)
                         :validations (:required)
@@ -279,7 +279,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :delete ,#'rbac-remove-permission
        :display t
        :type-roles ("logged-in" "permission-creator")
-       :fields (:name (:type :text
+       :fields (:name (:type :text :identity t
                         :ui (:label "Permission" :input-type :line)
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t))
@@ -296,7 +296,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :type-roles ("logged-in" "role-creator")
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
-       :fields (:name (:type :text
+       :fields (:name (:type :text :identity t
                         :ui (:label "Role" :input-type :line)
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
@@ -340,7 +340,7 @@ returns S. If S is not a string or a number, this function returns NIL."
        :per-user t
        :views (:main (:tables (:settings :users))
                 :users (:tables (:users)))
-       :fields (:user (:type :text
+       :fields (:user (:type :text :identity t
                         ;; TODO: This should not be needed. Fix compiler.
                         :force-sql-name "setting_user"
                         :ui (:label "Login" :input-type :read-only)
@@ -861,24 +861,38 @@ necessary."
                type-key field-key k v)))
       wt)))
 
+(defun valid-target (model type-key field-key field-def)
+  (let ((target (getf field-def :target)))
+    (unless (u:has (u:plist-keys model) target)
+      (error "Unknown target ~s in type ~s, field ~s" 
+        target type-key field-key))
+    (loop with fields = (u:tree-get model target :fields)
+      for f-key in fields by #'cddr
+      for f-def in (cdr fields) by #'cddr
+      when (getf f-def :identity) count f-key into id-field-count
+      finally
+      (unless (= id-field-count 1)
+        (error "Field ~s of type ~s targets type ~s, which has ~d identity ~
+                fields. However, targets must have exactly 1 identity field."
+          field-key type-key target id-field-count)))
+    target))
+
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
     with force-sql-name = (getf field-def :force-sql-name)
     with name-sql = (or
                       force-sql-name
                       (column-name model type-key new-field-key field-def))
-    and type-sql = (sql-type
+    with target = (valid-target model type-key old-field-key field-def)
+    with type-sql = (sql-type
                      type-key
                      new-field-key
-                     (if (getf field-def :target) :uuid (getf field-def :type)))
-    and column = (if (getf field-def :target)
-                   t
-                   (getf field-def :column))
+                     (if target :uuid (getf field-def :type)))
+    and column = (if target t (getf field-def :column))
     and primary-key = (when (getf field-def :primary-key) "primary key")
-    and not-null = (if (getf field-def :target)
+    and not-null = (if target
                      "not null"
                      (when (getf field-def :not-null) "not null"))
-    with target = (getf field-def :target)
     with references = (when target
                         (format nil "references ~a(id) on delete cascade"
                           (table-name target (built-in-p target model))))
@@ -909,13 +923,11 @@ necessary."
                                    new-field-key field-def)
                        :type (or (getf field-def :type) :text)
                        :column column
-                       :not-null (if (getf field-def :target)
-                                   t
-                                   (getf field-def :not-null))
+                       :not-null (if target t (getf field-def :not-null))
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
-                    :autofill)
+                    :autofill :identity)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))

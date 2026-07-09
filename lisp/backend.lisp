@@ -768,26 +768,39 @@ has a value in VALUES."
             (query (cons sql values)))
       (a:with-rbac (*rbac*) (a:rbac-query query :column)))))
 
+(defun identity-field (type-key)
+  ":private: For types that are referenced as target types, which must have a
+single identity field, this function returns the field key for that identity
+field."
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (getf field-def :identity)
+    do (return field-key)))
+
 (defun resolve-reference-id (type-key field-key value)
   ":private: If the field has a :target (and no :join-table), treat VALUE as a
-display name from the target's :source :column (default 'name'), look it up and
-return the matching UUID. Signals validation error if no match or value is not
-a string. For non-reference fields return VALUE unchanged."
+display name from the target's :source :column (defaults to the target type's
+identity field), look it up and return the matching UUID. Signals validation
+error if no match or value is not a string. For non-reference fields return
+VALUE unchanged."
   (let* ((m *compiled-model*)
           (field-def (u:tree-get m type-key :fields field-key))
           (target (getf field-def :target))
           (joiner (getf field-def :join-table)))
     (if (and target (not joiner))
       (cond
-        ((uuid-p value) value)           ; already an ID (e.g. synthetic :id field with :target :resources)
-        ((listp value) value)            ; lists are handled via join-table path
+        ((uuid-p value) value)
+        ((listp value) value)
         ((not (stringp value))
           (report-ve "resolve-reference-id"
             "Reference field ~s ~s expects a string value, got ~s"
             ~type-key ~field-key ~value))
         (t
           (let* ((target-type target)
-                  (col-key (or (u:tree-get field-def :source :column) :name))
+                  (col-key (or
+                             (u:tree-get field-def :source :column)
+                             (identity-field target-type)))
                   (table (u:tree-get m target-type :table-name))
                   (val-col (u:tree-get m target-type :fields col-key :name-sql))
                   (sql (format nil "select id from ~a where ~a = $1" table val-col))
@@ -994,7 +1007,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
     for param-keys = (cdr qt)
     for names = (getf data key)
     for ref-type-key = (u:tree-get m type-key :fields key :source :table)
-    for value-ids = (list-ids ref-type-key :name names)
+    for value-ids = (list-ids ref-type-key (identity-field ref-type-key) names)
     when value-ids do
     (loop with value-key = (u:make-keyword
                              (to-sql-identifier key

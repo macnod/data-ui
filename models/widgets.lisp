@@ -11,7 +11,7 @@
       :views (:main (:tables (::model:)))
       :fields
       (:name
-        (:type :text
+        (:type :text :identity t
           :ui (:label ":model: name" :input-type :line)
           :validations (:required)
           :source (:view :main :column :name :agg :first)

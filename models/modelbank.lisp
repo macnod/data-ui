@@ -13,7 +13,7 @@
        :views (:main (:tables (:directories)))
        :fields
        (:name
-         (:type :text :path t
+         (:type :text :identity t :path t
            :ui (:label "Directory" :input-type :line)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
@@ -29,7 +29,7 @@
        :views (:main (:tables (:models :images :ratings)))
        :fields
        (:name
-         (:type :text
+         (:type :text :identity t
            :ui (:label "Model Name" :input-type :line)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
@@ -70,7 +70,7 @@
                 :models (:tables (:models) :scope :user))
        :fields
        (:name
-         (:type :text :path t
+         (:type :text :identity t :path t
            :ui (:label "File" :input-type :line :render-as :image)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
@@ -113,7 +113,7 @@
                 :users (:tables (:users) :scope :user))
        :fields
        (:model
-         (:type :text 
+         (:type :text :identity t
            :force-sql-name "rating_model"
            :ui (:label "Model" :input-type :select)
            :target :models
@@ -121,7 +121,7 @@
            :source-all (:view :models :table :models :column :name :agg :list)
            :column t :not-null t)
          :user
-         (:type :text
+         (:type :text :identity t
            :autofill :user
            :force-sql-name "rating_user"
            :ui (:label "User" :input-type :read-only)

@@ -13,7 +13,7 @@
                :tags (:tables (:tags)))
       :fields
       (:name 
-        (:type :text
+        (:type :text :identity t
           :ui (:label "To Do" :input-type :line)
           :validations (:required
                          (lambda (type-key field-key value user)
@@ -52,7 +52,7 @@
       :type-roles ("todo-users")
       :fields 
       (:name
-        (:type :text
+        (:type :text :identity t
           ;; TODO: Add checks for :input-type value
           :ui (:label "Tag" :input-type :line)
           :validations (:required)

@@ -16,7 +16,7 @@
       :views (:main (:tables (:directories)))
       :fields
       (:name 
-        (:type :text :path t
+        (:type :text :identity t :path t
           :ui (:label "Directory" :input-type :line)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
@@ -37,7 +37,7 @@
       :views (:main (:tables (:files)))
       :fields
       (:name
-        (:type :text :path t
+        (:type :text :identity t :path t
           :ui (:label "File" :input-type :line)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
