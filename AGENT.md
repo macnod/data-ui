@@ -154,14 +154,25 @@ not modified without human permission.
 
 ### Known gaps / next up
 
-- **Write-through** — writing values to related tables (not just associations);
-  unblocks ratings. The scoping behavioral test is blocked on this.
+- **Write-through** (`:write-to` + `:identity t`) — in progress on the
+  `grok` branch. Phase 1 / 1.5 done (pass-through, identity cleanup,
+  `valid-target`, `identity-field`). Still TODO: `:search-sql`, unique
+  identity indexes, compile-time write-to↔identity validation, and
+  backend execute path in `be-insert` / `be-update`. Unblocks Model Bank
+  ratings and the scoping behavioral test.
+- **Transactions / rollback** — deliberately deferred to post-MVP.
+  Lifecycle hooks and write-through are **not** atomic with the primary
+  write. A failing hook fails the operation without rolling back prior
+  side effects. Database init (`rbac:initialize-database`) is also not
+  idempotent. Design hooks and write-through with eventual transaction
+  wrapping in mind; do not assume atomicity today.
 - File **update** is not implemented; may be deferred past the MVP
-- UI polish — important, a current focus
-- More example models (prove generality) — important, a current focus
+- UI polish — important for the video; deferred relative to compiler /
+  backend capability work (frontend changes are cheaper)
+- More example models (prove generality)
 - The 30-second create-model→deployed-app video (MVP deliverable,
   deadline end of December 2026)
-
+ 
 ## Deployment (working; read this before touching it)
 
 `scripts/data-ui deploy` (renamed from `scripts/run.sh`) deploys
@@ -214,13 +225,14 @@ distinction straight:
 - **Expert / self-hosting tier** — the open-source Common Lisp engine. Full power:
   raw Lisp lambdas as hooks/validations, function overrides for lifecycle ops.
   The guardrail is the developer's own judgment (a "shotgun" philosophy — it does
-  not stop you from doing whatever you want). MVP-stage safety concerns (e.g.
-  transactions) are deliberately deferred.
+  not stop you from doing whatever you want). **MVP safety note:** transactions
+  and rollback are deliberately deferred (see Known gaps). A failing lifecycle
+  hook does not roll back the primary write.
 - **AI / no-code / hosted tier** — model is pure data (YAML/JSON), hooks come from
   a curated, parameterized registry, no raw-code escape hatch. The constraint is
   the product, not a limitation: it makes the tier safe to operate and consumable
   by an AI. The escape valve for power users is to self-host the open engine.
-
+ 
 Both tiers reduce to the same hook contract before anything runs; the compiler
 never special-cases one against the other.
 
@@ -243,9 +255,15 @@ single calling contract.
 - Shell hooks: input as JSON on stdin; exit status/output determines
   success/failure; the adapter conforms to the standard contract.
 
-**MVP caveat:** lifecycle hooks are NOT transaction-wrapped. A failing hook fails
-the operation WITHOUT rollback. Transactions/rollback are deferred to post-MVP;
-the eventual boundary is intended to wrap a whole hook list as a unit.
+**MVP caveat (transactions deferred):** lifecycle hooks are NOT
+transaction-wrapped. A failing hook fails the operation WITHOUT rollback of
+the primary write or earlier hooks in the list. Write-through (when shipped)
+follows the same rule: primary write commits first; related-table upserts
+run after and are best-effort (`handler-case`, log, continue). Transactions
+and rollback are deliberately deferred to post-MVP; the eventual boundary is
+intended to wrap primary write + hook list + write-through as a unit. Design
+hooks with that future in mind, and never assume atomicity in MVP code or
+docs.
 
 ## Important Design Decisions
 
@@ -283,8 +301,7 @@ application logic; the closed product adds operational concerns (hosting, AI fro
 door, billing) that are infrastructure, not application.
 
 ## Current Focus / To Do (MVP)
-See TODO.md for the live prioritized list. Deadline: complete MVP,
-including the demo video, by end of December 2026.
+Deadline: complete MVP, including the demo video, by end of December 2026.
 
 **Model Bank is the priority function.** The MVP must prove that real,
 non-trivial applications can be built on Data UI significantly faster
@@ -299,16 +316,25 @@ gaps that block building real apps cannot.
 Priorities now:
 1. **Build Model Bank** — the live priority function; gaps it surfaces
    drive everything below
-2. **Write-through** — writing values to related tables (not just
-   associations); unblocks ratings. This is the current blocker for
-   the scoping behavioral test.
+2. **Write-through** (`:write-to` + `:identity t`) — in progress;
+   unblocks ratings and the scoping behavioral test. Compiler remains
+   authoritative for all SQL (search SQL, unique identity indexes,
+   upsert path). See the write-through plan in the workbench.
 3. **Field-level scoping** — view-level `:scope :user` is done;
    field-level scope is not yet implemented
-4. **UI polish** — the video shows the UI; it must look clean
+4. **UI polish** — the video shows the UI; it must look clean.
+   Frontend work is deliberately deferred behind compiler/backend
+   capability gaps (frontend is cheaper to change).
 5. **The 30-second video** — nothing → deployed app
 6. File update (only if time permits; otherwise post-MVP)
 
+**Explicitly post-MVP (do not quietly pull in):**
+- Transactions / rollback around primary write + hooks + write-through
+- Idempotent database initialization
+- Single-statement `ON CONFLICT` upserts (blocked on two-phase resource insert)
+- YAML/JSON model input and the hosted AI front door
+
 Frontend known weaknesses (from deployment testing, good first UI
-tasks): failed token refresh leaves the app rendering as logged-in
-instead of returning to the login form; "No records" is shown for both
-empty results and failed requests.
+tasks once capability work is unblocked): failed token refresh leaves
+the app rendering as logged-in instead of returning to the login form;
+"No records" is shown for both empty results and failed requests.

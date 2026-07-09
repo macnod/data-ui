@@ -325,6 +325,19 @@ Data UI serves two audiences through a single compiler:
 Both tiers reduce to the same contract before anything runs. The
 compiler never special-cases one against the other.
 
+**Why the expert tier stays in Common Lisp.** Despite its age, Common
+Lisp remains the most powerful programming language in a purely
+technical sense. Its object system, condition system, live image,
+incremental compilation of running code to efficient machine code, and
+full programmability have no real peers. Without that power gap, Data
+UI would not exist.
+
+That the power of Common Lisp is invisible to most working programmers
+is itself a moat: it keeps casual competitors out while steering
+sophisticated users who want the capability without becoming a Lisp
+shop straight to the hosted product. The open engine remains fully
+available for those who want that power unmediated.
+
 * Current Status (June 2026)
 
 This is not a slide deck. It's a working system:
@@ -360,6 +373,12 @@ The priority is **Model Bank** — a model-sharing application with
 relationships, ownership, image association, and ratings. It's the
 fitness function for the MVP: if Data UI can build Model Bank
 significantly faster than any alternative, the thesis is proven.
+
+**Explicitly deferred past MVP** (so the claim stays honest):
+transactions and rollback around primary writes, hooks, and
+write-through; idempotent database initialization; and the hosted
+YAML/JSON + AI front door. The open engine is a shotgun — power without
+training wheels — until those land.
 
 Post-MVP: hosted service with YAML/JSON input and AI prompts, the
 curated hook registry, a marketplace of shareable models, and managed

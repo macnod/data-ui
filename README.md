@@ -158,7 +158,7 @@ the built-in RBAC tables themselves.
 
 ### Two tiers, one engine
 
-Data UI deliberately supports two audiences through one compiler:
+Data UI deliberately supports two audiences through a single compiler:
 
 - **The expert, self-hosting tier.** Written in Common Lisp, the open-source
   engine gives you full power. You can attach raw Lisp lambdas as hooks and
@@ -176,6 +176,18 @@ Data UI deliberately supports two audiences through one compiler:
 
 Both tiers reduce to the same contract before anything runs, so the compiler
 never special-cases one against the other.
+
+**Why Common Lisp stays.** Despite its age, Common Lisp remains the most
+powerful programming language in a purely technical sense. Its object system,
+condition system, live image, incremental compilation of running code to
+efficient machine code, and full programmability have no real peers. Without
+that power gap, Data UI would not exist.
+
+That the power of Common Lisp is invisible to most working programmers
+is itself a moat: it keeps casual competitors out while steering
+sophisticated users who want the capability without becoming a Lisp shop
+straight to the hosted product. The open engine remains fully available
+for those who want that power unmediated.
 
 ## Example Model
 
@@ -445,11 +457,16 @@ Returning `nil` (or no error) means success; returning an error string fails the
 operation. Hooks are lists, so multiple hooks can be attached and each reduces to
 this contract.
 
-> Note on the MVP: lifecycle hooks are **not** transaction-wrapped in the MVP. If
-> one hook in a list fails, the operation fails **without rollback**. Transactions
-> and rollback are deliberately deferred to post-MVP. The eventual transaction
-> boundary is intended to wrap a whole hook list as a unit; design hooks with that
-> future in mind.
+> **MVP caveat — transactions deferred:** lifecycle hooks are **not**
+> transaction-wrapped. If one hook in a list fails, the operation fails
+> **without rollback** of the primary write or earlier hooks. The same
+> rule will apply to write-through (`:write-to`): the primary row commits
+> first; related-table upserts run after and are best-effort. Transactions
+> and rollback (including idempotent database initialization) are
+> deliberately deferred to post-MVP. The eventual transaction boundary is
+> intended to wrap primary write + hook list + write-through as a unit;
+> design hooks with that future in mind, and never assume atomicity in
+> MVP code or docs.
 
 ### The registry: parameterized, data-only hooks
 
@@ -637,9 +654,21 @@ integration, validation, CRUD, and Kubernetes deployment are implemented
 and exercised in production. Work continues on UI refinement and
 additional example models.
 
-Deliberately deferred to post-MVP: transactions and rollback (including
-idempotent database initialization). See
-[Hooks and the Registry](#hooks-and-the-registry).
+Deliberately deferred to post-MVP (do not assume these exist today):
+
+- **Transactions and rollback.** Lifecycle hooks are not
+  transaction-wrapped. A failing hook fails the operation without
+  rolling back the primary write or earlier hooks. Write-through
+  (`:write-to`) will follow the same rule until transactions land:
+  primary write commits first; related-table upserts are best-effort.
+  Idempotent database initialization is also deferred (see deployment
+  Trap 1).
+- Single-statement `ON CONFLICT` upserts (blocked on the two-phase
+  resource insert).
+- YAML/JSON model input and the hosted AI front door.
+
+See [Hooks and the Registry](#hooks-and-the-registry) for the hook
+contract and the MVP atomicity caveat.
 
 See `lisp/model.lisp` for the current `*base-model*` and the `models/`
 directory for example models (one per file, e.g. `todos.lisp`,
@@ -669,8 +698,11 @@ Odds of hitting the date: **strong.** The reasoning, plainly:
   in weeks.
 - The main schedule risks are scope creep and polish perfectionism. The
   mitigations are written down: file update may ship after MVP,
-  transactions are explicitly post-MVP, and the UI bar is "clean and
-  demo-ready," not "design award."
+  **transactions and rollback are explicitly post-MVP** (hooks and
+  write-through are not atomic with the primary write today), and the UI
+  bar is "clean and demo-ready," not "design award." Frontend polish is
+  deliberately sequenced after compiler/backend capability work because
+  frontend changes are cheaper.
 
 **Model Bank is the priority function.** The MVP must prove that real,
 non-trivial applications can be built on Data UI significantly faster
