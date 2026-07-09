@@ -4,16 +4,6 @@
 ;; BEGIN Internal helper functions
 ;;
 
-(defun placeholders (fields &key (start-at 1))
-  (loop for a from start-at to (1- (+ start-at (length fields)))
-    collect (format nil "$~d" a)))
-
-(defun value-or-nil (value)
-  ":private: Returns value unless value is the keyword :null, in which case this
-function returns NIL. This is useful for dealing the values that the database
-returns for fields that are null."
-  (if (equal value :null) nil value))
-
 (defun aggregate-values (aggregation values)
   ":private: Performs AGGREGATION on the VALUES list."
   (when values
@@ -295,9 +285,9 @@ given in ID is used."
               (db-value type-key field-key user field-value))))
 
 (defun user-fields (type-key)
-  ":private: Returns a list of the field keys that should be validated for
-TYPE-KEY. This includes all the local fields (see LOCAL-FIELDS) plus join-table
-fields."
+  ":private: Returns a list of all non-base field keys for TYPE-KEY. Excludes
+fields marked =:base-field=. Used by =full-data= to assemble the data plist for
+insert/update."
   (loop with fields = (u:tree-get *compiled-model* type-key :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
@@ -1152,6 +1142,67 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
       (list ids-filter)
       (when scope-filter (list scope-filter)))))
 
+(defun expand-value-tag (tag &key this user value)
+  (case tag
+    (:this this)
+    (:user (a:get-id *rbac* "users" user))
+    (:value value)
+    (otherwise
+      (report-e "expand-value-tag" "Unknown :write-to value tag ~s" ~tag))))
+
+(defun identity-keys (type-key)
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (getf field-def :identity)
+    collect field-key))
+
+(defun execute-write-to (type-key field-key data uuid user)
+  (let* ((m *compiled-model*)
+          (write-to (u:tree-get m type-key :fields field-key :write-to))
+          (to-type-key (getf write-to :table))
+          (to-type-id-keys (identity-keys to-type-key))
+          (search-pairs (loop
+                          for k in write-to by #'cddr
+                          for v in (cdr write-to) by #'cddr
+                          when (u:has to-type-id-keys k)
+                          append 
+                          (list k (expand-value-tag v :this uuid :user user))))
+          (value-key (loop
+                       for k in write-to by #'cddr
+                       for v in (cdr write-to) by #'cddr
+                       when (equal v :value)
+                       do (return k)))
+          (value (getf data value-key))
+          (search-sql (u:tree-get m to-type-key :search-sql))
+          (search-query (cons (car search-sql)
+                          (loop for key in (cdr search-sql)
+                            collect (getf search-pairs key))))
+          (to-row-id (a:with-rbac (*rbac*) (a:rbac-query search-query :single)))
+          (to-row-values (append 
+                           search-pairs
+                           (list 
+                             value-key 
+                             (db-value to-type-key value-key user value)))))
+    (if to-row-id
+      (let* ((to-row-values (append to-row-values (list :id to-row-id)))
+              (update-sql (u:tree-get m to-type-key :update-sql :main))
+              (update-query (cons (car update-sql)
+                              (loop for key in (cdr update-sql)
+                                collect (getf to-row-values key)))))
+        (a:with-rbac (*rbac*) (a:rbac-query update-query)))
+      (let* ((resource (make-resource-name to-type-key to-row-values))
+              (insert-resource-sql (car (u:tree-get m to-type-key :insert-sql :resource)))
+              (insert-resource-query (list insert-resource-sql resource))
+              (to-row-id (a:with-rbac (*rbac*) 
+                           (a:rbac-query insert-resource-query :single))))
+        (setf (getf to-row-values :id) to-row-id)
+        (let* ((insert-row-sql (u:tree-get m to-type-key :insert-sql :main))
+                (insert-row-query (cons (car insert-row-sql)
+                                    (loop for key in (cdr insert-row-sql)
+                                      collect (getf to-row-values key)))))
+          (a:with-rbac (*rbac*) (a:rbac-query insert-row-query)))))))
+
 ;;
 ;; END Internal database helper functions
 ;;
@@ -1266,10 +1317,20 @@ value is of the correct type for its field key."
           "Unknown field key ~s for type ~s." ~field-key ~type-key))
       ((getf field-def :join-table)
         (valid-values-list value))
-      ((not (getf field-def :base))
+      ((and
+         (not (getf field-def :base))
+         (or
+           (getf field-def :column)
+           (not (getf field-def :write-to))))
         (valid-value-type type-key field-key value))
       ((equal field-key :id)
         (valid-uuid value))
+      ((and
+         (not (getf field-def :base))
+         (getf field-def :write-to)
+         (not (getf field-def :column)))
+        ;; Virtual write-to field — skip validation, handled by execute-write-to
+        nil)
       (t (report-ve "valid-data"
            "Invalid field key ~s for type ~s." ~field-key ~type-key)))
     (let ((target (getf field-def :target))
@@ -1727,7 +1788,7 @@ kitchen\":
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (valid-file-token file-token)
-  (let ((data (full-data type-key data user)))
+ (let ((data (full-data type-key data user)))
     (valid-data type-key data)
     (let ((id (id-from-data type-key data)))
       (if id
@@ -1760,6 +1821,16 @@ kitchen\":
                                  ~type-key ~f)))))
               (when post-create
                 (funcall post-create nil nil data nil nil))
+              (loop
+                for field-key in (user-fields type-key)
+                for field-def = (u:tree-get m type-key :fields field-key)
+                when (getf field-def :write-to)
+                do (handler-case
+                     (execute-write-to type-key field-key data new-id user)
+                     (error (e)
+                       (pl:perror :in "be-insert"
+                         :status "write-through failed"
+                         :type-key type-key :field-key field-key :error e))))
               (values new-id t))))))))
 
 (defun be-insert-internal (type-key data user &key roles)
@@ -1870,6 +1941,17 @@ update fails.
     (update-join-tables type-key uuid full-data record)
     ;; Update roles
     (when roles (update-roles type-key filters user roles))
+    ;; Write-through: upsert to related tables
+    (loop 
+      for field-key in (user-fields type-key)
+      for field-def = (u:tree-get m type-key :fields field-key)
+      when (getf field-def :write-to)
+      do (handler-case
+           (execute-write-to type-key field-key full-data uuid user)
+           (error (e)
+             (pl:perror :in "be-update"
+               :status "Write-through failed"
+               :type-key type-key :field-key field-key :error e))))
     uuid))
 
 (defun be-delete (type-key filters user)

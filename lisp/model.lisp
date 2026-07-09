@@ -442,17 +442,26 @@ end $$;
     table table table table))
 
 (defun create-table-sql (table fields)
-  (list
-    :table (format
-             nil
-             "~%create table if not exists ~a (~%    ~{~a~^,~%    ~}~%)~%"
-             table
-             (mapcar
-               (lambda (field) (getf field :create-sql))
-               (remove-if-not
-                 (lambda (field) (getf field :column))
-                 (u:plist-values fields))))
-    :trigger (updated-at-trigger-sql table)))
+  (let ((identity-fields (remove-if-not
+                           (lambda (f) (getf f :identity))
+                           (u:plist-values fields))))
+    (list
+      :table (format
+               nil
+               "~%create table if not exists ~a (~%    ~{~a~^,~%    ~}~%)~%"
+               table
+               (mapcar
+                 (lambda (field) (getf field :create-sql))
+                 (remove-if-not
+                   (lambda (field) (getf field :column))
+                   (u:plist-values fields))))
+      :trigger (updated-at-trigger-sql table)
+      :index (when identity-fields
+               (format nil
+                 "create unique index if not exists ix_~a_identity ~
+                on ~a (~{~a~^, ~})"
+                 table table
+                 (mapcar (lambda (f) (getf f :name-sql)) identity-fields))))))
 
 (defun filtered-fields (fields keys)
   "Returns field key and definition for fields that have non-NIL values for all
@@ -516,7 +525,7 @@ fields that have non-NIL values for all HAVE-KEYS."
                       (:resource :resources)
                       (:main type-key)
                       (otherwise (u:tree-get fields key :join-table)))
-    for table-name = (table-name table-key (built-in-p type-key model))
+    for table-name = (table-name table-key (built-in-p table-key model))
     for table-cols = (case key
                        (:resource res-columns)
                        (:main (if (u:tree-get model table-key :base)
@@ -655,18 +664,13 @@ this:
               :source-field field-key
               :target target)))
 
-(defun find-xref-for-target (table xrefs)
-  ":private: Selects the xref from XREFS where the value of :target equals
-TABLE. If no xref meets that condition, this function returns NIL. An xref
-identifies a connection between tables and looks like this:
-    (:source source-table-key
-     :source-field source-field-key
-     :target target-table-key)"
-  (loop
-    for xref in xrefs
-    for target = (getf xref :target)
-    for xref-copy = (u:deep-copy xref)
-    when (equal table target) do (return xref-copy)))
+(defun find-xref-connecting (table xrefs)
+  "Returns the first xref where TABLE is either :source or :target."
+  (loop for xref in xrefs
+        for source = (getf xref :source)
+        for target = (getf xref :target)
+        when (or (equal source table) (equal target table))
+        do (return (u:deep-copy xref))))
 
 (defun ordered-xrefs (model view-tables)
   ":private: Returns a list of xrefs in the context of VIEW-TABLES. The xrefs
@@ -684,7 +688,7 @@ C->D) where a table is reachable via two paths. This is acceptable for the MVP."
       (loop
         with remaining-xrefs = (u:deep-copy xrefs)
         for j-table in view-tables
-        for j-xref = (find-xref-for-target j-table remaining-xrefs)
+        for j-xref = (find-xref-connecting j-table remaining-xrefs)
         when j-xref
         do (setf remaining-xrefs (remove j-xref remaining-xrefs :test #'equal))
         and collect j-xref))))
@@ -752,6 +756,24 @@ necessary."
     (if base
       (list (format nil "delete from ~a where id = $1" table-name) :id)
       (list "delete from resources where id = $1" :id))))
+
+(defun search-sql (model type-key)
+  (loop with fields = (u:tree-get model type-key :fields)
+    and table-name = (table-name type-key (built-in-p type-key model))
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for column = (getf field-def :name-sql)
+    when (getf field-def :identity)
+    collect field-key into keys
+    and collect column into cols
+    finally
+    (return
+      (when keys
+        (cons
+          (format nil "select id from ~a where ~{~a = ~a~^ and ~}"
+            table-name
+            (u:zip cols (placeholders cols)))
+          keys)))))
 
 (defun value-sql (value field-type-key &key quote)
   (case field-type-key
@@ -858,24 +880,33 @@ necessary."
           unless (or (equal k :table) (u:has '(:this :user :value) v))
           do (error "The ~s ~s :write-to key ~s must have a value of ~
                      :this, :user, or :value. Unknown value ~s"
-               type-key field-key k v)))
-      wt)))
+               type-key field-key k v))
+        (loop with fields = (u:tree-get model to-table :fields)
+          and wt-keys = (u:plist-keys wt)
+          for k in fields by #'cddr
+          for v in (cdr fields) by #'cddr
+          when (and (getf v :identity) (not (u:has wt-keys k)))
+          do (error "The ~s ~s :write-to value is missing required ~s ~
+                     identity field ~s"
+               type-key field-key to-table k))
+        wt))))
 
 (defun valid-target (model type-key field-key field-def)
   (let ((target (getf field-def :target)))
-    (unless (u:has (u:plist-keys model) target)
-      (error "Unknown target ~s in type ~s, field ~s" 
-        target type-key field-key))
-    (loop with fields = (u:tree-get model target :fields)
-      for f-key in fields by #'cddr
-      for f-def in (cdr fields) by #'cddr
-      when (getf f-def :identity) count f-key into id-field-count
-      finally
-      (unless (= id-field-count 1)
-        (error "Field ~s of type ~s targets type ~s, which has ~d identity ~
+    (when target
+      (unless (u:has (u:plist-keys model) target)
+        (error "Unknown target ~s in type ~s, field ~s" 
+          target type-key field-key))
+      (loop with fields = (u:tree-get model target :fields)
+        for f-key in fields by #'cddr
+        for f-def in (cdr fields) by #'cddr
+        when (getf f-def :identity) count f-key into id-field-count
+        finally
+        (unless (= id-field-count 1)
+          (error "Field ~s of type ~s targets type ~s, which has ~d identity ~
                 fields. However, targets must have exactly 1 identity field."
-          field-key type-key target id-field-count)))
-    target))
+            field-key type-key target id-field-count)))
+      target)))
 
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
@@ -1272,6 +1303,7 @@ necessary."
     for insert-sql = (unless joiner (insert-sql model type-key))
     for update-sql = (unless joiner (update-sql model type-key))
     for delete-sql = (unless joiner (delete-sql model type-key))
+    for search-sql = (unless joiner (search-sql model type-key))
     for create-table-sql = (create-table-sql table-name fields)
     for new-def = (remove-null-value-pairs
                     (list
@@ -1279,7 +1311,8 @@ necessary."
                       :views views
                       :insert-sql insert-sql
                       :update-sql update-sql
-                      :delete-sql delete-sql))
+                      :delete-sql delete-sql
+                      :search-sql search-sql))
     appending (list type-key (add-to-plist type-def new-def))))
 
 (defun stage-3 (model)
@@ -1383,6 +1416,7 @@ efficiently instantiate and support the application described by MODEL."))
     for table-name = (u:tree-get m type-key :table-name)
     for table = (u:tree-get m type-key :create-table-sql :table)
     for trigger = (u:tree-get m type-key :create-table-sql :trigger)
+    for index = (u:tree-get m type-key :create-table-sql :index)
     unless (a:with-rbac (*rbac*)
              (a:rbac-query
                (list
@@ -1390,7 +1424,10 @@ efficiently instantiate and support the application described by MODEL."))
                  table-name)
                :single))
     do
-    (a:with-rbac (*rbac*) (db:query table) (db:query trigger))
+    (a:with-rbac (*rbac*)
+      (db:query table)
+      (db:query trigger)
+      (when index (db:query index)))
     (pl:pdebug :in "create-tables" :state "added table and triggers"
       :table table-name :type-key type-key)))
 

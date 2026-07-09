@@ -51,3 +51,59 @@
                  (lambda (x) (u:starts-with x "/image-2-"))
                  image-names)))))
 
+(defun count-ratings-for-model (model-name)
+  "Count ratings rows for MODEL-NAME via direct SQL."
+  (let ((result (query
+                  "select count(*) from rt_ratings
+                   where rating_model = (
+                     select id from rt_models where model_name = $1)"
+                  :params (list model-name)
+                  :result-type :column)))
+    (if (stringp (car result))
+      (parse-integer (car result))
+      (car result))))
+
+(defun get-rating-value (model-name user-name)
+  "Get the rating value for MODEL-NAME by USER-NAME via direct SQL."
+  (let ((result (query
+                  "select rating_rating from rt_ratings
+                   where rating_model = (
+                     select id from rt_models where model_name = $1)
+                   and rating_user = (
+                     select id from users where user_name = $2)"
+                  :params (list model-name user-name)
+                  :result-type :column)))
+    (car result)))
+
+;; TODO: Clear the rating (set to NULL) — blocked on full-data preserving
+;; old values over submitted nil. The =(or data-value record-value ...)=
+;; in full-data discards a submitted nil when the record already has a
+;; value.
+(test write-through-rating
+  (let ((user-1 "rater-1")
+         (user-2 "rater-2")
+         (model-1 "wt-model-1")
+         (roles '("models-user" "ratings-user" "role-1")))
+    ;; Create users with roles needed for models + ratings
+    (th-make-user user-1 :roles roles)
+    (th-make-user user-2 :roles roles)
+    ;; Create a model as user-1
+    (let ((model-id (th-make-model model-1 user-1
+                      :roles '("role-1" "models-user"))))
+      (is-true (uuid-p model-id))
+      ;; 1. user-1 rates the model via write-through
+      (be-update :models model-id `(:rating 5) user-1)
+      ;; Verify exactly one ratings row exists for this model
+      (is (= 1 (count-ratings-for-model model-1)))
+      ;; Verify the rating value is 5
+      (is (= 5 (get-rating-value model-1 user-1)))
+      ;; 2. user-1 updates the rating — should update, not duplicate
+      (be-update :models model-id `(:rating 3) user-1)
+      (is (= 1 (count-ratings-for-model model-1)))
+      (is (= 3 (get-rating-value model-1 user-1)))
+      ;; 3. user-2 rates the same model — separate row
+      (be-update :models model-id `(:rating 4) user-2)
+      (is (= 2 (count-ratings-for-model model-1)))
+      (is (= 4 (get-rating-value model-1 user-2)))
+      ;; user-1's rating should be unchanged
+      (is (= 3 (get-rating-value model-1 user-1))))))

@@ -184,3 +184,14 @@ function."
 
 (defun scoped-path (type-key path)
   (u:join-paths (format nil "~(~a~)" type-key) path))
+
+(defun placeholders (fields &key (start-at 1))
+  (loop for a from start-at to (1- (+ start-at (length fields)))
+    collect (format nil "$~d" a)))
+
+(defun value-or-nil (value)
+  ":private: Returns value unless value is the keyword :null, in which case this
+function returns NIL. This is useful for dealing the values that the database
+returns for fields that are null."
+  (if (equal value :null) nil value))
+
