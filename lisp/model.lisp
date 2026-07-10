@@ -1089,7 +1089,7 @@ necessary."
 
 (defun valid-view-scope (type-key view-scope)
   (when view-scope
-    (let ((scope-types '(:record :user))
+    (let ((scope-types '(:user))
            (scope-details '(:table :field)))
       (unless (or (keywordp view-scope) (u:plistp view-scope))
         (error "View :scope for ~s must be a plist, got ~s" type-key view-scope))
