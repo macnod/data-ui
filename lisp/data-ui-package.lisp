@@ -1,5 +1,6 @@
 (defpackage :data-ui
   (:use :cl :fiveam)
+  (:export :eval-safely)
   (:local-nicknames
     (:re :ppcre)
     (:db :postmodern)

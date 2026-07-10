@@ -27,6 +27,7 @@
                                (:file "model")
                                (:file "backend")
                                (:file "rest")
+                               (:file "eval-safely")
                                (:file "startup")))
                 (:module "tests"
                   :components ((:file "helpers")
