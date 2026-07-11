@@ -963,14 +963,35 @@ necessary."
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
 
+(defun resolve-scope-alias (model type-key view-key table-key scope)
+  "Resolve a :scope keyword on a field source to the alias key
+that the view result uses for the scoped column. Currently only
+:scope :user is supported. When :scope :user is specified, the
+function looks up the :user field on TABLE-KEY in the view's
+aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
+  (when scope
+    (case scope
+      (:user
+        (let* ((user-alias (u:tree-get model type-key :views view-key
+                             :aliases table-key :user)))
+          (unless user-alias
+            (error "Field-level :scope :user on ~s requires that ~
+                    table ~s has a :user field in view ~s"
+              type-key table-key view-key))
+          (u:make-keyword user-alias)))
+      (t (error "Unsupported field-level scope ~s on ~s" scope type-key)))))
+
 (defun compile-field-stage-2 (model type-key field-def)
   (cond
     ((u:tree-get field-def :source :view)
       (let* ((table-key (or (u:tree-get field-def :source :table) type-key))
               (column-key (u:tree-get field-def :source :column))
               (view-key (u:tree-get field-def :source :view))
+              (scope (u:tree-get field-def :source :scope))
               (alias (u:tree-get model type-key :views view-key :aliases table-key column-key))
-              (column (u:tree-get model type-key :views view-key :columns table-key column-key)))
+              (column (u:tree-get model type-key :views view-key :columns table-key column-key))
+              (scope-alias (resolve-scope-alias
+                             model type-key view-key table-key scope)))
         (add-to-plist
           field-def
           (list
@@ -978,7 +999,8 @@ necessary."
                       (u:tree-get field-def :source)
                       (list
                         :alias-key (u:make-keyword alias)
-                        :column-name column))))))
+                        :column-name column
+                        :scope-alias scope-alias))))))
     ((and
        (u:tree-get field-def :source-sel :view)
        (u:tree-get field-def :source-all :view))

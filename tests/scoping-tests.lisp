@@ -107,3 +107,50 @@
       (is (= 4 (get-rating-value model-1 user-2)))
       ;; user-1's rating should be unchanged
       (is (= 3 (get-rating-value model-1 user-1))))))
+
+(test field-level-scope-shows-current-user-rating
+  "Two users rate the same model. Each user's be-list for :models
+should show their own rating in the :rating field (scoped via
+:scope :user on the field source), while :average-rating shows
+the unscoped average across all users."
+  (let ((user-1 "fls-1")
+         (user-2 "fls-2")
+         (user-3 "fls-3")
+         (model-1 "fls-model-1")
+         (roles '("models-user" "ratings-user" "role-1")))
+    ;; Create users
+    (th-make-user user-1 :roles roles)
+    (th-make-user user-2 :roles roles)
+    (th-make-user user-3 :roles roles)
+    ;; Create a model
+    (let ((model-id (th-make-model model-1 user-1
+                      :roles '("role-1" "models-user"))))
+      (is-true (uuid-p model-id))
+      ;; user-1 rates it 5, user-2 rates it 3
+      (be-update :models model-id `(:rating 5) user-1)
+      (be-update :models model-id `(:rating 3) user-2)
+      ;; user-3 does not rate it
+      ;; Verify: user-1 sees their own rating (5)
+      (let ((rec (find model-1
+                   (getf (be-list :models user-1) :records)
+                   :key (lambda (r) (getf r :name))
+                   :test #'equal)))
+        (is-true rec)
+        (is (= 5 (getf rec :rating)))
+        (is (= 4.0 (getf rec :average-rating))))
+      ;; Verify: user-2 sees their own rating (3)
+      (let ((rec (find model-1
+                   (getf (be-list :models user-2) :records)
+                   :key (lambda (r) (getf r :name))
+                   :test #'equal)))
+        (is-true rec)
+        (is (= 3 (getf rec :rating)))
+        (is (= 4.0 (getf rec :average-rating))))
+      ;; Verify: user-3 sees NIL (no rating) but avg is still 4.0
+      (let ((rec (find model-1
+                   (getf (be-list :models user-3) :records)
+                   :key (lambda (r) (getf r :name))
+                   :test #'equal)))
+        (is-true rec)
+        (is (null (getf rec :rating)))
+        (is (= 4.0 (getf rec :average-rating)))))))

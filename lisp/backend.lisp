@@ -4,6 +4,10 @@
 ;; BEGIN Internal helper functions
 ;;
 
+(defparameter *current-user-id* nil
+  "Bound dynamically during be-list to the current user's UUID.
+Used by field-values-for-id to filter rows for field-level scoping.")
+
 (defun aggregate-values (aggregation values)
   ":private: Performs AGGREGATION on the VALUES list."
   (when values
@@ -11,9 +15,13 @@
       (:first (value-or-nil (car values)))
       (:list (remove-if-not #'value-or-nil values))
       (:distinct (u:distinct-values (remove-if-not #'value-or-nil values)))
+      (:avg (let ((valid (remove-if-not #'value-or-nil values)))
+              (when valid
+                (float (/ (reduce #'+ valid) (length valid))))))
       (t (error "Invalid aggregation ~s." aggregation)))))
 
-(defun field-values-for-id (view-result id-key id-value alias-key aggregation)
+(defun field-values-for-id (view-result id-key id-value alias-key aggregation
+                            &key scope-alias scope-value)
   ":private: Retrieves from VIEW-RESULT the field values for the record where
 ID-KEY contains ID-VALUE, with those field values aggregated according to
 AGGREGATION.
@@ -30,10 +38,16 @@ values we want to retrieve.
 
 ALIAS-KEY is the alias key (also from the :VEWS metadata) for the field that
 contains the values we want to retrieve. AGGREGATION is a keyword that specifies
-how to aggregate the values for the field."
+how to aggregate the values for the field.
+
+SCOPE-ALIAS and SCOPE-VALUE, when provided, filter the rows so that only rows
+where the column identified by SCOPE-ALIAS matches SCOPE-VALUE are collected.
+This is used for field-level scoping (e.g., :scope :user on a field source)."
   (loop for row in view-result
     for value = (getf row alias-key)
-    when (equal (getf row id-key) id-value)
+    when (and (equal (getf row id-key) id-value)
+              (or (null scope-alias)
+                  (equal (getf row scope-alias) scope-value)))
     collect value into values
     finally (return (aggregate-values aggregation values))))
 
@@ -102,16 +116,20 @@ the 3 roles."
       with id-key = (car alias-keys)
       with distinct-ids = (view-result-ids type-key field-keys view-result)
       with aggregations = (aggregations type-key field-keys)
+      with scope-aliases = (scope-aliases type-key field-keys)
       for id in distinct-ids
       collect
       (append (list :id id)
         (loop for key in (cdr field-keys)
           for alias in (cdr alias-keys)
           for aggregation in (cdr aggregations)
+          for scope-alias in (cdr scope-aliases)
           appending
           (list
             key
-            (field-values-for-id view-result id-key id alias aggregation)))))))
+            (field-values-for-id view-result id-key id alias aggregation
+              :scope-alias scope-alias
+              :scope-value *current-user-id*)))))))
 
 (defun view-result-ids (type-key field-keys view-result)
   ":private: "
@@ -192,6 +210,15 @@ given by FIELD-KEYS in the TYPE-KEY model."
     with m = *compiled-model*
     for field-key in field-keys
     collect (u:tree-get m type-key :fields field-key :source :agg)))
+
+(defun scope-aliases (type-key field-keys)
+  ":private: Returns a list of scope alias keys for FIELD-KEYS in TYPE-KEY.
+Each element is the alias key for the user column on the joined table,
+or NIL when the field has no field-level scope."
+  (loop
+    with m = *compiled-model*
+    for field-key in field-keys
+    collect (u:tree-get m type-key :fields field-key :source :scope-alias)))
 
 (defun form-field-keys (type-key form)
   ":private: Returns a list of the field keys in the TYPE-KEY model's FORM node.
@@ -1319,9 +1346,7 @@ value is of the correct type for its field key."
         (valid-values-list value))
       ((and
          (not (getf field-def :base))
-         (or
-           (getf field-def :column)
-           (not (getf field-def :write-to))))
+         (getf field-def :column))
         (valid-value-type type-key field-key value))
       ((equal field-key :id)
         (valid-uuid value))
@@ -1330,6 +1355,14 @@ value is of the correct type for its field key."
          (getf field-def :write-to)
          (not (getf field-def :column)))
         ;; Virtual write-to field — skip validation, handled by execute-write-to
+        nil)
+      ((and
+         (not (getf field-def :base))
+         (not (getf field-def :column))
+         (not (getf field-def :write-to))
+         (not (getf field-def :join-table)))
+        ;; Pure computed/read-only field — no column, no write-to.
+        ;; Value comes from view aggregation, not from user input.
         nil)
       (t (report-ve "valid-data"
            "Invalid field key ~s for type ~s." ~field-key ~type-key)))
@@ -1721,7 +1754,8 @@ following example returns a list of all the :todos records that have the tag
                      (a:with-rbac (*rbac*)
                        (db:query (format nil "select id from ~a" table)
                          :column))))
-                 (user-read-type-ids user type-key))))
+                 (user-read-type-ids user type-key)))
+          (*current-user-id* (a:get-id *rbac* "users" user)))
     (pl:pdebug :in "be-list" :filters filters)
     (if ids
       (let* ((all-filters (filters-for-be-list type-key ids filters user))

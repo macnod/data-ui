@@ -51,11 +51,17 @@
          :rating
          (:type :integer
            :ui (:label "Rating" :input-type :line)
-           :source (:view :main :table :ratings :column :rating :agg :first)
+           :source (:view :main :table :ratings :column :rating
+                    :scope :user :agg :first)
            :write-to (:table :ratings
                        :model :this
                        :user :user
-                       :rating :value)))
+                       :rating :value))
+         :average-rating
+         (:type :real
+           :ui (:label "Average Rating" :input-type :read-only)
+           :source (:view :main :table :ratings :column :rating
+                    :agg :avg)))
        :list-form (:fields t)
        :update-form (:fields t)
        :add-form (:fields t))
