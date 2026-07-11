@@ -115,6 +115,11 @@ modify the test suites themselves (`backend-tests.lisp`,
 - Use `TodoWrite` to track any multi-step work (3+ distinct steps/phases)
 - Delegate complex multi-file edits or systematic refactors to `executor`
 - All pre-work discussions and planning remain mandatory before code changes
+- **Never stage or commit changes.** The workflow is:
+  1. The human provides a clean repo (no untracked or unstaged changes).
+  2. The agent makes changes but does not stage or commit anything.
+  3. The human reviews unstaged changes and untracked files.
+  4. If approved, the human stages and commits. If not, the review cycle repeats.
 
 
 - All Lisp code (model compiler, backend functions, REST endpoints, database layer, etc.) was written by a human.
