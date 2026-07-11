@@ -85,8 +85,29 @@ Without this step, the running image still holds the old code and tests will pas
 
 This is read-most: prefer it for verification and introspection. It runs real
 Lisp against the live image, so treat state-mutating forms with the same care you
-would in a REPL, and remember the project rule that Lisp source outside `web/` is
-not modified without human permission.
+would in a REPL, and remember the project rule that Lisp source outside `web/`
+and `tests/` is not modified without human permission.
+
+## Running Tests
+
+Use the helper functions in `tests/helpers.lisp` — never call
+`fiveam:run!` directly. These helpers handle model loading, database
+resetting, and test-suite selection so you don't run unnecessary tests
+or forget setup steps.
+
+- `(run-tests)` — runs backend, predicates, and REST suites using the
+  `test-model` fixture model (via `with-model`, which resets the
+  database and loads the model automatically).
+- `(run-modelbank-tests)` — runs the scoping suite using the `modelbank`
+  model. (This function is a placeholder name and will be cleaned up
+  post-MVP.)
+
+When you need a focused test run for a specific model or suite, add a
+new `run-*` function to `tests/helpers.lisp`. AI agents are explicitly
+permitted to modify `tests/helpers.lisp` for this purpose — add as many
+`run-*` functions as needed to keep the development cycle tight. Do not
+modify the test suites themselves (`backend-tests.lisp`,
+`scoping-tests.lisp`, etc.) without human permission.
 
 ## AI Agent Workflow & Tooling
 - Use specialized file tools exclusively: `Glob`, `Grep`, `Read`, `Edit`, `Write` (never `Bash` for file inspection/editing)
@@ -97,7 +118,7 @@ not modified without human permission.
 
 
 - All Lisp code (model compiler, backend functions, REST endpoints, database layer, etc.) was written by a human.
-- AI agents must not modify any Lisp source files outside `web/` without special permission from a human. That code is complex and largely outside of AI's current capabilities.
+- AI agents must not modify any Lisp source files outside `web/` and `tests/helpers.lisp` without special permission from a human. That code is complex and largely outside of AI's current capabilities.
 - The React frontend in `web/` was built with AI assistance. Future frontend work will also involve AI.
 - Do not refactor, clean up, or "improve" Lisp code unless explicitly instructed.
 - Before any code is written, a thorough discussion of the goals must happen.
