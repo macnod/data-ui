@@ -31,3 +31,4 @@
 # Miscellaneous
 TODO.md
 /.debug/
+*.markdown-preview.*

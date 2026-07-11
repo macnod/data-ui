@@ -32,6 +32,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 - [Current Status (June 2026)](#current-status-june-2026)
 - [Road to MVP](#road-to-mvp)
 - [Goals & Vision](#goals--vision)
+- [Competitive Landscape](docs/competitive-landscape.md)
 - [The Marketplace](#the-marketplace)
 - [Business & Monetization](#business--monetization)
 - [Related Repositories](#related-repositories)
@@ -404,6 +405,22 @@ from rt_tags"
 - **Runtime** — Generic backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-item`, etc. in `lisp/backend.lisp`) pull pre-generated SQL from the compiled model.
 - **RBAC** — Every operation is gated by `user-allowed` from the rbac library. RBAC tables are treated exactly like your own types, so you can manage users, roles, permissions, and resource access through the same UI/API.
 - **Validation** — Per-field lambdas, parameterized registry entries, or common validator keywords (with support for lists). Pre-compiled during `set-model`. Separate validation functions are available.
+
+### What `*compiled-model*` actually is
+
+The compiler stores its output in `*compiled-model*` — a single structure
+that is simultaneously the application specification (data), the
+deployment configuration (data), and the executable application logic
+(native machine code). SBCL compiles every backend function, every RBAC
+check, and every hook lambda — including validation and lifecycle hooks
+authored directly in the model — to native x86-64 or ARM instructions.
+No interpreter. No VM. No JIT warmup. When a validation hook runs, it
+calls a function pointer to compiled code that was placed in the model
+at compile time. The model is not just a description of the application;
+it *is* the application, in executable form.
+
+For a detailed comparison of Data UI's approach against existing tools,
+see [Competitive Landscape](docs/competitive-landscape.md).
 
 
 ## Key Model Features
