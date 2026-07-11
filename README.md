@@ -6,7 +6,7 @@ Describe your data once. Get a deployed, RBAC-backed application —
 deterministically. Manage users, roles, and permissions live, in the running
 app.
 
-This is no longer just a thesis. As of June 2026, the full pipeline works
+This is no longer just a thesis. As of July 2026, the full pipeline works
 end to end: a one-page model compiles into a complete application —
 PostgreSQL, REST API, RBAC, React frontend — and **one command deploys it
 to Kubernetes behind TLS at its own domain**. The first deployed instance
@@ -29,7 +29,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 - [API Approach](#api-approach)
 - [Development](#development)
 - [Deployment](#deployment)
-- [Current Status (June 2026)](#current-status-june-2026)
+- [Current Status (July 2026)](#current-status-july-2026)
 - [Road to MVP](#road-to-mvp)
 - [Goals & Vision](#goals--vision)
 - [Competitive Landscape](docs/competitive-landscape.md)
@@ -131,7 +131,7 @@ Data UI is a Common Lisp system that takes a simple nested plist model and
 - Generic, model-driven backend functions and API endpoints
 - UI hints for dynamic React forms and lists
 - Per-field and per-form data validation endpoints
-- View-level scoping (`:scope :user`) for per-user data filtering
+- View-level and field-level scoping (`:scope :user`) for per-user data filtering
 - Tree-structured types with filesystem backing (directories, file storage)
 - Complete React frontend
 - Kubernetes manifests for deployment
@@ -631,7 +631,7 @@ how cert renewal works, troubleshooting — is in
 [docs/deployment.md](docs/deployment.md).
 
 
-## Current Status (June 2026)
+## Current Status (July 2026)
 
 The project is in active development, and the core claim is now
 demonstrated end to end:
@@ -644,9 +644,11 @@ demonstrated end to end:
   code, across **all** types — both the built-in RBAC types (users, roles,
   permissions, resources, etc.) and user-defined types.
 - JWT-based authentication (access + refresh tokens) protects the API.
-- **Scoping** (`:scope :user` at the view level) is implemented in the
-  compiler and backend — `be-list` results are filtered to records owned
-  by the current user. Field-level scoping is not yet implemented.
+- **Scoping** is implemented at both the view level and the field level.
+  View-level `:scope :user` filters `be-list` results to records owned by
+  the current user. Field-level scoping (`:scope` on individual fields)
+  further restricts which fields are visible or editable based on the
+  user context.
 - **Model features in active use** (exercised by `models/modelbank.lisp`):
   tree-structured types with filesystem backing (`:tree`, `:is-leaf`,
   `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated
@@ -704,14 +706,14 @@ deployed, working application.**
 Odds of hitting the date: **strong.** The reasoning, plainly:
 
 - The riskiest milestones are already behind us. The compiler, RBAC
-  integration, generic API, and — as of June — the entire deployment
+  integration, generic API, and — as of July — the entire deployment
   pipeline are working in production. These were the make-or-break
   items; everything that could have invalidated the core thesis has
   instead confirmed it.
 - What remains is effort-bounded, not research-bounded: building Model
   Bank (the fitness function), write-through for related tables,
-  field-level scoping, UI polish, and the video itself. None of it
-  requires solving an open problem; six months remain for work measured
+  UI polish, and the video itself. None of it
+  requires solving an open problem; five months remain for work measured
   in weeks.
 - The main schedule risks are scope creep and polish perfectionism. The
   mitigations are written down: file update may ship after MVP,
