@@ -265,6 +265,18 @@ intended to wrap primary write + hook list + write-through as a unit. Design
 hooks with that future in mind, and never assume atomicity in MVP code or
 docs.
 
+## Lisp Coding Style
+
+- **Prefer explicit parameter passing over dynamic (special) variables.**
+  Dynamic variables (`*foo*`) are reserved for values that are truly
+  global to the entire system (e.g. `*compiled-model*`, `*rbac*`).
+  Request-scoped or function-chain-scoped values (e.g. the current
+  user's ID during a `be-list` call) must be threaded as parameters,
+  not bound dynamically. Dynamic binding is technically thread-safe in
+  SBCL, but it creates hidden coupling: the reader must know a variable
+  is special, find where it's bound, and trace its extent. Explicit
+  parameters make data flow visible at the call site.
+
 ## Important Design Decisions
 
 - RBAC types are treated exactly like user-defined types. Thus, you can add a role to a user in the same way that you would add a tag to a To Do item.

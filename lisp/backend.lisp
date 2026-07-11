@@ -4,10 +4,6 @@
 ;; BEGIN Internal helper functions
 ;;
 
-(defparameter *current-user-id* nil
-  "Bound dynamically during be-list to the current user's UUID.
-Used by field-values-for-id to filter rows for field-level scoping.")
-
 (defun aggregate-values (aggregation values)
   ":private: Performs AGGREGATION on the VALUES list."
   (when values
@@ -18,6 +14,8 @@ Used by field-values-for-id to filter rows for field-level scoping.")
       (:avg (let ((valid (remove-if-not #'value-or-nil values)))
               (when valid
                 (float (/ (reduce #'+ valid) (length valid))))))
+      (:sum (let ((valid (remove-if-not #'value-or-nil values)))
+              (when valid (reduce #'+ valid))))
       (t (error "Invalid aggregation ~s." aggregation)))))
 
 (defun field-values-for-id (view-result id-key id-value alias-key aggregation
@@ -45,9 +43,11 @@ where the column identified by SCOPE-ALIAS matches SCOPE-VALUE are collected.
 This is used for field-level scoping (e.g., :scope :user on a field source)."
   (loop for row in view-result
     for value = (getf row alias-key)
-    when (and (equal (getf row id-key) id-value)
-              (or (null scope-alias)
-                  (equal (getf row scope-alias) scope-value)))
+    when (and
+           (equal (getf row id-key) id-value)
+           (or
+             (null scope-alias)
+             (equal (getf row scope-alias) scope-value)))
     collect value into values
     finally (return (aggregate-values aggregation values))))
 
@@ -94,7 +94,7 @@ converting timetstamps from integers to ISO 8601 strings."
                             (t value))
         appending (list key final-value)))))
 
-(defun view-result-values (type-key field-keys view-result)
+(defun view-result-values (type-key field-keys view-result &key user)
   ":private: Given a VIEW-RESULT, which is the result of running one of the
 :VIEWS queries associated with TYPE-KEY, and which can contain multiple rows for
 a given record (due to joins with other tables), this function collapses the
@@ -116,20 +116,21 @@ the 3 roles."
       with id-key = (car alias-keys)
       with distinct-ids = (view-result-ids type-key field-keys view-result)
       with aggregations = (aggregations type-key field-keys)
-      with scope-aliases = (scope-aliases type-key field-keys)
+      with scope-args = (scope-args type-key field-keys)
       for id in distinct-ids
       collect
       (append (list :id id)
         (loop for key in (cdr field-keys)
           for alias in (cdr alias-keys)
           for aggregation in (cdr aggregations)
-          for scope-alias in (cdr scope-aliases)
+          for scope-arg in (cdr scope-args)
           appending
           (list
             key
             (field-values-for-id view-result id-key id alias aggregation
-              :scope-alias scope-alias
-              :scope-value *current-user-id*)))))))
+              :scope-alias (getf scope-arg :alias)
+              :scope-value (scope-value-for-kind
+                             (getf scope-arg :kind) user))))))))
 
 (defun view-result-ids (type-key field-keys view-result)
   ":private: "
@@ -211,14 +212,28 @@ given by FIELD-KEYS in the TYPE-KEY model."
     for field-key in field-keys
     collect (u:tree-get m type-key :fields field-key :source :agg)))
 
-(defun scope-aliases (type-key field-keys)
-  ":private: Returns a list of scope alias keys for FIELD-KEYS in TYPE-KEY.
-Each element is the alias key for the user column on the joined table,
-or NIL when the field has no field-level scope."
+(defun scope-args (type-key field-keys)
+  ":private: Returns a list of scope plists for FIELD-KEYS in TYPE-KEY.
+Each element is (:alias alias-key :kind scope-kind) or NIL when the
+field has no field-level scope."
   (loop
     with m = *compiled-model*
     for field-key in field-keys
-    collect (u:tree-get m type-key :fields field-key :source :scope-alias)))
+    for scope-alias = (u:tree-get m type-key :fields field-key
+                         :source :scope-alias)
+    for scope-kind = (u:tree-get m type-key :fields field-key
+                        :source :scope-kind)
+    when scope-alias
+      collect (list :alias scope-alias :kind scope-kind)
+      else collect nil))
+
+(defun scope-value-for-kind (scope-kind user)
+  ":private: Resolve the scope value for SCOPE-KIND from USER.
+Currently only :user is supported, which returns the user's UUID."
+  (when scope-kind
+    (case scope-kind
+      (:user (a:get-id *rbac* "users" user))
+      (t (error "Unsupported scope kind ~s" scope-kind)))))
 
 (defun form-field-keys (type-key form)
   ":private: Returns a list of the field keys in the TYPE-KEY model's FORM node.
@@ -584,7 +599,8 @@ all the right fields when we perform inserts or updates."
                  type-key
                  form
                  user
-                 (view-result-values type-key field-keys view-result))
+                 (view-result-values type-key field-keys view-result
+                   :user user))
       :allowed-values (allowed-values type-key user))
     (fe-fields type-key user)))
 
@@ -1005,7 +1021,8 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
           :type type-key
           :fields (fe-fields type-key user)
           :record (car
-                    (view-result-values type-key field-keys view-result))
+                    (view-result-values type-key field-keys view-result
+                      :user user))
           :allowed-values (allowed-values type-key user))))))
 
 (defun insert-join-table-rows (type-key uuid data)
@@ -1665,7 +1682,8 @@ error:
           (where (add-where-clause sql efilters user))
           (view-result (view-result type-key where))
           (field-keys '(:id))
-          (result (view-result-values type-key field-keys view-result)))
+          (result (view-result-values type-key field-keys view-result
+                   :user user)))
     (cond
       ((zerop (length result)) nil)
       ((> (length result) 1) (error "More than one match."))
@@ -1754,8 +1772,7 @@ following example returns a list of all the :todos records that have the tag
                      (a:with-rbac (*rbac*)
                        (db:query (format nil "select id from ~a" table)
                          :column))))
-                 (user-read-type-ids user type-key)))
-          (*current-user-id* (a:get-id *rbac* "users" user)))
+                 (user-read-type-ids user type-key))))
     (pl:pdebug :in "be-list" :filters filters)
     (if ids
       (let* ((all-filters (filters-for-be-list type-key ids filters user))

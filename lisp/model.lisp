@@ -1000,7 +1000,8 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
                       (list
                         :alias-key (u:make-keyword alias)
                         :column-name column
-                        :scope-alias scope-alias))))))
+                        :scope-alias scope-alias
+                        :scope-kind scope))))))
     ((and
        (u:tree-get field-def :source-sel :view)
        (u:tree-get field-def :source-all :view))
