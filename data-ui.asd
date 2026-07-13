@@ -34,4 +34,5 @@
                                 (:file "predicate-tests")
                                 (:file "backend-tests")
                                 (:file "rest-tests")
+                                (:file "hook-registry-tests")
                                 (:file "scoping-tests")))))

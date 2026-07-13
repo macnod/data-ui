@@ -18,7 +18,7 @@
     `(let ((,fixture (progn
                        (reset-database)
                        (set-model ,model-name)
-                       (funcall ,seeding-fn))))
+                       (when ,seeding-fn (funcall ,seeding-fn)))))
        (let ((*fixture* ,fixture))
          ,@body))))
 
@@ -200,17 +200,28 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
 ;; END Test Helpers
 ;;
 
-(defun run-tests ()
-  (with-model "test-model" (lambda ())
+(defun run-backend-tests ()
+  (with-model "test-model" nil
     (run! 'backend-suite)
-    (run! 'predicates-suite)
-    (run! 'rest-suite)))
-  ;; TODO: Include scoping tests here
-  ;; (with-model "modelbank" (lambda ())
-  ;;   (run! 'scoping-suite)))
+    (run! 'predicates-suite)))
 
-;; TODO: Remove after all modelbank tests are in place. After that, use
-;; RUN-TESTS to run all the tests.
-(defun run-modelbank-tests ()
-  (with-model "modelbank" (lambda ())
+(defun run-scoping-tests ()
+  (with-model "modelbank" nil
     (run! 'scoping-suite)))
+
+(defun run-hook-registry-tests ()
+  "Run hook registry unit tests (no model needed) then integration tests against
+both test-model and modelbank."
+  ;; Pure registry tests — no model required
+  (run! 'hook-registry-suite)
+  ;; Integration: test-model (todos with :required + lambda)
+  (with-model "test-model" nil
+    (run! 'hook-registry-integration-suite))
+  ;; Integration: modelbank (:in-range on ratings)
+  (with-model "modelbank" nil
+    (run! 'hook-registry-modelbank-suite)))
+
+(defun run-tests ()
+  (run-backend-tests)
+  (run-scoping-tests)
+  (run-hook-registry-tests))

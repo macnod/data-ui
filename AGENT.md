@@ -303,6 +303,85 @@ docs.
   is special, find where it's bound, and trace its extent. Explicit
   parameters make data flow visible at the call site.
 
+## Error Reporting: `report-e` and `report-ve`
+
+Never use raw `(error ...)` calls. Use the two macros defined in
+`lisp/aux.lisp` instead:
+
+- **`report-e`** — for system/structural errors (unknown hooks, wrong
+  kind, unsupported features, model compilation failures). Calls
+  `error` under the hood.
+- **`report-ve`** — for validation errors (bad user input, invalid
+  parameters, schema violations). Signals a validation error condition
+  under the hood.
+
+Both generate a **Guru Meditation Number** (a deterministic 6-hex-hash
+of the function name + 3 random hex digits, e.g. `897270-ff3`) that is
+appended to the error message and logged. The function name can be
+recovered from the hash via `gmn-fname`.
+
+### Signature
+
+Both macros share the same form:
+
+```lisp
+(report-ve function-name format-string &rest var-specs)
+(report-e  function-name format-string &rest var-specs)
+```
+
+- **`function-name`** — string, the name of the calling function
+  (e.g. `"valid-hook-params"`).
+- **`format-string`** — a `format` directive string. Use `~a` (not
+  `~s`) for cleaner error messages; raw values are logged separately.
+- **`var-specs`** — symbols (variable names), **not** expressions.
+
+### The tilde convention
+
+Each var-spec is a symbol. If the symbol is prefixed with `~`, it is
+included as a `format` argument (the tilde is stripped). If not
+prefixed, it is **log-only** — it appears in the `pl:plog` entry but
+is not interpolated into the error message.
+
+This lets you provide extra debugging context to the log without
+cluttering the error shown to the user:
+
+```lisp
+(report-ve "valid-hook-params"
+           "Hook ~a parameter ~a must be an integer, got ~a"
+           ~hook-name ~key ~val)
+```
+
+All three vars are logged as `:hook-name`, `:key`, `:val`. All three
+are also format arguments (all have tildes).
+
+```lisp
+(report-ve "valid-filter"
+           "Invalid field key ~a for type ~a."
+           ~field-key ~type-key request-id)
+```
+
+Here `request-id` is logged but not shown in the error message.
+
+### Practical constraints
+
+- Var-specs must be **symbols** (lexical variable names), not
+  arbitrary expressions. Bind expressions to local variables first.
+- The log key is derived from the cleaned symbol name (tilde
+  stripped), converted to a keyword (e.g. `~hook-name` → `:hook-name`).
+- When choosing between `report-e` and `report-ve`: if the error is
+  validating user-supplied input against a schema or contract, use
+  `report-ve`. If it's a structural/system error (something is wrong
+  with the model or code path), use `report-e`.
+
+### Naming convention: `valid-*`
+
+Functions that check or validate data are named with the `valid-`
+prefix (e.g. `valid-hook-params`, `valid-target`, `valid-view-scope`).
+Do not use `check-` or other prefixes for this purpose. The `valid-*`
+family has mixed return semantics — some signal on error and return
+`nil` otherwise, others return a resolved value — but they share the
+common purpose of validating input against a schema or contract.
+
 ## Important Design Decisions
 
 - RBAC types are treated exactly like user-defined types. Thus, you can add a role to a user in the same way that you would add a tag to a To Do item.

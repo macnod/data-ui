@@ -51,6 +51,7 @@
          :rating
          (:type :integer
            :ui (:label "Rating" :input-type :line)
+           :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating
                     :scope :user :agg :first)
            :write-to (:table :ratings
@@ -138,6 +139,7 @@
          :rating
          (:type :integer
            :ui (:label "Rating" :input-type :line)
+           :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating :agg :first)
            :column t))
        :list-form (:fields t)

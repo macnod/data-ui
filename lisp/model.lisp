@@ -186,16 +186,202 @@ returns S. If S is not a string or a number, this function returns NIL."
     (when resource-name
       (a:remove-resource *rbac* resource-name))))
 
-(defparameter *validation-map*
-  ;; type is not included here because it is automatically applied to all
-  ;; fields, and thus need never be specified in the model definition.
-  (list
-    :required #'v-required
-    :user-name #'v-user-name
-    :password #'v-password
-    :email #'v-email
-    :join-items-exist #'v-join-items-exist
-    :exists #'v-exists))
+;;; ---------------------------------------------------------------------------
+;;; Hook Registry
+;;;
+;;; A curated registry of named hooks (validations now, lifecycle in Plan 3).
+;;; Each entry stores: name (keyword), kind (:validation | :lifecycle),
+;;; a parameter schema (plist of keyword → type), and a factory function
+;;; that accepts the resolved parameters and returns a contract-conforming
+;;; function.
+;;;
+;;; Validation contract: (lambda (type-key field-key value user)
+;;;                        → nil | error-string)
+;;; ---------------------------------------------------------------------------
+
+(defparameter *hook-registry* (make-hash-table))
+
+(defstruct hook-entry
+  name kind parameters factory)
+
+(defun register-hook (name kind parameters factory)
+  "Register a hook named NAME (keyword) of KIND (:validation or :lifecycle).
+PARAMETERS is a plist specifying required keyword params and their types,
+e.g. (:max integer), or NIL if the hook takes no parameters.  FACTORY is a
+function that receives the resolved parameter values as keyword args and
+returns a validation/lifecycle function."
+  (check-type name keyword)
+  (check-type kind (member :validation :lifecycle))
+  (check-type parameters (or null list))
+  (check-type factory (or function symbol))
+  (setf (gethash name *hook-registry*)
+        (make-hook-entry :name name
+                         :kind kind
+                         :parameters parameters
+                         :factory factory))
+  name)
+
+(defun get-hook (name)
+  "Return the HOOK-ENTRY for NAME, or NIL if not registered."
+  (check-type name keyword)
+  (gethash name *hook-registry*))
+
+(defun list-hook-names (&optional kind)
+  "Return a list of registered hook names, optionally filtered by KIND."
+  (loop for entry being the hash-value of *hook-registry*
+        when (or (null kind) (eq (hook-entry-kind entry) kind))
+        collect (hook-entry-name entry)))
+
+(defun valid-hook-params (entry plist)
+  "Validate PLIST against ENTRY's parameter schema.  Returns a plist of resolved
+keyword/value pairs.  Signals an error on missing or wrong-type params."
+  (let ((schema (hook-entry-parameters entry))
+        (hook-name (hook-entry-name entry))
+        (result nil))
+    (loop for (key type) on schema by #'cddr
+          for val = (getf plist key)
+          unless val do
+          (report-ve "valid-hook-params"
+                     "Hook ~a requires parameter ~a"
+                     ~hook-name ~key)
+          do
+          (case type
+            (:integer
+              (let ((n (cond
+                         ((integerp val) val)
+                         ((stringp val)
+                          (ignore-errors
+                            (parse-integer val :junk-allowed nil)))
+                         (t nil))))
+                (unless n
+                  (report-ve "valid-hook-params"
+                             "Hook ~a parameter ~a must be an integer, got ~a"
+                             ~hook-name ~key ~val))
+                (setf (getf result key) n)))
+            (:number
+              (let ((n (parse-number val)))
+                (unless n
+                  (report-ve "valid-hook-params"
+                             "Hook ~a parameter ~a must be a number, got ~a"
+                             ~hook-name ~key ~val))
+                (setf (getf result key) n)))
+            (otherwise
+              (setf (getf result key) val))))
+    result))
+
+(defun resolve-hook-form (form &key (kind :validation)
+                                 type-key field-key)
+  "Resolve a single hook FORM into a contract-conforming function.
+FORM may be:
+  - A keyword:  :required  → zero-arg registry lookup
+  - A plist list: (:max-length :max 20) → parameterized registry lookup
+  - A lambda:    (lambda ...) → compiled as-is (expert tier)
+TYPE-KEY and FIELD-KEY are optional context used only for error
+messages.
+Signals an error for unknown hooks, wrong kind, :shell forms, or bad params."
+  (flet ((ctx (fmt)
+           (if (and type-key field-key)
+               (format nil "~a for ~(~a/~a~): " fmt type-key field-key)
+               (if type-key
+                   (format nil "~a for ~(~a~): " fmt type-key)
+                   (format nil "~a" fmt)))))
+    (cond
+    ;; Raw lambda — expert tier, pass through
+    ((and (consp form) (eq (car form) 'lambda))
+     (compile nil form))
+    ;; :shell — explicitly rejected in this plan
+    ((and (consp form) (eq (car form) :shell))
+     (report-e "resolve-hook-form"
+               (ctx ":shell hooks are not supported yet")))
+    ;; Keyword alone: zero-arg registry entry
+    ((keywordp form)
+     (let ((entry (get-hook form)))
+       (unless entry
+         (report-e "resolve-hook-form"
+                   (ctx "Unknown hook: ~a")
+                   ~form))
+       (let ((actual-kind (hook-entry-kind entry)))
+         (unless (eq actual-kind kind)
+           (report-e "resolve-hook-form"
+                     (ctx "Hook ~a is kind ~a, expected ~a")
+                     ~form ~actual-kind ~kind)))
+       ;; Zero-arg: call factory with no params
+       (funcall (hook-entry-factory entry))))
+    ;; Plist list: (:hook-name :param value ...)
+    ((and (consp form) (keywordp (car form)))
+     (let* ((name (car form))
+            (entry (get-hook name)))
+       (unless entry
+         (report-e "resolve-hook-form"
+                   (ctx "Unknown hook: ~a")
+                   ~name))
+       (let ((actual-kind (hook-entry-kind entry)))
+         (unless (eq actual-kind kind)
+           (report-e "resolve-hook-form"
+                     (ctx "Hook ~a is kind ~a, expected ~a")
+                     ~name ~actual-kind ~kind)))
+       (let ((params (valid-hook-params entry (cdr form))))
+         (apply (hook-entry-factory entry) params))))
+    (t
+     (report-e "resolve-hook-form"
+               (ctx "Invalid hook form: ~a")
+               ~form)))))
+
+(defun resolve-hook-list (forms &key (kind :validation)
+                                   type-key field-key)
+  "Resolve a list of hook FORMS into a list of functions, preserving order.
+TYPE-KEY and FIELD-KEY are optional context passed through to
+resolve-hook-form for error messages."
+  (loop for form in forms
+        collect (resolve-hook-form form :kind kind
+                                         :type-key type-key
+                                         :field-key field-key)))
+
+;;; ---------------------------------------------------------------------------
+;;; Registry builtins — migrated from *validation-map*
+;;; ---------------------------------------------------------------------------
+
+(register-hook :required :validation
+  nil (lambda () #'v-required))
+(register-hook :user-name :validation
+  nil (lambda () #'v-user-name))
+(register-hook :password :validation
+  nil (lambda () #'v-password))
+(register-hook :email :validation
+  nil (lambda () #'v-email))
+(register-hook :join-items-exist :validation
+  nil (lambda () #'v-join-items-exist))
+(register-hook :exists :validation
+  nil (lambda () #'v-exists))
+
+;;; :max-length — inclusive string length ≤ :max
+(register-hook :max-length :validation
+  '(:max :integer)
+  (lambda (&key max)
+    (lambda (type-key field-key value user)
+      (declare (ignore user))
+      ;; No-op on empty/nil (use :required for that)
+      (when (and value (stringp value) (not (equal value "")))
+        (when (> (length value) max)
+          (validation-error-string type-key field-key value
+            (format nil "must be at most ~d characters." max)))))))
+
+;;; :in-range — inclusive numeric range, min ≤ value ≤ max
+(register-hook :in-range :validation
+  '(:min :integer :max :integer)
+  (lambda (&key min max)
+    (lambda (type-key field-key value user)
+      (declare (ignore user))
+      ;; No-op on empty/nil (use :required for that)
+      (when (and value (not (equal value "")))
+        (let ((num (parse-number value)))
+          (cond
+            ((null num)
+             (validation-error-string type-key field-key value
+               "must be a valid number."))
+            ((or (< num min) (> num max))
+             (validation-error-string type-key field-key value
+               (format nil "must be between ~d and ~d." min max)))))))))
 
 (defparameter *forms* '(:list-form :add-form :update-form))
 
@@ -839,14 +1025,12 @@ necessary."
         source))))
 
 (defun compile-validations (model type-key field-key)
-  (let ((vfs (loop with validations = (u:tree-get model type-key :fields
-                                        field-key :validations)
-               for validation in validations
-               for validation-fn = (if (keywordp validation)
-                                     (getf *validation-map* validation)
-                                     (compile nil validation))
-               when validation-fn collect validation-fn
-               else do (error "Invalid validation definition: ~a" validation))))
+  (let ((vfs (resolve-hook-list
+               (u:tree-get model type-key :fields
+                 field-key :validations)
+               :kind :validation
+               :type-key type-key
+               :field-key field-key)))
     (push #'v-type vfs)
     (when (u:tree-get model type-key :fields field-key :required)
       (push #'v-required vfs))
@@ -1432,6 +1616,11 @@ plist. Setting the model involves compiling the model into an enriched model
 that includes compiled functions (machine code), generated parameterized SQL, as
 well as maps, other data structures, and settings that Data UI can use to
 efficiently instantiate and support the application described by MODEL."))
+
+(defun reset-to-model (model)
+  ":public: Resets the database (drop all records from all tables, drop all tables associated with user-defined types), then call SET-MODEL with MODEL."
+  (reset-database)
+  (set-model model))
 
 (defun create-tables ()
   (loop with m = *compiled-model*
