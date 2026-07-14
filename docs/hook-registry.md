@@ -27,7 +27,7 @@ contract the factory's returned function must conform to.
 - **Never signals.** Returning a string is the failure path; the caller
   aggregates.
 
-### Lifecycle contract (not yet implemented)
+### Lifecycle contract
 
 ```
 (lambda (type-key data user &key id roles record) → effect)
@@ -42,15 +42,14 @@ contract the factory's returned function must conform to.
 |-------------|--------|----------|-----------|
 | pre-create  | —      | roles    | —         |
 | post-create | new-id | roles    | —         |
-| pre-update  | uuid   | roles?   | optional  |
-| post-update | uuid   | roles?   | —         |
+| pre-update  | uuid   | roles    | record    |
+| post-update | uuid   | roles    | —         |
 | pre-delete  | uuid   | —        | record    |
 | post-delete | uuid   | —        | record    |
 
-**Current state:** lifecycle hooks are raw functions stored directly on the
-model (e.g. `:post-create ,#'add-user-settings`). They are not yet compiled
-through the registry. The call sites in `be-insert`, `be-insert-internal`, and
-`be-delete` use inconsistent argument shapes.
+All six lifecycle slots are compiled at model-compile time into function lists
+on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks`
+(backend.lisp) — no registry lookup occurs at runtime.
 
 
 ## Registry API
@@ -145,43 +144,77 @@ Missing or wrong-type parameters signal a validation error
 
 ```
 model source
-  ↓  compile-validations (model.lisp)
-  ↓  resolve-hook-list → resolve-hook-form per hook
-  ↓  keyword/plist → registry lookup; lambda → compile
+  ↓  compile-validations → resolve-hook-list (:kind :validation)
+  ↓  compile-lifecycle-hooks → resolve-hook-list (:kind :lifecycle)
+  ↓  resolve-hook-form per hook:
+       keyword/plist → registry lookup
+       lambda → compile
+       raw function → pass through as-is
   ↓
-*compiled-model* (holds function lists)
+*compiled-model* (holds function lists for both validations and lifecycle)
   ↓
-runtime: validate-field-internal / be-insert / be-delete
+runtime: validate-field-internal / run-lifecycle-hooks
 ```
 
-`compile-validations` resolves all hook forms at compile time and stores
-the resulting function lists on `*compiled-model*`. The runtime never
-touches the registry.
+Both `compile-validations` and `compile-lifecycle-hooks` resolve all hook
+forms at compile time and store the resulting function lists on
+`*compiled-model*`. The runtime never touches the registry.
 
 
-## Lifecycle Hooks (Current State)
+## Lifecycle Hooks
 
-Lifecycle hooks are stored as raw functions on the base model, not yet
-compiled through the registry.
+Lifecycle slots are compiled at model-compile time via
+`compile-lifecycle-hooks` (model.lisp). All six slots are resolved into
+function lists and stored on the compiled type definition, overriding the
+raw model values.
 
 | Slot | Base model value | Purpose |
 |------|-----------------|---------|
 | `:post-create` | `#'add-user-settings` | Creates a per-user settings row on user creation |
 | `:pre-delete` | `#'remove-user-settings` | Cleans up settings row on user deletion |
-| `:pre-update` / `:post-update` | not implemented | — |
+| `:pre-create` | — | — |
+| `:post-delete` | — | — |
+| `:pre-update` | — | — |
+| `:post-update` | — | — |
 
-### Current call-site signatures (inconsistent)
+### Runtime invocation
+
+All call sites use `run-lifecycle-hooks` (backend.lisp), which iterates
+the compiled function list and calls each hook with the unified contract:
 
 ```
-pre-create:   (funcall pre-create type-key data roles user)
-post-create:  (funcall post-create nil nil data nil nil)
-pre-delete:   (funcall pre-delete type-key uuid record user)
-post-delete:  (funcall post-delete type-key uuid record user)
+(run-lifecycle-hooks hooks type-key data user
+  &key id roles record)
 ```
 
-These are the signatures in `be-insert`, `be-insert-internal`, and
-`be-delete` today. Plan 3 will unify them to the target lifecycle
-contract.
+Call sites:
+
+| Function | Slots invoked |
+|----------|--------------|
+| `be-insert` | `:pre-create` (before write), `:post-create` (after write, with `:id new-id`) |
+| `be-insert-internal` | `:post-create` (after write, with `:id new-id`) |
+| `be-update` | `:pre-update` (before write), `:post-update` (after write-through) |
+| `be-delete` | `:pre-delete` (before write), `:post-delete` (after write) |
+
+### Surface forms on lifecycle slots
+
+Same as validation — all three forms are accepted:
+
+```lisp
+;; Keyword (zero-arg registry entry, :lifecycle kind)
+:post-create :my-hook
+
+;; Plist list (parameterized registry entry)
+:post-update (:my-hook :param value)
+
+;; Raw function (expert tier)
+:pre-delete #'(lambda (type-key data user &key id roles record) ...)
+
+;; List of hooks (all three forms may be mixed)
+:post-create (:hook-a (:hook-b :param 1) (lambda ...))
+```
+
+Raw function values (`#'foo`) pass through `resolve-hook-form` as-is.
 
 
 ## MVP Caveat: No Transactional Guarantees
@@ -191,16 +224,3 @@ A failing hook fails the operation **without rollback** of the primary
 write or earlier hooks. Transactions and rollback are deliberately
 deferred to post-MVP. Design hooks with that future boundary in mind;
 never assume atomicity today.
-
-
-## Implementation Plans
-
-The hook registry was built in three phases:
-
-| Plan | Status | Topic |
-|------|--------|-------|
-| Plan 1 | Done | Registry API + validation path + `:in-range` / `:max-length` |
-| Plan 2 | Done | Write-path field validation (enforce compiled validators on insert/update) |
-| Plan 3 | Not started | Lifecycle compile + unified call sites |
-
-Plans live in `~/workbench/data-ui-hook-registry-plan-{0..3}.org`.

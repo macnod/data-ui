@@ -1814,6 +1814,19 @@ like BE-LIST, but it returns a list of values instead of a list of records."
           field-key
           (u:tree-get (fe-fields type-key user) form field-key))))))
 
+(defun run-lifecycle-hooks (hooks type-key data user
+                           &key id roles record)
+  "Run a list of compiled lifecycle HOOKS with the unified contract.
+Each hook is called as (funcall hook type-key data user :id id
+:roles roles :record record)."
+  (loop for hook in hooks
+        when hook
+        ;; Contract: (type-key data user &key id roles record)
+        ;; See model.lisp "Lifecycle contract" and
+        ;; docs/hook-registry.md § "Lifecycle contract".
+        do (funcall hook type-key data user
+             :id id :roles roles :record record)))
+
 ;; TODO: Transaction!
 (defun be-insert (type-key data user &key roles file-token)
   ":public: Inserts a record of type TYPE-KEY with the given DATA, provided
@@ -1860,8 +1873,8 @@ kitchen\":
                   (pre-create (u:tree-get m type-key :pre-create))
                   (post-create (u:tree-get m type-key :post-create)))
             (valid-new-directory type-key logical-path file-token user roles)
-            (when pre-create
-              (funcall pre-create type-key data roles user))
+            (run-lifecycle-hooks pre-create type-key data user
+              :roles roles)
             (when (and logical-path (not file-token))
               (store-directory type-key logical-path user roles))
             (let ((new-id (cond
@@ -1874,8 +1887,8 @@ kitchen\":
                             (t (report-ve "be-insert"
                                  "Invalid create function for type ~s: ~s"
                                  ~type-key ~f)))))
-              (when post-create
-                (funcall post-create nil nil data nil nil))
+              (run-lifecycle-hooks post-create type-key data user
+                :id new-id :roles roles)
               (loop
                 for field-key in (user-fields type-key)
                 for field-def = (u:tree-get m type-key :fields field-key)
@@ -1940,8 +1953,8 @@ not.
                           (t (report-ve "be-insert-internal"
                                "Invalid create function for type ~s: ~s"
                                ~type-key ~f)))))
-          (when post-create
-            (funcall post-create nil nil data nil nil))
+          (run-lifecycle-hooks post-create type-key data user
+            :id new-id :roles roles)
           (values new-id t))))))
 
 ;; TODO: Remove. This is for debugging only.
@@ -1981,12 +1994,17 @@ update fails.
           (sql (car (u:tree-get m type-key :update-sql :main)))
           (values (local-values-for-update type-key data record user :id uuid))
           (update-query (cons sql values))
-          (full-data (full-data type-key data user :record record)))
+          (full-data (full-data type-key data user :record record))
+          (pre-update (u:tree-get m type-key :pre-update))
+          (post-update (u:tree-get m type-key :post-update)))
     (valid-existing-join-data type-key full-data)
     (let ((field-errors (validate-fields type-key full-data user)))
       (when field-errors
         (report-ve "be-update"
           "Field validation failed:~{ ~a~}" ~field-errors)))
+    ;; Pre-update lifecycle hooks
+    (run-lifecycle-hooks pre-update type-key full-data user
+      :id uuid :roles roles :record record)
     ;; Update TYPE-KEY row (main update)
     (when (equal type-key :resources)
       (report-ve "be-update" "Can't update internal type :resources"))
@@ -2015,6 +2033,9 @@ update fails.
              (pl:perror :in "be-update"
                :status "Write-through failed"
                :type-key type-key :field-key field-key :error e))))
+    ;; Post-update lifecycle hooks
+    (run-lifecycle-hooks post-update type-key full-data user
+      :id uuid :roles roles)
     uuid))
 
 (defun be-delete (type-key filters user)
@@ -2050,8 +2071,8 @@ treated as the UUID of the record to be deleted."
       :logical-path logical-path)
     (valid-existing-file-or-directory type-key logical-path)
     (when (and uuid (user-allowed-resource user uuid "delete"))
-      (when pre-delete
-        (funcall pre-delete type-key uuid record user))
+      (run-lifecycle-hooks pre-delete type-key nil user
+        :id uuid :record record)
       (cond
         ((equal (type-of f) 'keyword)
           (case f
@@ -2069,10 +2090,8 @@ treated as the UUID of the record to be deleted."
           (funcall f type-key record user))
         (t (report-ve "be-delete"
              "Invalid delete function for type ~s: ~s" ~type-key ~f)))
-      (when post-delete
-        (pl:pdebug :in "be-delete" :step 2)
-        (funcall post-delete type-key uuid record user)
-        (pl:pdebug :in "be-delete" :step 3 :uuid uuid))
+      (run-lifecycle-hooks post-delete type-key nil user
+        :id uuid :record record)
       uuid)))
 
 (defun be-add-type-roles (type-key user &rest roles)

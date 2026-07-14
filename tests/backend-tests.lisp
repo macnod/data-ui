@@ -1173,7 +1173,7 @@ Notes:
   (be-delete :tags `((:tags :name :eq "tag-2")) "admin"))
 
 ;;
-;; Write-path field validation tests (Plan 2)
+;; Write-path field validation tests
 ;;
 
 (test write-path-missing-required-fails

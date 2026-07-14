@@ -159,8 +159,8 @@ returns S. If S is not a string or a number, this function returns NIL."
   (declare (ignore type-key user))
   (a:remove-permission *rbac* (getf data :name)))
 
-(defun add-user-settings (type-key id data roles user)
-  (declare (ignore type-key id roles user))
+(defun add-user-settings (type-key data user &key id roles record)
+  (declare (ignore type-key id roles record))
   (let ((username (getf data :name)))
     (pl:pdebug :in "add-user-settings" :data data :username username)
     (be-insert-internal :settings `(:dark-mode :false
@@ -170,8 +170,8 @@ returns S. If S is not a string or a number, this function returns NIL."
       "admin"
       :roles (list (a:exclusive-role-for username)))))
 
-(defun remove-user-settings (type-key id record user)
-  (declare (ignore type-key id user))
+(defun remove-user-settings (type-key data user &key id roles record)
+  (declare (ignore type-key data user id roles))
   (let* ((username (u:tree-get record :record :name))
           (settings-id (when username
                          (be-id :settings
@@ -189,7 +189,7 @@ returns S. If S is not a string or a number, this function returns NIL."
 ;;; ---------------------------------------------------------------------------
 ;;; Hook Registry
 ;;;
-;;; A curated registry of named hooks (validations now, lifecycle in Plan 3).
+;;; A curated registry of named hooks (validations and lifecycle).
 ;;; Each entry stores: name (keyword), kind (:validation | :lifecycle),
 ;;; a parameter schema (plist of keyword → type), and a factory function
 ;;; that accepts the resolved parameters and returns a contract-conforming
@@ -286,6 +286,9 @@ Signals an error for unknown hooks, wrong kind, :shell forms, or bad params."
                    (format nil "~a for ~(~a~): " fmt type-key)
                    (format nil "~a" fmt)))))
     (cond
+    ;; Raw function — expert tier, pass through as-is
+    ((functionp form)
+     form)
     ;; Raw lambda — expert tier, pass through
     ((and (consp form) (eq (car form) 'lambda))
      (compile nil form))
@@ -1036,6 +1039,29 @@ necessary."
       (push #'v-required vfs))
     vfs))
 
+(defparameter *lifecycle-keys*
+  '(:pre-create :post-create
+    :pre-update :post-update
+    :pre-delete :post-delete))
+
+(defun compile-lifecycle-hooks (model type-key)
+  "Resolve all lifecycle slots for TYPE-KEY into lists of functions.
+Returns a plist of :key → function-list for each lifecycle slot that
+has a value in the model."
+  (loop for key in *lifecycle-keys*
+        for raw = (getf (getf model type-key) key)
+        when raw
+        append (list key
+                     (if (listp raw)
+                       ;; A list of hook forms — resolve each
+                       (resolve-hook-list raw
+                         :kind :lifecycle
+                         :type-key type-key)
+                       ;; Single form (function, keyword, or plist)
+                       (resolve-hook-list (list raw)
+                         :kind :lifecycle
+                         :type-key type-key)))))
+
 (defun write-to (model type-key field-key field-def)
   (let ((wt (getf field-def :write-to)))
     (when wt
@@ -1437,16 +1463,19 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
     (let ((fields-with-path (mark-path-field type-key fs-backed fields)))
       (add-to-plist
         type-def
-        (list
-          :internal internal
-          :create create
-          :type-roles roles
-          :table-name table-name
-          :fields fields-with-path
-          :tree tree
-          :is-leaf is-leaf
-          :parent-type parent-type
-          :fs-backed fs-backed)))))
+        (append
+          (list
+            :internal internal
+            :create create
+            :type-roles roles
+            :table-name table-name
+            :fields fields-with-path
+            :tree tree
+            :is-leaf is-leaf
+            :parent-type parent-type
+            :fs-backed fs-backed)
+          ;; Compiled lifecycle hooks override raw values on type-def
+          (compile-lifecycle-hooks model type-key))))))
 
 (defun preliminary-model-check (&optional def key-path)
   (loop with current = (apply #'u:tree-get (cons def key-path))
@@ -1543,9 +1572,7 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
     unless setting-id do
     (add-user-settings
       :settings
-      nil
       `(:name ,user)
-      (list (a:exclusive-role-for user))
       "admin")))
 
 (defun add-root-fs-resources ()
