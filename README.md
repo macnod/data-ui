@@ -131,7 +131,8 @@ Data UI is a Common Lisp system that takes a simple nested plist model and
 - Generic, model-driven backend functions and API endpoints
 - UI hints for dynamic React forms and lists
 - Per-field and per-form data validation endpoints
-- View-level and field-level scoping (`:scope :user`) for per-user data filtering
+- View-level and field-level scoping (`:scope :user`) for per-user data
+  filtering
 - Tree-structured types with filesystem backing (directories, file storage)
 - Complete React frontend
 - Kubernetes manifests for deployment
@@ -192,12 +193,14 @@ for those who want that power unmediated.
 
 ## Example Model
 
-This example is the full contents of `models/todos.lisp`. Each file in the
-`models/` directory holds a bare model plist (no `defparameter` and no wrapping
-variable). The top-level keys (`:title`, `:name`, `:version`, `:domain`, `:repl`)
-carry the model's identity, and `:types` holds the type definitions. Load the
-model with `(set-model "todos")` — pass just the file name, with no path and no
-`.lisp` extension.
+This example matches `models/todos.lisp` (and `models/default-model.lisp`,
+which is an exact copy used by the deploy pipeline). Each file in the
+`models/` directory holds a bare model plist (no `defparameter` and no
+wrapping variable). The top-level keys (`:title`, `:name`, `:version`,
+`:domain`, `:repl`) carry the model's identity, and `:types` holds the type
+definitions. Load the model with `(set-model "todos")` — pass just the file
+name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
+(see [Deployment](#deployment)).
 
 ```lisp
 (:title "To Do List"
@@ -214,7 +217,7 @@ model with `(set-model "todos")` — pass just the file name, with no path and n
                :tags (:tables (:tags)))
       :fields
       (:name
-        (:type :text
+        (:type :text :identity t
           :ui (:label "To Do" :input-type :line)
           :validations (:required
                          (lambda (type-key field-key value user)
@@ -253,7 +256,7 @@ model with `(set-model "todos")` — pass just the file name, with no path and n
       :type-roles ("todo-users")
       :fields
       (:name
-        (:type :text
+        (:type :text :identity t
           :ui (:label "Tag" :input-type :line)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
@@ -429,11 +432,14 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:target` as a shorthand for `:reference` on non-joiner fields (sets up FK + UUID column)
 - `:views` to explicitly control joins (e.g., `:main (:tables (:todos :todo-tags :tags))`)
 - `:scope :user` on a view to filter `be-list` results to records owned by the current user
+- `:scope :user` on a field's `:source` to filter aggregated field values to the current user (e.g. "my rating")
+- `:identity t` marks a field as the natural key used for write-through lookups and unique indexes
+- `:write-to` declares related-table upserts from a field write (e.g. rating → ratings row); non-transactional in MVP
 - `:ui` hints (`:label`, `:input-type`, `:render-as`) for frontend rendering
 - `:render-as` values: `:code`, `:image`, `:image-list` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview)
 - `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`
 - `:validations` common validation names, parameterized registry entries, or lambdas that validate form/field data
-- `:join-table` / `:ids-table` for many-to-many relationships
+- `:join-table` for many-to-many relationships
 - `:is-joiner t` for explicit join tables
 - `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` for tree-structured types with filesystem backing (directories, file storage)
 - `:path t` to mark the path field on fs-backed types
@@ -442,7 +448,7 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:type-roles` to declare which roles can access a type
 - `:force-sql-name` to override the generated SQL column name
 - `:auto` for create/update/delete → generated SQL (or override with your own function)
-- Lifecycle hooks (`:create`, `:update`, `:delete`, `:post-create`, `:pre-delete`, etc.) that accept registry entries, shell calls, or raw functions
+- Lifecycle hooks (`:create`, `:update`, `:delete`, `:post-create`, `:pre-delete`, etc.) that accept registry entries or raw functions (shell hooks planned)
 - Non-base tables get an `rt_` prefix to avoid name collisions with RBAC tables
 
 
@@ -454,11 +460,11 @@ before it runs, so the compiler treats them uniformly.
 
 There are three ways to express a hook, spanning the two tiers:
 
-| Form in the model            | Who writes the Lisp                  | Tier                       |
-|------------------------------|--------------------------------------|----------------------------|
-| `(:keyword args...)`         | the registry author (you/community)  | AI / no-code / hosted      |
-| `(:shell "script" args...)`  | nobody (compiler generates adapter)  | AI / no-code / hosted      |
-| `(lambda ...)`               | the model author, raw                | expert / self-host only    |
+| Form in the model            | Who writes the Lisp                  | Tier                       | Status        |
+|------------------------------|--------------------------------------|----------------------------|---------------|
+| `(:keyword args...)`         | the registry author (you/community)  | AI / no-code / hosted      | Supported     |
+| `(lambda ...)`               | the model author, raw                | expert / self-host only    | Supported     |
+| `(:shell "script" args...)`  | nobody (compiler generates adapter)  | AI / no-code / hosted      | Planned       |
 
 ### The contract
 
@@ -477,7 +483,7 @@ this contract.
 > **MVP caveat — transactions deferred:** lifecycle hooks are **not**
 > transaction-wrapped. If one hook in a list fails, the operation fails
 > **without rollback** of the primary write or earlier hooks. The same
-> rule will apply to write-through (`:write-to`): the primary row commits
+> rule applies to write-through (`:write-to`): the primary row commits
 > first; related-table upserts run after and are best-effort. Transactions
 > and rollback (including idempotent database initialization) are
 > deliberately deferred to post-MVP. The eventual transaction boundary is
@@ -500,7 +506,7 @@ For example, a maximum-length validation written as pure data:
 is backed by a registry entry whose Lisp lives in the engine, written once:
 
 ```lisp
-(register-validation :max-length
+(register-hook :max-length
   (lambda (max)                                   ; parameter from the model
     (lambda (type-key field-key value user)       ; conforms to the contract
       (unless (< (length value) max)
@@ -514,7 +520,6 @@ to YAML or JSON. The same pattern applies to lifecycle hooks:
 ```lisp
 :post-create (:add-user-settings)                       ; zero-arg entry
 :post-create ((:send-webhook :url "https://...") )      ; parameterized entry
-:post-create ((:shell "thumbnail.sh"))                  ; shell adapter
 ```
 
 ### Why the registry matters
@@ -536,14 +541,14 @@ This is the mechanism that makes the model AI-consumable: an AI does not write
 hooks, it picks registry entries and fills parameters. The Lisp lives in the
 registry; the model author — human or AI — writes only data.
 
-### Shell hooks
+### Shell hooks (planned)
 
-A shell hook is expressed as a tagged form, e.g. `(:shell "thumbnail.sh" ...)`.
-The compiler generates an adapter that wraps the subprocess to satisfy the same
-hook contract as any other hook. Input is delivered to the script as JSON on
-stdin; the script's exit status and output determine success or failure. Because
-the adapter conforms to the standard contract, shell hooks coexist in the same
-hook list as registry entries and raw lambdas.
+Shell hooks are **planned but not yet supported**. The intended form is a tagged
+expression such as `(:shell "thumbnail.sh" ...)`. When implemented, the compiler
+will generate an adapter that wraps the subprocess to satisfy the same hook
+contract as any other hook: input as JSON on stdin; exit status and output
+determine success or failure. Until then, `(:shell ...)` forms are rejected at
+compile time.
 
 ## API Approach
 
@@ -589,8 +594,8 @@ the frontend components.
   - In Slime: `(start-web-server)`
   - The server serves both the API and the frontend
 
-- Navigate to http://localhost:8080
-
+- Navigate to http://localhost:8081 or whatever the repl-environment terminal
+  says
 
 ## Deployment
 
@@ -599,9 +604,10 @@ model itself declares the application's identity:
 
 ```lisp
 (:title "To Do List"
-  :name "todo"
+  :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
+  ;; Prefer :repl nil in production (extra attack surface; SSH tunnel still required)
   :repl t
   :types ...)
 ```
@@ -626,6 +632,10 @@ the model and the git commit. Secrets and port assignments are generated
 once and thereafter recovered from the live cluster, so a deploy can be
 re-run from a fresh machine without breaking a running instance.
 
+`:repl t` works and exposes Swank for the instance (reachable over an SSH
+tunnel). Prefer `:repl nil` in production — it is an extra attack surface
+even behind a tunnel.
+
 The full story — every step, every file, where the admin password lives,
 how cert renewal works, troubleshooting — is in
 [docs/deployment.md](docs/deployment.md).
@@ -646,14 +656,20 @@ demonstrated end to end:
 - JWT-based authentication (access + refresh tokens) protects the API.
 - **Scoping** is implemented at both the view level and the field level.
   View-level `:scope :user` filters `be-list` results to records owned by
-  the current user. Field-level scoping (`:scope` on individual fields)
-  further restricts which fields are visible or editable based on the
-  user context.
+  the current user. Field-level scoping (`:scope :user` on a field's
+  `:source`) filters aggregated field values to the current user (e.g.
+  "my rating" on Model Bank). It does not control field visibility or
+  editability in the UI.
+- **Write-through** (`:write-to` + `:identity t`) is implemented: related-
+  table upserts run from `be-insert` / `be-update` (best-effort, non-
+  transactional). Used by Model Bank ratings. Some edge cases (e.g.
+  clear-to-NULL) remain open.
 - **Model features in active use** (exercised by `models/modelbank.lisp`):
   tree-structured types with filesystem backing (`:tree`, `:is-leaf`,
   `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated
-  fields (`:autofill :user`), per-user types (`:per-user`), and UI hints
-  for code blocks, images, and image lists (`:render-as`).
+  fields (`:autofill :user`), per-user types (`:per-user`), write-through
+  ratings (`:write-to`, `:identity`), and UI hints for code blocks, images,
+  and image lists (`:render-as`).
 - File handling: uploading, listing, and deleting files and directories
   works end-to-end (uploads use a two-phase flow: `multipart/form-data`
   POST to `/api/upload`, then a JSON `/api/insert` carrying the returned
@@ -666,25 +682,26 @@ demonstrated end to end:
 - Tests for compilation, predicates, backend, REST, and scoping are in
   `tests/` (FiveAM): `predicate-tests.lisp`, `backend-tests.lisp`,
   `rest-tests.lisp`, `scoping-tests.lisp`, plus `helpers.lisp` and
-  `model-template.lisp`.
+  `model-template.lisp`. One view-level scoping behavioral test remains
+  flaky / TODO.
 
 Model compilation, SQL generation for tables/views/triggers, RBAC
-integration, validation, CRUD, and Kubernetes deployment are implemented
-and exercised in production. Work continues on UI refinement and
-additional example models.
+integration, validation, CRUD, write-through, and Kubernetes deployment
+are implemented and exercised. Work continues on Model Bank completion,
+write-through edge cases, UI refinement, and additional example models.
 
 Deliberately deferred to post-MVP (do not assume these exist today):
 
 - **Transactions and rollback.** Lifecycle hooks are not
   transaction-wrapped. A failing hook fails the operation without
   rolling back the primary write or earlier hooks. Write-through
-  (`:write-to`) will follow the same rule until transactions land:
-  primary write commits first; related-table upserts are best-effort.
-  Idempotent database initialization is also deferred (see deployment
-  Trap 1).
+  (`:write-to`) follows the same rule: primary write commits first;
+  related-table upserts are best-effort. Idempotent database
+  initialization is also deferred (see deployment Trap 1).
 - Single-statement `ON CONFLICT` upserts (blocked on the two-phase
   resource insert).
 - YAML/JSON model input and the hosted AI front door.
+- Shell hooks (`:shell ...`) — planned; rejected at compile time today.
 
 See [Hooks and the Registry](#hooks-and-the-registry) for the hook
 contract and the MVP atomicity caveat.
@@ -706,15 +723,14 @@ deployed, working application.**
 Odds of hitting the date: **strong.** The reasoning, plainly:
 
 - The riskiest milestones are already behind us. The compiler, RBAC
-  integration, generic API, and — as of July — the entire deployment
-  pipeline are working in production. These were the make-or-break
-  items; everything that could have invalidated the core thesis has
-  instead confirmed it.
-- What remains is effort-bounded, not research-bounded: building Model
-  Bank (the fitness function), write-through for related tables,
-  UI polish, and the video itself. None of it
-  requires solving an open problem; five months remain for work measured
-  in weeks.
+  integration, generic API, write-through, and — as of July — the entire
+  deployment pipeline are working in production. These were the
+  make-or-break items; everything that could have invalidated the core
+  thesis has instead confirmed it.
+- What remains is effort-bounded, not research-bounded: finishing Model
+  Bank (the fitness function), hardening write-through edge cases, UI
+  polish, and the video itself. None of it requires solving an open
+  problem; five months remain for work measured in weeks.
 - The main schedule risks are scope creep and polish perfectionism. The
   mitigations are written down: file update may ship after MVP,
   **transactions and rollback are explicitly post-MVP** (hooks and

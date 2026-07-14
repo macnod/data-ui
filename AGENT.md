@@ -135,20 +135,31 @@ modify the test suites themselves (`backend-tests.lisp`,
   live app.** The to-do model is deployed and working at
   https://todo.demo.data-ui.com via `scripts/data-ui deploy`.
 - Backend compilation, SQL generation, RBAC, and generic endpoints are working
-- `models/todos.lisp` contains an example model for a To Do list; load it with `(set-model "todos")`. The deploy pipeline deploys `models/default-model.lisp`.
+- `models/todos.lisp` contains an example model for a To Do list; load it with
+  `(set-model "todos")`. The deploy pipeline deploys `models/default-model.lisp`,
+  which is an exact copy of `todos.lisp`.
 - Full CRUD works on **all** types — both the built-in RBAC types (users, roles,
   permissions, resources, etc.) and user-defined types
-- **Scoping** (`:scope :user` at the view level) is implemented in the compiler
-  and backend. A view with `:scope :user` filters `be-list` results to records
-  owned by the current user. Tests in `tests/scoping-tests.lisp` (the behavioral
-  test is marked TODO, blocked on write-through). Field-level scoping is not yet
-  implemented.
+- **Scoping** is implemented at both the view level and the field level.
+  - View-level `:scope :user` filters `be-list` results to records owned by
+    the current user.
+  - Field-level `:scope :user` on a field's `:source` filters aggregated field
+    values to the current user (e.g. Model Bank "my rating"). It does **not**
+    control field visibility or editability in the UI.
+  - Tests in `tests/scoping-tests.lisp`. One view-level behavioral test remains
+    flaky / TODO.
+- **Write-through** (`:write-to` + `:identity t`) is implemented: compile-time
+  validation, `:search-sql`, unique identity indexes, and backend execute path
+  in `be-insert` / `be-update` (best-effort `handler-case`, non-transactional).
+  Used by Model Bank ratings. Remaining work is edge cases (e.g. clear-to-NULL)
+  and Model Bank completion — not the core execute path.
 - **Model features now in use** (exercised by `models/modelbank.lisp`):
   - `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` — tree-structured
     types with filesystem backing (directories, file storage)
   - `:path t` — marks the path field on fs-backed types
   - `:autofill :user` — auto-populates a field with the current username
   - `:per-user t` — type-level flag (used by settings); suppresses roles field
+  - `:identity t` / `:write-to` — natural keys and related-table upserts
   - `:render-as` UI hint (`:code`, `:image`, `:image-list`) — passed through the
     `:ui` plist to the frontend for custom cell/form rendering
   - `:input-type` values now include `:textbox`, `:select`, `:read-only`,
@@ -180,18 +191,16 @@ modify the test suites themselves (`backend-tests.lisp`,
 
 ### Known gaps / next up
 
-- **Write-through** (`:write-to` + `:identity t`) — in progress on the
-  `grok` branch. Phase 1 / 1.5 done (pass-through, identity cleanup,
-  `valid-target`, `identity-field`). Still TODO: `:search-sql`, unique
-  identity indexes, compile-time write-to↔identity validation, and
-  backend execute path in `be-insert` / `be-update`. Unblocks Model Bank
-  ratings and the scoping behavioral test.
+- **Write-through edge cases** — core path landed; remaining: clear-to-NULL and
+  other edge cases surfaced by Model Bank. Unblocks remaining scoping
+  behavioral test polish.
 - **Transactions / rollback** — deliberately deferred to post-MVP.
   Lifecycle hooks and write-through are **not** atomic with the primary
   write. A failing hook fails the operation without rolling back prior
   side effects. Database init (`rbac:initialize-database`) is also not
   idempotent. Design hooks and write-through with eventual transaction
   wrapping in mind; do not assume atomicity today.
+- **Shell hooks** (`:shell ...`) — planned; rejected at compile time today.
 - File **update** is not implemented; may be deferred past the MVP
 - UI polish — important for the video; deferred relative to compiler /
   backend capability work (frontend changes are cheaper)
@@ -202,10 +211,10 @@ modify the test suites themselves (`backend-tests.lisp`,
 ## Deployment (working; read this before touching it)
 
 `scripts/data-ui deploy` (renamed from `scripts/run.sh`) deploys
-`models/default-model.lisp` to a k3d cluster on the deploy host
-(`evo-x2`) behind HAProxy + TLS. Full detail in **docs/deployment.md**;
-session-by-session history of how it was built (with every bug and fix)
-in **~/.debug/deployment-work.md**. Key facts:
+`models/default-model.lisp` (exact copy of `todos.lisp`) to a k3d cluster on
+the deploy host (`evo-x2`) behind HAProxy + TLS. Full detail in
+**docs/deployment.md**; session-by-session history of how it was built (with
+every bug and fix) in **~/.debug/deployment-work.md**. Key facts:
 
 - The model's top-level keys (`:name`, `:version`, `:domain`, `:repl`)
   drive everything: tag `<name>-<version>-<githash>`, namespace
@@ -215,7 +224,8 @@ in **~/.debug/deployment-work.md**. Key facts:
   outside the repo in `~/.local/state/data-ui-deploy/`. ports.lock and
   secrets.env are caches; the live cluster is the source of truth.
   Admin password: `grep ADMIN_PASSWORD
-  ~/.local/state/data-ui-deploy/todo/secrets.env`.
+  ~/.local/state/data-ui-deploy/todos/secrets.env` (or the instance name
+  derived from the model's `:name`).
 - App data is durable on the host: `~/k3d/volumes/dataui` is mounted
   into the k3d node at `/data/dataui`; instance PVs use
   `/data/dataui/<name>-<env>/`.
@@ -240,8 +250,9 @@ in **~/.debug/deployment-work.md**. Key facts:
   Hunchentoot serves the built files from `web/dist/`; there is no dev
   server. `npm run build` runs `tsc` first (typecheck) then `vite build`
   (bundle). Without this step, changes are invisible.
-- The model's `:repl` key has a TODO — it is "not taking effect yet"
-  and must be `nil` in production once it does.
+- **`:repl t` works** and exposes Swank for the instance (SSH tunnel
+  required to connect). Prefer `:repl nil` in production — it is an
+  extra attack surface even behind a tunnel.
 
 ## Two Tiers, One Engine
 
@@ -269,27 +280,27 @@ single calling contract.
 
 - Validation contract: `(lambda (type-key field-key value user) -> nil | error-string)`
 - Lifecycle contract (e.g.): `(lambda (type-key data user &key roles) -> effect)`
-- Hooks are **lists**; multiple hooks may attach. Three forms coexist:
-  - `(:keyword args...)` — registry entry (data-only; AI/no-code/hosted tier)
-  - `(:shell "script" args...)` — compiler-generated subprocess adapter (data-only)
-  - `(lambda ...)` — raw Lisp (expert/self-host tier only)
+- Hooks are **lists**; multiple hooks may attach. Forms:
+  - `(:keyword args...)` — registry entry (data-only; AI/no-code/hosted tier) — **supported**
+  - `(lambda ...)` — raw Lisp (expert/self-host tier only) — **supported**
+  - `(:shell "script" args...)` — compiler-generated subprocess adapter — **planned**;
+    rejected at compile time today
 - The **registry** generalizes the existing keyword→lambda validation pattern by
   letting entries take **parameters as data**. A registry entry = name +
   parameter-schema + factory. The parameter schema does triple duty: validates
   hosted-tier data, drives the no-code UI palette, and serves as the AI
-  function-calling spec.
-- Shell hooks: input as JSON on stdin; exit status/output determines
-  success/failure; the adapter conforms to the standard contract.
+  function-calling spec. API: `register-hook` (not `register-validation`).
+- Shell hooks (when implemented): input as JSON on stdin; exit status/output
+  determines success/failure; the adapter will conform to the standard contract.
 
 **MVP caveat (transactions deferred):** lifecycle hooks are NOT
 transaction-wrapped. A failing hook fails the operation WITHOUT rollback of
-the primary write or earlier hooks in the list. Write-through (when shipped)
-follows the same rule: primary write commits first; related-table upserts
-run after and are best-effort (`handler-case`, log, continue). Transactions
-and rollback are deliberately deferred to post-MVP; the eventual boundary is
-intended to wrap primary write + hook list + write-through as a unit. Design
-hooks with that future in mind, and never assume atomicity in MVP code or
-docs.
+the primary write or earlier hooks in the list. Write-through follows the
+same rule: primary write commits first; related-table upserts run after and
+are best-effort (`handler-case`, log, continue). Transactions and rollback
+are deliberately deferred to post-MVP; the eventual boundary is intended to
+wrap primary write + hook list + write-through as a unit. Design hooks with
+that future in mind, and never assume atomicity in MVP code or docs.
 
 ## Lisp Coding Style
 
@@ -433,17 +444,17 @@ gaps that block building real apps cannot.
 Priorities now:
 1. **Build Model Bank** — the live priority function; gaps it surfaces
    drive everything below
-2. **Write-through** (`:write-to` + `:identity t`) — in progress;
-   unblocks ratings and the scoping behavioral test. Compiler remains
-   authoritative for all SQL (search SQL, unique identity indexes,
-   upsert path). See the write-through plan in the workbench.
-3. **Field-level scoping** — view-level `:scope :user` is done;
-   field-level scope is not yet implemented
-4. **UI polish** — the video shows the UI; it must look clean.
+2. **Write-through edge cases** — core path (`:write-to` + `:identity t`,
+   search SQL, unique identity indexes, `be-insert` / `be-update` execute)
+   is landed and non-transactional. Remaining: edge cases (e.g.
+   clear-to-NULL) and Model Bank completion. Compiler remains
+   authoritative for all SQL.
+3. **UI polish** — the video shows the UI; it must look clean.
    Frontend work is deliberately deferred behind compiler/backend
    capability gaps (frontend is cheaper to change).
-5. **The 30-second video** — nothing → deployed app
-6. File update (only if time permits; otherwise post-MVP)
+4. **The 30-second video** — nothing → deployed app
+5. File update (only if time permits; otherwise post-MVP)
+6. Shell hooks (planned; not required for MVP demo)
 
 **Explicitly post-MVP (do not quietly pull in):**
 - Transactions / rollback around primary write + hooks + write-through

@@ -2147,6 +2147,8 @@ validate API (be-validate-field) and the write path (validate-fields)."
                          type-key :fields field-key :validations)
     for validation in validations
     for clean-value = (trim-maybe value)
+    ;; Validation contract: (type-key field-key value user) → nil | error-string
+    ;; See docs/hook-registry.md for full details.
     for e = (funcall validation type-key field-key clean-value user)
     when e collect e))
 

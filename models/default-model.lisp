@@ -1,11 +1,10 @@
 '(:title "To Do List"
-  :name "todo"
+  :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
-  ;; TODO: :repl is not taking effect yet
   :repl t
-  :types   
+  :types
   (:todos
     (:table t
       :create :auto :update :auto :delete :auto :display t
@@ -53,7 +52,7 @@
       :type-roles ("todo-users")
       :fields 
       (:name
-        (:type :text :identity
+        (:type :text :identity t
           ;; TODO: Add checks for :input-type value
           :ui (:label "Tag" :input-type :line)
           :validations (:required)
