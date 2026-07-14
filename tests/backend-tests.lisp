@@ -309,7 +309,7 @@ where users.id in (
                 :users '((:users :name :eq "nonexistent-user"))))))
 
 (test update-roles
-  (let ((test-todo-name "test-update-roles-todo")
+  (let ((test-todo-name "test-roles-todo")
         (test-tag-name "test-update-roles-tag"))
     ;; Cleanup from any previous partial test run
     (be-delete :todos `((:todos :name :eq ,test-todo-name)) "admin")
@@ -811,11 +811,11 @@ Notes:
       :roles '("todo-creator"))
     (be-add-type-roles :todos "admin" "todo-creator")
     (is (uuid-p (be-insert :todos
-                  '(:name "test-insert-todo-creator")
+                  '(:name "test-todo-creator")
                   "todo-user-1")))
     ;; Clean
     (is-true (uuid-p (be-delete :todos
-                       '((:todos :name :eq "test-insert-todo-creator"))
+                       '((:todos :name :eq "test-todo-creator"))
                        "admin")))
     (a:remove-user *rbac* "todo-user-1")
     (a:remove-role *rbac* "todo-creator")))
@@ -1171,3 +1171,73 @@ Notes:
   ;; Clean up the tags
   (be-delete :tags `((:tags :name :eq "tag-1")) "admin")
   (be-delete :tags `((:tags :name :eq "tag-2")) "admin"))
+
+;;
+;; Write-path field validation tests (Plan 2)
+;;
+
+(test write-path-missing-required-fails
+  "Insert with a missing required field should fail with validation-error."
+  ;; :name is :required with no default — omitting it should fail
+  (signals validation-error
+    (be-insert :todos '(:points 5) "admin")))
+
+(test write-path-bad-lambda-fails
+  "Insert with a value that fails a lambda validator should fail."
+  ;; :name lambda requires < 20 chars
+  (signals validation-error
+    (be-insert :todos '(:name "this-name-is-too-long") "admin")))
+
+(test write-path-bad-type-fails
+  "Insert with a value that fails v-type should fail."
+  ;; :points is :integer — string should fail
+  (signals validation-error
+    (be-insert :todos '(:name "ok-name" :points "not-a-number") "admin")))
+
+(test write-path-happy-path-succeeds
+  "Valid data should insert and update successfully."
+  (let ((id (be-insert :todos '(:name "valid-todo" :points 3) "admin")))
+    (is-true (uuid-p id))
+    ;; Update with valid data
+    (is-true (uuid-p (be-update :todos id
+                     '(:name "updated-todo" :points 7) "admin")))
+    ;; Verify the update
+    (let ((rec (getf (be-rec id "admin" :type-key :todos) :record)))
+      (is (equal "updated-todo" (getf rec :name)))
+      (is (equal 7 (getf rec :points))))
+    ;; Clean up
+    (is-true (uuid-p (be-delete :todos id "admin")))))
+
+(test write-path-update-bad-value-fails
+  "Update with a value that fails validation should fail without writing."
+  (let ((id (be-insert :todos '(:name "orig-todo" :points 1) "admin")))
+    (is-true (uuid-p id))
+    ;; Attempt update with too-long name — should fail
+    (signals validation-error
+      (be-update :todos id '(:name "this-name-is-too-long") "admin"))
+    ;; Verify original value is unchanged
+    (let ((rec (getf (be-rec id "admin" :type-key :todos) :record)))
+      (is (equal "orig-todo" (getf rec :name))))
+    ;; Clean up
+    (is-true (uuid-p (be-delete :todos id "admin")))))
+
+(test write-path-validate-api-still-works
+  "be-validate-field and be-validate-form should still work without writing."
+  ;; be-validate-field
+  (is (equal (getf (be-validate-field :todos :name "x" "admin") :valid)
+             :true))
+  (is (equal (getf (be-validate-field :todos :name
+                                       "this-is-too-long-name" "admin")
+                   :valid)
+             :false))
+  ;; be-validate-form
+  (is (equal (getf (be-validate-form :todos
+                                     '(:name "ok" :points 1) "admin")
+                   :valid)
+             :true))
+  (is (equal (getf (be-validate-form :todos
+                                     '(:name "ok" :points "bad") "admin")
+                   :valid)
+             :false))
+  ;; Verify nothing was inserted
+  (is-false (be-id :todos '((:todos :name :eq "ok")) "admin")))

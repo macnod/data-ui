@@ -253,7 +253,7 @@ validates and user exists. Otherwise, logs a message and returns NIL."
                         t)))
         (unless user
           (abort-auth "Invalid or expired token."))
-        (values user allowed required))
+        (values user allowed required-roles))
       (cond
         ((not (get-access-token))
           (abort-auth "Missing or invalid token"))

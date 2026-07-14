@@ -154,3 +154,34 @@ the unscoped average across all users."
         (is-true rec)
         (is (null (getf rec :rating)))
         (is (= 4.0 (getf rec :average-rating)))))))
+
+;;
+;; Write-path field validation tests (Plan 2) — modelbank
+;;
+
+(test write-path-in-range-fails-on-insert
+  "Insert with out-of-range rating should fail with validation-error."
+  (signals validation-error
+    (be-insert :models
+      '(:name "bad-rating-model"
+         :description "test"
+         :model "code"
+         :rating 10)
+      "admin"))
+  ;; Verify nothing was inserted
+  (is-false (be-id :models '((:models :name :eq "bad-rating-model"))
+                   "admin")))
+
+(test write-path-in-range-fails-on-update
+  "Update with out-of-range rating should fail without writing."
+  (let ((id (be-insert :models
+              '(:name "rating-update-test"
+                 :description "test"
+                 :model "code")
+              "admin")))
+    (is-true (uuid-p id))
+    ;; Attempt update with out-of-range rating
+    (signals validation-error
+      (be-update :models id '(:rating 99) "admin"))
+    ;; Clean up
+    (is-true (uuid-p (be-delete :models id "admin")))))

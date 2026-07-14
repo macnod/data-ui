@@ -1839,8 +1839,12 @@ kitchen\":
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (valid-file-token file-token)
- (let ((data (full-data type-key data user)))
+  (let ((data (full-data type-key data user)))
     (valid-data type-key data)
+    (let ((field-errors (validate-fields type-key data user)))
+      (when field-errors
+        (report-ve "be-insert"
+          "Field validation failed:~{ ~a~}" ~field-errors)))
     (let ((id (id-from-data type-key data)))
       (if id
         (values id nil)
@@ -1910,6 +1914,10 @@ not.
   (valid-user-permissions user type-key "create")
   (let ((data (full-data type-key data user)))
     (valid-data type-key data)
+    (let ((field-errors (validate-fields type-key data user)))
+      (when field-errors
+        (report-ve "be-insert-internal"
+          "Field validation failed:~{ ~a~}" ~field-errors)))
     (let ((id (id-from-data type-key data)))
       (if id
         (values id nil)
@@ -1975,6 +1983,10 @@ update fails.
           (update-query (cons sql values))
           (full-data (full-data type-key data user :record record)))
     (valid-existing-join-data type-key full-data)
+    (let ((field-errors (validate-fields type-key full-data user)))
+      (when field-errors
+        (report-ve "be-update"
+          "Field validation failed:~{ ~a~}" ~field-errors)))
     ;; Update TYPE-KEY row (main update)
     (when (equal type-key :resources)
       (report-ve "be-update" "Can't update internal type :resources"))
@@ -2126,6 +2138,53 @@ array trimmed."
     (pl:pdebug :in "trim-maybe" :step 4 :result result)
     result))
 
+(defun validate-field-internal (type-key field-key value user)
+  ":private: Core per-field validator. Returns a list of error strings
+(nil if valid). This is the shared inner loop used by both the
+validate API (be-validate-field) and the write path (validate-fields)."
+  (loop
+    with validations = (u:tree-get *compiled-model*
+                         type-key :fields field-key :validations)
+    for validation in validations
+    for clean-value = (trim-maybe value)
+    for e = (funcall validation type-key field-key clean-value user)
+    when e collect e))
+
+(defun validate-fields (type-key data user)
+  ":private: Form-level field validator. Walks user-facing fields for
+TYPE-KEY (with defaults from DATA), runs compiled :validations on each,
+and returns a list of error strings (nil if all valid). Used by both
+be-validate-form (REST validate API) and the write path (be-insert,
+be-update, be-insert-internal) so behavior cannot drift.
+
+Skips pure computed fields (no :column, no :write-to, no :join-table,
+no :target) since those are read-only aggregations, not user-writable.
+For write-to fields without a column, validation runs only when a
+value is present, since those fields are optional on the main form."
+  (loop
+    with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in (user-fields type-key)
+    for field-def = (u:tree-get fields field-key)
+    for has-column = (getf field-def :column)
+    for has-write-to = (getf field-def :write-to)
+    for has-join-table = (getf field-def :join-table)
+    for has-target = (getf field-def :target)
+    for default = (u:tree-get fields field-key :default)
+    for value = (getf data field-key default)
+    ;; Skip pure computed/read-only fields
+    unless (or has-column has-write-to has-join-table has-target)
+    do (pl:pdebug :in "validate-fields"
+         :status "skipping computed field" :field-key field-key)
+    else
+    ;; For write-to fields without a column, only validate when
+    ;; a value is present (optional on the main form)
+    ;; For write-to fields without a column, only validate when
+    ;; a value is present (optional on the main form)
+    unless (and has-write-to (not has-column)
+                (or (null value) (equal value :null)))
+    appending (validate-field-internal
+                type-key field-key value user)))
+
 (defun be-validate-field (type-key field-key value user)
   ":public: Validates that VALUE is acceptable for FIELD-KEY of TYPE-KEY. This
 function returns
@@ -2139,28 +2198,13 @@ if VALUE is valid for the field, and
 if VALUE is not valid for the field. `{error-message-list}` is a list of strings
 describing the problems with VALUE."
   (valid-compiled-model)
-  (pl:pdebug :in "be-validate-field" :step 1
-    :type-key type-key :field-key field-key :value value :user user)
-  (loop
-    with validations = (u:tree-get *compiled-model*
-                         type-key :fields field-key :validations)
-    initially
-    (valid-type-key type-key)
-    (valid-field-key type-key field-key)
-    (pl:pdebug :in "be-validate-field" :step 2
-      :type-key type-key :field-key field-key :value value)
-    for validation in validations
-    for clean-value = (trim-maybe value)
-    for log-1 = (pl:pdebug :in "be-validate-field" :step 3
-                  :clean-value clean-value
-                  :validation validation)
-    for e = (funcall validation type-key field-key clean-value user)
-    for log-2 = (pl:pdebug :in "be-validate-field" :step 4 :e e)
-    when e collect e into errors
-    finally (return
-              (if errors
-                (list :valid :false :errors errors)
-                (list :valid :true)))))
+  (valid-type-key type-key)
+  (valid-field-key type-key field-key)
+  (let ((errors (validate-field-internal
+                  type-key field-key value user)))
+    (if errors
+      (list :valid :false :errors errors)
+      (list :valid :true))))
 
 (defun be-validate-form (type-key values user)
   ":public: Validates that each value in the VALUES plist is acceptable for its
@@ -2175,33 +2219,10 @@ when all values are valid, and
 
 when even one value is invalid. `{error-message-list}` is a list of strings."
   (valid-compiled-model)
-  (loop
-    with fields = (u:tree-get *compiled-model* type-key :fields)
-    with data = (loop for key in (user-fields type-key)
-                  for default = (u:tree-get fields key :default)
-                  for value = (getf values key default)
-                  do (pl:pdebug :in "be-validate-form" :step 1
-                       :key key :default default :value value)
-                  append (list key value))
-    for field-key in data by #'cddr
-    for value in (cdr data) by #'cddr
-    for log-1 = (pl:pdebug :in "be-validate-form"
-                  :step 2
-                  :type-key type-key
-                  :field-key field-key :value value)
-    for e = (be-validate-field type-key field-key value user)
-    when (equal (getf e :valid) :false)
-    append (getf e :errors) into errors
-    finally
-    (pl:pdebug :in "be-validate-form"
-      :step 3
-      :type-key type-key
-      :valid (if errors :false :true)
-      :errors errors)
-    (return
-      (if errors
-        (list :valid :false :errors errors)
-        (list :valid :true)))))
+  (let ((errors (validate-fields type-key values user)))
+    (if errors
+      (list :valid :false :errors errors)
+      (list :valid :true))))
 
 (defun be-types (user)
   (valid-compiled-model)
