@@ -50,7 +50,7 @@
            :source (:view :main :table :images :column :name :agg :list))
          :rating
          (:type :integer
-           :ui (:label "Rating" :input-type :line)
+           :ui (:label "Rating" :input-type :line :render-as :stars)
            :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating
                     :scope :user :agg :first)
@@ -60,7 +60,8 @@
                        :rating :value))
          :average-rating
          (:type :real
-           :ui (:label "Average Rating" :input-type :read-only)
+           :ui (:label "Average Rating" :input-type :read-only
+                :render-as :stars :precision 1)
            :source (:view :main :table :ratings :column :rating
                     :agg :avg)))
        :list-form (:fields t)
@@ -138,7 +139,7 @@
            :column t :not-null t)
          :rating
          (:type :integer
-           :ui (:label "Rating" :input-type :line)
+           :ui (:label "Rating" :input-type :line :render-as :stars)
            :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating :agg :first)
            :column t))

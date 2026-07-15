@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { apiFetch, setTokens, clearTokens, getAccessToken } from './api'
+import StarRating from './StarRating'
 
 // Extract the backend's error message from a failed response, falling back
 // to a generic message if the body can't be parsed.
@@ -19,6 +20,7 @@ interface Field {
   path?: boolean
   'render-as'?: string
   table?: string
+  precision?: number
 }
 
 interface ListResponse {
@@ -36,6 +38,17 @@ interface ListResponse {
   }
 }
 
+// Format a number according to the field's :precision UI hint.
+// Returns the original value untouched if it's not a number or
+// no precision is specified.
+function formatNumber(
+  val: any, field: Field
+): string {
+  if (typeof val !== 'number' || field.precision == null)
+    return val != null ? String(val) : ''
+  return val.toFixed(field.precision)
+}
+
 // --- Render-as dispatch ---
 //
 // Each function handles one rendering context (list cell vs form).
@@ -46,7 +59,7 @@ function renderCellValue(
 ): React.ReactNode {
   const renderAs = field['render-as'] || 'text'
   const text = Array.isArray(val) ? val.join(', ')
-    : (val !== null && val !== undefined ? String(val) : '')
+    : formatNumber(val, field)
 
   switch (renderAs) {
     case 'code':
@@ -79,6 +92,12 @@ function renderCellValue(
           type={field.table || ''} paths={[path]} size={40}
         />
       )
+    }
+    case 'stars': {
+      const num = typeof val === 'number' ? val
+        : val ? Number(val) : null
+      if (num == null || isNaN(num)) return ''
+      return <StarRating value={num} />
     }
     default:
       return text
@@ -133,6 +152,17 @@ function renderFormField(
 
   // For now only 'code' gets special form treatment.
   // Future render-as values (rating, image, etc.) will add cases.
+  if (renderAs === 'stars') {
+    const num = value ? Number(value) : null
+    return (
+      <StarRating
+        value={num}
+        interactive={true}
+        onChange={onChange}
+      />
+    )
+  }
+
   if (renderAs === 'code') {
     return (
       <textarea
@@ -373,9 +403,17 @@ function renderReadOnlyField(
     )
   }
 
+  if (renderAs === 'stars') {
+    const num = typeof value === 'number' ? value
+      : value ? Number(value) : null
+    if (num == null || isNaN(num))
+      return <div style={{ color: '#999' }}>—</div>
+    return <StarRating value={num} />
+  }
+
   // Default read-only: plain text display
   const text = Array.isArray(value) ? value.join(', ')
-    : (value !== null && value !== undefined ? String(value) : '')
+    : formatNumber(value, field)
   return (
     <div style={{
       padding: '0.3rem 0',
