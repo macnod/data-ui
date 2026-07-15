@@ -460,6 +460,7 @@ function App() {
   const changeType = (newType: string) => {
     setType(newType)
     setShowAddForm(false)
+    setEditRecord(null)
     setFormValues({})
   }
 
