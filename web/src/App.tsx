@@ -797,22 +797,33 @@ function App() {
         ))}
       </div>
 
-      <div style={{ marginBottom: '0.5rem' }}>
-        {data.result.create && (
-          <button onClick={() => { setShowAddForm(!showAddForm); setEditRecord(null) }}>
-            {showAddForm ? 'Cancel' : 'Add'}
-          </button>
-        )}
-        {data.result.delete && (
-          <button onClick={deleteSelected} style={{ marginLeft: '0.5rem' }}>
-            Delete Selected
-          </button>
-        )}
-      </div>
+      {!(showAddForm || isEditMode) && (
+        <div style={{ marginBottom: '0.5rem' }}>
+          {data.result.create && (
+            <button onClick={() => { setShowAddForm(true); setEditRecord(null) }}>
+              Add
+            </button>
+          )}
+          {data.result.delete && (
+            <button onClick={deleteSelected} style={{ marginLeft: '0.5rem' }}>
+              Delete Selected
+            </button>
+          )}
+        </div>
+      )}
 
       {(showAddForm || isEditMode) && (
         <form style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
           <h3>{isEditMode ? 'Edit' : 'Add'} {data.result['type-key']}</h3>
+
+          <div style={{ marginBottom: '1rem' }}>
+            <button type="button" onClick={submitForm}>
+              {isEditMode ? 'Update' : 'Submit'}
+            </button>
+            <button type="button" onClick={closeForm} style={{ marginLeft: '0.5rem' }}>
+              Cancel
+            </button>
+          </div>
 
           {(isEditMode ? Object.keys(data.result['update-form']) : addFields).map(f => {
             const fieldMeta = isEditMode
