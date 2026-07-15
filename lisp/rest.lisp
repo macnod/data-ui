@@ -1107,7 +1107,9 @@ GET /api/types"
   (let* ((user (require-auth '("logged-in"))))
     (render-output
       (mapcar
-        (lambda (x) (format nil "~(~a~)" x))
+        (lambda (e)
+          (list :name (format nil "~(~a~)" (getf e :name))
+                :category (getf e :category)))
         (be-types user)))))
 
 (h:define-easy-handler (rest-info :uri "/api/info" :default-request-type :get)

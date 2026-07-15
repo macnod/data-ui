@@ -39,6 +39,13 @@ interface ListResponse {
   }
 }
 
+interface TypeInfo {
+  name: string
+  category: 'user' | 'system' | 'settings'
+}
+
+type ViewMode = 'app' | 'admin' | 'settings'
+
 // Format a number according to the field's :precision UI hint.
 // Returns the original value untouched if it's not a number or
 // no precision is specified.
@@ -428,7 +435,8 @@ function renderReadOnlyField(
 
 function App() {
   const [data, setData] = useState<ListResponse | null>(null)
-  const [types, setTypes] = useState<string[]>([])
+  const [types, setTypes] = useState<TypeInfo[]>([])
+  const [viewMode, setViewMode] = useState<ViewMode>('app')
   const [type, setType] = useState('__init__')
   const [showAddForm, setShowAddForm] = useState(false)
   const [formValues, setFormValues] = useState<Record<string, any>>({})
@@ -454,6 +462,14 @@ function App() {
 
   const isEditMode = !!editRecord
 
+  const userTypes = types.filter(t => t.category === 'user')
+  const systemTypes = types.filter(t => t.category === 'system')
+  const settingsTypes = types.filter(t => t.category === 'settings')
+
+  const activeTypes = viewMode === 'admin' ? systemTypes
+    : viewMode === 'settings' ? settingsTypes
+    : userTypes
+
   const fetchList = () => {
     setListError(null)
     apiFetch(`/api/list?type=${type}`)
@@ -475,6 +491,24 @@ function App() {
     setShowAddForm(false)
     setEditRecord(null)
     setFormValues({})
+  }
+
+  const switchViewMode = (mode: ViewMode) => {
+    setViewMode(mode)
+    setShowAddForm(false)
+    setEditRecord(null)
+    setFormValues({})
+    // Select first type in the new mode
+    if (mode === 'app') {
+      const first = userTypes[0]
+      if (first) setType(first.name)
+    } else if (mode === 'admin') {
+      const first = systemTypes[0]
+      if (first) setType(first.name)
+    } else if (mode === 'settings') {
+      const first = settingsTypes[0]
+      if (first) setType(first.name)
+    }
   }
 
   const openEditForm = (record: any) => {
@@ -677,12 +711,23 @@ function App() {
       apiFetch('/api/info').then(r => r.json()),
       apiFetch('/api/types').then(r => r.json())
     ]).then(([info, typesJson]) => {
-      setTypes(typesJson.result || [])
+      const typeInfos: TypeInfo[] =
+        (typesJson.result || []).map((t: any) => ({
+          name: typeof t === 'string' ? t : t.name,
+          category: typeof t === 'string'
+            ? 'user' : t.category
+        }))
+      setTypes(typeInfos)
       const lp = info.result?.['landing-page']
       if (lp) {
         setType(String(lp))
-      } else if (typesJson.result?.length > 0) {
-        setType(typesJson.result[0])
+      } else {
+        const firstUser = typeInfos.find(
+          t => t.category === 'user'
+        )
+        if (firstUser) setType(firstUser.name)
+        else if (typeInfos.length > 0)
+          setType(typeInfos[0].name)
       }
       // else: no types at all; leave __init__ (empty app)
     }).catch(() => {
@@ -737,6 +782,22 @@ function App() {
             {type}
           </div>
           <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {settingsTypes.length > 0 && viewMode !== 'settings' && (
+              <button
+                onClick={() => switchViewMode('settings')}
+                style={{}}
+              >
+                ⚙ Settings
+              </button>
+            )}
+            {systemTypes.length > 0 && viewMode !== 'admin' && (
+              <button
+                onClick={() => switchViewMode('admin')}
+                style={{}}
+              >
+                🔧 Admin
+              </button>
+            )}
             <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
             <button
               onClick={() => { clearTokens(); setLoggedIn(false); setLoggedInUser(''); setData(null) }}
@@ -747,20 +808,35 @@ function App() {
           </div>
         </div>
         <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
-          {types.map(t => (
+          {viewMode !== 'app' && (
             <button
-              key={t}
-              onClick={() => changeType(t)}
+              onClick={() => switchViewMode('app')}
               style={{
                 padding: '0.5rem 1rem',
                 border: 'none',
-                background: t === type ? '#fff' : '#f0f0f0',
-                borderBottom: t === type ? '2px solid #000' : 'none',
-                fontWeight: t === type ? 'bold' : 'normal',
+                background: '#e8e8e8',
+                borderBottom: 'none',
+                fontWeight: 'normal',
                 cursor: 'pointer'
               }}
             >
-              {t}
+              ← Back
+            </button>
+          )}
+          {activeTypes.map(t => (
+            <button
+              key={t.name}
+              onClick={() => changeType(t.name)}
+              style={{
+                padding: '0.5rem 1rem',
+                border: 'none',
+                background: t.name === type ? '#fff' : '#f0f0f0',
+                borderBottom: t.name === type ? '2px solid #000' : 'none',
+                fontWeight: t.name === type ? 'bold' : 'normal',
+                cursor: 'pointer'
+              }}
+            >
+              {t.name}
             </button>
           ))}
         </div>
@@ -790,6 +866,22 @@ function App() {
           {type}
         </div>
         <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {settingsTypes.length > 0 && viewMode !== 'settings' && (
+            <button
+              onClick={() => switchViewMode('settings')}
+              style={{}}
+            >
+              ⚙ Settings
+            </button>
+          )}
+          {systemTypes.length > 0 && viewMode !== 'admin' && (
+            <button
+              onClick={() => switchViewMode('admin')}
+              style={{}}
+            >
+              🔧 Admin
+            </button>
+          )}
           <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
           <button
             onClick={() => { clearTokens(); setLoggedIn(false); setLoggedInUser(''); setData(null) }}
@@ -801,20 +893,35 @@ function App() {
       </div>
 
       <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
-        {types.map(t => (
+        {viewMode !== 'app' && (
           <button
-            key={t}
-            onClick={() => changeType(t)}
+            onClick={() => switchViewMode('app')}
             style={{
               padding: '0.5rem 1rem',
               border: 'none',
-              background: t === type ? '#fff' : '#f0f0f0',
-              borderBottom: t === type ? '2px solid #000' : 'none',
-              fontWeight: t === type ? 'bold' : 'normal',
+              background: '#e8e8e8',
+              borderBottom: 'none',
+              fontWeight: 'normal',
               cursor: 'pointer'
             }}
           >
-            {t}
+            ← Back
+          </button>
+        )}
+        {activeTypes.map(t => (
+          <button
+            key={t.name}
+            onClick={() => changeType(t.name)}
+            style={{
+              padding: '0.5rem 1rem',
+              border: 'none',
+              background: t.name === type ? '#fff' : '#f0f0f0',
+              borderBottom: t.name === type ? '2px solid #000' : 'none',
+              fontWeight: t.name === type ? 'bold' : 'normal',
+              cursor: 'pointer'
+            }}
+          >
+            {t.name}
           </button>
         ))}
       </div>
