@@ -4,6 +4,7 @@
   :domain "todo.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
   :repl t
+  :landing-page :todos
   :types
   (:todos
     (:table t

@@ -4,6 +4,7 @@
    :domain "modelbank.demo.data-ui.com"
    ;; WARNING: :repl must be nil in production
    :repl t
+   :landing-page :models
    :types
    (:directories
      (:table t

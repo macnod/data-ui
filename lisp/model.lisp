@@ -1,7 +1,8 @@
 (in-package :data-ui)
 
 (defparameter *top-level-settings* nil)
-(defparameter *top-level-keys* '(:title :name :version :domain :repl))
+(defparameter *top-level-keys*
+  '(:title :name :version :domain :repl :landing-page))
 
 (defparameter *max-value-length* 1000)
 
@@ -1775,6 +1776,13 @@ efficiently instantiate and support the application described by MODEL."))
       (:repl
         (valid-top-level-value key value nil
           :required nil :predicates (list #'booleanp)))
+      (:landing-page
+        (valid-top-level-value key value nil
+          :required nil
+          :predicates (list (lambda (x) (or (null x) (keywordp x)))))
+        (when value
+          (unless (getf (getf model :types) value)
+            (error "~(~s~) value ~s is not a defined type." key value))))
       (:types
         (valid-top-level-value key value nil
           :predicates (list #'u:plistp))))))
@@ -1807,3 +1815,7 @@ efficiently instantiate and support the application described by MODEL."))
 
 (defun model-repl ()
   (top-level-model-field :repl :default nil))
+
+(defun model-landing-page ()
+  "Configured (not user-resolved) landing type, or NIL."
+  (getf *top-level-settings* :landing-page))

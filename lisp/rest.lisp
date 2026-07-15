@@ -1119,7 +1119,10 @@ provides a Common Lisp REPL.
 GET /api/info"
   (let* ((user (require-auth '("logged-in"))))
     (when user
-      (render-output *top-level-settings*))))
+      (let ((settings (copy-list *top-level-settings*)))
+        (setf (getf settings :landing-page)
+              (be-landing-page user))
+        (render-output settings)))))
 
 (h:define-easy-handler (rest-login :uri "/api/login" :default-request-type :post)
   ()

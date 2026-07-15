@@ -428,7 +428,7 @@ function renderReadOnlyField(
 function App() {
   const [data, setData] = useState<ListResponse | null>(null)
   const [types, setTypes] = useState<string[]>([])
-  const [type, setType] = useState('roles')
+  const [type, setType] = useState('__init__')
   const [showAddForm, setShowAddForm] = useState(false)
   const [formValues, setFormValues] = useState<Record<string, any>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -442,13 +442,6 @@ function App() {
   const [loggedInUser, setLoggedInUser] = useState('')
 
   const isEditMode = !!editRecord
-
-  const fetchTypes = () => {
-    apiFetch('/api/types')
-      .then(res => res.json())
-      .then(json => setTypes(json.result || []))
-      .catch(() => setTypes([]))
-  }
 
   const fetchList = () => {
     apiFetch(`/api/list?type=${type}`)
@@ -659,7 +652,26 @@ function App() {
 
   useEffect(() => {
     if (!loggedIn) return
-    fetchTypes()
+    // Fetch landing page + types in parallel on login
+    Promise.all([
+      apiFetch('/api/info').then(r => r.json()),
+      apiFetch('/api/types').then(r => r.json())
+    ]).then(([info, typesJson]) => {
+      setTypes(typesJson.result || [])
+      const lp = info.result?.['landing-page']
+      if (lp) {
+        setType(String(lp))
+      } else if (typesJson.result?.length > 0) {
+        setType(typesJson.result[0])
+      }
+      // else: no types at all; leave __init__ (empty app)
+    }).catch(() => {
+      setTypes([])
+    })
+  }, [loggedIn])
+
+  useEffect(() => {
+    if (!loggedIn || type === '__init__') return
     fetchList()
   }, [loggedIn, type])
 

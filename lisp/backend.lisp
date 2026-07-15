@@ -2257,6 +2257,18 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
     when (and display allowed (not internal))
     collect type-key))
 
+(defun be-landing-page (user)
+  ":public: Effective landing type-key for USER, or NIL.
+Uses model :landing-page when allowed; else first non-base type
+from be-types; else first be-types entry; else NIL."
+  (let* ((allowed (be-types user))
+         (configured (model-landing-page)))
+    (cond
+      ((and configured (member configured allowed :test #'eq))
+       configured)
+      ((find-if (lambda (k) (not (base-type-p k))) allowed))
+      (t (first allowed)))))
+
 ;;
 ;; END Public backend functions
 ;;
