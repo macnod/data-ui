@@ -434,6 +434,7 @@ function App() {
   const [formValues, setFormValues] = useState<Record<string, any>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [editRecord, setEditRecord] = useState<any>(null)
+  const [listError, setListError] = useState<string | null>(null)
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -454,10 +455,19 @@ function App() {
   const isEditMode = !!editRecord
 
   const fetchList = () => {
+    setListError(null)
     apiFetch(`/api/list?type=${type}`)
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) {
+          throw new Error(`Request failed (${res.status})`)
+        }
+        return res.json()
+      })
       .then(setData)
-      .catch(() => setData(null))
+      .catch(err => {
+        setData(null)
+        setListError(err.message || 'Failed to load data')
+      })
   }
 
   const changeType = (newType: string) => {
@@ -754,7 +764,9 @@ function App() {
             </button>
           ))}
         </div>
-        <p>No records</p>
+        <p style={{ color: listError ? '#c00' : undefined }}>
+          {listError || 'No records'}
+        </p>
       </div>
     )
   }
