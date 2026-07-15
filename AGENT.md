@@ -40,7 +40,7 @@ The goal is deterministic, repeatable development: change the model, recompile, 
 ## Key Architecture
 
 - `lisp/model.lisp` – Model compilation and the RBAC base model (`*base-model*`)
-- `lisp/backend.lisp` – Backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, etc.)
+- `lisp/backend.lisp` – Backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-landing-page`, etc.)
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
 - `lisp/predicates.lisp` – Type/field predicates (`table-p`, `base-type-p`, etc.)
 - `lisp/database.lisp` – Database initialization and table creation
@@ -164,8 +164,11 @@ modify the test suites themselves (`backend-tests.lisp`,
     `:ui` plist to the frontend for custom cell/form rendering
   - `:input-type` values now include `:textbox`, `:select`, `:read-only`,
     `:file`, `:check-box` (in addition to `:line`, `:checkbox-list`)
+  - `:landing-page` — top-level key; declares which type the frontend
+    shows on load. `/api/info` resolves it per-user via `be-landing-page`
+    (falls back to first non-base type the user can access)
 - React frontend has:
-  - Type selector (`/api/types`)
+  - Type selector (`/api/types`); initial type chosen from `/api/info` `:landing-page`
   - Dynamic list with conditional Add / Delete Selected buttons and per-row Edit buttons
   - Delete checkboxes (shown when `delete: true`)
   - Expandable Add/Edit form (uses `add-form` / `update-form`)
@@ -180,7 +183,7 @@ modify the test suites themselves (`backend-tests.lisp`,
   - `/api/insert`, `/api/update`, `/api/delete` — CRUD mutations
   - `/api/upload` — file upload (multipart, returns `file-token`)
   - `/api/validate-field`, `/api/validate-form` — validation
-  - `/api/types`, `/api/info` — schema/metadata
+  - `/api/types`, `/api/info` — schema/metadata (`/api/info` resolves `:landing-page` per-user via `be-landing-page`)
   - `/api/login`, `/api/refresh` — JWT auth (access + refresh tokens)
   - `/api/file` — file serving (with token auth)
   - `/health` — health check
@@ -216,7 +219,7 @@ the deploy host (`evo-x2`) behind HAProxy + TLS. Full detail in
 **docs/deployment.md**; session-by-session history of how it was built (with
 every bug and fix) in **~/.debug/deployment-work.md**. Key facts:
 
-- The model's top-level keys (`:name`, `:version`, `:domain`, `:repl`)
+- The model's top-level keys (`:name`, `:version`, `:domain`, `:repl`, `:landing-page`)
   drive everything: tag `<name>-<version>-<githash>`, namespace
   `dataui-<name>`, HAProxy map entry for `:domain`, Swank port iff
   `:repl t`.

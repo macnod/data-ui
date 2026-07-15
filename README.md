@@ -197,7 +197,7 @@ This example matches `models/todos.lisp` (and `models/default-model.lisp`,
 which is an exact copy used by the deploy pipeline). Each file in the
 `models/` directory holds a bare model plist (no `defparameter` and no
 wrapping variable). The top-level keys (`:title`, `:name`, `:version`,
-`:domain`, `:repl`) carry the model's identity, and `:types` holds the type
+`:domain`, `:repl`, `:landing-page`) carry the model's identity, and `:types` holds the type
 definitions. Load the model with `(set-model "todos")` — pass just the file
 name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
 (see [Deployment](#deployment)).
@@ -208,6 +208,7 @@ name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
   :version "0.1"
   :domain "todo.demo.data-ui.com"
   :repl t
+  :landing-page :todos
   :types
   (:todos
     (:table t
@@ -446,6 +447,7 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:autofill :user` to auto-populate a field with the current username
 - `:per-user t` (type-level) to suppress the roles field (used by settings)
 - `:type-roles` to declare which roles can access a type
+- `:landing-page` (top-level) to declare which type the frontend shows on load (resolved per-user via `be-landing-page`)
 - `:force-sql-name` to override the generated SQL column name
 - `:auto` for create/update/delete → generated SQL (or override with your own function)
 - Lifecycle hooks (`:create`, `:update`, `:delete`, `:post-create`, `:pre-delete`, etc.) that accept registry entries or raw functions (shell hooks planned)
@@ -609,6 +611,7 @@ model itself declares the application's identity:
   :domain "todo.demo.data-ui.com"
   ;; Prefer :repl nil in production (extra attack surface; SSH tunnel still required)
   :repl t
+  :landing-page :todos
   :types ...)
 ```
 
