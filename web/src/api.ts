@@ -1,5 +1,10 @@
 let accessToken: string | null = null
 let refreshToken: string | null = null
+let authFailureCallback: (() => void) | null = null
+
+export function onAuthFailure(cb: () => void) {
+  authFailureCallback = cb
+}
 
 export function setTokens(access: string, refresh: string) {
   accessToken = access
@@ -78,6 +83,9 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
       }
       return fetch(url, { ...options, headers: retryHeaders })
     }
+    // Refresh failed — session is dead
+    clearTokens()
+    if (authFailureCallback) authFailureCallback()
   }
 
   return res

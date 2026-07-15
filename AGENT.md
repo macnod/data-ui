@@ -56,6 +56,10 @@ The non-frontend code is almost entirely Common Lisp (SBCL).
 
 The frontend is intentionally minimal and schema-driven. It consumes `list-form`/`add-form`/`update-form`, `records`, and `allowed-values` from the API to render dynamic lists and forms.
 
+## Feature and Issue Tracking
+
+Features, issues, and TODOs are tracked in **`~/workbench/data-ui-todo.org`** (an org-mode file with `TODO` / `DONE` states and tag-based categorization). This is the canonical backlog for MVP work, MVP backlog, and post-MVP items. Refer to it when deciding what to work on next.
+
 ## Live Introspection: `eval-in-data-ui`
 
 An Elisp helper, `eval-in-data-ui`, evaluates a Common Lisp form against a
@@ -108,6 +112,14 @@ permitted to modify `tests/helpers.lisp` for this purpose — add as many
 `run-*` functions as needed to keep the development cycle tight. Do not
 modify the test suites themselves (`backend-tests.lisp`,
 `scoping-tests.lisp`, etc.) without human permission.
+
+## Interaction Conventions
+
+- **"Take a look at our todo list" / "take a look at our next todo item"**
+  (or similar phrasings) means: read the todo list, acknowledge what you
+  see, and **ask the human whether to start working on it**. It does **not**
+  mean "begin researching or implementing immediately." Wait for explicit
+  direction before starting any work.
 
 ## AI Agent Workflow & Tooling
 - Use specialized file tools exclusively: `Glob`, `Grep`, `Read`, `Edit`, `Write` (never `Bash` for file inspection/editing)

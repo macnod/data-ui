@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { apiFetch, setTokens, clearTokens, getAccessToken } from './api'
+import { apiFetch, setTokens, clearTokens, getAccessToken,
+         onAuthFailure } from './api'
 import StarRating from './StarRating'
 
 // Extract the backend's error message from a failed response, falling back
@@ -440,6 +441,15 @@ function App() {
   const [loginError, setLoginError] = useState('')
   const [loggedIn, setLoggedIn] = useState(false)
   const [loggedInUser, setLoggedInUser] = useState('')
+
+  // When token refresh fails, force return to login screen
+  useEffect(() => {
+    onAuthFailure(() => {
+      setLoggedIn(false)
+      setLoggedInUser('')
+      setData(null)
+    })
+  }, [])
 
   const isEditMode = !!editRecord
 
