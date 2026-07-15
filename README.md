@@ -437,15 +437,17 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:identity t` marks a field as the natural key used for write-through lookups and unique indexes
 - `:write-to` declares related-table upserts from a field write (e.g. rating → ratings row); non-transactional in MVP
 - `:ui` hints (`:label`, `:input-type`, `:render-as`) for frontend rendering
-- `:render-as` values: `:code`, `:image`, `:image-list` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview)
-- `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`
+- `:title` (top-level) — human-readable app title (e.g. "To Do List")
+- `:render-as` values: `:code`, `:image`, `:image-list`, `:stars` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview, star ratings)
+- `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`
 - `:validations` common validation names, parameterized registry entries, or lambdas that validate form/field data
 - `:join-table` for many-to-many relationships
 - `:is-joiner t` for explicit join tables
 - `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` for tree-structured types with filesystem backing (directories, file storage)
 - `:path t` to mark the path field on fs-backed types
 - `:autofill :user` to auto-populate a field with the current username
-- `:per-user t` (type-level) to suppress the roles field (used by settings)
+- `:user-setting t` (type-level) to mark per-user settings types; auto-sets `:suppress-roles t`
+- `:suppress-roles t` (type-level) to suppress the injected `roles` field in forms
 - `:type-roles` to declare which roles can access a type
 - `:landing-page` (top-level) to declare which type the frontend shows on load (resolved per-user via `be-landing-page`)
 - `:force-sql-name` to override the generated SQL column name
@@ -561,7 +563,7 @@ All endpoints stay **generic** — no per-type handler generation needed:
 - `POST /api/insert`, `/api/update`, `/api/delete` → CRUD mutations (validation runs first)
 - `POST /api/upload` → file upload (multipart, returns `file-token`)
 - `POST /api/validate-field`, `/api/validate-form` → per-field and per-form validation
-- `GET /api/types`, `/api/info` → schema and metadata
+- `GET /api/types`, `/api/info` → schema and metadata (`/api/types` returns a `:category` per type: `:system`, `:settings`, or `:user`)
 - `POST /api/login`, `/api/refresh` → JWT auth (access + refresh tokens)
 - `GET /api/file` → file serving (with token auth)
 - `GET /health` → health check
@@ -670,9 +672,10 @@ demonstrated end to end:
 - **Model features in active use** (exercised by `models/modelbank.lisp`):
   tree-structured types with filesystem backing (`:tree`, `:is-leaf`,
   `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated
-  fields (`:autofill :user`), per-user types (`:per-user`), write-through
+  fields (`:autofill :user`), per-user settings types (`:user-setting`),
+  write-through
   ratings (`:write-to`, `:identity`), and UI hints for code blocks, images,
-  and image lists (`:render-as`).
+  image lists, and star ratings (`:render-as`).
 - File handling: uploading, listing, and deleting files and directories
   works end-to-end (uploads use a two-phase flow: `multipart/form-data`
   POST to `/api/upload`, then a JSON `/api/insert` carrying the returned

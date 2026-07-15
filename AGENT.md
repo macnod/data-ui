@@ -170,12 +170,18 @@ modify the test suites themselves (`backend-tests.lisp`,
     types with filesystem backing (directories, file storage)
   - `:path t` — marks the path field on fs-backed types
   - `:autofill :user` — auto-populates a field with the current username
-  - `:per-user t` — type-level flag (used by settings); suppresses roles field
+  - `:user-setting t` — type-level flag marking per-user settings types;
+    auto-sets `:suppress-roles t`. Used by the built-in `:settings` type.
+  - `:suppress-roles t` — type-level flag that suppresses the injected `roles`
+    field in forms. Auto-set when `:user-setting t`; can also be set independently.
   - `:identity t` / `:write-to` — natural keys and related-table upserts
-  - `:render-as` UI hint (`:code`, `:image`, `:image-list`) — passed through the
-    `:ui` plist to the frontend for custom cell/form rendering
+  - `:render-as` UI hint (`:code`, `:image`, `:image-list`, `:stars`) — passed
+    through the `:ui` plist to the frontend for custom cell/form rendering
   - `:input-type` values now include `:textbox`, `:select`, `:read-only`,
-    `:file`, `:check-box` (in addition to `:line`, `:checkbox-list`)
+    `:file`, `:check-box`, `:password`, `:hidden` (in addition to `:line`,
+    `:checkbox-list`)
+  - `:title` — top-level key; the human-readable app title (e.g. "To Do List").
+    Used for the page title in the frontend.
   - `:landing-page` — top-level key; declares which type the frontend
     shows on load. `/api/info` resolves it per-user via `be-landing-page`
     (falls back to first non-base type the user can access)
@@ -231,7 +237,7 @@ the deploy host (`evo-x2`) behind HAProxy + TLS. Full detail in
 **docs/deployment.md**; session-by-session history of how it was built (with
 every bug and fix) in **~/.debug/deployment-work.md**. Key facts:
 
-- The model's top-level keys (`:name`, `:version`, `:domain`, `:repl`, `:landing-page`)
+- The model's top-level keys (`:title`, `:name`, `:version`, `:domain`, `:repl`, `:landing-page`)
   drive everything: tag `<name>-<version>-<githash>`, namespace
   `dataui-<name>`, HAProxy map entry for `:domain`, Swank port iff
   `:repl t`.
@@ -411,12 +417,16 @@ common purpose of validating input against a schema or contract.
 ## Important Design Decisions
 
 - RBAC types are treated exactly like user-defined types. Thus, you can add a role to a user in the same way that you would add a tag to a To Do item.
-- Non-base types automatically receive a `roles` field (checkbox-list) in all forms, unless `:per-user t` is set on the type
+- Non-base types automatically receive a `roles` field (checkbox-list) in all forms, unless `:suppress-roles t` is set on the type (auto-set by `:user-setting t`)
 - The backend injects filtered `allowed-values.roles` so users only see roles they can assign
 - Forms are schema-driven; the frontend does not hard-code field lists
 - The `:ui` plist is passed through to the frontend verbatim — new UI hints (like `:render-as`) work without backend changes
 - Delete uses the existing single-record-delete endpoint in a loop (acceptable for MVP)
 - Keep models small; hide RBAC complexity from model authors
+- **Type categorization** — `/api/types` returns a `:category` for each type:
+  `:system` (built-in RBAC types with `:built-in t`), `:settings`
+  (`:user-setting t` types), or `:user` (everything else). The frontend
+  uses this to group types in the type selector.
 
 ## Working with the Frontend
 
