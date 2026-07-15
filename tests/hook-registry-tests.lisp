@@ -203,21 +203,14 @@
 
 (test settings-created-on-user-insert
   "Creating a user via be-insert fires :post-create → add-user-settings"
-  (let* ((result-before (be-list :settings "admin"))
-         (records-before (getf result-before :records)))
-    (is (string= (th-make-user "lifecycle-test-user") "lifecycle-test-user"))
-    (let* ((result-after (be-list :settings "admin"))
-           (records-after (getf result-after :records)))
-      (is (> (length records-after) (length records-before)))
-      ;; The new settings row should reference our user
-      (let ((new-setting
-              (find-if
-                (lambda (r)
-                  (string= (getf r :user) "lifecycle-test-user"))
-                records-after)))
-        (is-true new-setting)
-        (is (string= (getf new-setting :display-name)
-                     "lifecycle-test-user"))))))
+  (is (string= (th-make-user "lifecycle-test-user") "lifecycle-test-user"))
+  ;; With :scope :user, use be-value-id (not scoped) to verify the row
+  (let ((settings-id (be-value-id :settings :user
+                        "lifecycle-test-user" "admin")))
+    (is-true settings-id)
+    (let ((display-name (be-val settings-id :display-name
+                          "admin" :type-key :settings)))
+      (is (string= display-name "lifecycle-test-user")))))
 
 (test settings-removed-on-user-delete
   "Deleting a user fires :pre-delete → remove-user-settings"

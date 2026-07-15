@@ -168,8 +168,7 @@ returns S. If S is not a string or a number, this function returns NIL."
                                      :font-size 10
                                      :display-name ,username
                                      :user ,username)
-      "admin"
-      :roles (list (a:exclusive-role-for username)))))
+      "admin")))
 
 (defun remove-user-settings (type-key data user &key id roles record)
   (declare (ignore type-key data user id roles))
@@ -177,15 +176,12 @@ returns S. If S is not a string or a number, this function returns NIL."
           (settings-id (when username
                          (be-id :settings
                            `((:users :name :eq ,username))
-                           "admin")))
-          (resource-name (when settings-id
-                           (id-to-resource-name settings-id))))
+                           "admin"))))
     (pl:pdebug :in "remove-user-settings" :step 2
       :username username
-      :settings-id settings-id
-      :settings-resource-name resource-name)
-    (when resource-name
-      (a:remove-resource *rbac* resource-name))))
+      :settings-id settings-id)
+    (when settings-id
+      (delete-by-id :settings settings-id))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Hook Registry
@@ -522,13 +518,11 @@ resolve-hook-form for error messages."
 
      :settings
      (:table t :built-in t
-       ;; Here, base is set to nil because we want settings to have roles. That
-       ;; is how we restrict users to their own settings row.
-       :base nil
+       :base t
        :create nil :update :auto :delete nil :display t
        :type-roles ("settings")
-       :per-user t
-       :views (:main (:tables (:settings :users))
+       :user-setting t
+       :views (:main (:tables (:settings :users) :scope :user)
                 :users (:tables (:users)))
        :fields (:user (:type :text :identity t
                         ;; TODO: This should not be needed. Fix compiler.
@@ -1461,7 +1455,8 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
       when (not (a:get-id *rbac* "roles" role))
       do (a:add-role *rbac* role :permissions permissions))
     (validate-tree model type-key tree is-leaf parent-type fs-backed)
-    (let ((fields-with-path (mark-path-field type-key fs-backed fields)))
+    (let ((fields-with-path (mark-path-field type-key fs-backed fields))
+          (user-setting (getf type-def :user-setting)))
       (add-to-plist
         type-def
         (append
@@ -1474,7 +1469,10 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
             :tree tree
             :is-leaf is-leaf
             :parent-type parent-type
-            :fs-backed fs-backed)
+            :fs-backed fs-backed
+            :user-setting user-setting
+            :suppress-roles
+              (or (getf type-def :suppress-roles) user-setting))
           ;; Compiled lifecycle hooks override raw values on type-def
           (compile-lifecycle-hooks model type-key))))))
 

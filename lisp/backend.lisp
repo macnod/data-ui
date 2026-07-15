@@ -537,10 +537,10 @@ all the right fields when we perform inserts or updates."
   (let* ((m *compiled-model*)
           (fields (u:tree-get m type-key form :fields))
           (base (u:tree-get m type-key :base))
-          (per-user (u:tree-get m type-key :per-user)))
+          (suppress (u:tree-get m type-key :suppress-roles)))
     (when (and
             (not base)
-            (not per-user)
+            (not suppress)
             (or
               (equal fields t)
               (u:has (a:list-user-role-names *rbac* user) "admin")))
