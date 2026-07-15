@@ -131,8 +131,10 @@ the unscoped average across all users."
       (be-update :models model-id `(:rating 3) user-2)
       ;; user-3 does not rate it
       ;; Verify: user-1 sees their own rating (5)
+      ;; Uses :update-form because :rating is not in :list-form
       (let ((rec (find model-1
-                   (getf (be-list :models user-1) :records)
+                   (getf (be-list :models user-1
+                           :form :update-form) :records)
                    :key (lambda (r) (getf r :name))
                    :test #'equal)))
         (is-true rec)
@@ -140,7 +142,8 @@ the unscoped average across all users."
         (is (= 4.0 (getf rec :average-rating))))
       ;; Verify: user-2 sees their own rating (3)
       (let ((rec (find model-1
-                   (getf (be-list :models user-2) :records)
+                   (getf (be-list :models user-2
+                           :form :update-form) :records)
                    :key (lambda (r) (getf r :name))
                    :test #'equal)))
         (is-true rec)
@@ -148,7 +151,8 @@ the unscoped average across all users."
         (is (= 4.0 (getf rec :average-rating))))
       ;; Verify: user-3 sees NIL (no rating) but avg is still 4.0
       (let ((rec (find model-1
-                   (getf (be-list :models user-3) :records)
+                   (getf (be-list :models user-3
+                           :form :update-form) :records)
                    :key (lambda (r) (getf r :name))
                    :test #'equal)))
         (is-true rec)

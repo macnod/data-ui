@@ -51,7 +51,7 @@
            :source (:view :main :table :images :column :name :agg :list))
          :rating
          (:type :integer
-           :ui (:label "Rating" :input-type :line :render-as :stars)
+           :ui (:label "My Rating" :input-type :line :render-as :stars)
            :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating
                     :scope :user :agg :first)
@@ -61,11 +61,11 @@
                        :rating :value))
          :average-rating
          (:type :real
-           :ui (:label "Average Rating" :input-type :read-only
+           :ui (:label "Rating" :input-type :read-only
                 :render-as :stars :precision 1)
            :source (:view :main :table :ratings :column :rating
                     :agg :avg)))
-       :list-form (:fields t)
+       :list-form (:fields (:name :description :model :images :average-rating))
        :update-form (:fields t)
        :add-form (:fields t))
 
