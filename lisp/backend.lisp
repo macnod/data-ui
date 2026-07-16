@@ -324,7 +324,11 @@ given in ID is used."
     when column
     collect (if (and (eq field-type :password) (not data-value))
               record-value
-              (db-value type-key field-key user field-value))))
+              (db-value type-key field-key
+                (if (eq field-type :password)
+                  (getf record :name user)
+                  user)
+                field-value))))
 
 (defun user-fields (type-key)
   ":private: Returns a list of all non-base field keys for TYPE-KEY. Excludes
@@ -492,14 +496,20 @@ all the right fields when we perform inserts or updates."
     for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
     for default-value = (getf field-def :default)
     for data-value = (getf data field-key)
+    for field-type = (getf field-def :type)
     for record-value = (getf record field-key)
     for autofill = (getf field-def :autofill)
     for autofill-value = (case autofill
                            (:user user)
                            (otherwise nil))
+    ;; Never pull password hashes from the record — they are
+    ;; internal artifacts, not user-supplied data, and must not
+    ;; flow back through validation.
     appending (list field-key
                 ;; Order is important here!
-                (or data-value record-value autofill-value default-value))))
+                (or data-value
+                    (unless (eq field-type :password) record-value)
+                    autofill-value default-value))))
 
 (defun uuid-exists-p (uuid)
   (valid-uuid uuid)
@@ -2190,6 +2200,7 @@ value is present, since those fields are optional on the main form."
     for has-write-to = (getf field-def :write-to)
     for has-join-table = (getf field-def :join-table)
     for has-target = (getf field-def :target)
+    for field-type = (getf field-def :type)
     for default = (u:tree-get fields field-key :default)
     for value = (getf data field-key default)
     ;; Skip pure computed/read-only fields
@@ -2202,6 +2213,10 @@ value is present, since those fields are optional on the main form."
     ;; For write-to fields without a column, only validate when
     ;; a value is present (optional on the main form)
     unless (and has-write-to (not has-column)
+                (or (null value) (equal value :null)))
+    ;; Skip password validation when no value is provided —
+    ;; password is required on insert but optional on update.
+    unless (and (eq field-type :password)
                 (or (null value) (equal value :null)))
     appending (validate-field-internal
                 type-key field-key value user)))
