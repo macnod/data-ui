@@ -523,6 +523,46 @@ function App() {
     setFormValues({})
   }
 
+  // Return to the landing page (used by settings Submit/Cancel).
+  const returnToLanding = () => {
+    closeForm()
+    apiFetch('/api/info')
+      .then(r => r.json())
+      .then(info => {
+        const lp = info.result?.['landing-page']
+        if (lp) {
+          setViewMode('app')
+          setType(String(lp))
+        }
+      })
+      .catch(() => {
+        // Fallback: first user type
+        setViewMode('app')
+        const first = userTypes[0]
+        if (first) setType(first.name)
+      })
+  }
+
+  // Cancel button handler: returns to landing in settings mode,
+  // otherwise just closes the form.
+  const handleCancel = () => {
+    if (viewMode === 'settings') {
+      returnToLanding()
+    } else {
+      closeForm()
+    }
+  }
+
+  // Back button handler: returns to landing from settings,
+  // otherwise switches to app mode.
+  const handleBack = () => {
+    if (viewMode === 'settings') {
+      returnToLanding()
+    } else {
+      switchViewMode('app')
+    }
+  }
+
   const handleLogin = async () => {
     setLoginError('')
     try {
@@ -669,8 +709,12 @@ function App() {
     }
 
     if (res.ok) {
-      closeForm()
-      fetchList()
+      if (viewMode === 'settings') {
+        returnToLanding()
+      } else {
+        closeForm()
+        fetchList()
+      }
     } else {
       alert(await errorMessage(res, isEditMode ? 'Failed to update' : 'Failed to insert'))
     }
@@ -739,6 +783,14 @@ function App() {
     if (!loggedIn || type === '__init__') return
     fetchList()
   }, [loggedIn, type])
+
+  // In settings mode, auto-enter edit mode with the single record.
+  useEffect(() => {
+    if (viewMode !== 'settings') return
+    if (!data?.result?.records?.length) return
+    if (isEditMode) return
+    openEditForm(data.result.records[0])
+  }, [data, viewMode])
 
   if (!loggedIn) {
     return (
@@ -810,7 +862,7 @@ function App() {
         <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
           {viewMode !== 'app' && (
             <button
-              onClick={() => switchViewMode('app')}
+              onClick={handleBack}
               style={{
                 padding: '0.5rem 1rem',
                 border: 'none',
@@ -895,7 +947,7 @@ function App() {
       <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
         {viewMode !== 'app' && (
           <button
-            onClick={() => switchViewMode('app')}
+            onClick={handleBack}
             style={{
               padding: '0.5rem 1rem',
               border: 'none',
@@ -949,7 +1001,7 @@ function App() {
             <button type="button" onClick={submitForm}>
               {isEditMode ? 'Update' : 'Submit'}
             </button>
-            <button type="button" onClick={closeForm} style={{ marginLeft: '0.5rem' }}>
+            <button type="button" onClick={handleCancel} style={{ marginLeft: '0.5rem' }}>
               Cancel
             </button>
           </div>
@@ -1060,12 +1112,13 @@ function App() {
           <button type="button" onClick={submitForm}>
             {isEditMode ? 'Update' : 'Submit'}
           </button>
-          <button type="button" onClick={closeForm} style={{ marginLeft: '0.5rem' }}>
+          <button type="button" onClick={handleCancel} style={{ marginLeft: '0.5rem' }}>
             Cancel
           </button>
         </form>
       )}
 
+      {viewMode !== 'settings' && (
       <table>
         <thead>
           <tr>
@@ -1109,6 +1162,7 @@ function App() {
           ))}
         </tbody>
       </table>
+      )}
     </div>
   )
 }
