@@ -4,8 +4,6 @@
 (defparameter *top-level-keys*
   '(:title :name :version :domain :repl :landing-page))
 
-(defparameter *max-value-length* 1000)
-
 (defun parse-number (s)
   ":private: Parses S into a number. Returns the number upon success, or NIL if
 the string is not a valid number. If S is is already a number, this function
@@ -33,8 +31,7 @@ returns S. If S is not a string or a number, this function returns NIL."
     (u:tree-get *field-types* field-type-key :general)))
 
 (defun valid-value-string (value)
-  (and (or (null value) (stringp value))
-    (<= (length value) *max-value-length*)))
+  (or (null value) (stringp value)))
 
 (defun sql-type (type-key field-key field-type-key)
   (or (u:tree-get *field-types* field-type-key :sql)
