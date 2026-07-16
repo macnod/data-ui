@@ -235,6 +235,23 @@ function ImageModal({
   const hasPrev = images.length > 1
   const hasNext = images.length > 1
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft')
+        onNavigate(
+          (index - 1 + images.length) % images.length
+        )
+      else if (e.key === 'ArrowRight')
+        onNavigate((index + 1) % images.length)
+      else if (e.key === 'Escape')
+        onClose()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener(
+      'keydown', handler
+    )
+  }, [index, images.length, onNavigate, onClose])
+
   return (
     <div
       onClick={onClose}
@@ -258,6 +275,7 @@ function ImageModal({
         cursor: 'default'
       }}>
         <button
+          type="button"
           onClick={e => {
             e.stopPropagation()
             onNavigate(
@@ -272,6 +290,7 @@ function ImageModal({
           {index + 1} / {images.length}
         </span>
         <button
+          type="button"
           onClick={e => {
             e.stopPropagation()
             onNavigate((index + 1) % images.length)
@@ -298,7 +317,7 @@ function ImageModal({
         >
           Open in new tab
         </a>
-        <button onClick={onClose}>Close</button>
+        <button type="button" onClick={onClose}>Close</button>
       </div>
       <img
         src={current.src}
