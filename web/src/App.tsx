@@ -587,16 +587,6 @@ function App() {
     }
   }
 
-  // Back button handler: returns to landing from settings,
-  // otherwise switches to app mode.
-  const handleBack = () => {
-    if (viewMode === 'settings') {
-      returnToLanding()
-    } else {
-      switchViewMode('app')
-    }
-  }
-
   const handleLogin = async () => {
     setLoginError('')
     try {
@@ -883,18 +873,33 @@ function App() {
             {type}
           </div>
           <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            {settingsTypes.length > 0 && viewMode !== 'settings' && (
+            <button
+              onClick={() => returnToLanding()}
+              style={{
+                fontWeight: viewMode === 'app' ? 'bold' : 'normal',
+                background: viewMode === 'app' ? '#e0e0ff' : ''
+              }}
+            >
+              🏠 Home
+            </button>
+            {settingsTypes.length > 0 && (
               <button
                 onClick={() => switchViewMode('settings')}
-                style={{}}
+                style={{
+                  fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
+                  background: viewMode === 'settings' ? '#e0e0ff' : ''
+                }}
               >
                 ⚙ Settings
               </button>
             )}
-            {systemTypes.length > 0 && viewMode !== 'admin' && (
+            {systemTypes.length > 0 && (
               <button
                 onClick={() => switchViewMode('admin')}
-                style={{}}
+                style={{
+                  fontWeight: viewMode === 'admin' ? 'bold' : 'normal',
+                  background: viewMode === 'admin' ? '#e0e0ff' : ''
+                }}
               >
                 🔧 Admin
               </button>
@@ -909,21 +914,6 @@ function App() {
           </div>
         </div>
         <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
-          {viewMode !== 'app' && (
-            <button
-              onClick={handleBack}
-              style={{
-                padding: '0.5rem 1rem',
-                border: 'none',
-                background: '#e8e8e8',
-                borderBottom: 'none',
-                fontWeight: 'normal',
-                cursor: 'pointer'
-              }}
-            >
-              ← Back
-            </button>
-          )}
           {activeTypes.map(t => (
             <button
               key={t.name}
@@ -974,18 +964,33 @@ function App() {
           {type}
         </div>
         <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          {settingsTypes.length > 0 && viewMode !== 'settings' && (
+          <button
+            onClick={() => returnToLanding()}
+            style={{
+              fontWeight: viewMode === 'app' ? 'bold' : 'normal',
+              background: viewMode === 'app' ? '#e0e0ff' : ''
+            }}
+          >
+            🏠 Home
+          </button>
+          {settingsTypes.length > 0 && (
             <button
               onClick={() => switchViewMode('settings')}
-              style={{}}
+              style={{
+                fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
+                background: viewMode === 'settings' ? '#e0e0ff' : ''
+              }}
             >
               ⚙ Settings
             </button>
           )}
-          {systemTypes.length > 0 && viewMode !== 'admin' && (
+          {systemTypes.length > 0 && (
             <button
               onClick={() => switchViewMode('admin')}
-              style={{}}
+              style={{
+                fontWeight: viewMode === 'admin' ? 'bold' : 'normal',
+                background: viewMode === 'admin' ? '#e0e0ff' : ''
+              }}
             >
               🔧 Admin
             </button>
@@ -1001,24 +1006,6 @@ function App() {
       </div>
 
       <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
-        {viewMode !== 'app' && (
-          <button
-            onClick={handleBack}
-            style={{
-              padding: '0.75rem 1.5rem',
-              border: 'none',
-              borderRight: '2px solid #ccc',
-              background: '#e8e8e8',
-              borderBottom: 'none',
-              fontSize: '1.1rem',
-              fontWeight: 'bold',
-              marginRight: '0.75rem',
-              cursor: 'pointer'
-            }}
-          >
-            ← Back
-          </button>
-        )}
         {activeTypes.map(t => (
           <button
             key={t.name}
