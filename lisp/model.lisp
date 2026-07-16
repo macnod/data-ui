@@ -160,28 +160,45 @@ returns S. If S is not a string or a number, this function returns NIL."
   (declare (ignore type-key user))
   (a:remove-permission *rbac* (getf data :name)))
 
-(defun add-user-settings (type-key data user &key id roles record)
+(defun build-default-setting-plist (type-key username type-def)
+  "Build an insert plist for a user-setting row. Populates :user
+and any field with :default-from :user."
+  (declare (ignore type-key))
+  (let ((fields (getf type-def :fields))
+        (plist (list :user username)))
+    (loop for fk in fields by #'cddr
+          for fd = (getf fields fk)
+          when (eq (getf fd :default-from) :user)
+          do (setf (getf plist fk) username))
+    plist))
+
+(defun add-user-setting-rows (type-key data user &key id roles record)
+  "Generic post-create hook: insert a default row for every
+:user-setting t type in the compiled model."
   (declare (ignore type-key id roles record))
   (let ((username (getf data :name)))
-    (pl:pdebug :in "add-user-settings" :data data :username username)
-    (be-insert-internal :settings `(:dark-mode :false
-                                     :font-size 10
-                                     :display-name ,username
-                                     :user ,username)
-      "admin")))
+    (pl:pdebug :in "add-user-setting-rows"
+      :username username)
+    (loop for tk in *compiled-model* by #'cddr
+          for td = (getf *compiled-model* tk)
+          when (getf td :user-setting)
+          do (be-insert-internal tk
+               (build-default-setting-plist tk username td)
+               "admin"))))
 
-(defun remove-user-settings (type-key data user &key id roles record)
+(defun remove-user-setting-rows (type-key data user &key id roles record)
+  "Generic pre-delete hook: remove the user's row from every
+:user-setting t type."
   (declare (ignore type-key data user id roles))
-  (let* ((username (u:tree-get record :record :name))
-          (settings-id (when username
-                         (be-id :settings
-                           `((:users :name :eq ,username))
-                           "admin"))))
-    (pl:pdebug :in "remove-user-settings" :step 2
-      :username username
-      :settings-id settings-id)
-    (when settings-id
-      (delete-by-id :settings settings-id))))
+  (let ((username (getf record :name)))
+    (pl:pdebug :in "remove-user-setting-rows"
+      :username username)
+    (loop for tk in *compiled-model* by #'cddr
+          for td = (getf *compiled-model* tk)
+          when (getf td :user-setting)
+          do (let ((row-id (be-value-id tk :user username "admin")))
+               (when row-id
+                 (delete-by-id tk row-id))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Hook Registry
@@ -401,8 +418,8 @@ resolve-hook-form for error messages."
        ;; of which there must be at least one, must be existing permissions.
        :type-roles ("logged-in" "user-creator")
        ;; TODO: Add processing for the :post-create key.
-       :post-create ,#'add-user-settings
-       :pre-delete ,#'remove-user-settings
+       :post-create ,#'add-user-setting-rows
+       :pre-delete ,#'remove-user-setting-rows
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
        :fields (:name (:type :text :identity t
@@ -540,6 +557,7 @@ resolve-hook-form for error messages."
                               :source (:view :main :column :font-size :agg :first)
                               :column t :not-null t)
                  :display-name (:type :text :default "(non specified)"
+                                 :default-from :user
                                  :ui (:label "Real Name" :input-type :line)
                                  :source (:view :main :column :display-name :agg :first)
                                  :column t :not-null t)
@@ -1163,7 +1181,7 @@ has a value in the model."
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
-                    :autofill :identity)
+                    :autofill :identity :default-from)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
@@ -1569,8 +1587,8 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
     for user in (list "admin" "guest")
     for setting-id = (be-value-id :settings :user user "admin")
     unless setting-id do
-    (add-user-settings
-      :settings
+    (add-user-setting-rows
+      :users
       `(:name ,user)
       "admin")))
 
