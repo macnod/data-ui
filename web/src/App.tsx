@@ -443,6 +443,7 @@ function App() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [editRecord, setEditRecord] = useState<any>(null)
   const [listError, setListError] = useState<string | null>(null)
+  const [title, setTitle] = useState('Data UI')
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -458,6 +459,18 @@ function App() {
       setLoggedInUser('')
       setData(null)
     })
+  }, [])
+
+  // Fetch the app title on mount (pre-login, no auth required)
+  useEffect(() => {
+    fetch('/api/public-info')
+      .then(r => r.ok ? r.json() : null)
+      .then(json => {
+        if (json?.result?.['title']) {
+          setTitle(String(json.result['title']))
+        }
+      })
+      .catch(() => {})
   }, [])
 
   const isEditMode = !!editRecord
@@ -529,6 +542,8 @@ function App() {
     apiFetch('/api/info')
       .then(r => r.json())
       .then(info => {
+        const t = info.result?.['title']
+        if (t) setTitle(String(t))
         const lp = info.result?.['landing-page']
         if (lp) {
           setViewMode('app')
@@ -762,6 +777,8 @@ function App() {
             ? 'user' : t.category
         }))
       setTypes(typeInfos)
+      const t = info.result?.['title']
+      if (t) setTitle(String(t))
       const lp = info.result?.['landing-page']
       if (lp) {
         setType(String(lp))
@@ -801,7 +818,7 @@ function App() {
   if (!loggedIn) {
     return (
       <div style={{ maxWidth: 320, margin: '100px auto', padding: 20 }}>
-        <h1>Data UI</h1>
+        <h1>{title}</h1>
         <h2>Login</h2>
         <input
           type="text"
@@ -828,7 +845,14 @@ function App() {
     return (
       <div>
         <div style={{ position: 'relative' }}>
-          <h1 style={{ margin: 0 }}>Data UI</h1>
+          <h1 style={{ margin: 0 }}>
+            <a href="#" onClick={(e) => {
+              e.preventDefault()
+              returnToLanding()
+            }} style={{ textDecoration: 'none', color: 'inherit' }}>
+              {title}
+            </a>
+          </h1>
           <div style={{
             position: 'absolute',
             left: '50%',
@@ -912,7 +936,14 @@ function App() {
   return (
     <div>
       <div style={{ position: 'relative' }}>
-        <h1 style={{ margin: 0 }}>Data UI</h1>
+        <h1 style={{ margin: 0 }}>
+          <a href="#" onClick={(e) => {
+            e.preventDefault()
+            returnToLanding()
+          }} style={{ textDecoration: 'none', color: 'inherit' }}>
+            {title}
+          </a>
+        </h1>
         <div style={{
           position: 'absolute',
           left: '50%',
@@ -955,11 +986,14 @@ function App() {
           <button
             onClick={handleBack}
             style={{
-              padding: '0.5rem 1rem',
+              padding: '0.75rem 1.5rem',
               border: 'none',
+              borderRight: '2px solid #ccc',
               background: '#e8e8e8',
               borderBottom: 'none',
-              fontWeight: 'normal',
+              fontSize: '1.1rem',
+              fontWeight: 'bold',
+              marginRight: '0.75rem',
               cursor: 'pointer'
             }}
           >

@@ -1112,6 +1112,16 @@ GET /api/types"
                 :category (getf e :category)))
         (be-types user)))))
 
+(h:define-easy-handler (rest-public-info
+                         :uri "/api/public-info"
+                         :default-request-type :get)
+  ()
+  ":public: Unauthenticated endpoint for non-sensitive app metadata.
+Currently returns only the model title.
+
+GET /api/public-info"
+  (render-output (list :title (getf *top-level-settings* :title))))
+
 (h:define-easy-handler (rest-info :uri "/api/info" :default-request-type :get)
   ()
   ":public: Endpoint for retrieving information about the deployed app,

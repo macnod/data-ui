@@ -147,5 +147,3 @@
        :list-form (:fields t)
        :update-form (:fields t)
        :add-form (:fields t))))
-
-
