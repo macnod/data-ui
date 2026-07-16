@@ -785,12 +785,18 @@ function App() {
   }, [loggedIn, type])
 
   // In settings mode, auto-enter edit mode with the single record.
+  // Depends on `type` too: when switching to settings, viewMode changes
+  // first (firing this effect with stale data), then type changes and
+  // fetchList delivers the correct record. Without `type` in the deps,
+  // the stale-data call sets isEditMode=true and the guard prevents the
+  // correct record from ever loading.
   useEffect(() => {
     if (viewMode !== 'settings') return
     if (!data?.result?.records?.length) return
+    if (data.result['type-key'] !== type) return
     if (isEditMode) return
     openEditForm(data.result.records[0])
-  }, [data, viewMode])
+  }, [data, viewMode, type])
 
   if (!loggedIn) {
     return (
