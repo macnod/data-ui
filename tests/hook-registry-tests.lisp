@@ -74,7 +74,7 @@
   (let ((fns (resolve-hook-list
                '(:required (:max-length :max 10)
                   (lambda (tk fk v u)
-                    (declare (ignore tk fk u))
+                    (declare (ignore tk fk v u))
                     nil)))))
     (is (= 3 (length fns)))
     (is (every #'functionp fns))))

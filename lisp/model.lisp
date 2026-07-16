@@ -176,11 +176,11 @@ and any field with :default-from :user."
   (let ((username (getf data :name)))
     (pl:pdebug :in "add-user-setting-rows"
       :username username)
-    (loop for tk in *compiled-model* by #'cddr
-          for td = (getf *compiled-model* tk)
-          when (getf td :user-setting)
-          do (be-insert-internal tk
-               (build-default-setting-plist tk username td)
+    (loop for type-key in *compiled-model* by #'cddr
+          for type-def = (getf *compiled-model* type-key)
+          when (getf type-def :user-setting)
+          do (be-insert-internal type-key
+               (build-default-setting-plist type-key username type-def)
                "admin"))))
 
 (defun remove-user-setting-rows (type-key data user &key id roles record)
@@ -190,12 +190,12 @@ and any field with :default-from :user."
   (let ((username (getf record :name)))
     (pl:pdebug :in "remove-user-setting-rows"
       :username username)
-    (loop for tk in *compiled-model* by #'cddr
-          for td = (getf *compiled-model* tk)
-          when (getf td :user-setting)
-          do (let ((row-id (be-value-id tk :user username "admin")))
+    (loop for type-key in *compiled-model* by #'cddr
+          for type-def = (getf *compiled-model* type-key)
+          when (getf type-def :user-setting)
+          do (let ((row-id (be-value-id type-key :user username "admin")))
                (when row-id
-                 (delete-by-id tk row-id))))))
+                 (delete-by-id type-key row-id))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Hook Registry
