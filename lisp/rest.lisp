@@ -1157,6 +1157,28 @@ GET /api/info"
               (be-landing-page user))
         (render-output settings)))))
 
+(h:define-easy-handler (rest-css-variables
+                         :uri "/api/css-variables"
+                         :default-request-type :get)
+  ()
+  ":public: Returns a JSON map of field-name -> value for every :css-value t
+field on the current user's settings record. Pure data extraction — the frontend
+owns all CSS interpretation.
+
+GET /api/css-variables"
+  (let* ((user (require-auth '("logged-in")))
+         (settings-id (be-value-id :settings :user user "admin")))
+    (when settings-id
+      (let ((record (be-rec settings-id user :type-key :settings)))
+        (when record
+          (let ((rec-data (getf record :record)))
+            (loop with fields = (u:tree-get *compiled-model* :settings :fields)
+              for field-key in fields by #'cddr
+              for field-def in (cdr fields) by #'cddr
+              when (getf field-def :css-value)
+              append (list field-key (getf rec-data field-key)) into css-vars
+              finally (return (render-output css-vars)))))))))
+
 (h:define-easy-handler (rest-login :uri "/api/login" :default-request-type :post)
   ()
   ":public: Endpoint for logging in and getting a JWT token.

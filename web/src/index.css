@@ -1,6 +1,50 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --border: #ccc;
+  --border-light: #eee;
+  --header-bg: #f5f5f5;
+  --tab-active-bg: #fff;
+  --tab-inactive-bg: #f0f0f0;
+  --tab-border: #000;
+  --hover-bg: #e0e0ff;
+  --muted: #888;
+  --muted-2: #999;
+  --overlay-bg: rgba(0,0,0,0.8);
+  --link: #6cf;
+  --error: #c00;
+  --error-bright: red;
+  --label: #555;
+  --input-bg: #fff;
+  --input-border: #ccc;
+}
+
+.dark {
+  --bg: #1a1a1a;
+  --fg: #e0e0e0;
+  --border: #444;
+  --border-light: #333;
+  --header-bg: #2a2a2a;
+  --tab-active-bg: #2a2a2a;
+  --tab-inactive-bg: #222;
+  --tab-border: #888;
+  --hover-bg: #333;
+  --muted: #999;
+  --muted-2: #777;
+  --overlay-bg: rgba(0,0,0,0.9);
+  --link: #6cf;
+  --error: #e44;
+  --error-bright: #e44;
+  --label: #aaa;
+  --input-bg: #333;
+  --input-border: #555;
+}
+
 body {
   font-family: system-ui, sans-serif;
   padding: 2rem;
+  background: var(--bg);
+  color: var(--fg);
 }
 
 table {
@@ -10,11 +54,11 @@ table {
 }
 
 th, td {
-  border: 1px solid #ccc;
+  border: 1px solid var(--border);
   padding: 8px;
   text-align: left;
 }
 
 th {
-  background: #f5f5f5;
+  background: var(--header-bg);
 }

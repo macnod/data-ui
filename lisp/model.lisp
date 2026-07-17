@@ -546,6 +546,7 @@ resolve-hook-form for error messages."
                         :source (:view :users :table :users :column :name :agg :first)
                         :column t :not-null t :unique t)
                  :dark-mode (:type :boolean :default :false
+                              :css-value t
                               :ui (:label "Dark Mode" :input-type :check-box)
                               :source (:view :main :column :dark-mode :agg :first)
                               :column t :not-null t)
@@ -1178,7 +1179,7 @@ has a value in the model."
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
-                    :autofill :identity :default-from)
+                    :autofill :identity :default-from :css-value)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))

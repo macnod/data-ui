@@ -3,6 +3,33 @@ import { apiFetch, setTokens, clearTokens, getAccessToken,
          onAuthFailure } from './api'
 import StarRating from './StarRating'
 
+// Apply CSS-relevant settings values to the document.
+// Currently only dark-mode (boolean → toggle .dark class on body).
+// Future fields just add one line each here.
+function applyCssVariables(vars: Record<string, unknown>) {
+  const body = document.body
+  if (vars['dark-mode']) {
+    body.classList.add('dark')
+  } else {
+    body.classList.remove('dark')
+  }
+}
+
+// Fetch CSS variables from the backend and apply them.
+async function fetchAndApplyCssVariables() {
+  try {
+    const res = await apiFetch('/api/css-variables')
+    if (res.ok) {
+      const json = await res.json()
+      if (json?.result) {
+        applyCssVariables(json.result)
+      }
+    }
+  } catch {
+    /* non-fatal — default light theme stays */
+  }
+}
+
 // Extract the backend's error message from a failed response, falling back
 // to a generic message if the body can't be parsed.
 async function errorMessage(res: Response, fallback: string): Promise<string> {
@@ -259,7 +286,7 @@ function ImageModal({
       style={{
         position: 'fixed',
         inset: 0,
-        background: 'rgba(0,0,0,0.8)',
+        background: 'var(--overlay-bg)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -287,7 +314,7 @@ function ImageModal({
         >
           ‹ Prev
         </button>
-        <span style={{ color: '#ccc', fontSize: '0.85rem' }}>
+        <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
           {index + 1} / {images.length}
         </span>
         <button
@@ -336,7 +363,7 @@ function ImageModal({
 }
 
 const modalLinkStyle: React.CSSProperties = {
-  color: '#6cf',
+  color: 'var(--link)',
   textDecoration: 'underline',
   cursor: 'pointer'
 }
@@ -354,7 +381,7 @@ function ThumbnailGrid({
   const thumbSize = size || 80
 
   if (!paths || paths.length === 0)
-    return <span style={{ color: '#999' }}>—</span>
+    return <span style={{ color: 'var(--muted-2)' }}>—</span>
 
   const modalImages = paths.map(p => ({
     src: fileUrl(type, p),
@@ -435,7 +462,7 @@ function renderReadOnlyField(
     const num = typeof value === 'number' ? value
       : value ? Number(value) : null
     if (num == null || isNaN(num))
-      return <div style={{ color: '#999' }}>—</div>
+      return <div style={{ color: 'var(--muted-2)' }}>—</div>
     return <StarRating value={num} />
   }
 
@@ -445,7 +472,7 @@ function renderReadOnlyField(
   return (
     <div style={{
       padding: '0.3rem 0',
-      color: '#555',
+      color: 'var(--label)',
       minHeight: '1.2em'
     }}>
       {text || '—'}
@@ -586,6 +613,7 @@ function App() {
   // Return to the landing page (used by settings Submit/Cancel).
   const returnToLanding = () => {
     closeForm()
+    fetchAndApplyCssVariables()
     apiFetch('/api/info')
       .then(r => r.json())
       .then(info => {
@@ -633,6 +661,7 @@ function App() {
           setLoggedInUser(username)
           setUsername('')
           setPassword('')
+          fetchAndApplyCssVariables()
         } else {
           setLoginError('Invalid response from server')
         }
@@ -911,7 +940,7 @@ function App() {
           onKeyDown={e => e.key === 'Enter' && handleLogin()}
         />
         <button onClick={handleLogin} style={{ width: '100%' }}>Login</button>
-        {loginError && <p style={{ color: 'red' }}>{loginError}</p>}
+        {loginError && <p style={{ color: 'var(--error-bright)' }}>{loginError}</p>}
       </div>
     )
   }
@@ -943,7 +972,7 @@ function App() {
               onClick={() => returnToLanding()}
               style={{
                 fontWeight: viewMode === 'app' ? 'bold' : 'normal',
-                background: viewMode === 'app' ? '#e0e0ff' : ''
+                background: viewMode === 'app' ? 'var(--hover-bg)' : ''
               }}
             >
               🏠 Home
@@ -953,7 +982,7 @@ function App() {
                 onClick={() => switchViewMode('settings')}
                 style={{
                   fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
-                  background: viewMode === 'settings' ? '#e0e0ff' : ''
+                  background: viewMode === 'settings' ? 'var(--hover-bg)' : ''
                 }}
               >
                 ⚙ Settings
@@ -964,7 +993,7 @@ function App() {
                 onClick={() => switchViewMode('admin')}
                 style={{
                   fontWeight: viewMode === 'admin' ? 'bold' : 'normal',
-                  background: viewMode === 'admin' ? '#e0e0ff' : ''
+                  background: viewMode === 'admin' ? 'var(--hover-bg)' : ''
                 }}
               >
                 🔧 Admin
@@ -972,14 +1001,20 @@ function App() {
             )}
             <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
             <button
-              onClick={() => { clearTokens(); setLoggedIn(false); setLoggedInUser(''); setData(null) }}
+              onClick={() => {
+                clearTokens()
+                setLoggedIn(false)
+                setLoggedInUser('')
+                setData(null)
+                document.body.classList.remove('dark')
+              }}
               style={{}}
             >
               Logout
             </button>
           </div>
         </div>
-        <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
+        <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid var(--border)' }}>
           {activeTypes.map(t => (
             <button
               key={t.name}
@@ -987,8 +1022,8 @@ function App() {
               style={{
                 padding: '0.5rem 1rem',
                 border: 'none',
-                background: t.name === type ? '#fff' : '#f0f0f0',
-                borderBottom: t.name === type ? '2px solid #000' : 'none',
+                background: t.name === type ? 'var(--tab-active-bg)' : 'var(--tab-inactive-bg)',
+                borderBottom: t.name === type ? '2px solid var(--tab-border)' : 'none',
                 fontWeight: t.name === type ? 'bold' : 'normal',
                 cursor: 'pointer'
               }}
@@ -997,7 +1032,7 @@ function App() {
             </button>
           ))}
         </div>
-        <p style={{ color: listError ? '#c00' : undefined }}>
+        <p style={{ color: listError ? 'var(--error)' : undefined }}>
           {listError || 'No records'}
         </p>
       </div>
@@ -1034,7 +1069,7 @@ function App() {
             onClick={() => returnToLanding()}
             style={{
               fontWeight: viewMode === 'app' ? 'bold' : 'normal',
-              background: viewMode === 'app' ? '#e0e0ff' : ''
+              background: viewMode === 'app' ? 'var(--hover-bg)' : ''
             }}
           >
             🏠 Home
@@ -1044,7 +1079,7 @@ function App() {
               onClick={() => switchViewMode('settings')}
               style={{
                 fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
-                background: viewMode === 'settings' ? '#e0e0ff' : ''
+                background: viewMode === 'settings' ? 'var(--hover-bg)' : ''
               }}
             >
               ⚙ Settings
@@ -1055,7 +1090,7 @@ function App() {
               onClick={() => switchViewMode('admin')}
               style={{
                 fontWeight: viewMode === 'admin' ? 'bold' : 'normal',
-                background: viewMode === 'admin' ? '#e0e0ff' : ''
+                background: viewMode === 'admin' ? 'var(--hover-bg)' : ''
               }}
             >
               🔧 Admin
@@ -1063,7 +1098,13 @@ function App() {
           )}
           <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
           <button
-            onClick={() => { clearTokens(); setLoggedIn(false); setLoggedInUser(''); setData(null) }}
+            onClick={() => {
+              clearTokens()
+              setLoggedIn(false)
+              setLoggedInUser('')
+              setData(null)
+              document.body.classList.remove('dark')
+            }}
             style={{}}
           >
             Logout
@@ -1071,7 +1112,7 @@ function App() {
         </div>
       </div>
 
-      <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid #ccc' }}>
+      <div style={{ marginBottom: '1rem', display: 'flex', gap: '0.25rem', borderBottom: '2px solid var(--border)' }}>
         {activeTypes.map(t => (
           <button
             key={t.name}
@@ -1079,8 +1120,8 @@ function App() {
             style={{
               padding: '0.5rem 1rem',
               border: 'none',
-              background: t.name === type ? '#fff' : '#f0f0f0',
-              borderBottom: t.name === type ? '2px solid #000' : 'none',
+              background: t.name === type ? 'var(--tab-active-bg)' : 'var(--tab-inactive-bg)',
+              borderBottom: t.name === type ? '2px solid var(--tab-border)' : 'none',
               fontWeight: t.name === type ? 'bold' : 'normal',
               cursor: 'pointer'
             }}
@@ -1186,7 +1227,7 @@ function App() {
                       />
                       {userSearchLoading && (
                         <span style={{ marginLeft: '0.5rem',
-                          color: '#888', fontSize: '0.85em' }}>
+                          color: 'var(--muted)', fontSize: '0.85em' }}>
                           searching...
                         </span>
                       )}
@@ -1195,9 +1236,9 @@ function App() {
                           position: 'relative',
                           marginTop: '0.25rem',
                           width: '200px',
-                          border: '1px solid #ccc',
+                          border: '1px solid var(--border)',
                           borderRadius: '3px',
-                          background: '#fff',
+                          background: 'var(--input-bg)',
                           zIndex: 10
                         }}>
                           {userSearchResults.map(name => (
@@ -1207,13 +1248,13 @@ function App() {
                               style={{
                                 padding: '0.25rem 0.5rem',
                                 cursor: 'pointer',
-                                borderBottom: '1px solid #eee'
+                                borderBottom: '1px solid var(--border-light)'
                               }}
                               onMouseEnter={e =>
-                                (e.currentTarget.style.background = '#f0f0f0')
+                                (e.currentTarget.style.background = 'var(--hover-bg)')
                               }
                               onMouseLeave={e =>
-                                (e.currentTarget.style.background = '#fff')
+                                (e.currentTarget.style.background = 'var(--input-bg)')
                               }
                             >
                               {name}
@@ -1312,7 +1353,7 @@ function App() {
         <thead>
           <tr>
             {data.result.delete && (
-              <th style={{ width: '40px', textAlign: 'center', color: 'red' }}>✕</th>
+              <th style={{ width: '40px', textAlign: 'center', color: 'var(--error-bright)' }}>✕</th>
             )}
             {data.result.update && (
               <th style={{ width: '60px' }}></th>
