@@ -16,13 +16,7 @@
       (:name 
         (:type :text :identity t
           :ui (:label "To Do" :input-type :line)
-          :validations (:required
-                         (lambda (type-key field-key value user)
-                           (declare (ignore user))
-                           (unless (< (length value) 20)
-                             (validation-error-string
-                               type-key field-key value
-                               "must be less than 20 characters."))))
+          :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points

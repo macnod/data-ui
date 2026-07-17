@@ -58,33 +58,16 @@
   (let ((fn (resolve-hook-form '(:in-range :min 1 :max 5))))
     (is (functionp fn))))
 
-(test resolve-lambda-hook
-  ;; Raw lambda still works (expert tier)
-  (let ((fn (resolve-hook-form
-              '(lambda (tk fk v u)
-                (declare (ignore tk fk u))
-                (when (string= v "bad")
-                  "bad value")))))
-    (is (functionp fn))
-    (is-false (funcall fn :test :field "ok" "admin"))
-    (is (string= (funcall fn :test :field "bad" "admin")
-                 "bad value"))))
-
 (test resolve-hook-list-preserves-order
   (let ((fns (resolve-hook-list
                '(:required (:max-length :max 10)
-                  (lambda (tk fk v u)
-                    (declare (ignore tk fk v u))
-                    nil)))))
+                  (:in-range :min 1 :max 5)))))
     (is (= 3 (length fns)))
     (is (every #'functionp fns))))
 
 (test resolve-unknown-hook-errors
   (signals error (resolve-hook-form :totally-unknown))
   (signals error (resolve-hook-form '(:totally-unknown :foo 1))))
-
-(test resolve-shell-hook-errors
-  (signals error (resolve-hook-form '(:shell "some-script"))))
 
 (test resolve-missing-params-error
   (signals error (resolve-hook-form '(:max-length)))    ; no :max
@@ -140,13 +123,13 @@
 
 (in-suite hook-registry-integration-suite)
 
-(test mixed-validations-keyword-and-lambda
-  ;; The test-model has :todos with :name (:required + lambda)
+(test mixed-validations-keyword-and-registry
+  ;; The test-model has :todos with :name (:required + :max-length 19)
   (let ((result (be-validate-field :todos :name "" "admin")))
     (is (equal (getf result :valid) :false)))
   (let ((result (be-validate-field :todos :name "test" "admin")))
     (is (equal (getf result :valid) :true)))
-  ;; Lambda validation still works (< 20 chars)
+  ;; :max-length validation rejects names > 19 chars
   (let ((result (be-validate-field :todos :name
                    "this is a very long name" "admin")))
     (is (equal (getf result :valid) :false))))
@@ -183,7 +166,8 @@
 (in-suite hook-registry-lifecycle-suite)
 
 (test resolve-function-hook
-  "Raw function values pass through resolve-hook-form as-is"
+  "Compiled function values pass through resolve-hook-form as-is
+(internal base-model use only — not a model-author surface form)"
   (let ((fn (lambda (tk d u &key id roles record)
               (declare (ignore tk d u id roles record)))))
     (is (eq (resolve-hook-form fn) fn))))

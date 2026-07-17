@@ -286,10 +286,11 @@ keyword/value pairs.  Signals an error on missing or wrong-type params."
 FORM may be:
   - A keyword:  :required  → zero-arg registry lookup
   - A plist list: (:max-length :max 20) → parameterized registry lookup
-  - A lambda:    (lambda ...) → compiled as-is (expert tier)
+  - A compiled function (internal base-model use only)
+The registry is the sole hook surface form for model authors.
 TYPE-KEY and FIELD-KEY are optional context used only for error
 messages.
-Signals an error for unknown hooks, wrong kind, :shell forms, or bad params."
+Signals an error for unknown hooks, wrong kind, or bad params."
   (flet ((ctx (fmt)
            (if (and type-key field-key)
                (format nil "~a for ~(~a/~a~): " fmt type-key field-key)
@@ -297,16 +298,9 @@ Signals an error for unknown hooks, wrong kind, :shell forms, or bad params."
                    (format nil "~a for ~(~a~): " fmt type-key)
                    (format nil "~a" fmt)))))
     (cond
-    ;; Raw function — expert tier, pass through as-is
+    ;; Compiled function — internal base-model pass-through only
     ((functionp form)
      form)
-    ;; Raw lambda — expert tier, pass through
-    ((and (consp form) (eq (car form) 'lambda))
-     (compile nil form))
-    ;; :shell — explicitly rejected in this plan
-    ((and (consp form) (eq (car form) :shell))
-     (report-e "resolve-hook-form"
-               (ctx ":shell hooks are not supported yet")))
     ;; Keyword alone: zero-arg registry entry
     ((keywordp form)
      (let ((entry (get-hook form)))
@@ -1379,11 +1373,9 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
 (defun compile-create (fn)
   (cond
     ((equal fn :auto) :auto)
-    ((equal (type-of fn) 'compiled-function) fn)
-    ((and (equal (type-of fn) 'cons) (eq (car fn) 'lambda))
-      (compile nil fn))
+    ((functionp fn) fn)
     ((null fn) nil)
-    (t (error "Invalid :create function definitions: ~a" fn))))
+    (t (error "Invalid :create function definition: ~a" fn))))
 
 (defun validate-tree (model type-key tree is-leaf parent-type fs-backed)
   ;; Ensure that if :is-leaf or :fs-backed is true, then :tree is true and

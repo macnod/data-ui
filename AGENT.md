@@ -232,7 +232,6 @@ modify the test suites themselves (`backend-tests.lisp`,
   side effects. Database init (`rbac:initialize-database`) is also not
   idempotent. Design hooks and write-through with eventual transaction
   wrapping in mind; do not assume atomicity today.
-- **Shell hooks** (`:shell ...`) — planned; rejected at compile time today.
 - File **update** is not implemented; may be deferred past the MVP
 - UI polish — important for the video; deferred relative to compiler /
   backend capability work (frontend changes are cheaper)
@@ -292,7 +291,8 @@ Data UI serves two audiences through a single compiler. Agents must keep the
 distinction straight:
 
 - **Expert / self-hosting tier** — the open-source Common Lisp engine. Full power:
-  raw Lisp lambdas as hooks/validations, function overrides for lifecycle ops.
+  custom registry entries (write your own hook factory in Lisp), function
+  overrides for lifecycle ops.
   The guardrail is the developer's own judgment (a "shotgun" philosophy — it does
   not stop you from doing whatever you want). **MVP safety note:** transactions
   and rollback are deliberately deferred (see Known gaps). A failing lifecycle
@@ -312,18 +312,13 @@ single calling contract.
 
 - Validation contract: `(lambda (type-key field-key value user) -> nil | error-string)`
 - Lifecycle contract (e.g.): `(lambda (type-key data user &key roles) -> effect)`
-- Hooks are **lists**; multiple hooks may attach. Forms:
-  - `(:keyword args...)` — registry entry (data-only; AI/no-code/hosted tier) — **supported**
-  - `(lambda ...)` — raw Lisp (expert/self-host tier only) — **supported**
-  - `(:shell "script" args...)` — compiler-generated subprocess adapter — **planned**;
-    rejected at compile time today
-- The **registry** generalizes the existing keyword→lambda validation pattern by
-  letting entries take **parameters as data**. A registry entry = name +
+- Hooks are **lists**; multiple hooks may attach. The sole surface form:
+  - `(:keyword args...)` — registry entry (data-only; AI/no-code/hosted tier)
+- The **registry** is the sole hook surface form.
+  A registry entry = name +
   parameter-schema + factory. The parameter schema does triple duty: validates
   hosted-tier data, drives the no-code UI palette, and serves as the AI
   function-calling spec. API: `register-hook` (not `register-validation`).
-- Shell hooks (when implemented): input as JSON on stdin; exit status/output
-  determines success/failure; the adapter will conform to the standard contract.
 
 **MVP caveat (transactions deferred):** lifecycle hooks are NOT
 transaction-wrapped. A failing hook fails the operation WITHOUT rollback of
@@ -490,7 +485,6 @@ Priorities now:
    capability gaps (frontend is cheaper to change).
 4. **The 30-second video** — nothing → deployed app
 5. File update (only if time permits; otherwise post-MVP)
-6. Shell hooks (planned; not required for MVP demo)
 
 **Explicitly post-MVP (do not quietly pull in):**
 - Transactions / rollback around primary write + hooks + write-through

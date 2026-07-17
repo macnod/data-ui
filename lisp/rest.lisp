@@ -992,7 +992,8 @@ The 'value' field is required and is the value to validate. The validation rules
 are defined in the model for each field. For example, you can specify that a
 field is required, or that it must be a number. The model supports a variety of
 validation rules, which you can specify with keywords. The model also supports
-custom validation function, which you can provide as lambdas.
+custom validation function, which you can provide as parameterized
+registry entries.
 
 The response will be a JSON object with the following structure:
 
@@ -1061,8 +1062,8 @@ to be validated. The field names must match the field names defined in the model
 for the specified type. The validation rules are defined in the model for each
 field. For example, you can specify that a field is required, or that it must be
 a number. The model supports a variety of validation rules, which you can
-specify with keywords. The model also supports custom validation function, which
-you can provide as lambdas.
+specify with keywords. The model also supports custom validation
+function, which you can provide as parameterized registry entries.
 
 The response will be a JSON object with the following structure:
 

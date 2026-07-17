@@ -163,10 +163,11 @@ the built-in RBAC tables themselves.
 Data UI deliberately supports two audiences through a single compiler:
 
 - **The expert, self-hosting tier.** Written in Common Lisp, the open-source
-  engine gives you full power. You can attach raw Lisp lambdas as hooks and
-  validations, override any lifecycle operation with your own function, and do
-  anything the language allows. The guardrail here is your own experience and
-  judgment. This tier is a shotgun: it does not stop you from doing whatever you
+  engine gives you full power. You can write custom registry entries as hooks
+  and validations, override any lifecycle operation with your own function, and
+  do anything the language allows. The guardrail here is your own experience
+  and judgment. This tier is a shotgun: it does not stop you from doing
+  whatever you
   want.
 
 - **The AI / no-code / hosted tier.** Here the model is pure data (YAML or JSON),
@@ -220,13 +221,7 @@ name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
       (:name
         (:type :text :identity t
           :ui (:label "To Do" :input-type :line)
-          :validations (:required
-                         (lambda (type-key field-key value user)
-                           (declare (ignore user))
-                           (unless (< (length value) 20)
-                             (validation-error-string
-                               type-key field-key value
-                               "must be less than 20 characters."))))
+          :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
@@ -408,7 +403,7 @@ from rt_tags"
 - **Compilation** — Adds default fields, resolves `:reference` into proper foreign keys, builds joined view SQL, prepares parameterized CRUD statements.
 - **Runtime** — Generic backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-item`, etc. in `lisp/backend.lisp`) pull pre-generated SQL from the compiled model.
 - **RBAC** — Every operation is gated by `user-allowed` from the rbac library. RBAC tables are treated exactly like your own types, so you can manage users, roles, permissions, and resource access through the same UI/API.
-- **Validation** — Per-field lambdas, parameterized registry entries, or common validator keywords (with support for lists). Pre-compiled during `set-model`. Separate validation functions are available.
+- **Validation** — Parameterized registry entries or common validator keywords (with support for lists). Pre-compiled during `set-model`. Separate validation functions are available.
 
 ### What `*compiled-model*` actually is
 
@@ -416,8 +411,8 @@ The compiler stores its output in `*compiled-model*` — a single structure
 that is simultaneously the application specification (data), the
 deployment configuration (data), and the executable application logic
 (native machine code). SBCL compiles every backend function, every RBAC
-check, and every hook lambda — including validation and lifecycle hooks
-authored directly in the model — to native x86-64 or ARM instructions.
+check, and every hook — including validation and lifecycle hooks
+— to native x86-64 or ARM instructions.
 No interpreter. No VM. No JIT warmup. When a validation hook runs, it
 calls a function pointer to compiled code that was placed in the model
 at compile time. The model is not just a description of the application;
@@ -440,7 +435,7 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:title` (top-level) — human-readable app title (e.g. "To Do List")
 - `:render-as` values: `:code`, `:image`, `:image-list`, `:stars` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview, star ratings)
 - `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`
-- `:validations` common validation names, parameterized registry entries, or lambdas that validate form/field data
+- `:validations` common validation names or parameterized registry entries that validate form/field data
 - `:join-table` for many-to-many relationships
 - `:is-joiner t` for explicit join tables
 - `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` for tree-structured types with filesystem backing (directories, file storage)
@@ -462,13 +457,11 @@ Custom logic — validation and lifecycle behavior — attaches through **hooks*
 Every hook, whatever its surface form, reduces to a single calling contract
 before it runs, so the compiler treats them uniformly.
 
-There are three ways to express a hook, spanning the two tiers:
+Hooks are expressed through the registry:
 
 | Form in the model            | Who writes the Lisp                  | Tier                       | Status        |
 |------------------------------|--------------------------------------|----------------------------|---------------|
 | `(:keyword args...)`         | the registry author (you/community)  | AI / no-code / hosted      | Supported     |
-| `(lambda ...)`               | the model author, raw                | expert / self-host only    | Supported     |
-| `(:shell "script" args...)`  | nobody (compiler generates adapter)  | AI / no-code / hosted      | Planned       |
 
 ### The contract
 
@@ -497,7 +490,7 @@ this contract.
 
 ### The registry: parameterized, data-only hooks
 
-The registry generalizes the existing keyword-to-lambda pattern used for
+The registry provides parameterized, data-only hooks for
 validations. A registry entry is a named factory that **closes over parameters
 supplied as data** and returns a contract-conforming closure.
 
@@ -544,15 +537,6 @@ The parameter schema does triple duty:
 This is the mechanism that makes the model AI-consumable: an AI does not write
 hooks, it picks registry entries and fills parameters. The Lisp lives in the
 registry; the model author — human or AI — writes only data.
-
-### Shell hooks (planned)
-
-Shell hooks are **planned but not yet supported**. The intended form is a tagged
-expression such as `(:shell "thumbnail.sh" ...)`. When implemented, the compiler
-will generate an adapter that wraps the subprocess to satisfy the same hook
-contract as any other hook: input as JSON on stdin; exit status and output
-determine success or failure. Until then, `(:shell ...)` forms are rejected at
-compile time.
 
 ## API Approach
 
@@ -707,7 +691,6 @@ Deliberately deferred to post-MVP (do not assume these exist today):
 - Single-statement `ON CONFLICT` upserts (blocked on the two-phase
   resource insert).
 - YAML/JSON model input and the hosted AI front door.
-- Shell hooks (`:shell ...`) — planned; rejected at compile time today.
 
 See [Hooks and the Registry](#hooks-and-the-registry) for the hook
 contract and the MVP atomicity caveat.

@@ -1086,15 +1086,14 @@ Notes:
   (is (equal
         (be-validate-field :todos :name "clean kitchen" "admin")
         '(:valid :true)))
-  ;; Validate a bad todo name (more than 20 characters). This validation is
-  ;; specified as a lambda in the model, so this test also checks that
-  ;; lambda is properly compiled and invoked by be-validate-field, just like
-  ;; the keyword validations.
+  ;; Validate a bad todo name (more than 19 characters). This validation is
+  ;; specified as (:max-length :max 19) in the model, testing that
+  ;; parameterized registry hooks are properly compiled and invoked.
   (is (equal
         (be-validate-field :todos :name "This is a very long name" "admin")
         `(:valid :false
            :errors (,(format nil
-                       "todo name ~s must be less than 20 characters."
+                       "todo name ~s must be at most 19 characters."
                        "This is a very long ...")))))
   ;; Validate a good todo points value. The front end always sends all values
   ;; as strings, so this checks that the string can be successfully validated
@@ -1158,7 +1157,7 @@ Notes:
            (,(format nil "~a ~s ~a"
               "todo name"
               "this is a very long ..."
-              "must be less than 20 characters.")
+              "must be at most 19 characters.")
              "todo points \"three\" must be a valid :INTEGER."
              "todo tags not found: tag-3"))))
   (is (equal
@@ -1182,9 +1181,9 @@ Notes:
   (signals validation-error
     (be-insert :todos '(:points 5) "admin")))
 
-(test write-path-bad-lambda-fails
-  "Insert with a value that fails a lambda validator should fail."
-  ;; :name lambda requires < 20 chars
+(test write-path-bad-max-length-fails
+  "Insert with a value that fails the :max-length validator should fail."
+  ;; :name has (:max-length :max 19)
   (signals validation-error
     (be-insert :todos '(:name "this-name-is-too-long") "admin")))
 

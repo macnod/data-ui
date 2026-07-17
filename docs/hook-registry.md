@@ -71,7 +71,7 @@ resolved function lists — no registry access occurs.
 
 ## Hook Forms
 
-Model authors can express hooks in three surface forms. All reduce to the same
+Model authors can express hooks in two surface forms. All reduce to the same
 contract before anything runs.
 
 ### 1. Keyword (zero-arg registry entry)
@@ -94,22 +94,9 @@ The first element names the registry entry; the remaining plist provides
 parameters. `valid-hook-params` validates the plist against the entry's
 parameter schema before the factory runs.
 
-### 3. Raw lambda (expert / self-host tier only)
-
-```lisp
-:validations ((lambda (type-key field-key value user)
-                (when (and value (> (length value) 100))
-                  "must be 100 characters or fewer.")))
-```
-
-Compiled as-is. No registry lookup. This is the escape hatch for
-self-hosting developers. Not available in the AI / no-code / hosted
-tier.
-
-### Rejected forms
-
-- `(:shell "script" ...)` — explicitly rejected with a compile error.
-  Shell hooks are planned but not yet implemented.
+The registry is the sole hook surface form. Raw lambda forms and shell
+hooks are not accepted. For expert/self-host needs, register a custom
+hook via `register-hook`.
 
 ## Registered Validation Hooks
 
@@ -148,8 +135,7 @@ model source
   ↓  compile-lifecycle-hooks → resolve-hook-list (:kind :lifecycle)
   ↓  resolve-hook-form per hook:
        keyword/plist → registry lookup
-       lambda → compile
-       raw function → pass through as-is
+       raw function → pass through as-is (internal base-model use)
   ↓
 *compiled-model* (holds function lists for both validations and lifecycle)
   ↓
@@ -198,7 +184,7 @@ Call sites:
 
 ### Surface forms on lifecycle slots
 
-Same as validation — all three forms are accepted:
+Same as validation — both forms are accepted:
 
 ```lisp
 ;; Keyword (zero-arg registry entry, :lifecycle kind)
@@ -207,14 +193,13 @@ Same as validation — all three forms are accepted:
 ;; Plist list (parameterized registry entry)
 :post-update (:my-hook :param value)
 
-;; Raw function (expert tier)
-:pre-delete #'(lambda (type-key data user &key id roles record) ...)
-
-;; List of hooks (all three forms may be mixed)
-:post-create (:hook-a (:hook-b :param 1) (lambda ...))
+;; List of hooks (both forms may be mixed)
+:post-create (:hook-a (:hook-b :param 1))
 ```
 
-Raw function values (`#'foo`) pass through `resolve-hook-form` as-is.
+Internal base-model lifecycle hooks use compiled function references
+(`#'foo`) which pass through `resolve-hook-form` as-is. This is an
+internal mechanism, not a model-author surface form.
 
 
 ## MVP Caveat: No Transactional Guarantees

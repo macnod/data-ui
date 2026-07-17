@@ -214,7 +214,7 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
 both test-model and modelbank."
   ;; Pure registry tests — no model required
   (run! 'hook-registry-suite)
-  ;; Integration: test-model (todos with :required + lambda)
+  ;; Integration: test-model (todos with :required + :max-length)
   (with-model "test-model" nil
     (run! 'hook-registry-integration-suite))
   ;; Integration: modelbank (:in-range on ratings)

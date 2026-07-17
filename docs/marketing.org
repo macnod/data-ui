@@ -273,15 +273,12 @@ forgotten corners of the codebase.
 
 ** Custom logic without rebuilding the architecture.
 
-Need validation beyond the built-ins? Attach hooks. Three forms
-coexist:
+Need validation beyond the built-ins? Attach hooks via the registry:
 
-- *Registry entries* (data-only): =(:max-length 20)= — parameterized,
+- *Registry entries* (data-only): =(:max-length :max 20)= — parameterized,
   serializable, AI-consumable
-- *Shell hooks* (data-only): =(:shell "thumbnail.sh")= — the compiler
-  generates the adapter, your script gets JSON on stdin
-- *Raw lambdas* (expert tier): full Lisp, for when you need complete
-  control
+- *Custom registry entries* (expert tier): write your own factory in
+  Lisp via =register-hook=, then use it as data in any model
 
 All hooks conform to the same contract. The compiler treats them
 uniformly.
