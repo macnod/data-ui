@@ -1994,9 +1994,6 @@ not.
             :id new-id :roles roles)
           (values new-id t))))))
 
-;; TODO: Remove. This is for debugging only.
-(defparameter *be-update-call* nil)
-
 ;; TODO:
 ;;   - Transaction
 ;;   - Don't update if there are no changes
@@ -2016,8 +2013,6 @@ for those fields.
 This function returns the ID of the updated record, or a list of errors if the
 update fails.
 "
-  (setf *be-update-call*
-    (lambda () (be-update type-key filters data user :roles roles)))
   (valid-compiled-model)
   (valid-type-key type-key)
   (if (stringp filters)
