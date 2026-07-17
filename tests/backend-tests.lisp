@@ -1241,3 +1241,170 @@ Notes:
              :false))
   ;; Verify nothing was inserted
   (is-false (be-id :todos '((:todos :name :eq "ok")) "admin")))
+
+;;
+;; BEGIN Form Roles tests
+;;
+
+(test shareable-exclusive-role-p
+  "Exclusive roles (except admin/guest) are shareable."
+  (is-true (shareable-exclusive-role-p "bob:exclusive"))
+  (is-true (shareable-exclusive-role-p "alice:exclusive"))
+  (is-false (shareable-exclusive-role-p "admin:exclusive"))
+  (is-false (shareable-exclusive-role-p "guest:exclusive"))
+  (is-false (shareable-exclusive-role-p "logged-in"))
+  (is-false (shareable-exclusive-role-p "public"))
+  (is-false (shareable-exclusive-role-p "todo-users"))
+  (is-false (shareable-exclusive-role-p ""))
+  (is-false (shareable-exclusive-role-p nil)))
+
+(test selectable-roles-admin
+  "Admin sees all roles minus system exclusives."
+  (let* ((all-roles (a:list-role-names *rbac*))
+         (result (selectable-roles :todos "admin"))
+         (expected (remove-if
+                     (lambda (r)
+                       (member r '("admin" "admin:exclusive"
+                                    "guest:exclusive")
+                         :test 'equal))
+                     all-roles)))
+    (is (equal (u:safe-sort result) (u:safe-sort expected)))
+    (is-false (member "admin" result :test 'equal))
+    (is-false (member "admin:exclusive" result :test 'equal))
+    (is-false (member "guest:exclusive" result :test 'equal))))
+
+(test selectable-roles-non-admin
+  "Non-admin sees own roles + public + type-roles, minus system exclusives."
+  (let ((user "roles-test-user"))
+    ;; Create test user with a role
+    (th-make-user user :roles '("todo-users"))
+    (unwind-protect
+      (let* ((result (selectable-roles :todos user)))
+        ;; User's own role is present
+        (is-true (member "todo-users" result :test 'equal))
+        ;; Public is present
+        (is-true (member "public" result :test 'equal))
+        ;; Type role is present (same as user's role in this case)
+        (is-true (member "todo-users" result :test 'equal))
+        ;; System exclusives are absent
+        (is-false (member "admin" result :test 'equal))
+        (is-false (member "admin:exclusive" result :test 'equal))
+        (is-false (member "guest:exclusive" result :test 'equal))
+        ;; No duplicates
+        (is (= (length result)
+               (length (remove-duplicates result :test 'equal)))))
+      ;; Cleanup
+      (be-delete :users
+        `((:users :name :eq ,user)) "admin"))))
+
+(test selectable-roles-includes-type-roles
+  "Type roles appear in selectable-roles even if user doesn't have them."
+  (let ((user "roles-test-user-2"))
+    ;; Create test user with NO roles (just exists)
+    (th-make-user user)
+    (unwind-protect
+      (let ((result (selectable-roles :todos user)))
+        ;; Type role "todo-users" is present even though user doesn't have it
+        (is-true (member "todo-users" result :test 'equal))
+        ;; Public is present
+        (is-true (member "public" result :test 'equal)))
+      ;; Cleanup
+      (be-delete :users
+        `((:users :name :eq ,user)) "admin"))))
+
+(test valid-user-roles-allows-exclusive-sharing
+  "A user can assign another user's exclusive role for sharing."
+  (let ((user "share-test-user")
+        (other "share-test-other"))
+    (th-make-user user :roles '("todo-users"))
+    (th-make-user other)
+    (unwind-protect
+      (let ((other-exclusive (a:exclusive-role-for other)))
+        ;; User can assign other's exclusive role
+        (is (null (valid-user-roles user
+                     (list "public" other-exclusive))))
+        ;; User can assign own roles
+        (is (null (valid-user-roles user '("todo-users" "public"))))
+        ;; User CANNOT assign roles they don't have (non-exclusive)
+        (signals validation-error
+          (valid-user-roles user '("some-random-role")))
+        ;; Admin can assign anything
+        (is (null (valid-user-roles "admin"
+                     (list "todo-users" other-exclusive)))))
+      ;; Cleanup
+      (be-delete :users `((:users :name :eq ,user)) "admin")
+      (be-delete :users `((:users :name :eq ,other)) "admin"))))
+
+(test valid-user-roles-blocks-system-exclusives
+  "Users cannot assign admin:exclusive or guest:exclusive."
+  (let ((user "block-excl-user"))
+    (th-make-user user :roles '("todo-users"))
+    (unwind-protect
+      (progn
+        ;; admin:exclusive is NOT shareable even though it matches pattern
+        (signals validation-error
+          (valid-user-roles user '("admin:exclusive")))
+        ;; guest:exclusive is NOT shareable
+        (signals validation-error
+          (valid-user-roles user '("guest:exclusive"))))
+      ;; Cleanup
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
+
+(test show-roles-p-non-admin
+  "show-roles-p returns t for non-base, non-suppressed types for any user."
+  (let ((user "show-roles-user"))
+    (th-make-user user :roles '("todo-users"))
+    (unwind-protect
+      (progn
+        ;; Non-admin user sees roles on :todos
+        (is-true (show-roles-p :todos :list-form user))
+        (is-true (show-roles-p :todos :add-form user))
+        ;; Admin also sees roles
+        (is-true (show-roles-p :todos :list-form "admin")))
+      ;; Cleanup
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
+
+(test show-roles-p-base-types
+  "show-roles-p returns nil for base types."
+  (is-false (show-roles-p :users :list-form "admin"))
+  (is-false (show-roles-p :roles :list-form "admin")))
+
+(test add-roles-to-view-filters-creator-exclusive
+  "add-roles-to-view filters out admin and creator's exclusive role."
+  (let ((user "filter-excl-user")
+        (todo-name "filter-excl-todo"))
+    (th-make-user user :roles '("todo-users"))
+    ;; Clean up any previous test data
+    (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+    (unwind-protect
+      (let* ((todo-id (be-insert :todos
+                       `(:name ,todo-name) user
+                       :roles '("public")))
+             (result (getf (be-list :todos user) :records))
+             (record (find-if
+                       (lambda (r)
+                         (equal (getf r :id) todo-id))
+                       result))
+             (roles (getf record :roles)))
+        (is-true (member "public" roles :test 'equal))
+        ;; Admin is filtered out
+        (is-false (member "admin" roles :test 'equal))
+        ;; Creator's exclusive role is filtered out
+        (is-false
+          (member (a:exclusive-role-for user) roles :test 'equal))
+        ;; Cleanup
+        (be-delete :todos todo-id "admin"))
+      ;; Cleanup
+      (be-delete :users `((:users :name :eq ,user)) "admin")
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin"))))
+
+(test list-result-includes-type-roles
+  "list-result includes :type-roles from the compiled model."
+  (let ((result (list-result :todos "admin" :list-form)))
+    (is-true (member "todo-users"
+                     (getf result :type-roles)
+                     :test 'equal))))
+
+;;
+;; END Form Roles tests
+;;

@@ -92,6 +92,17 @@ Lisp against the live image, so treat state-mutating forms with the same care yo
 would in a REPL, and remember the project rule that Lisp source outside `web/`
 and `tests/` is not modified without human permission.
 
+**Gotcha: reloading `rest.lisp` while the web server is running.**
+`start-web-server` (in `rest.lisp`) is guarded by `(unless *http-server* ...)`
+so it is a no-op if the server is already running. However, reloading
+`rest.lisp` into the live image can clobber `*http-server*` (or invalidate
+the existing acceptor object), leaving the global nil while the OS still
+holds the port. The next `set-model` → `start-web-server` then tries to bind
+a new acceptor and fails with `ADDRESS-IN-USE-ERROR`. If you need to reload
+`rest.lisp`, verify `*http-server*` is still live afterward. If it is nil,
+you may need to `(stop-web-server)` (to release any half-open socket) before
+the next `set-model` can restart it cleanly.
+
 ## Running Tests
 
 Use the helper functions in `tests/helpers.lisp` — never call

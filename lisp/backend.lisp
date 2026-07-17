@@ -544,16 +544,11 @@ all the right fields when we perform inserts or updates."
     list))
 
 (defun show-roles-p (type-key form user)
+  (declare (ignore form user))
   (let* ((m *compiled-model*)
-          (fields (u:tree-get m type-key form :fields))
           (base (u:tree-get m type-key :base))
           (suppress (u:tree-get m type-key :suppress-roles)))
-    (when (and
-            (not base)
-            (not suppress)
-            (or
-              (equal fields t)
-              (u:has (a:list-user-role-names *rbac* user) "admin")))
+    (when (and (not base) (not suppress))
       t)))
 
 (defun fe-fields (type-key user)
@@ -611,7 +606,8 @@ all the right fields when we perform inserts or updates."
                  user
                  (view-result-values type-key field-keys view-result
                    :user user))
-      :allowed-values (allowed-values type-key user))
+      :allowed-values (allowed-values type-key user)
+      :type-roles (u:tree-get *compiled-model* type-key :type-roles))
     (fe-fields type-key user)))
 
 ;;
@@ -1127,6 +1123,27 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
           (x-field-key (getf source :column)))
     (getf (be-list-column x-type-key x-field-key user) :values)))
 
+(defun selectable-roles (type-key user)
+  ":private: Returns the list of roles the current USER can assign on
+TYPE-KEY. For admin, returns all roles minus system exclusives. For
+other users, returns the user's own roles plus \"public\" plus the
+type's :type-roles."
+  (let ((system-exclusives
+          (list* "admin" "admin:exclusive" "guest:exclusive"
+                 (when user
+                   (list (a:exclusive-role-for user))))))
+    (if (equal user "admin")
+      (remove-if
+        (lambda (r) (member r system-exclusives :test 'equal))
+        (a:list-role-names *rbac*))
+      (let* ((user-roles (a:list-user-role-names *rbac* user))
+             (type-roles (u:tree-get *compiled-model* type-key :type-roles)))
+        (remove-duplicates
+          (remove-if
+            (lambda (r) (member r system-exclusives :test 'equal))
+            (append user-roles (list "public") type-roles))
+          :test 'equal)))))
+
 (defun allowed-values (type-key user)
   (loop with fields = (u:tree-get *compiled-model* type-key :fields)
     and base = (u:tree-get *compiled-model* type-key :base)
@@ -1144,12 +1161,7 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
         allowed
         (append
           allowed
-          (list :roles
-            (remove-if
-              (lambda (r)
-                (member r '("admin" "admin:exclusive" "guest:exclusive")
-                  :test 'equal))
-              (a:list-role-names *rbac*))))))))
+          (list :roles (selectable-roles type-key user)))))))
 
 (defun add-roles-to-view (type-key form user view)
   (when view
@@ -1172,7 +1184,9 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
                         :type-key type-key
                         :resource-name resource-name)
           for roles = (remove-if
-                        (lambda (x) (equal x "admin"))
+                        (lambda (x)
+                          (or (equal x "admin")
+                              (equal x (a:exclusive-role-for user))))
                         (a:list-resource-role-names *rbac* resource-name))
           collect (add-to-plist record (list :roles roles)))
         view))))
@@ -1443,18 +1457,31 @@ for TYPE-KEY."
     when (not (member role existing-roles :test 'equal))
     do (report-ve "valid-existing-roles" "Role ~s does not exist." ~role)))
 
+(defun shareable-exclusive-role-p (role)
+  ":private: Returns t if ROLE is a user-exclusive role that can be
+assigned by any user for point-to-point sharing. Excludes
+\"admin:exclusive\" and \"guest:exclusive\"."
+  (and (stringp role)
+       (> (length role) 10)
+       (string= (subseq role (- (length role) 10)) ":exclusive")
+       (not (member role '("admin:exclusive" "guest:exclusive")
+                    :test 'equal))))
+
 (defun valid-user-roles (user roles)
-  ":private: Returns nil (success) if every role in ROLES exists and either USER
-is 'admin' or USER has every role in ROLES. Otherwise, raises a validation
-error."
+  ":private: Returns nil (success) if every role in ROLES exists and either
+USER is 'admin', USER has every role in ROLES, or the role is another
+user's exclusive role (for point-to-point sharing). Otherwise, raises a
+validation error."
   (valid-existing-user user)
   (valid-existing-roles roles)
   (let* ((user-roles (a:list-user-role-names *rbac* user))
-          (non-user-roles (if (equal user "admin")
-                            nil
-                            (remove-if
-                              (lambda (r) (member r user-roles :test 'equal))
-                              roles))))
+         (non-user-roles (if (equal user "admin")
+                           nil
+                           (remove-if
+                             (lambda (r)
+                               (or (member r user-roles :test 'equal)
+                                   (shareable-exclusive-role-p r)))
+                             roles))))
     (when non-user-roles
       (report-ve "valid-user-roles"
         "User ~s does not have the following roles: ~{~s~^, ~}."
