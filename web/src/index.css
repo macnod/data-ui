@@ -17,6 +17,7 @@
   --label: #555;
   --input-bg: #fff;
   --input-border: #ccc;
+  --button-bg: #f0f0f0;
 }
 
 .dark {
@@ -38,6 +39,7 @@
   --label: #aaa;
   --input-bg: #333;
   --input-border: #555;
+  --button-bg: #333;
 }
 
 body {
@@ -45,6 +47,11 @@ body {
   padding: 2rem;
   background: var(--bg);
   color: var(--fg);
+}
+
+button {
+  color: var(--fg);
+  background: var(--button-bg);
 }
 
 table {
