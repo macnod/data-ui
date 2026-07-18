@@ -1067,6 +1067,34 @@ has a value in the model."
                          :kind :lifecycle
                          :type-key type-key)))))
 
+(defun compile-action-hooks (model type-key)
+  "Resolve :actions on all :button fields for TYPE-KEY.
+Returns a plist: :action-hooks → (field-key (:hooks <fn-list>
+:status-field <kw>) ...) for each button field that has :actions."
+  (let ((fields (u:tree-get model type-key :fields)))
+    (loop for fk in fields by #'cddr
+          for fd in (cdr fields) by #'cddr
+          when (and (equal (getf fd :type) :button)
+                    (getf fd :actions))
+          append (let ((raw (getf fd :actions))
+                       (status-key (u:make-keyword
+                                     (format nil "~a-STATUS" fk))))
+                   (list fk
+                         (list
+                           :hooks (resolve-hook-list
+                                    (if (listp (car raw))
+                                      raw
+                                      (list raw))
+                                    :kind :action
+                                    :type-key type-key
+                                    :field-key fk)
+                           :status-field status-key)))
+          into pairs
+          finally
+          (return
+            (when pairs
+              (list :action-hooks pairs))))))
+
 (defun write-to (model type-key field-key field-def)
   (let ((wt (getf field-def :write-to)))
     (when wt
@@ -1134,7 +1162,10 @@ has a value in the model."
                      type-key
                      new-field-key
                      (if target :uuid (getf field-def :type)))
-    and column = (if target t (getf field-def :column))
+    and column = (if target t
+                   (if (equal (getf field-def :type) :button)
+                     nil
+                     (getf field-def :column)))
     and primary-key = (when (getf field-def :primary-key) "primary key")
     and not-null = (if target
                      "not null"
@@ -1173,7 +1204,7 @@ has a value in the model."
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
-                    :autofill :identity :default-from :css-value)
+                    :autofill :identity :default-from :css-value :actions)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally (return (append def new-def))))
@@ -1295,6 +1326,58 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
   (append
     (default-fields :model model :type-key type-key)
     (u:deep-copy (u:tree-get model type-key :fields))))
+
+(defun synthesize-status-fields (type-key fields)
+  "For each :button field, inject a companion :<field>-status field
+if it does not already exist.  Returns the augmented fields plist."
+  (loop for fk in fields by #'cddr
+        for fd in (cdr fields) by #'cddr
+        when (equal (getf fd :type) :button)
+        collect fk into button-keys
+        finally
+        (return
+          (if (null button-keys)
+            fields
+            (let ((augmented fields))
+              (dolist (bk button-keys augmented)
+                (let ((status-key (u:make-keyword
+                                    (format nil "~a-STATUS" bk))))
+                  ;; Check for duplicate author-defined status field
+                  (when (getf augmented status-key)
+                    (report-e "synthesize-status-fields"
+                              "Field ~a on type ~a conflicts with auto-~
+                               generated status field for button ~a"
+                              ~status-key ~type-key ~bk))
+                  (setf augmented
+                        (append augmented
+                          (list status-key
+                                (list
+                                  :type :text
+                                  :column t
+                                  :ui (list :label
+                                            (format nil "~a Status"
+                                              (string-capitalize bk))
+                                            :input-type :read-only)
+                                  :source (list :view :main
+                                                :column status-key
+                                                :agg :first)
+                                  :update nil
+                                  :default "idle"
+                                  :not-null t
+                                  :unique nil)))))))))))
+
+(defun validate-actions-on-buttons (type-key fields)
+  "Ensure :actions only appears on :button fields.  Signals an error
+if :actions is present on a non-button field."
+  (loop for fk in fields by #'cddr
+        for fd in (cdr fields) by #'cddr
+        for field-type = (getf fd :type)
+        when (and (getf fd :actions)
+                  (not (equal field-type :button)))
+        do (report-e "validate-actions-on-buttons"
+                     ":actions is only valid on :button fields, but ~
+                      field ~a on type ~a has type ~a"
+                     ~fk ~type-key ~field-type)))
 
 (defun compile-fields (type-key model)
   (loop with fields = (add-default-fields type-key model)
@@ -1436,13 +1519,61 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
                    field-def))))
     fields))
 
+(defun augment-update-form (type-def fields)
+  "Ensure :update-form :fields includes status keys for any button
+fields it lists.  If :update-form :fields is t (all fields) or absent,
+no augmentation is needed.  Returns the type-def with updated form."
+  (let ((uf-fields (u:tree-get type-def :update-form :fields)))
+    (if (or (null uf-fields) (eq uf-fields t))
+      type-def
+      ;; Explicit field list — append missing status keys
+      (let ((button-keys
+              (loop for fk in fields by #'cddr
+                    for fd in (cdr fields) by #'cddr
+                    when (equal (getf fd :type) :button)
+                    collect fk))
+            (current-keys (if (listp uf-fields) uf-fields (list uf-fields))))
+        (if (null button-keys)
+          type-def
+          (let ((missing
+                  (loop for bk in button-keys
+                        for sk = (u:make-keyword
+                                   (format nil "~a-STATUS" bk))
+                        when (and (member bk current-keys)
+                                  (not (member sk current-keys)))
+                        collect sk)))
+            (if (null missing)
+              type-def
+              (let ((new-fields (append current-keys missing)))
+                (add-to-plist type-def
+                  (list :update-form
+                          (add-to-plist
+                            (getf type-def :update-form)
+                            (list :fields new-fields))))))))))))
+
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
           (is-joiner (getf type-def :is-joiner))
           (internal (getf type-def :internal is-joiner))
           (create (compile-create (getf type-def :create)))
-          (fields (compile-fields type-key model))
+          ;; Augment model with synthesized status fields so that
+          ;; compile-fields / field-source can find them
+          (raw-fields (u:deep-copy
+                        (u:tree-get model type-key :fields)))
+          (validated-fields (progn
+                              (validate-actions-on-buttons type-key raw-fields)
+                              raw-fields))
+          (augmented-fields (synthesize-status-fields type-key
+                             validated-fields))
+          (augmented-model (if (eq augmented-fields validated-fields)
+                             model
+                             (let* ((td (getf model type-key))
+                                    (new-td (add-to-plist td
+                                              (list :fields augmented-fields))))
+                               (add-to-plist model
+                                 (list type-key new-td)))))
+          (fields (compile-fields type-key augmented-model))
           (table-name (table-name type-key built-in))
           (tree (getf type-def :tree))
           (is-leaf (getf type-def :is-leaf))
@@ -1464,9 +1595,10 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
       do (a:add-role *rbac* role :permissions permissions))
     (validate-tree model type-key tree is-leaf parent-type fs-backed)
     (let ((fields-with-path (mark-path-field type-key fs-backed fields))
-          (user-setting (getf type-def :user-setting)))
+          (user-setting (getf type-def :user-setting))
+          (augmented-def (augment-update-form type-def fields)))
       (add-to-plist
-        type-def
+        augmented-def
         (append
           (list
             :internal internal
@@ -1482,7 +1614,9 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
             :suppress-roles
               (or (getf type-def :suppress-roles) user-setting))
           ;; Compiled lifecycle hooks override raw values on type-def
-          (compile-lifecycle-hooks model type-key))))))
+          (compile-lifecycle-hooks model type-key)
+          ;; Compiled action hooks from button fields
+          (compile-action-hooks model type-key))))))
 
 (defun preliminary-model-check (&optional def key-path)
   (loop with current = (apply #'u:tree-get (cons def key-path))
