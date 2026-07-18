@@ -79,6 +79,13 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     do (drop-table table-name)
     finally (initialize-tables)))
 
+(defun existing-db-tables ()
+  (query
+    (format nil
+      "select table_name from information_schema.tables ~
+       where table_schema = 'public'")
+    :result-type :column))
+
 (defun reset-database ()
   (loop
     with sql-tables = (format nil
@@ -88,12 +95,14 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
     for table in tables
     do (drop-table table))
   (loop with sql = "truncate ~{~a~^, ~} cascade"
+    and existing = (existing-db-tables)
     for table-key in *base-model* by #'cddr
     for table-def in (cdr *base-model*) by #'cddr
     for is-base = (u:tree-get *base-model* table-key :base)
     for built-in = (u:tree-get *base-model* table-key :built-in)
     for table-name = (table-name table-key built-in)
-    when is-base collect table-name into tables
+    for table-exists = (u:has existing table-name)
+    when (and is-base table-exists) collect table-name into tables
     finally
     (query (format nil sql tables)))
   (a:initialize-database *rbac* *admin-password*))

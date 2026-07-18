@@ -1050,9 +1050,9 @@ necessary."
     :pre-delete :post-delete))
 
 (defun compile-lifecycle-hooks (model type-key)
-  "Resolve all lifecycle slots for TYPE-KEY into lists of functions.
-Returns a plist of :key → function-list for each lifecycle slot that
-has a value in the model."
+  "Resolve all lifecycle slots for TYPE-KEY into lists of functions. Returns a
+plist of :key → function-list for each lifecycle slot that has a value in the
+model."
   (loop for key in *lifecycle-keys*
         for raw = (getf (getf model type-key) key)
         when raw
@@ -1068,32 +1068,28 @@ has a value in the model."
                          :type-key type-key)))))
 
 (defun compile-action-hooks (model type-key)
-  "Resolve :actions on all :button fields for TYPE-KEY.
-Returns a plist: :action-hooks → (field-key (:hooks <fn-list>
-:status-field <kw>) ...) for each button field that has :actions."
-  (let ((fields (u:tree-get model type-key :fields)))
-    (loop for fk in fields by #'cddr
-          for fd in (cdr fields) by #'cddr
-          when (and (equal (getf fd :type) :button)
-                    (getf fd :actions))
-          append (let ((raw (getf fd :actions))
-                       (status-key (u:make-keyword
-                                     (format nil "~a-STATUS" fk))))
-                   (list fk
-                         (list
-                           :hooks (resolve-hook-list
-                                    (if (listp (car raw))
-                                      raw
-                                      (list raw))
-                                    :kind :action
-                                    :type-key type-key
-                                    :field-key fk)
-                           :status-field status-key)))
-          into pairs
-          finally
-          (return
-            (when pairs
-              (list :action-hooks pairs))))))
+  "Resolve :actions on all :button fields for TYPE-KEY. Returns a plist:
+:action-hooks → (field-key (:hooks <fn-list> :status-field <kw>) ...) for each
+button field that has :actions."
+  (loop with fields = (u:tree-get model type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for actions = (getf field-def :actions)
+    for type = (getf field-def :type)
+    for action-button = (and (equal type :button) actions)
+    for status-key = (when action-button
+                       (u:make-keyword (format nil "~a-STATUS" field-key)))
+    when action-button
+    append (list field-key
+             (list
+               :hooks (resolve-hook-list
+                        (if (listp (car actions)) actions (list actions))
+                        :kind :action
+                        :type-key type-key
+                        :field-key field-key)
+               :status-field status-key))
+    into pairs
+    finally (return (when pairs (list :action-hooks pairs)))))
 
 (defun write-to (model type-key field-key field-def)
   (let ((wt (getf field-def :write-to)))
@@ -1328,56 +1324,50 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
     (u:deep-copy (u:tree-get model type-key :fields))))
 
 (defun synthesize-status-fields (type-key fields)
-  "For each :button field, inject a companion :<field>-status field
-if it does not already exist.  Returns the augmented fields plist."
-  (loop for fk in fields by #'cddr
-        for fd in (cdr fields) by #'cddr
-        when (equal (getf fd :type) :button)
-        collect fk into button-keys
-        finally
-        (return
-          (if (null button-keys)
-            fields
-            (let ((augmented fields))
-              (dolist (bk button-keys augmented)
-                (let ((status-key (u:make-keyword
-                                    (format nil "~a-STATUS" bk))))
-                  ;; Check for duplicate author-defined status field
-                  (when (getf augmented status-key)
-                    (report-e "synthesize-status-fields"
-                              "Field ~a on type ~a conflicts with auto-~
-                               generated status field for button ~a"
-                              ~status-key ~type-key ~bk))
-                  (setf augmented
-                        (append augmented
-                          (list status-key
-                                (list
-                                  :type :text
-                                  :column t
-                                  :ui (list :label
-                                            (format nil "~a Status"
-                                              (string-capitalize bk))
-                                            :input-type :read-only)
-                                  :source (list :view :main
-                                                :column status-key
-                                                :agg :first)
-                                  :update nil
-                                  :default "idle"
-                                  :not-null t
-                                  :unique nil)))))))))))
+  "For each :button field, inject a companion :<field>-status field if it does
+not already exist.  Returns the augmented fields plist."
+  (loop
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for field-type = (getf field-def :type)
+    when (equal field-type :button)
+    collect field-key into button-keys
+    finally
+    (return
+      (loop
+        for button-key in button-keys
+        for status-key = (u:make-keyword (format nil "~a-status" button-key))
+        for button-label = (or (u:tree-get fields button-key :ui :label)
+                             (format nil "~@(~a~)" button-key))
+        for status-label = (format nil "~a Status" button-label)
+        when (getf fields status-key)
+        do (report-e "synthesize-status-fields"
+             "Field ~s on type ~s conflicts with auto-generated status field ~
+              for button ~s"
+             ~status-key ~type-key ~button-key)
+        appending
+        `(,status-key
+           (:type :text
+             :column t
+             :ui (:label ,status-label :input-type :read-only)
+             :source (:view :main :column ,status-key :agg :first)
+             :default "idle"
+             :not-null t))
+        into status-fields
+        finally (return (append fields status-fields))))))
 
-(defun validate-actions-on-buttons (type-key fields)
-  "Ensure :actions only appears on :button fields.  Signals an error
-if :actions is present on a non-button field."
-  (loop for fk in fields by #'cddr
-        for fd in (cdr fields) by #'cddr
-        for field-type = (getf fd :type)
-        when (and (getf fd :actions)
-                  (not (equal field-type :button)))
-        do (report-e "validate-actions-on-buttons"
+(defun ensure-actions-on-buttons (type-key fields)
+  "Ensure :actions only appears on :button fields.  Signals an error if :actions
+is present on a non-button field."
+  (loop for field-key in fields by #'cddr
+        for field-def in (cdr fields) by #'cddr
+        for field-type = (getf field-def :type)
+        when (and (getf field-def :actions)
+               (not (equal field-type :button)))
+        do (report-e "ensure-actions-on-buttons"
                      ":actions is only valid on :button fields, but ~
-                      field ~a on type ~a has type ~a"
-                     ~fk ~type-key ~field-type)))
+                      field ~s on type ~s has type ~s"
+                     ~field-key ~type-key ~field-type)))
 
 (defun compile-fields (type-key model)
   (loop with fields = (add-default-fields type-key model)
@@ -1520,28 +1510,36 @@ if :actions is present on a non-button field."
     fields))
 
 (defun augment-update-form (type-def fields)
-  "Ensure :update-form :fields includes status keys for any button
-fields it lists.  If :update-form :fields is t (all fields) or absent,
-no augmentation is needed.  Returns the type-def with updated form."
+  "Ensure :update-form :fields includes status keys for any button fields it
+lists. When a model designer adds a button field with an :actions attribute,
+the compiler automatically adds a status field that's associated with that
+button field. This status field is necessary to display the status of the
+actions taken when the button is pressed. The model designer does not need
+to think about that field. Similarly, this function adds the field to the
+list of fields the model designer provided to display in the update form.
+If :update-form :fields is t (all fields) or absent, no augmentation is
+needed. Returns the type-def with updated form."
   (let ((uf-fields (u:tree-get type-def :update-form :fields)))
     (if (or (null uf-fields) (eq uf-fields t))
       type-def
-      ;; Explicit field list — append missing status keys
-      (let ((button-keys
-              (loop for fk in fields by #'cddr
-                    for fd in (cdr fields) by #'cddr
-                    when (equal (getf fd :type) :button)
-                    collect fk))
+      ;; Explicit field list - append missing status keys
+      (let ((button-keys (loop
+                           for field-key in fields by #'cddr
+                           for field-def in (cdr fields) by #'cddr
+                           for field-type = (getf field-def :type)
+                           when (equal field-type :button)
+                           collect field-key))
             (current-keys (if (listp uf-fields) uf-fields (list uf-fields))))
         (if (null button-keys)
           type-def
-          (let ((missing
-                  (loop for bk in button-keys
-                        for sk = (u:make-keyword
-                                   (format nil "~a-STATUS" bk))
-                        when (and (member bk current-keys)
-                                  (not (member sk current-keys)))
-                        collect sk)))
+          (let ((missing (loop
+                           for button-key in button-keys
+                           for status-key = (u:make-keyword
+                                              (format nil "~a-status" 
+                                                button-key))
+                           when (and (member button-key current-keys)
+                                  (not (member status-key current-keys)))
+                           collect status-key)))
             (if (null missing)
               type-def
               (let ((new-fields (append current-keys missing)))
@@ -1562,7 +1560,7 @@ no augmentation is needed.  Returns the type-def with updated form."
           (raw-fields (u:deep-copy
                         (u:tree-get model type-key :fields)))
           (validated-fields (progn
-                              (validate-actions-on-buttons type-key raw-fields)
+                              (ensure-actions-on-buttons type-key raw-fields)
                               raw-fields))
           (augmented-fields (synthesize-status-fields type-key
                              validated-fields))

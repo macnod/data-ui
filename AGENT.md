@@ -371,6 +371,10 @@ Both macros share the same form:
   (e.g. `"valid-hook-params"`).
 - **`format-string`** — a `format` directive string. Use `~a` (not
   `~s`) for cleaner error messages; raw values are logged separately.
+  **Exception:** use `~s` for keyword symbols and keys (e.g. type keys,
+  field keys) so they display with their leading colon (e.g.
+  `:FOO-STATUS` rather than `FOO-STATUS`), making them visually
+  identifiable as keys.
 - **`var-specs`** — symbols (variable names), **not** expressions.
 
 ### The tilde convention
