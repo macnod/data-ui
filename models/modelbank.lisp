@@ -48,7 +48,7 @@
          :images
          (:type :list
            :ui (:label "Images" :input-type :read-only :render-as :image-list)
-           :source (:view :main :table :images :column :name :agg :list))
+           :source (:view :main :table :images :column :name :agg :distinct))
          :rating
          (:type :integer
            :ui (:label "My Rating" :input-type :line :render-as :stars)
