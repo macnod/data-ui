@@ -200,11 +200,11 @@ and any field with :default-from :user."
 ;;; ---------------------------------------------------------------------------
 ;;; Hook Registry
 ;;;
-;;; A curated registry of named hooks (validations and lifecycle).
-;;; Each entry stores: name (keyword), kind (:validation | :lifecycle),
-;;; a parameter schema (plist of keyword → type), and a factory function
-;;; that accepts the resolved parameters and returns a contract-conforming
-;;; function.
+;;; A curated registry of named hooks (validations, lifecycle, and actions).
+;;; Each entry stores: name (keyword), kind (:validation | :lifecycle
+;;; | :action), a parameter schema (plist of keyword → type), and a factory
+;;; function that accepts the resolved parameters and returns a
+;;; contract-conforming function.
 ;;;
 ;;; Validation contract: (lambda (type-key field-key value user)
 ;;;                        → nil | error-string)
@@ -216,13 +216,13 @@ and any field with :default-from :user."
   name kind parameters factory)
 
 (defun register-hook (name kind parameters factory)
-  "Register a hook named NAME (keyword) of KIND (:validation or :lifecycle).
-PARAMETERS is a plist specifying required keyword params and their types,
-e.g. (:max integer), or NIL if the hook takes no parameters.  FACTORY is a
-function that receives the resolved parameter values as keyword args and
-returns a validation/lifecycle function."
+  "Register a hook named NAME (keyword) of KIND (:validation, :lifecycle,
+or :action).  PARAMETERS is a plist specifying required keyword params and
+their types, e.g. (:max integer), or NIL if the hook takes no parameters.
+FACTORY is a function that receives the resolved parameter values as
+keyword args and returns a validation/lifecycle/action function."
   (check-type name keyword)
-  (check-type kind (member :validation :lifecycle))
+  (check-type kind (member :validation :lifecycle :action))
   (check-type parameters (or null list))
   (check-type factory (or function symbol))
   (setf (gethash name *hook-registry*)
@@ -1505,6 +1505,11 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
          ((and
             (equal (second key-path) :fields)
             (equal key :validations)
+            (listp sdef))
+           t)
+         ((and
+            (equal (second key-path) :fields)
+            (equal key :actions)
             (listp sdef))
            t)
          ((and

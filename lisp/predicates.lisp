@@ -115,7 +115,8 @@ TYPE-KEY"
      :uuid (:general :text :sql "uuid" :test ,#'uuid-p)
      :timestamp (:general :text :sql "timestamp" :test ,#'timestamp-p)
      :list (:general :list :sql "" :test ,#'listp)
-     :file (:general :text :sql "" :test ,#'identity)))
+     :file (:general :text :sql "" :test ,#'identity)
+     :button (:general :button :sql "" :test ,#'identity)))
 
 (defun base-type-p (type-key &optional (model *compiled-model*))
   (u:tree-get model type-key :base))
