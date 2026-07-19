@@ -243,11 +243,12 @@ with TYPE-KEY. The result always starts with :ID, even when FORM doesn't include
 the :ID field key."
   (let* ((type-def (u:tree-get *compiled-model* type-key))
           (form-field-keys (u:tree-get type-def form :fields))
+          (exclude-field-keys '(:file :button))
           (all-field-keys (remove-if
                             (lambda (k)
-                              (equal
+                              (member
                                 (u:tree-get type-def :fields k :type)
-                                :file))
+                                exclude-field-keys))
                             (u:plist-keys (u:tree-get type-def :fields)))))
     (cond
       ((equal form-field-keys t)
@@ -583,7 +584,10 @@ all the right fields when we perform inserts or updates."
                (not (equal (getf ui :input-type) :hidden))
                (not (and
                       (equal form :list-form)
-                      (equal field-type :file))))
+                      (equal field-type :file)))
+               (not (and
+                      (member form '(:list-form :add-form))
+                      (equal field-type :button))))
         append (list field-key (add-to-plist (list
                                                :default default
                                                :path path
@@ -1234,7 +1238,7 @@ type's :type-roles."
                           for k in write-to by #'cddr
                           for v in (cdr write-to) by #'cddr
                           when (u:has to-type-id-keys k)
-                          append 
+                          append
                           (list k (expand-value-tag v :this uuid :user user))))
           (value-key (loop
                        for k in write-to by #'cddr
@@ -1247,10 +1251,10 @@ type's :type-roles."
                           (loop for key in (cdr search-sql)
                             collect (getf search-pairs key))))
           (to-row-id (a:with-rbac (*rbac*) (a:rbac-query search-query :single)))
-          (to-row-values (append 
+          (to-row-values (append
                            search-pairs
-                           (list 
-                             value-key 
+                           (list
+                             value-key
                              (db-value to-type-key value-key user value)))))
     (if to-row-id
       (let* ((to-row-values (append to-row-values (list :id to-row-id)))
@@ -1262,7 +1266,7 @@ type's :type-roles."
       (let* ((resource (make-resource-name to-type-key to-row-values))
               (insert-resource-sql (car (u:tree-get m to-type-key :insert-sql :resource)))
               (insert-resource-query (list insert-resource-sql resource))
-              (to-row-id (a:with-rbac (*rbac*) 
+              (to-row-id (a:with-rbac (*rbac*)
                            (a:rbac-query insert-resource-query :single))))
         (setf (getf to-row-values :id) to-row-id)
         (let* ((insert-row-sql (u:tree-get m to-type-key :insert-sql :main))
@@ -2055,7 +2059,7 @@ update fails.
     ;; Update roles
     (when roles (update-roles type-key filters user roles))
     ;; Write-through: upsert to related tables
-    (loop 
+    (loop
       for field-key in (user-fields type-key)
       for field-def = (u:tree-get m type-key :fields field-key)
       when (getf field-def :write-to)
@@ -2313,6 +2317,112 @@ from be-types; else first be-types entry; else NIL."
        configured)
       ((find-if (lambda (k) (not (base-type-p k))) allowed))
       (t (first allowed)))))
+
+(defun be-set-field-value (type-key id field-key value user)
+  ":internal: Single-column update with no lifecycle, no form validations, no
+write-through, no join/role updates.  Used by the action status path.  Requires
+TYPE-KEY to be valid, ID to be an existing UUID, FIELD-KEY to exist with :column
+t, and USER to exist."
+  (valid-compiled-model)
+  (valid-type-key type-key)
+  (valid-existing-uuid id)
+  (valid-existing-user user)
+  (valid-field-key type-key field-key)
+  (let* ((m *compiled-model*)
+         (field-def (u:tree-get m type-key :fields field-key))
+         (column (getf field-def :column)))
+    (unless column
+      (report-ve "be-set-field-value"
+        "Field ~s on type ~s is not a column."
+        ~field-key ~type-key))
+    (let* ((table (u:tree-get m type-key :table-name))
+           (col-name (getf field-def :name-sql))
+           (sql (format nil "update ~a set ~a = $1 where id = $2"
+                  table col-name)))
+      (a:with-rbac (*rbac*)
+        (a:rbac-query (list sql value id))))))
+
+(defun be-action (type-key id field-key user)
+  ":public: Execute the action hook(s) attached to FIELD-KEY (a :button field)
+on the record ID of TYPE-KEY.
+
+Sets the companion status field to \"running\", invokes each compiled action
+hook with the unified contract, then transitions to \"complete\" (sync success)
+or \"failed: <reason>\" (sync error).  Async hooks (:async t in the result)
+leave status at \"running\" for a worker to complete.
+
+Returns a plist:
+  (:status \"complete\" :message <hook-message-or-nil>)
+  (:status \"accepted\" :message <msg> :async t)
+  (:status \"failed\" :message <reason>)
+
+Signals a validation error if:
+  - TYPE-KEY is invalid or lacks action hooks for FIELD-KEY
+  - USER lacks update permission on TYPE-KEY or the record
+  - Status is already \"running\" (in-progress guard)"
+  (valid-compiled-model)
+  (valid-type-key type-key)
+  (valid-existing-uuid id)
+  (valid-existing-user user)
+  (valid-field-key type-key field-key)
+  ;; Look up the compiled field definition
+  (let* ((m *compiled-model*)
+         (field-def (u:tree-get m type-key :fields field-key)))
+    ;; Field must be a :button with a compiled hook
+    (unless (equal (getf field-def :type) :button)
+      (report-ve "be-action"
+        "Field ~s on type ~s is not a :button field."
+        ~field-key ~type-key))
+    (let* ((hook (getf field-def :compiled-hook))
+           (status-field (getf field-def :status-field)))
+      (unless hook
+        (report-ve "be-action"
+          "Field ~s on type ~s has no action hook."
+          ~field-key ~type-key))
+      ;; Type-level update permission
+      (valid-user-permissions user type-key "update")
+      ;; Record-level access
+      (unless (user-allowed-resource user id "update")
+        (report-ve "be-action"
+          "User ~a does not have update permission on record ~a."
+          ~user ~id))
+      ;; Load the record
+      (let ((record (getf (rec id user :type-key type-key) :record)))
+        (unless record
+          (report-ve "be-action"
+            "Record ~a not found for type ~s." ~id ~type-key))
+        ;; In-progress guard
+        (let ((current-status (getf record status-field)))
+          (when (equal current-status "running")
+            (report-ve "be-action"
+              "Action already in progress for ~s ~s field ~s."
+              ~type-key ~id ~field-key)))
+        ;; Build set-status closure
+        (let ((set-status (lambda (message)
+                            (be-set-field-value
+                              type-key id status-field message user))))
+          ;; Write "running"
+          (funcall set-status "running")
+          ;; Run the hook (non-transactional MVP)
+          (handler-case
+              (let ((result (funcall hook
+                              type-key field-key record user
+                              :status-field status-field
+                              :set-status set-status)))
+                (if (and (listp result) (getf result :async))
+                    ;; Async: don't auto-complete
+                    result
+                    ;; Sync success: set complete
+                    (progn
+                      (funcall set-status "complete")
+                      (list :status "complete"))))
+            (error (e)
+              (let* ((err-str (format nil "~a" e))
+                     (msg (format nil "failed: ~a"
+                            (subseq err-str 0
+                              (min (length err-str) 200)))))
+                (funcall set-status msg)
+                (list :status "failed" :message err-str)))))))))
 
 ;;
 ;; END Public backend functions

@@ -35,7 +35,19 @@
           :validations (:join-items-exist)
           :source (:view :main :table :tags :column :name :agg :list)
           :source-all (:view :tags :table :tags :column :name :agg :list)
-          :join-table :todo-tags))
+          :join-table :todo-tags)
+        :test-action
+        (:type :button
+          :ui (:label "Test Action" :input-type :button)
+          :action (:test-sync))
+        :test-async-action
+        (:type :button
+          :ui (:label "Test Async" :input-type :button)
+          :action (:test-async))
+        :test-error-action
+        (:type :button
+          :ui (:label "Test Error" :input-type :button)
+          :action (:test-error)))
       :list-form (:fields t)
       :update-form (:fields t)
       :add-form (:fields t))

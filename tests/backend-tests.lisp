@@ -192,19 +192,28 @@ where users.id in (
         (u:safe-sort
           '(:rt-todos-id :rt-todos-created-at :rt-todos-updated-at
              :rt-todos-todo-name :rt-todos-todo-points
-             :rt-todos-todo-done :rt-tags-tag-name)))))
+             :rt-todos-todo-done
+             :rt-todos-todo-test-action-status
+             :rt-todos-todo-test-async-action-status
+             :rt-todos-todo-test-error-action-status
+             :rt-tags-tag-name)))))
 
 (test aggregations
   (is (equal
         (aggregations :todos (form-field-keys :todos :list-form))
-        (list :first :first :first :first :first :first :list))))
+        (list :first :first :first :first :first :first :list
+              :first :first :first))))
 
 (test resource-id-keys
   (is (equal (resource-id-keys :todos) '(:id :todo-id)))
   (is (equal (resource-id-keys :users) '(:id :user-id))))
 
 (test local-fields
-  (is (equal (local-fields :todos) '(:name :points :done)))
+  (is (equal (local-fields :todos)
+             '(:name :points :done
+               :test-action-status
+               :test-async-action-status
+               :test-error-action-status)))
   (is (equal (local-fields :users) '(:name :password :email))))
 
 (test make-resource-name
@@ -259,7 +268,7 @@ where users.id in (
          (data '(:name "Test Todo"))
          (result (insert-main-query type-key insert uuid data "admin"))
          (main-qt (getf insert :main)))
-    (is (and (consp result) (= 5 (length result))))
+    (is (and (consp result) (= 8 (length result))))
     (is (equal (first result) (first main-qt)))
     (is (equal (second result) uuid))
     (is (equal (third result) (getf data :name))))

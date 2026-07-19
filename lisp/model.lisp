@@ -1067,30 +1067,6 @@ model."
                          :kind :lifecycle
                          :type-key type-key)))))
 
-(defun compile-action-hooks (model type-key)
-  "Resolve :actions on all :button fields for TYPE-KEY. Returns a plist:
-:action-hooks → (field-key (:hooks <fn-list> :status-field <kw>) ...) for each
-button field that has :actions."
-  (loop with fields = (u:tree-get model type-key :fields)
-    for field-key in fields by #'cddr
-    for field-def in (cdr fields) by #'cddr
-    for actions = (getf field-def :actions)
-    for type = (getf field-def :type)
-    for action-button = (and (equal type :button) actions)
-    for status-key = (when action-button
-                       (u:make-keyword (format nil "~a-STATUS" field-key)))
-    when action-button
-    append (list field-key
-             (list
-               :hooks (resolve-hook-list
-                        (if (listp (car actions)) actions (list actions))
-                        :kind :action
-                        :type-key type-key
-                        :field-key field-key)
-               :status-field status-key))
-    into pairs
-    finally (return (when pairs (list :action-hooks pairs)))))
-
 (defun write-to (model type-key field-key field-def)
   (let ((wt (getf field-def :write-to)))
     (when wt
@@ -1200,10 +1176,26 @@ button field that has :actions."
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
-                    :autofill :identity :default-from :css-value :actions)
+                    :autofill :identity :default-from :css-value :action)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
-    finally (return (append def new-def))))
+    finally
+    (return
+      (let* ((field-type (getf field-def :type))
+             (action (getf field-def :action))
+             (is-button (and (equal field-type :button) action))
+             (status-key (when is-button
+                           (u:make-keyword
+                             (format nil "~a-STATUS" new-field-key))))
+             (compiled-hook (when is-button
+                              (resolve-hook-form action
+                                :kind :action
+                                :type-key type-key
+                                :field-key new-field-key))))
+        (append def new-def
+          (when is-button
+            (list :compiled-hook compiled-hook
+                  :status-field status-key)))))))
 
 (defun resolve-scope-alias (model type-key view-key table-key scope)
   "Resolve a :scope keyword on a field source to the alias key
@@ -1356,16 +1348,16 @@ not already exist.  Returns the augmented fields plist."
         into status-fields
         finally (return (append fields status-fields))))))
 
-(defun ensure-actions-on-buttons (type-key fields)
-  "Ensure :actions only appears on :button fields.  Signals an error if :actions
+(defun ensure-action-on-buttons (type-key fields)
+  "Ensure :action only appears on :button fields.  Signals an error if :action
 is present on a non-button field."
   (loop for field-key in fields by #'cddr
         for field-def in (cdr fields) by #'cddr
         for field-type = (getf field-def :type)
-        when (and (getf field-def :actions)
+        when (and (getf field-def :action)
                (not (equal field-type :button)))
-        do (report-e "ensure-actions-on-buttons"
-                     ":actions is only valid on :button fields, but ~
+        do (report-e "ensure-action-on-buttons"
+                     ":action is only valid on :button fields, but ~
                       field ~s on type ~s has type ~s"
                      ~field-key ~type-key ~field-type)))
 
@@ -1511,7 +1503,7 @@ is present on a non-button field."
 
 (defun augment-update-form (type-def fields)
   "Ensure :update-form :fields includes status keys for any button fields it
-lists. When a model designer adds a button field with an :actions attribute,
+lists. When a model designer adds a button field with an :action attribute,
 the compiler automatically adds a status field that's associated with that
 button field. This status field is necessary to display the status of the
 actions taken when the button is pressed. The model designer does not need
@@ -1560,7 +1552,7 @@ needed. Returns the type-def with updated form."
           (raw-fields (u:deep-copy
                         (u:tree-get model type-key :fields)))
           (validated-fields (progn
-                              (ensure-actions-on-buttons type-key raw-fields)
+                              (ensure-action-on-buttons type-key raw-fields)
                               raw-fields))
           (augmented-fields (synthesize-status-fields type-key
                              validated-fields))
@@ -1612,9 +1604,7 @@ needed. Returns the type-def with updated form."
             :suppress-roles
               (or (getf type-def :suppress-roles) user-setting))
           ;; Compiled lifecycle hooks override raw values on type-def
-          (compile-lifecycle-hooks model type-key)
-          ;; Compiled action hooks from button fields
-          (compile-action-hooks model type-key))))))
+          (compile-lifecycle-hooks model type-key))))))
 
 (defun preliminary-model-check (&optional def key-path)
   (loop with current = (apply #'u:tree-get (cons def key-path))
@@ -1641,8 +1631,8 @@ needed. Returns the type-def with updated form."
            t)
          ((and
             (equal (second key-path) :fields)
-            (equal key :actions)
-            (listp sdef))
+            (equal key :action)
+            (or (keywordp sdef) (listp sdef)))
            t)
          ((and
             (equal key :type-roles)

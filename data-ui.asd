@@ -35,4 +35,5 @@
                                 (:file "backend-tests")
                                 (:file "rest-tests")
                                 (:file "hook-registry-tests")
-                                (:file "scoping-tests")))))
+                                (:file "scoping-tests")
+                                (:file "action-tests")))))

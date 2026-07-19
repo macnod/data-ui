@@ -226,8 +226,14 @@ both test-model and modelbank."
   (with-model "test-model" nil
     (run! 'hook-registry-lifecycle-suite)))
 
+(defun run-action-tests ()
+  "Run action hook tests."
+  (with-model "test-model" nil
+    (run! 'action-suite)))
+
 (defun run-tests ()
   (run-backend-tests)
   (run-scoping-tests)
   (run-hook-registry-tests)
-  (run-lifecycle-tests))
+  (run-lifecycle-tests)
+  (run-action-tests))
