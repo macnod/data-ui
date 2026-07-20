@@ -1572,18 +1572,6 @@ needed. Returns the type-def with updated form."
           (fs-backed (getf type-def :fs-backed))
           (roles (when (type-has-roles type-def)
                    (getf type-def :type-roles '("admin")))))
-    ;; TODO: Documentation. Be very careful when explicitly adding roles to a
-    ;;       type, because if the role doesn't exist, it will be created here
-    ;;       with full permissions and associated with the type.
-    (loop
-      with default-permissions = '("create" "read" "update" "delete")
-      for role-spec in roles
-      for role = (if (stringp role-spec) role-spec (car role-spec))
-      for permissions = (if (stringp role-spec)
-                          default-permissions
-                          (cdr role-spec))
-      when (not (a:get-id *rbac* "roles" role))
-      do (a:add-role *rbac* role :permissions permissions))
     (validate-tree model type-key tree is-leaf parent-type fs-backed)
     (let ((fields-with-path (mark-path-field type-key fs-backed fields))
           (user-setting (getf type-def :user-setting))
@@ -1694,8 +1682,14 @@ needed. Returns the type-def with updated form."
     for new-def = (add-to-plist type-def (list :fields fields))
     appending (list type-key new-def)))
 
+(defun validate-model (model)
+  "Pure validation: structural checks + stage-1 compile.
+No side effects (no DB, no RBAC mutation). Returns the stage-1
+compiled model or signals an error."
+  (stage-1 model))
+
 (defun compile-model (model)
-  (let* ((model-1 (stage-1 model))
+  (let* ((model-1 (validate-model model))
           (model-2 (stage-2 model-1))
           (model-3 (stage-3 model-2)))
     model-3))
@@ -1751,6 +1745,7 @@ needed. Returns the type-def with updated form."
       finally
       (setf *compiled-model* compiled-model)
       (create-tables)
+      (ensure-model-roles)
       (add-type-roles)
       (add-system-user-settings)
       (add-root-fs-resources)
@@ -1807,6 +1802,24 @@ efficiently instantiate and support the application described by MODEL."))
 
 (defun type-resource-name (type-key)
   (format nil "type-~(~a~)" type-key))
+
+(defun ensure-model-roles ()
+  "Create any roles declared in :type-roles that don't yet exist in RBAC.
+Called after compilation (compile-model is now pure) and before
+add-type-roles (which needs roles to exist)."
+  (loop with m = *compiled-model*
+    for type-key in m by #'cddr
+    for type-def in (cdr m) by #'cddr
+    for roles = (getf type-def :type-roles)
+    when (type-has-roles type-def)
+    do
+    (loop for role-spec in roles
+      for role = (if (stringp role-spec) role-spec (car role-spec))
+      for permissions = (if (stringp role-spec)
+                          '("create" "read" "update" "delete")
+                          (cdr role-spec))
+      unless (a:get-id *rbac* "roles" role)
+      do (a:add-role *rbac* role :permissions permissions))))
 
 (defun add-type-roles ()
   (loop with m = *compiled-model*
