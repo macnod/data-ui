@@ -962,6 +962,73 @@ POST /api/delete"
                       (abort-error e :type type :filters filters)))))
     (render-output result)))
 
+(h:define-easy-handler (rest-actions :uri "/api/actions"
+                         :default-request-type :post)
+  ()
+  ":public: Endpoint for executing an action hook on a record.
+
+Method
+
+POST
+
+Body
+
+The body of the POST request must be a JSON object with a structure that is
+similar to the following example:
+
+    {
+      \"type\": \"models\",
+      \"id\": \"<record-uuid>\",
+      \"field\": \"deploy\"
+    }
+
+The 'type' field is required and identifies the type in the model.
+
+The 'id' field is required and identifies the target record by UUID.
+
+The 'field' field is required and must name a :button field that has a compiled
+action hook.
+
+The response will be a JSON object with the following structure:
+
+    {
+      \"status\": \"success\",
+      \"result\": {
+        \"status\": \"complete\"
+      }
+    }
+
+The 'result.status' value will be \"complete\" (sync success), \"accepted\" with
+an 'async' flag (async hook started), or \"failed\" with a 'message' field (sync
+error during hook execution).
+
+Validation errors (unknown type, bad field, missing permissions, action already
+running) return 400. Other errors return 500.
+
+POST /api/actions"
+  (let* ((tree (parse-posted-json))
+          (type (getf tree :type))
+          (id (getf tree :id))
+          (field (getf tree :field))
+          (type-key (parse-type type))
+          (type-roles (get-type-roles type-key))
+          (user (require-auth type-roles))
+          (field-key (when field
+                       (if (stringp field)
+                           (u:make-keyword field)
+                           (abort-bad-request
+                            "Parameter 'field' must be a string."
+                            :field field))))
+          (result (handler-case
+                    (be-action type-key id field-key user)
+                    (validation-error (e)
+                      (abort-bad-request
+                       e :type type :id id :field field :user user))
+                    (error (e)
+                      (abort-error
+                       e :type type :id id :field field :user user)))))
+    (render-output result)))
+
 (h:define-easy-handler (rest-validate-field :uri "/api/validate-field"
                          :default-request-type :post)
   ()
