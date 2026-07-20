@@ -1155,6 +1155,17 @@ model."
     and default-value = (getf field-def :default
                           (unless (equal (getf field-def :type) :list) :null))
     and validations = (compile-validations model type-key new-field-key)
+    and field-type = (getf field-def :type)
+    and action = (getf field-def :action)
+    with is-button = (and (equal field-type :button) action)
+    with status-key = (when is-button
+                        (u:make-keyword
+                          (format nil "~a-status" new-field-key)))
+    and compiled-hook (when is-button
+                        (resolve-hook-form action
+                          :kind :action
+                          :type-key type-key
+                          :field-key new-field-key))
     with sql-parts = (remove-if-not #'identity
                        (list name-sql type-sql primary-key not-null
                          references unique default))
@@ -1181,21 +1192,11 @@ model."
     append (list attr (getf field-def attr)) into def
     finally
     (return
-      (let* ((field-type (getf field-def :type))
-             (action (getf field-def :action))
-             (is-button (and (equal field-type :button) action))
-             (status-key (when is-button
-                           (u:make-keyword
-                             (format nil "~a-STATUS" new-field-key))))
-             (compiled-hook (when is-button
-                              (resolve-hook-form action
-                                :kind :action
-                                :type-key type-key
-                                :field-key new-field-key))))
-        (append def new-def
-          (when is-button
-            (list :compiled-hook compiled-hook
-                  :status-field status-key)))))))
+      (append def new-def
+        (when is-button
+          (list
+            :compiled-hook compiled-hook
+            :status-field status-key))))))
 
 (defun resolve-scope-alias (model type-key view-key table-key scope)
   "Resolve a :scope keyword on a field source to the alias key
