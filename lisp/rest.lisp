@@ -12,7 +12,7 @@
 ;; Global variables
 (defparameter *guest* "guest")
 (defparameter *favicon* (u:join-paths *web-directory* "favicon.ico"))
-(defparameter *http-server* nil)
+(defvar *http-server* nil)
 
 ;;
 ;; BEGIN Custom Hunchentoot acceptor
