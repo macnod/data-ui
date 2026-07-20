@@ -1161,11 +1161,11 @@ model."
     with status-key = (when is-button
                         (u:make-keyword
                           (format nil "~a-status" new-field-key)))
-    and compiled-hook (when is-button
-                        (resolve-hook-form action
-                          :kind :action
-                          :type-key type-key
-                          :field-key new-field-key))
+    and compiled-hook = (when is-button
+                          (resolve-hook-form action
+                            :kind :action
+                            :type-key type-key
+                            :field-key new-field-key))
     with sql-parts = (remove-if-not #'identity
                        (list name-sql type-sql primary-key not-null
                          references unique default))
