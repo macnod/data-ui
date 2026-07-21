@@ -495,6 +495,7 @@ function App() {
   const [userSearch, setUserSearch] = useState('')
   const [userSearchResults, setUserSearchResults] = useState<string[]>([])
   const [userSearchLoading, setUserSearchLoading] = useState(false)
+  const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -709,6 +710,44 @@ function App() {
     // Clear search
     setUserSearch('')
     setUserSearchResults([])
+  }
+
+  const handleAction = async (fieldKey: string) => {
+    if (!editRecord) return
+    const id = editRecord.id
+    setPendingActions(prev => new Set(prev).add(fieldKey))
+    try {
+      const res = await apiFetch('/api/actions', {
+        method: 'POST',
+        body: JSON.stringify({
+          type,
+          id,
+          field: fieldKey
+        })
+      })
+      if (!res.ok) {
+        alert(await errorMessage(res, 'Action failed'))
+      }
+      // Reload list, then re-open edit form with updated record
+      // so the status field refreshes.
+      const listRes = await apiFetch(`/api/list?type=${type}`)
+      if (listRes.ok) {
+        const json = await listRes.json()
+        setData(json)
+        const updated = json?.result?.records?.find(
+          (r: any) => r.id === id
+        )
+        if (updated) openEditForm(updated)
+      }
+    } catch {
+      alert('Network error during action')
+    } finally {
+      setPendingActions(prev => {
+        const next = new Set(prev)
+        next.delete(fieldKey)
+        return next
+      })
+    }
   }
 
   const submitForm = async () => {
@@ -1324,6 +1363,38 @@ function App() {
                   <label>{fieldMeta.label}</label><br />
                   {renderReadOnlyField(
                     fieldMeta, formValues[f]
+                  )}
+                </div>
+              )
+            }
+
+            if (fieldMeta['input-type'] === 'button') {
+              const statusKey = `${f}-status`
+              const statusVal = editRecord?.[statusKey] || ''
+              const isRunning = statusVal === 'running'
+              const isPending = pendingActions.has(f)
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <button
+                    type="button"
+                    disabled={isRunning || isPending}
+                    onClick={() => handleAction(f)}
+                  >
+                    {isPending ? 'Working...' : fieldMeta.label}
+                  </button>
+                  {statusVal && (
+                    <span style={{
+                      marginLeft: '0.5rem',
+                      fontSize: '0.85em',
+                      color: statusVal === 'complete'
+                        ? 'var(--success, green)'
+                        : statusVal.startsWith('failed')
+                          ? 'var(--error)'
+                          : 'var(--muted)'
+                    }}>
+                      {statusVal}
+                    </span>
                   )}
                 </div>
               )
