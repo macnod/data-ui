@@ -409,7 +409,7 @@ resolve-hook-form for error messages."
       (declare (ignore type-key field-key roles status-field))
       (block hook-body
         (let ((model-text (getf record field)))
-          (flet ((fail (message)
+          (flet ((fail-hook (message)
                    (funcall set-status
                      (format nil "failed: ~a"
                        (subseq message 0
@@ -418,18 +418,18 @@ resolve-hook-form for error messages."
                      (list :status "failed" :message message))))
             (unless (and model-text (stringp model-text)
                          (> (length (string-trim " " model-text)) 0))
-              (fail "model text is empty"))
+              (fail-hook "model text is empty"))
             ;; Parse the model text
             (let ((model-plist (ignore-errors (read-from-string model-text))))
-              (unless model-plist (fail "parse error in model text"))
+              (unless model-plist (fail-hook "parse error in model text"))
               ;; Validate in-process (pure, no side effects)
               (let ((types (getf model-plist :types)))
                 (unless types
-                  (fail "model has no :types key"))
+                  (fail-hook "model has no :types key"))
                 (handler-case
                     (validate-model types)
                   (error (e)
-                    (fail (format nil "~a" e))))
+                    (fail-hook (format nil "~a" e))))
                 ;; Validation passed — spawn async worker
                 (let ((captured-set-status set-status))
                   (sb-thread:make-thread
