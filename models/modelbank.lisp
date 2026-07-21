@@ -64,7 +64,11 @@
            :ui (:label "Rating" :input-type :read-only
                 :render-as :stars :precision 1)
            :source (:view :main :table :ratings :column :rating
-                    :agg :avg)))
+                    :agg :avg))
+         :deploy
+         (:type :button
+           :ui (:label "Deploy Model" :input-type :button)
+           :action (:deploy-model :field :model)))
        :list-form (:fields (:name :description :model :images :average-rating))
        :update-form (:fields t)
        :add-form (:fields t))
