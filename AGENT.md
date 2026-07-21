@@ -42,7 +42,7 @@ The goal is deterministic, repeatable development: change the model, recompile, 
 - `lisp/model.lisp` – Model compilation and the RBAC base model (`*base-model*`)
 - `lisp/backend.lisp` – Backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-landing-page`, etc.)
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
-- `lisp/predicates.lisp` – Type/field predicates (`table-p`, `base-type-p`, etc.)
+- `lisp/predicates.lisp` – Type/field predicates (`table-p`, `base-type-p`, etc.; `:button` field type)
 - `lisp/database.lisp` – Database initialization and table creation
 - `lisp/aux.lisp` – Auxiliary helpers (path utilities, scoped paths)
 - `lisp/plist-json.lisp` – Plist ↔ JSON serialization
@@ -50,7 +50,7 @@ The goal is deterministic, repeatable development: change the model, recompile, 
 - `lisp/startup.lisp`, `lisp/data-ui.lisp`, `lisp/data-ui-package.lisp` – System startup and package definition
 - `models/` – Example models, one per file (e.g. `todos.lisp`, `parts.lisp`, `file-server.lisp`, `modelbank.lisp`, `widgets.lisp`). Each file holds a bare model plist (no `defparameter`, no wrapping variable). Load one with `(set-model "todos")` — pass just the file name, with no path and no `.lisp` extension.
 - `web/` – React frontend (Vite + TypeScript)
-- `tests/` – FiveAM test suites: `predicate-tests.lisp`, `backend-tests.lisp`, `rest-tests.lisp`, `scoping-tests.lisp`, plus `helpers.lisp` and `model-template.lisp`
+- `tests/` – FiveAM test suites: `predicate-tests.lisp`, `backend-tests.lisp`, `rest-tests.lisp`, `scoping-tests.lisp`, `action-tests.lisp`, plus `helpers.lisp` and `model-template.lisp`
 
 The non-frontend code is almost entirely Common Lisp (SBCL).
 
@@ -110,9 +110,11 @@ Use the helper functions in `tests/helpers.lisp` — never call
 resetting, and test-suite selection so you don't run unnecessary tests
 or forget setup steps.
 
-- `(run-tests)` — runs backend, predicates, and REST suites using the
-  `test-model` fixture model (via `with-model`, which resets the
-  database and loads the model automatically).
+- `(run-tests)` — runs backend, predicates, scoping, hook registry, lifecycle,
+  and action suites using the `test-model` fixture model (via `with-model`,
+  which resets the database and loads the model automatically).
+- `(run-action-tests)` — runs the action hook suite (button fields, `be-action`,
+  status transitions, in-progress guard, permission checks, form exclusions).
 - `(run-modelbank-tests)` — runs the scoping suite using the `modelbank`
   model. (This function is a placeholder name and will be cleaned up
   post-MVP.)
@@ -189,8 +191,12 @@ modify the test suites themselves (`backend-tests.lisp`,
   - `:render-as` UI hint (`:code`, `:image`, `:image-list`, `:stars`) — passed
     through the `:ui` plist to the frontend for custom cell/form rendering
   - `:input-type` values now include `:textbox`, `:select`, `:read-only`,
-    `:file`, `:check-box`, `:password`, `:hidden` (in addition to `:line`,
-    `:checkbox-list`)
+    `:file`, `:check-box`, `:password`, `:hidden`, `:button` (in addition to
+    `:line`, `:checkbox-list`)
+  - `:button` field type with `:action` — clickable controls on update forms
+    that invoke registry action hooks. Compiler synthesizes a companion
+    `:<field>-status` column (default `"idle"`) to track action state.
+    See "Action Hooks" section below.
   - `:title` — top-level key; the human-readable app title (e.g. "To Do List").
     Used for the page title in the frontend.
   - `:landing-page` — top-level key; declares which type the frontend
@@ -210,6 +216,7 @@ modify the test suites themselves (`backend-tests.lisp`,
   - `/api/list`, `/api/item`, `/api/id`, `/api/value`, `/api/value-id`,
     `/api/column` — data retrieval
   - `/api/insert`, `/api/update`, `/api/delete` — CRUD mutations
+  - `/api/actions` — execute an action hook on a button field (POST)
   - `/api/upload` — file upload (multipart, returns `file-token`)
   - `/api/validate-field`, `/api/validate-form` — validation
   - `/api/types`, `/api/info` — schema/metadata (`/api/info` resolves `:landing-page` per-user via `be-landing-page`)
@@ -307,11 +314,12 @@ never special-cases one against the other.
 
 ## Hooks and the Registry
 
-All custom logic (validation + lifecycle) attaches via hooks that reduce to a
-single calling contract.
+All custom logic (validation, lifecycle, and actions) attaches via hooks that reduce to a
+single calling contract per kind.
 
 - Validation contract: `(lambda (type-key field-key value user) -> nil | error-string)`
 - Lifecycle contract (e.g.): `(lambda (type-key data user &key roles) -> effect)`
+- Action contract: `(lambda (type-key field-key record user &key roles status-field set-status) -> result-plist-or-nil)`
 - Hooks are **lists**; multiple hooks may attach. The sole surface form:
   - `(:keyword args...)` — registry entry (data-only; AI/no-code/hosted tier)
 - The **registry** is the sole hook surface form.
@@ -319,6 +327,7 @@ single calling contract.
   parameter-schema + factory. The parameter schema does triple duty: validates
   hosted-tier data, drives the no-code UI palette, and serves as the AI
   function-calling spec. API: `register-hook` (not `register-validation`).
+  Registry kinds: `:validation`, `:lifecycle`, `:action`.
 
 **MVP caveat (transactions deferred):** lifecycle hooks are NOT
 transaction-wrapped. A failing hook fails the operation WITHOUT rollback of
@@ -328,6 +337,135 @@ are best-effort (`handler-case`, log, continue). Transactions and rollback
 are deliberately deferred to post-MVP; the eventual boundary is intended to
 wrap primary write + hook list + write-through as a unit. Design hooks with
 that future in mind, and never assume atomicity in MVP code or docs.
+
+## Action Hooks
+
+Action hooks are a third hook kind (`:action`) that attach to `:button` fields.
+They let model authors define clickable controls on the update form that execute
+server-side logic — e.g. deploying a model, generating content, running a
+transformation.
+
+### Field authoring
+
+```lisp
+:deploy
+(:type :button
+  :ui (:label "Deploy Model" :input-type :button)
+  :action (:deploy-model :field :model))
+```
+
+- `:type :button` — no storage column; the field is a control, not data.
+- `:action` — a single registry form `(:keyword args...)` naming the hook to
+  run. (The plan originally called this `:actions` plural; the implementation
+  uses `:action` singular.)
+- `:ui` must include `:input-type :button` so `fe-fields` emits the field.
+- `:action` is valid **only** on `:type :button` fields (compile-time error
+  otherwise).
+
+### Status field (compiler-synthesized)
+
+Every `:button` field gets an auto-generated companion status column named
+`:<field>-status` (e.g. `:deploy` → `:deploy-status`):
+
+- `:type :text`, `:column t`, `:default "idle"`, `:not-null t`
+- `:ui (:input-type :read-only)`
+- `:update nil` (blocks normal update path; status writes use `be-set-field-value`
+  only)
+- `:source (:view :main :column <status-key> :agg :first)`
+
+The compiler auto-includes the status field on `:update-form` when the button
+field is listed there. If the status key already exists as an author-declared
+field, compilation fails (`report-e`).
+
+### Status protocol
+
+Four canonical status strings:
+
+| Status | Who sets | Terminal? |
+|--------|----------|-----------|
+| `idle` | column default | yes (ready / never started) |
+| `running` | `be-action` before hooks | no (sole in-progress state) |
+| `complete` | framework (sync success) or worker via `set-status` | yes |
+| `failed: <reason>` | framework (sync error) or worker via `set-status` | yes |
+
+- **In-progress guard:** `be-action` refuses to start iff current status is
+  exactly `"running"`. All other values allow a new run.
+- **Sync hooks** (no `:async t` in result): framework sets `complete` on
+  success, `failed: <message>` on error (truncated to 200 chars).
+- **Async hooks** (result plist includes `:async t`): framework does not
+  auto-complete. Worker must call `set-status` with `"complete"` or
+  `"failed: ..."`. If the process restarts mid-deploy, status can remain
+  `running` forever — operator must reset manually (no job queue in MVP).
+
+### Action hook contract
+
+```lisp
+(lambda (type-key field-key record user
+         &key roles status-field set-status)
+  -> nil | plist)
+```
+
+| Parameter | Meaning |
+|-----------|---------|
+| `type-key` | Type containing the button |
+| `field-key` | Button field key (e.g. `:deploy`) |
+| `record` | Full record plist at click time |
+| `user` | Acting username string |
+| `roles` | Optional roles list from the request path |
+| `status-field` | Keyword of companion status column (e.g. `:deploy-status`) |
+| `set-status` | `(lambda (message) ...)` — sole supported way for hooks to write status |
+
+Return `nil` for sync completion, or `(:async t :message "...")` for async.
+
+### Placement and permissions
+
+- Buttons appear on the **update form only** — never list or add forms.
+  `fe-fields` excludes `:button` fields from `:list-form` and `:add-form`.
+- Permission: type-level `update` + record-level access (same path as
+  `be-update`). No separate `execute` permission for MVP.
+
+### `POST /api/actions`
+
+Request:
+```json
+{"type": "models", "id": "<record-uuid>", "field": "deploy"}
+```
+
+Response (sync success):
+```json
+{"status": "success", "result": {"status": "complete"}}
+```
+
+Response (async):
+```json
+{"status": "success", "result": {"status": "accepted", "async": true,
+  "message": "Deploy started"}}
+```
+
+Response (sync failure):
+```json
+{"status": "success", "result": {"status": "failed", "message": "..."}}
+```
+
+Validation errors (unknown type, bad field, missing permissions, action
+already running) return 400. Other errors return 500.
+
+### `validate-model` (pure model validation)
+
+`validate-model` is a pure function (no DB, no RBAC mutation) that runs
+structure checks + stage-1 compilation on a model's `:types` plist. The
+`:deploy-model` hook calls it in-process before spawning a subprocess, so
+compile errors surface immediately as `failed: <message>` without wasting a
+deploy cycle.
+
+### Non-goals (post-MVP)
+
+- Polling / auto-refresh / WebSocket / SSE for live status updates
+- Persistent job queue, retries, cancel
+- Transaction wrapping around actions
+- New RBAC permission `execute` / `action`
+- Buttons on list rows or add forms
+- Reset-status control (operator clears stuck `running` manually)
 
 ## Lisp Coding Style
 
@@ -431,6 +569,7 @@ common purpose of validating input against a schema or contract.
 - The backend injects filtered `allowed-values.roles` so users only see roles they can assign
 - Forms are schema-driven; the frontend does not hard-code field lists
 - The `:ui` plist is passed through to the frontend verbatim — new UI hints (like `:render-as`) work without backend changes
+- `:button` fields are excluded from `:list-form` and `:add-form` by `fe-fields`; they appear only on `:update-form`
 - Delete uses the existing single-record-delete endpoint in a loop (acceptable for MVP)
 - Keep models small; hide RBAC complexity from model authors
 - **Type categorization** — `/api/types` returns a `:category` for each type:
@@ -446,6 +585,7 @@ common purpose of validating input against a schema or contract.
 - All forms render from the schema returned by `/api/list`
 - Permission flags (`create`/`delete`/`update`) returned by `/api/list` control visibility of Add, Delete, and Edit controls
 - The `:ui` plist is the extension point for frontend rendering — `:render-as`, `:input-type`, and `:table` are consumed by the React components
+- Button rendering: `:input-type :button` triggers a `<button>` element on the edit form; `onClick` posts to `/api/actions`; the button is disabled while status is `running`
 - Image rendering: `:render-as :image` and `:render-as :image-list` trigger thumbnail grids with modal/lightbox preview; the `:table` key on the field tells the frontend which type to use for `/api/file` URLs
 
 ## Goals
