@@ -449,12 +449,15 @@ Returns the relative file path (for the deploy script) and the model name."
     :directory repo-root))
 
 (defun deploy-model-run-script (model-file package-root)
-  ":private: Run scripts/data-ui deploy with MODEL_FILE set."
+  ":private: Run scripts/data-ui deploy with MODEL_FILE set.
+Returns (values stdout stderr exit-code).  Does not signal on
+non-zero exit — the caller inspects exit-code and stderr."
   (let ((script-path (namestring
                        (merge-pathnames "scripts/data-ui" package-root)))
         (repo-root (namestring package-root)))
     (uiop:run-program (list script-path "deploy")
       :output :string :error-output :string
+      :ignore-error-status t
       :directory repo-root
       :environment (cons (format nil "MODEL_FILE=~a" model-file)
                          (sb-ext:posix-environ)))))
@@ -469,8 +472,19 @@ become 'failed: <message>' rather than silent thread death."
           (deploy-model-write-file model-plist package-root)
         (deploy-model-git-commit
           model-path model-name (namestring package-root))
-        (deploy-model-run-script model-file package-root)
-        (funcall set-status "complete"))
+        (multiple-value-bind (stdout stderr exit-code)
+            (deploy-model-run-script model-file package-root)
+          (declare (ignore stdout))
+          (if (zerop exit-code)
+              (funcall set-status "complete")
+              (let ((msg (format nil "deploy exited ~a: ~a"
+                            exit-code
+                            (string-trim '(#\Newline #\Space) stderr))))
+                (pl:pinfo :in "deploy-model-async"
+                  :status "failed" :reason msg)
+                (funcall set-status
+                  (format nil "failed: ~a"
+                    (subseq msg 0 (min (length msg) 180))))))))
     (error (e)
       (let ((msg (format nil "~a" e)))
         (pl:pinfo :in "deploy-model-async"

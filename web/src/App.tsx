@@ -579,16 +579,31 @@ function App() {
     }
   }
 
-  const openEditForm = (record: any) => {
-    setEditRecord(record)
+  const openEditForm = async (record: any) => {
+    // Fetch the full record from /api/item with update-form so that
+    // fields absent from list-form (e.g. deploy-status, my-rating)
+    // are populated correctly in the edit form.
+    let fullRecord = record
+    try {
+      const res = await apiFetch(
+        `/api/item?type=${type}&id=${record.id}&form=update-form`
+      )
+      if (res.ok) {
+        const json = await res.json()
+        fullRecord = json?.result?.record || record
+      }
+    } catch {
+      // Fall back to list record on error
+    }
+    setEditRecord(fullRecord)
     // Filter out the current user's own exclusive role from the
     // roles — it's injected automatically by the backend and should
     // never appear as a manual checkbox or be sent back.
     const myExclusive = `${loggedInUser}:exclusive`
-    const cleanRoles = (record.roles || []).filter(
+    const cleanRoles = (fullRecord.roles || []).filter(
       (r: string) => r !== myExclusive
     )
-    setFormValues({ ...record, roles: cleanRoles })
+    setFormValues({ ...fullRecord, roles: cleanRoles })
     setShowAddForm(false)
     // Populate extraRoles with any roles on the record that aren't
     // in the backend's allowed-values (e.g. other users' exclusive
