@@ -398,9 +398,10 @@ resolve-hook-form for error messages."
 ;;; :deploy-model — async deploy hook for Model Bank.
 ;;;
 ;;; Reads model text from a field (param :field), validates it in-process via
-;;; validate-model, then spawns a worker thread that shells out to
-;;; scripts/data-ui deploy.  Validation failures produce an immediate "failed:
-;;; <message>" without spawning a subprocess.
+;;; validate-model, then spawns a worker thread that writes the model to
+;;; models/<name>-<timestamp>.lisp, commits it, and shells out to
+;;; scripts/data-ui deploy with MODEL_FILE set.  Validation failures produce
+;;; an immediate "failed: <message>" without spawning a subprocess.
 (register-hook :deploy-model :action
   '(:field :keyword)
   (lambda (&key field)
@@ -431,46 +432,68 @@ resolve-hook-form for error messages."
                   (error (e)
                     (fail-hook (format nil "~a" e))))
                 ;; Validation passed — spawn async worker
-                (let ((captured-set-status set-status))
+                (let ((captured-set-status set-status)
+                       (captured-model-plist model-plist)
+                       (captured-package-root *package-root*))
                   (sb-thread:make-thread
                     (lambda ()
                       (handler-case
-                          (let* ((tmp-file
-                                   (ensure-directories-exist
-                                     (merge-pathnames
-                                       (format nil "deploy-~a.lisp"
-                                         (dt:current-unix-time))
-                                       (uiop:temporary-directory))))
+                          (let* ((model-name
+                                   (or (getf captured-model-plist :name)
+                                       "model"))
+                                 (timestamp (dt:current-unix-time))
+                                 (filename
+                                   (format nil "~a-~a.lisp"
+                                     model-name timestamp))
+                                 (models-dir
+                                   (merge-pathnames "models/"
+                                     captured-package-root))
+                                 (model-path
+                                   (merge-pathnames filename models-dir))
                                  (model-string
                                    (with-output-to-string (s)
-                                     (prin1 model-plist s))))
+                                     (prin1 captured-model-plist s))))
+                            ;; Ensure models/ exists and write the file
+                            (ensure-directories-exist models-dir)
                             (with-open-file
-                                (out tmp-file
+                                (out model-path
                                   :direction :output
                                   :if-exists :supersede)
                               (write-string model-string out))
-                            ;; Try to shell out to scripts/data-ui deploy
+                            ;; git add + commit so the tree is clean
+                            ;; for the deploy script's require_clean_tree
+                            (let ((repo-root
+                                    (namestring captured-package-root)))
+                              (uiop:run-program
+                                (list "git" "add"
+                                  (namestring model-path))
+                                :directory repo-root)
+                              (uiop:run-program
+                                (list "git" "commit" "-m"
+                                  (format nil "Deploy ~a" model-name))
+                                :directory repo-root))
+                            ;; Run the deploy script with MODEL_FILE
                             (let* ((script-path
                                      (namestring
-                                       (merge-pathnames
-                                         "scripts/data-ui"
-                                         *package-root*)))
+                                       (merge-pathnames "scripts/data-ui"
+                                         captured-package-root)))
+                                   (model-file
+                                     (format nil "models/~a" filename))
                                    (output
                                      (multiple-value-list
-                                       (ignore-errors
-                                         (uiop:run-program
-                                           (list script-path "deploy")
-                                           :output :string
-                                           :error-output :string)))))
-                              (if (and output (first output))
-                                  (funcall captured-set-status "complete")
-                                  ;; Stub: deploy script not available.
-                                  ;; For MVP, treat as success on dev
-                                  ;; machines where deploy host is remote.
-                                  (progn
-                                    (sleep 2)
-                                    (funcall captured-set-status
-                                      "complete")))))
+                                       (uiop:run-program
+                                         (list script-path "deploy")
+                                         :output :string
+                                         :error-output :string
+                                         :directory
+                                           (namestring captured-package-root)
+                                         :environment
+                                           (cons
+                                             (format nil "MODEL_FILE=~a"
+                                               model-file)
+                                             (sb-ext:posix-environ))))))
+                              (declare (ignore output))
+                              (funcall captured-set-status "complete")))
                         (error (e)
                           (let ((msg (format nil "~a" e)))
                             (funcall captured-set-status
