@@ -478,6 +478,14 @@ deploy cycle.
   SBCL, but it creates hidden coupling: the reader must know a variable
   is special, find where it's bound, and trace its extent. Explicit
   parameters make data flow visible at the call site.
+- **Prefer small, single-purpose functions.** Every function should be
+  short enough to grasp at a glance — roughly half a page or less. When
+  a function grows beyond that, extract named sub-functions even if
+  they're only called once. A descriptive function name documents intent
+  better than inlined code, and the reader sees a simple outline rather
+  than a wall of logic. The complexity of Data UI lives in the
+  architecture and the interaction of its parts — never in any
+  individual function.
 
 ## Error Reporting: `report-e` and `report-ve`
 

@@ -395,6 +395,9 @@ resolve-hook-form for error messages."
 ;;; Action hooks
 ;;; ---------------------------------------------------------------------------
 
+;;;
+;;; BEGIN Register hook :deploy-model
+;;;
 ;;; :deploy-model — async deploy hook for Model Bank.
 ;;;
 ;;; Reads model text from a field (param :field), validates it in-process via
@@ -402,106 +405,105 @@ resolve-hook-form for error messages."
 ;;; models/<name>-<timestamp>.lisp, commits it, and shells out to
 ;;; scripts/data-ui deploy with MODEL_FILE set.  Validation failures produce
 ;;; an immediate "failed: <message>" without spawning a subprocess.
+
+(defun validate-deploy-model-text (model-text)
+  ":private: Validate model text for the deploy-model hook.
+Returns (:ok model-plist) on success or (:error message) on failure."
+  (flet ((ok (model-plist) (list :ok model-plist))
+         (err (msg) (list :error msg)))
+    (unless (and model-text (stringp model-text)
+                 (> (length (string-trim " " model-text)) 0))
+      (return-from validate-deploy-model-text (err "model text is empty")))
+    (let ((model-plist (ignore-errors (read-from-string model-text))))
+      (unless model-plist (return-from validate-deploy-model-text
+                            (err "parse error in model text")))
+      (let ((types (getf model-plist :types)))
+        (unless types
+          (return-from validate-deploy-model-text
+            (err "model has no :types key")))
+        (handler-case
+            (progn (validate-model types)
+                   (ok model-plist))
+          (error (e) (err (format nil "~a" e))))))))
+
+(defun deploy-model-write-file (model-plist package-root)
+  ":private: Write MODEL-PLIST to models/<name>-<timestamp>.lisp.
+Returns the relative file path (for the deploy script) and the model name."
+  (let* ((model-name (or (getf model-plist :name) "model"))
+         (timestamp (dt:current-unix-time))
+         (filename (format nil "~a-~a.lisp" model-name timestamp))
+         (models-dir (merge-pathnames "models/" package-root))
+         (model-path (merge-pathnames filename models-dir))
+         (model-string (with-output-to-string (s) (prin1 model-plist s))))
+    (ensure-directories-exist models-dir)
+    (with-open-file (out model-path :direction :output :if-exists :supersede)
+      (write-string model-string out))
+    (values (format nil "models/~a" filename) model-name model-path)))
+
+(defun deploy-model-git-commit (model-path model-name repo-root)
+  ":private: Stage and commit the model file so the tree is clean for deploy."
+  (uiop:run-program (list "git" "add" (namestring model-path))
+    :directory repo-root)
+  (uiop:run-program (list "git" "commit" "-m"
+                    (format nil "Deploy ~a" model-name))
+    :directory repo-root))
+
+(defun deploy-model-run-script (model-file package-root)
+  ":private: Run scripts/data-ui deploy with MODEL_FILE set."
+  (let ((script-path (namestring
+                       (merge-pathnames "scripts/data-ui" package-root)))
+        (repo-root (namestring package-root)))
+    (uiop:run-program (list script-path "deploy")
+      :output :string :error-output :string
+      :directory repo-root
+      :environment (cons (format nil "MODEL_FILE=~a" model-file)
+                         (sb-ext:posix-environ)))))
+
+(defun deploy-model-async (model-plist set-status package-root)
+  ":private: Worker body for the deploy-model hook.
+Writes the model file, commits it, runs the deploy script, and
+updates status.  Wraps everything in a handler-case so errors
+become 'failed: <message>' rather than silent thread death."
+  (handler-case
+      (multiple-value-bind (model-file model-name model-path)
+          (deploy-model-write-file model-plist package-root)
+        (deploy-model-git-commit
+          model-path model-name (namestring package-root))
+        (deploy-model-run-script model-file package-root)
+        (funcall set-status "complete"))
+    (error (e)
+      (let ((msg (format nil "~a" e)))
+        (pl:pinfo :in "deploy-model-async"
+          :status "failed" :reason msg)
+        (funcall set-status
+          (format nil "failed: ~a"
+            (subseq msg 0 (min (length msg) 180))))))))
+
 (register-hook :deploy-model :action
   '(:field :keyword)
   (lambda (&key field)
     (lambda (type-key field-key record user
              &key roles status-field set-status)
-      (declare (ignore type-key field-key roles status-field))
-      (block hook-body
-        (let ((model-text (getf record field)))
-          (flet ((fail-hook (message)
-                   (funcall set-status
-                     (format nil "failed: ~a"
-                       (subseq message 0
-                         (min (length message) 180))))
-                   (return-from hook-body
-                     (list :status "failed" :message message))))
-            (unless (and model-text (stringp model-text)
-                         (> (length (string-trim " " model-text)) 0))
-              (fail-hook "model text is empty"))
-            ;; Parse the model text
-            (let ((model-plist (ignore-errors (read-from-string model-text))))
-              (unless model-plist (fail-hook "parse error in model text"))
-              ;; Validate in-process (pure, no side effects)
-              (let ((types (getf model-plist :types)))
-                (unless types
-                  (fail-hook "model has no :types key"))
-                (handler-case
-                    (validate-model types)
-                  (error (e)
-                    (fail-hook (format nil "~a" e))))
-                ;; Validation passed — spawn async worker
-                (let ((captured-set-status set-status)
-                       (captured-model-plist model-plist)
-                       (captured-package-root *package-root*))
-                  (sb-thread:make-thread
-                    (lambda ()
-                      (handler-case
-                          (let* ((model-name
-                                   (or (getf captured-model-plist :name)
-                                       "model"))
-                                 (timestamp (dt:current-unix-time))
-                                 (filename
-                                   (format nil "~a-~a.lisp"
-                                     model-name timestamp))
-                                 (models-dir
-                                   (merge-pathnames "models/"
-                                     captured-package-root))
-                                 (model-path
-                                   (merge-pathnames filename models-dir))
-                                 (model-string
-                                   (with-output-to-string (s)
-                                     (prin1 captured-model-plist s))))
-                            ;; Ensure models/ exists and write the file
-                            (ensure-directories-exist models-dir)
-                            (with-open-file
-                                (out model-path
-                                  :direction :output
-                                  :if-exists :supersede)
-                              (write-string model-string out))
-                            ;; git add + commit so the tree is clean
-                            ;; for the deploy script's require_clean_tree
-                            (let ((repo-root
-                                    (namestring captured-package-root)))
-                              (uiop:run-program
-                                (list "git" "add"
-                                  (namestring model-path))
-                                :directory repo-root)
-                              (uiop:run-program
-                                (list "git" "commit" "-m"
-                                  (format nil "Deploy ~a" model-name))
-                                :directory repo-root))
-                            ;; Run the deploy script with MODEL_FILE
-                            (let* ((script-path
-                                     (namestring
-                                       (merge-pathnames "scripts/data-ui"
-                                         captured-package-root)))
-                                   (model-file
-                                     (format nil "models/~a" filename))
-                                   (output
-                                     (multiple-value-list
-                                       (uiop:run-program
-                                         (list script-path "deploy")
-                                         :output :string
-                                         :error-output :string
-                                         :directory
-                                           (namestring captured-package-root)
-                                         :environment
-                                           (cons
-                                             (format nil "MODEL_FILE=~a"
-                                               model-file)
-                                             (sb-ext:posix-environ))))))
-                              (declare (ignore output))
-                              (funcall captured-set-status "complete")))
-                        (error (e)
-                          (let ((msg (format nil "~a" e)))
-                            (funcall captured-set-status
-                              (format nil "failed: ~a"
-                                (subseq msg 0
-                                  (min (length msg) 180))))))))
-                    :name "data-ui-deploy-model")
-                  (list :async t :message "Deploy started"))))))))))
+      (declare (ignore type-key field-key roles user))
+      (let ((result (validate-deploy-model-text (getf record field))))
+        (if (getf result :error)
+            (progn
+              (pl:pinfo :in "deploy-model"
+                :status "failed" :reason (getf result :error))
+              (funcall set-status
+                (format nil "failed: ~a" (getf result :error)))
+              (list :status "failed" :message (getf result :error)))
+            (let ((model-plist (getf result :ok)))
+              (sb-thread:make-thread
+                (lambda ()
+                  (deploy-model-async
+                    model-plist set-status *package-root*))
+                :name "data-ui-deploy-model")
+              (list :async t :message "Deploy started")))))))
+
+;;;
+;;; END Register hook :deploy-model
+;;;
 
 (defparameter *forms* '(:list-form :add-form :update-form))
 
