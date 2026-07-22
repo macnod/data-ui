@@ -181,7 +181,7 @@ and any field with :default-from :user."
           when (getf type-def :user-setting)
           do (be-insert-internal type-key
                (build-default-setting-plist type-key username type-def)
-               "admin"))))
+               user))))
 
 (defun remove-user-setting-rows (type-key data user &key id roles record)
   "Generic pre-delete hook: remove the user's row from every
