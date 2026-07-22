@@ -126,6 +126,61 @@ permitted to modify `tests/helpers.lisp` for this purpose — add as many
 modify the test suites themselves (`backend-tests.lisp`,
 `scoping-tests.lisp`, etc.) without human permission.
 
+### Writing a New Test Suite
+
+To add a new test suite (e.g. for a new feature), four files change:
+
+1. **Create the test file** in `tests/` (e.g. `tests/secrets-tests.lisp`).
+   Follow the existing pattern:
+   ```lisp
+   (in-package :data-ui)
+
+   (def-suite secrets-suite :description "Secrets type tests")
+
+   (in-suite secrets-suite)
+
+   (test secrets-type-compiles
+     "Description of what this test verifies."
+     (is-true ...))
+   ```
+   - Use FiveAM primitives: `is`, `is-true`, `is-false`, `signals`,
+     `finishes`.
+   - Tests run inside `with-model`, which resets the database and
+     recompiles with the specified model. Base types (from `*base-model*`)
+     are present in every model, so you can test them with any model.
+   - Clean up any data you insert (delete test rows) so tests are
+     order-independent.
+   - `be-types` returns plists, not alists — use `(getf entry :name)`
+     as the `:key` when searching, not `#'car`.
+
+2. **Register the file in `data-ui.asd`** — add it to the `tests`
+   module component list, after the existing test files:
+   ```lisp
+   (:file "secrets-tests")
+   ```
+
+3. **Add a `run-*` helper** in `tests/helpers.lisp`:
+   ```lisp
+   (defun run-secrets-tests ()
+     "Run secrets type tests."
+     (with-model "test-model" nil
+       (run! 'secrets-suite)))
+   ```
+
+4. **Add the helper to `run-tests`** in the same file so the full
+   suite includes it:
+   ```lisp
+   (defun run-tests ()
+     ...
+     (run-secrets-tests))
+   ```
+
+After creating or modifying a test file, reload it into the live image
+with `(load "~/common-lisp/data-ui/tests/secrets-tests.lisp")` before
+running. If you modified `helpers.lisp`, reload that too. If the live
+image was reloaded via `asdf:load-system` (which resets `*rbac*` to
+nil), call `(init-database)` before running tests.
+
 ## Interaction Conventions
 
 - **"Take a look at our todo list" / "take a look at our next todo item"**

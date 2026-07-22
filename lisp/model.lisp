@@ -706,6 +706,40 @@ death."
        :update-form (:fields t)
        :add-form (:fields t))
 
+     :secrets
+     (:table t :built-in t
+       :base nil
+       :create :auto :update :auto :delete :auto :display t
+       :type-roles ("settings")
+       :suppress-roles t
+       :category :settings
+       :views (:main (:tables (:secrets :users) :scope :user)
+                :users (:tables (:users)))
+       :fields (:user (:type :text
+                        :force-sql-name "secret_user"
+                        :ui (:label "Login" :input-type :read-only)
+                        :target :users
+                        :autofill :user
+                        :source (:view :users :table :users
+                                  :column :name :agg :first)
+                        :column t :not-null t)
+                 :name (:type :text
+                         :ui (:label "Name" :input-type :line)
+                         :source (:view :main :column :name :agg :first)
+                         :column t :not-null t)
+                 :value (:type :text
+                          :ui (:label "Value" :input-type :line)
+                          :source (:view :main :column :value :agg :first)
+                          :column t :not-null t)
+                 :description (:type :text
+                                :ui (:label "Description" :input-type :line)
+                                :source (:view :main
+                                          :column :description :agg :first)
+                                :column t))
+       :list-form (:fields (:user :name :description))
+       :update-form (:fields t)
+       :add-form (:fields t))
+
      :tokens
      (:table t :base nil :built-in t
        :create nil :update nil :delete nil :display nil

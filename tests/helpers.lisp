@@ -231,9 +231,15 @@ both test-model and modelbank."
   (with-model "test-model" nil
     (run! 'action-suite)))
 
+(defun run-secrets-tests ()
+  "Run secrets type tests."
+  (with-model "test-model" nil
+    (run! 'secrets-suite)))
+
 (defun run-tests ()
   (run-backend-tests)
   (run-scoping-tests)
   (run-hook-registry-tests)
   (run-lifecycle-tests)
-  (run-action-tests))
+  (run-action-tests)
+  (run-secrets-tests))

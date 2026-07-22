@@ -36,4 +36,5 @@
                                 (:file "rest-tests")
                                 (:file "hook-registry-tests")
                                 (:file "scoping-tests")
-                                (:file "action-tests")))))
+                                (:file "action-tests")
+                               (:file "secrets-tests")))))
