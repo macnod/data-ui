@@ -69,3 +69,18 @@ th, td {
 th {
   background: var(--header-bg);
 }
+
+@keyframes du-spin {
+  to { transform: rotate(360deg); }
+}
+
+.du-spinner {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border: 2px solid var(--muted-2);
+  border-top-color: var(--fg);
+  border-radius: 50%;
+  animation: du-spin 0.8s linear infinite;
+  vertical-align: middle;
+}

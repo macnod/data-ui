@@ -496,6 +496,8 @@ function App() {
   const [userSearchResults, setUserSearchResults] = useState<string[]>([])
   const [userSearchLoading, setUserSearchLoading] = useState(false)
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
+  const [elapsed, setElapsed] = useState<number | null>(null)
+  const runningStartRef = useRef<number | null>(null)
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -959,6 +961,81 @@ function App() {
     fetchList()
   }, [loggedIn, type])
 
+  // Poll for status updates when a button field's status starts
+  // with "running". Re-fetches the record via /api/item and
+  // updates editRecord + formValues so the status text updates
+  // live in the open form. Prefix match on "running" means
+  // intermediate statuses like "running: building image" keep
+  // polling automatically.
+  //
+  // Also tracks elapsed time since running started, with a 1s
+  // ticker for the display.
+  const editRecordId = editRecord?.id
+  const hasRunningStatus = Object.keys(editRecord || {}).some(
+    k => k.endsWith('-status') &&
+         String(editRecord?.[k]).startsWith('running')
+  )
+
+  // Manage the running start timestamp
+  useEffect(() => {
+    if (hasRunningStatus && runningStartRef.current === null) {
+      runningStartRef.current = Date.now()
+      setElapsed(0)
+    } else if (!hasRunningStatus) {
+      runningStartRef.current = null
+      setElapsed(null)
+    }
+  }, [hasRunningStatus])
+
+  // 1s ticker for elapsed display
+  useEffect(() => {
+    if (!hasRunningStatus) return
+    const ticker = setInterval(() => {
+      if (runningStartRef.current !== null) {
+        setElapsed(Math.floor(
+          (Date.now() - runningStartRef.current) / 1000
+        ))
+      }
+    }, 1000)
+    return () => clearInterval(ticker)
+  }, [hasRunningStatus])
+
+  // 3s poll for record updates
+  useEffect(() => {
+    if (!editRecordId || !type || !hasRunningStatus) return
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiFetch(
+          `/api/item?type=${type}&id=${editRecordId}` +
+          `&form=update-form`
+        )
+        if (!res.ok) return
+        const json = await res.json()
+        const updated = json?.result?.record
+        if (!updated) return
+        setEditRecord(updated)
+        // Preserve any unsaved form edits except status fields,
+        // which come from the server.
+        setFormValues(prev => {
+          const next = { ...prev }
+          for (const k of Object.keys(updated)) {
+            if (k.endsWith('-status')) {
+              next[k] = updated[k]
+            }
+          }
+          return next
+        })
+        // Also refresh the list so list-view statuses stay fresh
+        fetchList()
+      } catch {
+        // Network errors during polling are non-fatal
+      }
+    }, 3000)
+
+    return () => clearInterval(interval)
+  }, [editRecordId, hasRunningStatus, type])
+
   // In settings mode, auto-enter edit mode with the single record.
   // Depends on `type` too: when switching to settings, viewMode changes
   // first (firing this effect with stale data), then type changes and
@@ -1386,7 +1463,7 @@ function App() {
             if (fieldMeta['input-type'] === 'button') {
               const statusKey = `${f}-status`
               const statusVal = editRecord?.[statusKey] || ''
-              const isRunning = statusVal === 'running'
+              const isRunning = statusVal.startsWith('running')
               const isPending = pendingActions.has(f)
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
@@ -1398,7 +1475,25 @@ function App() {
                   >
                     {isPending ? 'Working...' : fieldMeta.label}
                   </button>
-                  {statusVal && (
+                  {isRunning && (
+                    <span style={{
+                      marginLeft: '0.5rem',
+                      fontSize: '0.85em',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.4rem',
+                      color: 'var(--muted)'
+                    }}>
+                      <span className="du-spinner" />
+                      {elapsed !== null && (
+                        <span>{elapsed}s</span>
+                      )}
+                      {statusVal !== 'running' && (
+                        <span>({statusVal})</span>
+                      )}
+                    </span>
+                  )}
+                  {!isRunning && statusVal && (
                     <span style={{
                       marginLeft: '0.5rem',
                       fontSize: '0.85em',
