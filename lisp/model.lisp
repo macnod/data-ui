@@ -451,10 +451,10 @@ Returns the relative file path (for the deploy script) and the model name."
 (defun deploy-model-git-commit (model-path model-name repo-root)
   ":private: Stage and commit the model file so the tree is clean for deploy."
   (uiop:run-program (list "git" "add" (namestring model-path))
-    :directory repo-root)
+    :input nil :directory repo-root)
   (uiop:run-program (list "git" "commit" "-m"
                     (format nil "Deploy ~a" model-name))
-    :directory repo-root))
+    :input nil :directory repo-root))
 
 (defun deploy-model-run-script (model-file package-root)
   ":private: Run scripts/data-ui deploy with MODEL_FILE set.
@@ -464,6 +464,7 @@ non-zero exit — the caller inspects exit-code and stderr."
                        (merge-pathnames "scripts/data-ui" package-root)))
         (repo-root (namestring package-root)))
     (uiop:run-program (list script-path "deploy")
+      :input nil
       :output :string :error-output :string
       :ignore-error-status t
       :directory repo-root
