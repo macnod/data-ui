@@ -195,3 +195,10 @@ function returns NIL. This is useful for dealing the values that the database
 returns for fields that are null."
   (if (equal value :null) nil value))
 
+(defun get-deployed-admin-password (model-name)
+  (fourth
+    (re:split
+      "\\n|="
+      (u:slurp
+        (format nil "~~/.local/state/data-ui-deploy/~a/secrets.env"
+          model-name)))))
