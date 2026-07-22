@@ -9,8 +9,7 @@
         (lambda (type-key field-key record user
                  &key roles status-field set-status)
           (declare (ignore type-key field-key record user
-                           roles status-field))
-          (funcall set-status "sync step done")
+                           roles status-field set-status))
           nil)))
 
 (register-hook :test-async :action

@@ -2409,13 +2409,24 @@ Signals a validation error if:
                               type-key field-key record user
                               :status-field status-field
                               :set-status set-status)))
-                (if (and (listp result) (getf result :async))
-                    ;; Async: don't auto-complete
-                    result
-                    ;; Sync success: set complete
-                    (progn
-                      (funcall set-status "complete")
-                      (list :status "complete"))))
+                (cond
+                  ;; Async: worker owns status via set-status
+                  ((and (listp result) (getf result :async))
+                   result)
+                  ;; Sync: be-action owns status, derived from result
+                  (t
+                   (let* ((failed (and (listp result)
+                                       (equal (getf result :status)
+                                              "failed")))
+                          (status (if failed "failed" "complete")))
+                     (funcall set-status
+                       (if failed
+                           (format nil "failed: ~a"
+                             (getf result :message))
+                           status))
+                     (if failed
+                         result
+                         (list :status "complete"))))))
             (error (e)
               (let* ((err-str (format nil "~a" e))
                      (msg (format nil "failed: ~a"

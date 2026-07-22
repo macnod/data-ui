@@ -498,14 +498,12 @@ become 'failed: <message>' rather than silent thread death."
   (lambda (&key field)
     (lambda (type-key field-key record user
              &key roles status-field set-status)
-      (declare (ignore type-key field-key roles user))
+      (declare (ignore type-key field-key roles user status-field))
       (let ((result (validate-deploy-model-text (getf record field))))
         (if (getf result :error)
             (progn
               (pl:pinfo :in "deploy-model"
                 :status "failed" :reason (getf result :error))
-              (funcall set-status
-                (format nil "failed: ~a" (getf result :error)))
               (list :status "failed" :message (getf result :error)))
             (let ((model-plist (getf result :ok)))
               (sb-thread:make-thread
