@@ -43,9 +43,8 @@ function usage {
     echo "         Kubernetes manifests, deploys the app to k3d, and routes"
     echo "         the model's domain to the app via HAProxy. Requires a"
     echo "         clean git tree and sudo (for HAProxy). Set DRY_RUN=1 to"
-    echo "         stop after generating the manifests. Set"
-    echo "         MODEL_FILE=models/<file>.lisp to deploy a specific model"
-    echo "         (default: models/default-model.lisp). When run on a"
+    echo "         stop after generating the manifests. The model is read"
+    echo "         from models/default-model.lisp. When run on a"
     echo "         machine other than \$DEPLOY_HOST (default evo-x2), pushes"
     echo "         the current branch and tag to origin and re-runs the"
     echo "         deploy on \$DEPLOY_HOST over ssh, in the deploy clone at"
@@ -234,11 +233,9 @@ function export_docs_environment {
 }
 
 function get_model_field {
-    # MODEL_FILE is a path like "models/default-model.lisp" or
-    # "models/todos-1234567890.lisp".  top-level-model-field takes
-    # just the basename without extension.
+    # top-level-model-field takes just the basename without extension.
     local model_base
-    model_base=$(basename "${MODEL_FILE:-models/default-model.lisp}" .lisp)
+    model_base=$(basename "models/default-model.lisp" .lisp)
     ros run -- --disable-debugger \
         --load "lisp/deployment.lisp" \
         --eval '(in-package :deployment)' \
@@ -302,7 +299,7 @@ function export_deploy_db_environment {
 
 function compile_default_model {
     echo
-    echo "Compiling model from ${MODEL_FILE:-models/default-model.lisp}..."
+    echo "Compiling model from models/default-model.lisp..."
     # Runs the compilation phase of SET-MODEL (validation, SQL generation,
     # lambda compilation) against a throwaway database, skipping the
     # cluster-facing side effects (CREATE-TABLES, START-WEB-SERVER, etc).
@@ -314,7 +311,7 @@ function compile_default_model {
     start_postgres_quietly
     initialize_database_quietly
     local status=0
-    local model_file="${MODEL_FILE:-models/default-model.lisp}"
+    local model_file="models/default-model.lisp"
     # Pin ASDF to this checkout so the deploy clone compiles its own
     # source rather than whatever other data-ui checkout is registered
     # in local-projects.

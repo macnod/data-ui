@@ -450,52 +450,60 @@ Returns the relative file path (for the deploy script) and the model name."
       (write-string model-string out))
     (values (format nil "models/~a" filename) model-name model-path)))
 
-(defun deploy-model-git-commit (model-path model-name repo-root)
-  ":private: Stage and commit the model file so the tree is clean for deploy."
-  (uiop:run-program (list "git" "add" (namestring model-path))
+(defun deploy-model-git-commit (model-path default-model-path
+                                model-name repo-root)
+  ":private: Stage and commit the model files so the tree is clean
+for deploy.  Both the timestamped model file and
+models/default-model.lisp are staged."
+  (uiop:run-program (list "git" "add"
+                    (namestring model-path)
+                    (namestring default-model-path))
     :input nil :directory repo-root)
   (uiop:run-program (list "git" "commit" "-m"
                     (format nil "Deploy ~a" model-name))
     :input nil :directory repo-root))
 
-(defun deploy-model-run-script (model-file package-root)
-  ":private: Run scripts/data-ui deploy with MODEL_FILE set.
-Returns (values stdout stderr exit-code).  Does not signal on
-non-zero exit — the caller inspects exit-code and stderr."
+(defun deploy-model-run-script (package-root)
+  ":private: Run scripts/data-ui deploy. Returns (values stdout stderr
+exit-code).  Does not signal on non-zero exit — the caller inspects exit-code
+and stderr."
   (let ((script-path (namestring
                        (merge-pathnames "scripts/data-ui" package-root)))
-        (repo-root (namestring package-root)))
+         (repo-root (namestring package-root)))
     (uiop:run-program (list script-path "deploy")
       :input nil
       :output :string :error-output :string
       :ignore-error-status t
-      :directory repo-root
-      :environment (cons (format nil "MODEL_FILE=~a" model-file)
-                         (sb-ext:posix-environ)))))
+      :directory repo-root)))
 
 (defun deploy-model-async (model-plist set-status package-root)
-  ":private: Worker body for the deploy-model hook.
-Writes the model file, commits it, runs the deploy script, and
-updates status.  Wraps everything in a handler-case so errors
-become 'failed: <message>' rather than silent thread death."
+  ":private: Worker body for the deploy-model hook. Writes the model file,
+commits it, runs the deploy script, and updates status.  Wraps everything in a
+handler-case so errors become 'failed: <message>' rather than silent thread
+death."
   (handler-case
-      (multiple-value-bind (model-file model-name model-path)
-          (deploy-model-write-file model-plist package-root)
+    (multiple-value-bind (model-file model-name model-path)
+      (deploy-model-write-file model-plist package-root)
+      (declare (ignore model-file))
+      (let ((default-model (merge-pathnames "models/default-model.lisp"
+                             package-root)))
+        (uiop:copy-file model-path default-model)
         (deploy-model-git-commit
-          model-path model-name (namestring package-root))
-        (multiple-value-bind (stdout stderr exit-code)
-            (deploy-model-run-script model-file package-root)
-          (declare (ignore stdout))
-          (if (zerop exit-code)
-              (funcall set-status "complete")
-              (let ((msg (format nil "deploy exited ~a: ~a"
-                            exit-code
-                            (string-trim '(#\Newline #\Space) stderr))))
-                (pl:pinfo :in "deploy-model-async"
-                  :status "failed" :reason msg)
-                (funcall set-status
-                  (format nil "failed: ~a"
-                    (subseq msg 0 (min (length msg) 180))))))))
+          model-path default-model model-name
+          (namestring package-root)))
+      (multiple-value-bind (stdout stderr exit-code)
+        (deploy-model-run-script package-root)
+        (declare (ignore stdout))
+        (if (zerop exit-code)
+          (funcall set-status "complete")
+          (let ((msg (format nil "deploy exited ~a: ~a"
+                       exit-code
+                       (string-trim '(#\Newline #\Space) stderr))))
+            (pl:pinfo :in "deploy-model-async"
+              :status "failed" :reason msg)
+            (funcall set-status
+              (format nil "failed: ~a"
+                (subseq msg 0 (min (length msg) 180))))))))
     (error (e)
       (let ((msg (format nil "~a" e)))
         (pl:pinfo :in "deploy-model-async"
