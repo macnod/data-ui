@@ -410,21 +410,29 @@ resolve-hook-form for error messages."
   ":private: Validate model text for the deploy-model hook.
 Returns (:ok model-plist) on success or (:error message) on failure."
   (flet ((ok (model-plist) (list :ok model-plist))
-         (err (msg) (list :error msg)))
+          (err (msg) (list :error msg)))
     (unless (and model-text (stringp model-text)
-                 (> (length (string-trim " " model-text)) 0))
+              (> (length (string-trim " " model-text)) 0))
       (return-from validate-deploy-model-text (err "model text is empty")))
-    (let ((model-plist (ignore-errors (read-from-string model-text))))
-      (unless model-plist (return-from validate-deploy-model-text
-                            (err "parse error in model text")))
-      (let ((types (getf model-plist :types)))
-        (unless types
-          (return-from validate-deploy-model-text
-            (err "model has no :types key")))
-        (handler-case
-            (progn (validate-model types)
-                   (ok model-plist))
-          (error (e) (err (format nil "~a" e))))))))
+    (let ((trimmed (u:trim model-text)))
+      (unless (and (plusp (length trimmed))
+                (char= (char trimmed 0) #\'))
+        (return-from validate-deploy-model-text
+          (err "model text must be a quoted plist (leading ')")))
+      (let ((model-plist (ignore-errors (read-from-string trimmed))))
+        (unless model-plist (return-from validate-deploy-model-text
+                              (err "parse error in model text")))
+        (let ((model-plist (cadr model-plist)))
+          (unless model-plist (return-from validate-deploy-model-text
+                                (err "parse error in model text")))
+          (let ((types (getf model-plist :types)))
+            (unless types
+              (return-from validate-deploy-model-text
+                (err "model has no :types key")))
+            (handler-case
+              (progn (validate-model types)
+                (ok model-plist))
+              (error (e) (err (format nil "~a" e))))))))))
 
 (defun deploy-model-write-file (model-plist package-root)
   ":private: Write MODEL-PLIST to models/<name>-<timestamp>.lisp.
