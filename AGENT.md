@@ -469,6 +469,26 @@ deploy cycle.
 
 ## Lisp Coding Style
 
+- **Prefer `u:` functions (from `dc-eclectic`) over raw CL or `uiop:`
+  equivalents.** The `dc-eclectic` library (nickname `u:`) provides
+  cleaner, more ergonomic wrappers for common operations. Use them
+  whenever an equivalent exists. Examples: `u:getenv` (not
+  `uiop:getenvp`), `u:join-paths` (not `merge-pathnames`),
+  `u:slurp` (not `with-open-file` + read loops),
+  `u:spew` (not `with-open-file` + write). When writing
+  new Lisp code, check whether `u:` has a suitable function before
+  reaching for the standard library. The library covers environment
+  access (=u:getenv=, =u:setenv=), filesystem (=u:file-exists-p=,
+  =u:directory-exists-p=, =u:copy-file=, =u:file-extension=,
+  =u:file-name-only=, =u:path-only=, =u:path-parent=), plist
+  utilities (=u:plistp=, =u:plist-keys=, =u:plist-values=,
+  =u:tree-get=), string operations (=u:trim=, =u:split-n-trim=,
+  =u:starts-with=, =u:ends-with=, =u:make-keyword=), collections
+  (=u:distinct-values=, =u:distinct-strings=, =u:safe-sort=,
+  =u:has=, =u:has-some=, =u:deep-copy=, =u:singular=, =u:plural=),
+  and shell commands (=u:shell-command-= family). This is a partial
+  list; browse the source in the =dc-eclectic= Quicklisp local
+  project for the full API.
 - **Prefer explicit parameter passing over dynamic (special) variables.**
   Dynamic variables (`*foo*`) are reserved for values that are truly
   global to the entire system (e.g. `*compiled-model*`, `*rbac*`).
