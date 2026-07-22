@@ -239,7 +239,7 @@ function get_model_field {
     # just the basename without extension.
     local model_base
     model_base=$(basename "${MODEL_FILE:-models/default-model.lisp}" .lisp)
-    ros run -- \
+    ros run -- --disable-debugger \
         --load "lisp/deployment.lisp" \
         --eval '(in-package :deployment)' \
         --eval "(top-level-model-field \"${FIELD_NAME}\" \"${model_base}\")" \
@@ -281,7 +281,7 @@ function die {
 }
 
 function model_field {
-    FIELD_NAME="$1" get_model_field 2>/dev/null | tail -1
+    FIELD_NAME="$1" get_model_field | tail -1
 }
 
 function require_clean_tree {
@@ -323,7 +323,7 @@ function compile_default_model {
         --eval "(require :data-ui)" \
         --eval "(in-package :data-ui)" \
         --eval "(init-database)" \
-        --eval "(let ((model (with-open-file (in \"${model_file}\") (read in)))) (top-level-settings model) (compile-model (getf model :types)) (format t \"Model compiled OK.~%\"))" \
+        --eval "(let ((model (cadr (with-open-file (in \"${model_file}\") (read in))))) (top-level-settings model) (compile-model (getf model :types)) (format t \"Model compiled OK.~%\"))" \
         --quit || status=1
     stop_database_quietly
     (( status == 0 )) \
