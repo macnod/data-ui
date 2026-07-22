@@ -1687,6 +1687,27 @@ needed. Returns the type-def with updated form."
                             (getf type-def :update-form)
                             (list :fields new-fields))))))))))))
 
+(defun valid-category (type-key category)
+  ":private: Validates a declared :category value. Returns CATEGORY
+if valid; signals via report-e if not."
+  (unless (member category '(:settings :system :user))
+    (report-e "valid-category"
+      "Type ~s has invalid :category ~s. Must be one of: :settings, :system, :user."
+      ~type-key ~category))
+  category)
+
+(defun compute-category (type-def)
+  ":private: Derives :category from type flags when not explicitly
+declared. Mirrors the previous runtime type-category logic."
+  (let ((category (getf type-def :category)))
+    (valid-category
+      type-def
+      (cond
+        (category category)
+        ((getf type-def :user-setting) :settings)
+        ((getf type-def :built-in) :system)
+        (t :user)))))
+
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
@@ -1716,7 +1737,8 @@ needed. Returns the type-def with updated form."
           (parent-type (getf type-def :parent-type))
           (fs-backed (getf type-def :fs-backed))
           (roles (when (type-has-roles type-def)
-                   (getf type-def :type-roles '("admin")))))
+                   (getf type-def :type-roles '("admin"))))
+          (category (compute-category type-def)))
     (validate-tree model type-key tree is-leaf parent-type fs-backed)
     (let ((fields-with-path (mark-path-field type-key fs-backed fields))
           (user-setting (getf type-def :user-setting))
@@ -1728,6 +1750,7 @@ needed. Returns the type-def with updated form."
             :internal internal
             :create create
             :type-roles roles
+            :category category
             :table-name table-name
             :fields fields-with-path
             :tree tree

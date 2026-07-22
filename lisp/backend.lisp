@@ -2286,13 +2286,6 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
       (list :valid :false :errors errors)
       (list :valid :true))))
 
-(defun type-category (type-def key)
-  (declare (ignore key))
-  (cond
-    ((getf type-def :user-setting) :settings)
-    ((getf type-def :built-in) :system)
-    (t :user)))
-
 (defun be-types (user)
   (valid-compiled-model)
   (loop with m = *compiled-model*
@@ -2304,7 +2297,7 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
     for display = (getf type-def :display)
     when (and display allowed (not internal))
     collect (list :name type-key
-                  :category (type-category type-def type-key))))
+                  :category (getf type-def :category))))
 
 (defun be-landing-page (user)
   ":public: Effective landing type-key for USER, or NIL.
