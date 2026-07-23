@@ -1533,7 +1533,6 @@ function App() {
         </form>
       )}
 
-      {viewMode !== 'settings' && (
       <table>
         <thead>
           <tr>
@@ -1577,7 +1576,6 @@ function App() {
           ))}
         </tbody>
       </table>
-      )}
     </div>
   )
 }
