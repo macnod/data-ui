@@ -1047,6 +1047,10 @@ function App() {
     if (!data?.result?.records?.length) return
     if (data.result['type-key'] !== type) return
     if (isEditMode) return
+    // Only auto-open the edit form for single-record settings types
+    // (e.g. user preferences). Multi-record types like secrets should
+    // display as a normal list.
+    if (data.result.records.length > 1) return
     openEditForm(data.result.records[0])
   }, [data, viewMode, type])
 
