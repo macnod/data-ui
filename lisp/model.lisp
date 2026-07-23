@@ -476,11 +476,32 @@ and stderr."
       :ignore-error-status t
       :directory repo-root)))
 
-(defun deploy-model-async (model-plist set-status package-root)
+(defun deploy-model-record-secret (model-name model-domain user)
+  ":private: After a successful deploy, read the generated admin password
+from the deploy state directory and insert a row into the :secrets table
+so the user can see it in the UI."
+  (handler-case
+    (let ((admin-password (get-deployed-admin-password model-name)))
+      (when admin-password
+        (be-insert :secrets
+          (list :name (format nil "~a admin password" model-name)
+                :value admin-password
+                :description (format nil "Admin password for ~a"
+                              (or model-domain model-name)))
+          user
+          :roles (list "settings"))
+        (pl:pinfo :in "deploy-model-record-secret"
+          :model-name model-name :status "recorded")))
+    (error (e)
+      (pl:perror :in "deploy-model-record-secret"
+        :model-name model-name :error e
+        :status "failed to record secret"))))
+
+(defun deploy-model-async (model-plist set-status package-root user)
   ":private: Worker body for the deploy-model hook. Writes the model file,
-commits it, runs the deploy script, and updates status.  Wraps everything in a
-handler-case so errors become 'failed: <message>' rather than silent thread
-death."
+commits it, runs the deploy script, records the admin password in the
+:secrets table, and updates status.  Wraps everything in a handler-case
+so errors become 'failed: <message>' rather than silent thread death."
   (handler-case
     (multiple-value-bind (model-file model-name model-path)
       (deploy-model-write-file model-plist package-root)
@@ -495,7 +516,10 @@ death."
         (deploy-model-run-script package-root)
         (declare (ignore stdout))
         (if (zerop exit-code)
-          (funcall set-status "complete")
+          (progn
+            (deploy-model-record-secret model-name
+              (getf model-plist :domain) user)
+            (funcall set-status "complete"))
           (let ((msg (format nil "deploy exited ~a: ~a"
                        exit-code
                        (string-trim '(#\Newline #\Space) stderr))))
@@ -517,7 +541,7 @@ death."
   (lambda (&key field)
     (lambda (type-key field-key record user
              &key roles status-field set-status)
-      (declare (ignore type-key field-key roles user status-field))
+      (declare (ignore type-key field-key roles status-field))
       (let ((result (validate-deploy-model-text (getf record field))))
         (if (getf result :error)
             (progn
@@ -528,7 +552,7 @@ death."
               (sb-thread:make-thread
                 (lambda ()
                   (deploy-model-async
-                    model-plist set-status *package-root*))
+                    model-plist set-status *package-root* user))
                 :name "data-ui-deploy-model")
               (list :async t :message "Deploy started")))))))
 
