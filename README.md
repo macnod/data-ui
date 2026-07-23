@@ -80,9 +80,11 @@ be needed to describe such an application.
 > description, and the running system is a pure function of that description.
 > The concept of "maintenance" as we know it just disappeared.
 
-> AI can now ship production applications. Not suggest code. Not draft
-> migrations. Ship. The missing piece was never the AI — it was the invariant
-> engine that lets the AI's output be trusted.
+> Data UI is the only product that lets an AI effectively author complete,
+> UI-administrable, row-level RBAC applications. AI can now ship production
+> applications. Not suggest code. Not draft migrations. Ship. The missing piece
+> was never the AI — it was the invariant engine that lets the AI's output be
+> trusted.
 
 
 ## Why AI Needs Data UI
