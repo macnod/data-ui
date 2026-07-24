@@ -175,6 +175,25 @@ For author models, use `:auto` or `nil`:
 String form gets full CRUD permissions when the role is created. Every type that
 participates in RBAC also receives `"admin"`.
 
+#### Default type-roles for built-in types
+
+| Type | Default `:type-roles` | Rationale |
+|------|----------------------|-----------|
+| `:users` | `("logged-in" "user-creator")` | All authenticated users can read; creators get full CRUD |
+| `:permissions` | `("logged-in" "permission-creator")` | Same pattern |
+| `:roles` | `("logged-in" "role-creator")` | Same pattern |
+| `:settings` | `("settings")` | Gated behind the `settings` role |
+| `:secrets` | `("settings")` | Same as settings |
+| `:resources` | *(none — internal, no CRUD)* | |
+| `:tokens` | *(none — internal)* | |
+
+Types with no explicit `:type-roles` default to `("admin")`. The `"admin"`
+role is always appended by `add-type-roles` regardless of what the model
+declares.
+
+When implementing `:type-roles` overrides on built-in types, these are the
+defaults you are replacing.
+
 ### Category
 
 `:category` is an author-facing key, not reserved. Valid values:
@@ -370,6 +389,13 @@ Notes:
 - Target type must have exactly one `:identity t` field
 - UI typically shows the identity display value (often `:name`), not the UUID
 - `:autofill :user` fills the current username on insert
+- **`:not-null` is forced to `t`** — the compiler ignores any explicit
+  `:not-null nil` (or missing `:not-null`) on `:target` fields. The
+  generated DDL always emits `not null`. This means `:target` fields
+  cannot represent an optional/nullable FK reference. If you need
+  "zero or one" or "zero or more" references to another type, use an
+  M2M list field (`:type :list` + `:join-table`) instead — the join
+  table can be empty, so the relationship is naturally optional.
 
 ### Identity fields
 
@@ -480,6 +506,12 @@ Joiner type:
   selector
 - Author `:internal t` on joiners is conventional but redundant (`:is-joiner`
   defaults internal)
+- **One M2M joiner per type (temporary limitation).** A type with
+  multiple `:join-table` list fields compiles, but the generated insert
+  SQL for each joiner incorrectly includes columns from all joiners on
+  the type (not just its own). This causes `be-insert` to fail. Until
+  the compiler bug is fixed, each type may have at most one M2M
+  relationship.
 
 ### One-way M2M only (do not put list fields on both ends)
 
@@ -1055,6 +1087,11 @@ resolved `:category` / `:internal`.
 14. **No computed/composed fields** — cannot derive a stored identity
     (e.g. full name) from other columns without a lifecycle data-effect hook
     (`:compose-string` designed, not implemented).
+
+15. **Multiple M2M joiners per type** — compile but produce incorrect
+    insert SQL (columns from all joiners merged into each statement).
+    Limit types to one M2M joiner until the compiler is fixed (see
+    [Join tables](#join-tables-m2m)).
 
 ---
 
