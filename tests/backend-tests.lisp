@@ -25,6 +25,16 @@
   (is (equal (aggregate-values :first '("abc" "def")) "abc"))
   (is (equal (aggregate-values :first '("a")) "a"))
   (is (equal (aggregate-values :distinct '("a" "b" "a")) '("a" "b")))
+  (is (equal (aggregate-values :count '(1 2 3)) 3))
+  (is (equal (aggregate-values :count '(1 nil 3 nil 5)) 3))
+  (is (equal (aggregate-values :count '("a" "b")) 2))
+  (is (equal (aggregate-values :count '(nil nil)) nil))
+  (is (equal (aggregate-values :count nil) nil))
+  (is (equal (aggregate-values :sum '(1 2 3)) 6))
+  (is (equal (aggregate-values :sum '(10 nil 20 nil 30)) 60))
+  (is (equal (aggregate-values :sum '(5)) 5))
+  (is (equal (aggregate-values :sum '(nil nil)) nil))
+  (is (equal (aggregate-values :sum nil) nil))
   (signals error (aggregate-values :unknown '(1 2 3))))
 
 (test field-values-for-id

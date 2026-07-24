@@ -16,6 +16,8 @@
                 (float (/ (reduce #'+ valid) (length valid))))))
       (:sum (let ((valid (remove-if-not #'value-or-nil values)))
               (when valid (reduce #'+ valid))))
+      (:count (let ((valid (remove-if-not #'value-or-nil values)))
+                (when valid (length valid))))
       (t (error "Invalid aggregation ~s." aggregation)))))
 
 (defun field-values-for-id (view-result id-key id-value alias-key aggregation

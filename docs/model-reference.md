@@ -24,11 +24,41 @@ Sources of truth: `lisp/model.lisp`, `lisp/backend.lisp`, `lisp/predicates.lisp`
 Each file under `models/` is a **bare quoted plist** — no `defparameter`, no
 wrapping variable:
 
+### File header (recommended)
+
+Precede the model plist with a `;;` comment block that states what the
+model is for and where it came from. Put it above the opening quote.
+Include:
+
+1. **Purpose** — what the app does (a few sentences is fine)
+2. **Author** — who wrote it
+3. **Created** — creation date
+4. **Prompt** — if an AI produced the model, the prompt that was used
+
+Example:
+
 ```lisp
+;; Purpose: Shared to-do list with tags and point scoring.
+;; Author: Donnie Cameron
+;; Created: 2025-06-12
+;; Prompt: (not AI-generated)
 '(:title "To Do List"
   :name "todos"
-  ...
-  :types (...))
+  ...)
+```
+
+For an AI-authored model, keep the prompt verbatim so the model can be
+regenerated or audited later:
+
+```lisp
+;; Purpose: Parts inventory with locations and reorder levels.
+;; Author: Claude (via Data UI hosted tier)
+;; Created: 2026-03-01
+;; Prompt: Build a parts inventory app. Each part has a SKU, name,
+;;   location, quantity on hand, and reorder level. Users should be
+;;   able to filter by location.
+'(:title "Parts Inventory"
+  ...)
 ```
 
 Load with:
@@ -269,6 +299,7 @@ If `:source` is omitted but `:column t`, the compiler defaults to:
 | `:distinct` | distinct non-null |
 | `:avg` | float average |
 | `:sum` | sum |
+| `:count` | count of non-null |
 
 ### Field-level scope
 
