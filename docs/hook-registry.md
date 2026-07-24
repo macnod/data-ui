@@ -30,10 +30,10 @@ which contract the factory's returned function must conform to.
 ### Lifecycle contract
 
 ```
-(lambda (type-key data user &key id roles record) → effect)
+(lambda (type-key data user &key id roles record) → ignored)
 ```
 
-- **Returns** an effect (semantics TBD).
+- **Returns** are ignored today (no effect protocol yet).
 - **Invoked** per-record, not per-field. Receives the full write-data plist, not
   a single value.
 - **Keyword args** carry call-site context:
@@ -68,7 +68,7 @@ on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks`
 
 | Arg | Meaning |
 |-----|---------|
-| `roles` | Optional roles list from the request path (may be nil) |
+| `roles` | Reserved on the contract; **`be-action` does not pass it today** (always default/`nil`). Do not rely on it in MVP hooks. |
 | `status-field` | Keyword of the companion status column (e.g. `:deploy-status`) |
 | `set-status` | `(lambda (message) ...)` — sole way for hooks to write status |
 
@@ -149,14 +149,16 @@ Range and length validators are no-ops on empty/nil values. Use
 
 ## Parameter Schema
 
-Each registry entry has a parameter schema: a plist of keyword → type.
-Currently supported types:
+Each registry entry has a parameter schema: a plist of keyword → type tag.
+`valid-hook-params` special-cases:
 
 - `:integer` — parsed from integer or numeric string
 - `:number` — parsed via `parse-number`
 
-Missing or wrong-type parameters signal a validation error
-(`report-ve`) at compile time.
+Any other type tag (including `:keyword`, used by `:deploy-model`) is
+**pass-through**: the raw value is accepted unchanged, with no type check.
+Missing parameters still signal a validation error (`report-ve`) at compile
+time.
 
 
 ## Compilation Pipeline
@@ -165,7 +167,7 @@ Missing or wrong-type parameters signal a validation error
 model source
   ↓  compile-validations → resolve-hook-list (:kind :validation)
   ↓  compile-lifecycle-hooks → resolve-hook-list (:kind :lifecycle)
-  ↓  compile-action-hooks → resolve-hook-form (:kind :action)
+  ↓  compile-field (per :button) → resolve-hook-form (:kind :action)
   ↓  resolve-hook-form per hook:
        keyword/plist → registry lookup
        raw function → pass through as-is (internal base-model use)
@@ -175,9 +177,11 @@ model source
 runtime: validate-field-internal / run-lifecycle-hooks / be-action
 ```
 
-Both `compile-validations` and `compile-lifecycle-hooks` resolve all hook
-forms at compile time and store the resulting function lists on
-`*compiled-model*`. The runtime never touches the registry.
+`compile-validations` and `compile-lifecycle-hooks` resolve hook forms at
+compile time into function lists on `*compiled-model*`. Action hooks are
+resolved inline in `compile-field` (when `:type :button` and `:action` are
+present) and stored on the field as `:compiled-hook`. The runtime never
+touches the registry.
 
 
 ## Lifecycle Hooks
@@ -189,8 +193,8 @@ raw model values.
 
 | Slot | Base model value | Purpose |
 |------|-----------------|---------|
-| `:post-create` | `#'add-user-settings` | Creates a per-user settings row on user creation |
-| `:pre-delete` | `#'remove-user-settings` | Cleans up settings row on user deletion |
+| `:post-create` | `#'add-user-setting-rows` | Creates a per-user settings row on user creation |
+| `:pre-delete` | `#'remove-user-setting-rows` | Cleans up settings row on user deletion |
 | `:pre-create` | — | — |
 | `:post-delete` | — | — |
 | `:pre-update` | — | — |
@@ -238,9 +242,9 @@ internal mechanism, not a model-author surface form.
 ## Action Hooks
 
 Action hooks attach to `:button` fields and execute when a user clicks the
-button on the update form. They are compiled at model-compile time via
-`compile-action-hooks` (model.lisp). The resolved hook function is stored on
-the compiled field definition as `:compiled-hook`.
+button on the update form. They are resolved at model-compile time inside
+`compile-field` (model.lisp) via `resolve-hook-form`. The resolved hook
+function is stored on the compiled field definition as `:compiled-hook`.
 
 ### Field authoring
 
@@ -266,8 +270,11 @@ Each `:button` field gets a companion `:<field>-status` column:
 | Column | `t` |
 | Default | `"idle"` |
 | Not-null | `t` |
-| UI | `(:input-type :read-only)` |
-| Update | `nil` (status writes use `be-set-field-value` only) |
+| UI | `(:label "<Button> Status" :input-type :read-only)` |
+| Source | `(:view :main :column <status-key> :agg :first)` |
+
+Status writes go through `be-set-field-value` only (the action path). The
+field is read-only in the UI.
 
 Status vocabulary: `idle` → `running` → `complete` | `failed: <reason>`.
 
@@ -290,6 +297,7 @@ fields from `:list-form` and `:add-form`.
 4. Sets status to `"running"` via `be-set-field-value`.
 5. Calls the hook with the action contract.
 6. Sync success → sets `"complete"`. Sync error → sets `"failed: <msg>"`.
+   (A result plist with `:status "failed"` is also treated as sync failure.)
 7. Async (`:async t` in result) → returns immediately; worker sets terminal
    status via `set-status`.
 
@@ -299,7 +307,7 @@ REST endpoint: `POST /api/actions` with `{"type", "id", "field"}`.
 
 | Name | Parameters | Behavior |
 |------|------------|----------|
-| `:deploy-model` | `:field` (keyword) | Reads model text from the record's `:field`, validates in-process via `validate-model`, then spawns an async worker. Worker shells out to `scripts/data-ui deploy` (or stub fallback). Returns `(:async t :message "Deploy started")`. |
+| `:deploy-model` | `:field` (keyword) | Reads model text from the record's `:field`, validates in-process via `validate-model`. On validation failure returns `(:status "failed" :message …)` immediately (no worker). On success spawns an async worker that writes the model file, commits, shells out to `scripts/data-ui deploy`, and records the admin password in `:secrets`. Returns `(:async t :message "Deploy started")`. |
 
 
 ## MVP Caveat: No Transactional Guarantees

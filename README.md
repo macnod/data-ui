@@ -165,12 +165,11 @@ the built-in RBAC tables themselves.
 Data UI deliberately supports two audiences through a single compiler:
 
 - **The expert, self-hosting tier.** Written in Common Lisp, the open-source
-  engine gives you full power. You can write custom registry entries as hooks
-  and validations, override any lifecycle operation with your own function, and
-  do anything the language allows. The guardrail here is your own experience
-  and judgment. This tier is a shotgun: it does not stop you from doing
-  whatever you
-  want.
+  engine gives you full power. You can write custom registry entries (hook
+  factories in Lisp), override lifecycle ops (`:create` / `:update` /
+  `:delete`) with your own functions, and do anything the language allows.
+  The guardrail here is your own experience and judgment. This tier is a
+  shotgun: it does not stop you from doing whatever you want.
 
 - **The AI / no-code / hosted tier.** Here the model is pure data (YAML or JSON),
   hooks are chosen from a curated, parameterized registry, and there is no
@@ -413,7 +412,7 @@ The compiler stores its output in `*compiled-model*` — a single structure
 that is simultaneously the application specification (data), the
 deployment configuration (data), and the executable application logic
 (native machine code). SBCL compiles every backend function, every RBAC
-check, and every hook — including validation and lifecycle hooks
+check, and every hook — including validation, lifecycle, and action hooks
 — to native x86-64 or ARM instructions.
 No interpreter. No VM. No JIT warmup. When a validation hook runs, it
 calls a function pointer to compiled code that was placed in the model
@@ -433,39 +432,51 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:scope :user` on a field's `:source` to filter aggregated field values to the current user (e.g. "my rating")
 - `:identity t` marks a field as the natural key used for write-through lookups and unique indexes
 - `:write-to` declares related-table upserts from a field write (e.g. rating → ratings row); non-transactional in MVP
-- `:ui` hints (`:label`, `:input-type`, `:render-as`) for frontend rendering
+- `:ui` hints (`:label`, `:input-type`, `:render-as`, `:precision`) for frontend rendering
 - `:title` (top-level) — human-readable app title (e.g. "To Do List")
 - `:render-as` values: `:code`, `:image`, `:image-list`, `:stars` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview, star ratings)
-- `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`
+- `:precision` (under `:ui`) — digit count for JavaScript `toFixed` numeric display (e.g. average rating)
+- `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`, `:button`
+- `:button` field type with `:action` — clickable control on the update form that runs a registry action hook; compiler synthesizes a companion `:<field>-status` column
 - `:validations` common validation names or parameterized registry entries that validate form/field data
 - `:join-table` for many-to-many relationships
 - `:is-joiner t` for explicit join tables
 - `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` for tree-structured types with filesystem backing (directories, file storage)
 - `:path t` to mark the path field on fs-backed types
 - `:autofill :user` to auto-populate a field with the current username
-- `:user-setting t` (type-level) to mark per-user settings types; auto-sets `:suppress-roles t`
+- `:user-setting t` (type-level) to mark per-user settings types; auto-sets `:suppress-roles t` and derives category `:settings` if omitted
 - `:suppress-roles t` (type-level) to suppress the injected `roles` field in forms
+- `:category` (type-level) to place a type in the selector: `:user`, `:settings` (Settings tab), or `:system`. Author key — not reserved to built-ins
 - `:type-roles` to declare which roles can access a type
 - `:landing-page` (top-level) to declare which type the frontend shows on load (resolved per-user via `be-landing-page`)
 - `:force-sql-name` to override the generated SQL column name
 - `:auto` for create/update/delete → generated SQL (or override with your own function)
-- Lifecycle hooks (`:create`, `:update`, `:delete`, `:post-create`, `:pre-delete`, etc.) that accept registry entries or raw functions (shell hooks planned)
+- Lifecycle hooks (`:pre-create`, `:post-create`, `:pre-update`, `:post-update`, `:pre-delete`, `:post-delete`) via registry entries (raw functions are internal base-model only)
+- Action hooks on `:button` fields (e.g. `:deploy-model`) via the same registry
 - Non-base tables get an `rt_` prefix to avoid name collisions with RBAC tables
+
+Full model vocabulary: [docs/model-reference.md](docs/model-reference.md).
+Hook contracts and builtins: [docs/hook-registry.md](docs/hook-registry.md).
 
 
 ## Hooks and the Registry
 
-Custom logic — validation and lifecycle behavior — attaches through **hooks**.
-Every hook, whatever its surface form, reduces to a single calling contract
-before it runs, so the compiler treats them uniformly.
+Custom logic — validation, lifecycle, and **actions** — attaches through
+**hooks**. Every hook reduces to a single calling contract per kind before it
+runs, so the compiler treats them uniformly.
 
-Hooks are expressed through the registry:
+Hooks are expressed through the registry (the sole author surface form):
 
 | Form in the model            | Who writes the Lisp                  | Tier                       | Status        |
 |------------------------------|--------------------------------------|----------------------------|---------------|
 | `(:keyword args...)`         | the registry author (you/community)  | AI / no-code / hosted      | Supported     |
+| `:keyword`                   | the registry author (zero-arg entry) | AI / no-code / hosted      | Supported     |
 
-### The contract
+Raw lambdas are not a model-author form; they exist only as an internal
+pass-through for base-model lifecycle functions. Expert/self-host power users
+extend the vocabulary with `register-hook`, not by embedding code in the model.
+
+### The contracts
 
 A **validation** hook conforms to:
 
@@ -473,17 +484,32 @@ A **validation** hook conforms to:
 
 A **lifecycle** hook conforms to (for example):
 
-    (lambda (type-key data user &key roles) -> effect)
+    (lambda (type-key data user &key id roles record) -> ignored)
 
-Returning `nil` (or no error) means success; returning an error string fails the
-operation. Hooks are lists, so multiple hooks can be attached and each reduces to
-this contract.
+An **action** hook conforms to:
+
+    (lambda (type-key field-key record user
+             &key roles status-field set-status)
+      -> nil | plist)
+
+Validation: return `nil` on success or an error string on failure. Lifecycle:
+return value is ignored today. Action: return `nil` (or any non-async result)
+for sync completion, or `(:async t :message "...")` so a worker owns status via
+`set-status`. Hooks are lists where the slot allows multiple entries; each
+reduces to its kind's contract.
+
+Action hooks attach to `:button` fields on the **update form only**. The
+compiler synthesizes a companion `:<field>-status` column (`idle` → `running`
+→ `complete` | `failed: <reason>`). `POST /api/actions` invokes them via
+`be-action`. Details: [docs/hook-registry.md](docs/hook-registry.md).
 
 > **MVP caveat — transactions deferred:** lifecycle hooks are **not**
 > transaction-wrapped. If one hook in a list fails, the operation fails
 > **without rollback** of the primary write or earlier hooks. The same
 > rule applies to write-through (`:write-to`): the primary row commits
-> first; related-table upserts run after and are best-effort. Transactions
+> first; related-table upserts run after and are best-effort. Action hooks
+> are likewise non-transactional; a process restart can leave status stuck
+> at `running` (no job queue in MVP — operator resets manually). Transactions
 > and rollback (including idempotent database initialization) are
 > deliberately deferred to post-MVP. The eventual transaction boundary is
 > intended to wrap primary write + hook list + write-through as a unit;
@@ -492,33 +518,36 @@ this contract.
 
 ### The registry: parameterized, data-only hooks
 
-The registry provides parameterized, data-only hooks for
-validations. A registry entry is a named factory that **closes over parameters
-supplied as data** and returns a contract-conforming closure.
+The registry provides parameterized, data-only hooks for validations,
+lifecycle, and actions. A registry entry is a named factory that **closes over
+parameters supplied as data** and returns a contract-conforming closure.
 
 For example, a maximum-length validation written as pure data:
 
 ```lisp
-:validations (:required (:max-length 20))
+:validations (:required (:max-length :max 20))
 ```
 
 is backed by a registry entry whose Lisp lives in the engine, written once:
 
 ```lisp
-(register-hook :max-length
-  (lambda (max)                                   ; parameter from the model
+(register-hook :max-length :validation
+  '(:max :integer)
+  (lambda (&key max)                              ; parameter from the model
     (lambda (type-key field-key value user)       ; conforms to the contract
-      (unless (< (length value) max)
-        (validation-error-string type-key field-key value
-          (format nil "must be less than ~d characters." max))))))
+      (when (and value (stringp value) (not (equal value "")))
+        (when (> (length value) max)
+          (validation-error-string type-key field-key value
+            (format nil "must be at most ~d characters." max)))))))
 ```
 
-The model author wrote only data — `(:max-length 20)` — which serializes cleanly
-to YAML or JSON. The same pattern applies to lifecycle hooks:
+The model author wrote only data — `(:max-length :max 20)` — which serializes
+cleanly to YAML or JSON. The same pattern applies to lifecycle and action hooks:
 
 ```lisp
 :post-create (:add-user-settings)                       ; zero-arg entry
 :post-create ((:send-webhook :url "https://...") )      ; parameterized entry
+:action (:deploy-model :field :model)                   ; action on a :button
 ```
 
 ### Why the registry matters
@@ -547,17 +576,18 @@ All endpoints stay **generic** — no per-type handler generation needed:
 - `GET /api/list?type=todos` → RBAC-gated results from the compiled view, including schema (`list-form`, `add-form`, `update-form`, `allowed-values`) and permission flags (`create`, `delete`, `update`)
 - `GET /api/item`, `/api/id`, `/api/value`, `/api/value-id`, `/api/column` → targeted data retrieval
 - `POST /api/insert`, `/api/update`, `/api/delete` → CRUD mutations (validation runs first)
+- `POST /api/actions` → run an action hook on a `:button` field (`{"type", "id", "field"}`)
 - `POST /api/upload` → file upload (multipart, returns `file-token`)
 - `POST /api/validate-field`, `/api/validate-form` → per-field and per-form validation
-- `GET /api/types`, `/api/info` → schema and metadata (`/api/types` returns a `:category` per type: `:system`, `:settings`, or `:user`)
+- `GET /api/types`, `/api/info` → schema and metadata (`/api/types` returns a `:category` per type: `:system`, `:settings`, or `:user`; authors set `:category` or it is derived)
 - `POST /api/login`, `/api/refresh` → JWT auth (access + refresh tokens)
 - `GET /api/file` → file serving (with token auth)
 - `GET /health` → health check
 
 React (or any frontend) fetches items with their schema and renders
 forms/lists automatically. The `:ui` plist on each field is the extension
-point — `:render-as`, `:input-type`, and `:table` are consumed directly by
-the frontend components.
+point — `:render-as`, `:input-type`, `:precision`, and `:table` are consumed
+directly by the frontend components.
 
 
 ## Development
@@ -655,13 +685,17 @@ demonstrated end to end:
   table upserts run from `be-insert` / `be-update` (best-effort, non-
   transactional). Used by Model Bank ratings. Some edge cases (e.g.
   clear-to-NULL) remain open.
+- **Action hooks** (`:button` fields + `:action`, `POST /api/actions`,
+  companion status column, sync/async protocol) are implemented. The
+  `:deploy-model` registry entry powers Model Bank deploy-from-record.
 - **Model features in active use** (exercised by `models/modelbank.lisp`):
   tree-structured types with filesystem backing (`:tree`, `:is-leaf`,
   `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated
   fields (`:autofill :user`), per-user settings types (`:user-setting`),
   write-through
-  ratings (`:write-to`, `:identity`), and UI hints for code blocks, images,
-  image lists, and star ratings (`:render-as`).
+  ratings (`:write-to`, `:identity`), action buttons (`:button`,
+  `:action`), and UI hints for code blocks, images, image lists, and star
+  ratings (`:render-as`).
 - File handling: uploading, listing, and deleting files and directories
   works end-to-end (uploads use a two-phase flow: `multipart/form-data`
   POST to `/api/upload`, then a JSON `/api/insert` carrying the returned
@@ -669,22 +703,23 @@ demonstrated end to end:
   deferred past the MVP.
 - React frontend: log in, navigate as a user, perform CRUD with RBAC
   enforcement, manage roles, upload and preview images (thumbnail grids
-  with modal/lightbox), inline edit mode. The UI works but needs polish
-  — this is a current focus.
-- Tests for compilation, predicates, backend, REST, and scoping are in
-  `tests/` (FiveAM): `predicate-tests.lisp`, `backend-tests.lisp`,
-  `rest-tests.lisp`, `scoping-tests.lisp`, plus `helpers.lisp` and
-  `model-template.lisp`. One view-level scoping behavioral test remains
-  flaky / TODO.
+  with modal/lightbox), inline edit mode, action buttons on update forms.
+  The UI works but needs polish — this is a current focus.
+- Tests for compilation, predicates, backend, REST, scoping, and actions
+  are in `tests/` (FiveAM): `predicate-tests.lisp`, `backend-tests.lisp`,
+  `rest-tests.lisp`, `scoping-tests.lisp`, `action-tests.lisp`, plus
+  `helpers.lisp` and `model-template.lisp`. One view-level scoping
+  behavioral test remains flaky / TODO.
 
 Model compilation, SQL generation for tables/views/triggers, RBAC
-integration, validation, CRUD, write-through, and Kubernetes deployment
-are implemented and exercised. Work continues on Model Bank completion,
-write-through edge cases, UI refinement, and additional example models.
+integration, validation, CRUD, write-through, action hooks, and Kubernetes
+deployment are implemented and exercised. Work continues on Model Bank
+completion, write-through edge cases, UI refinement, and additional
+example models.
 
 Deliberately deferred to post-MVP (do not assume these exist today):
 
-- **Transactions and rollback.** Lifecycle hooks are not
+- **Transactions and rollback.** Lifecycle hooks and action hooks are not
   transaction-wrapped. A failing hook fails the operation without
   rolling back the primary write or earlier hooks. Write-through
   (`:write-to`) follows the same rule: primary write commits first;
@@ -694,8 +729,10 @@ Deliberately deferred to post-MVP (do not assume these exist today):
   resource insert).
 - YAML/JSON model input and the hosted AI front door.
 
-See [Hooks and the Registry](#hooks-and-the-registry) for the hook
-contract and the MVP atomicity caveat.
+See [Hooks and the Registry](#hooks-and-the-registry) and
+[docs/hook-registry.md](docs/hook-registry.md) for the hook contracts and
+the MVP atomicity caveat. Model vocabulary:
+[docs/model-reference.md](docs/model-reference.md).
 
 See `lisp/model.lisp` for the current `*base-model*` and the `models/`
 directory for example models (one per file, e.g. `todos.lisp`,

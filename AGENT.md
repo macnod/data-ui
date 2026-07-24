@@ -24,6 +24,9 @@ Tagline: **"Your whole app, in an email."**
 See README.md for the full framing (Big Idea, Why AI Needs Data UI, Hooks and
 the Registry, the Marketplace).
 
+Model vocabulary (top-level keys, types, fields, `:ui`, forms, views): 
+`docs/model-reference.md`. Hook contracts: `docs/hook-registry.md`.
+
 ## Core Concept
 
 Describe your data model once. The system generates:
@@ -661,9 +664,10 @@ common purpose of validating input against a schema or contract.
 - Delete uses the existing single-record-delete endpoint in a loop (acceptable for MVP)
 - Keep models small; hide RBAC complexity from model authors
 - **Type categorization** — `/api/types` returns a `:category` for each type:
-  `:system` (built-in RBAC types with `:built-in t`), `:settings`
-  (`:user-setting t` types), or `:user` (everything else). The frontend
-  uses this to group types in the type selector.
+  `:system`, `:settings`, or `:user`. Authors set `:category` explicitly
+  (e.g. `:category :settings` to place a type under the Settings tab). If
+  omitted, it is derived: `:user-setting t` → `:settings`, `:built-in t` →
+  `:system`, else `:user`. The frontend groups the type selector by category.
 
 ## Working with the Frontend
 
