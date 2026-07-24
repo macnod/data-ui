@@ -1059,22 +1059,27 @@ function App() {
       <div style={{ maxWidth: 320, margin: '100px auto', padding: 20 }}>
         <h1>{title}</h1>
         <h2>Login</h2>
-        <input
-          type="text"
-          placeholder="Username"
-          value={username}
-          onChange={e => setUsername(e.target.value)}
-          style={{ width: '100%', marginBottom: 8 }}
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          style={{ width: '100%', marginBottom: 8 }}
-          onKeyDown={e => e.key === 'Enter' && handleLogin()}
-        />
-        <button onClick={handleLogin} style={{ width: '100%' }}>Login</button>
+        <form onSubmit={e => { e.preventDefault(); handleLogin() }}>
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            placeholder="Username"
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            style={{ width: '100%', marginBottom: 8 }}
+          />
+          <input
+            type="password"
+            name="password"
+            autoComplete="current-password"
+            placeholder="Password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            style={{ width: '100%', marginBottom: 12 }}
+          />
+          <button type="submit" style={{ width: '100%' }}>Login</button>
+        </form>
         {loginError && <p style={{ color: 'var(--error-bright)' }}>{loginError}</p>}
       </div>
     )

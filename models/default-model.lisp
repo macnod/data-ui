@@ -1,49 +1,64 @@
-'(:TITLE "Parts Tracker" :NAME "parts" :VERSION "0.1" :DOMAIN
-  "parts.demo.data-ui.com" :REPL T :TYPES
-  (:DIRECTORIES
-   (:TABLE T :CREATE :AUTO :UPDATE :AUTO :DELETE :AUTO :DISPLAY T :TREE T
-    :IS-LEAF NIL :PARENT-TYPE :DIRECTORIES :FS-BACKED T :TYPE-ROLES ("parts")
-    :VIEWS (:MAIN (:TABLES (:DIRECTORIES))) :FIELDS
-    (:NAME
-     (:TYPE :TEXT :IDENTITY T :PATH T :UI
-      (:LABEL "Directory" :INPUT-TYPE :LINE) :VALIDATIONS (:REQUIRED) :SOURCE
-      (:VIEW :MAIN :COLUMN :NAME :AGG :FIRST) :COLUMN T :NOT-NULL T :UNIQUE T)
-     :BOGUS
-     (:TYPE :TEXT :DEFAULT "" :UI (:LABEL "Bogus" :INPUT-TYPE :LINE) :SOURCE
-      (:VIEW :MAIN :COLUMN :NAME :AGG :FIRST) :COLUMN T))
-    :LIST-FORM (:FIELDS T) :UPDATE-FORM (:FIELDS T) :ADD-FORM (:FIELDS T))
-   :FILES
-   (:TABLE T :CREATE :AUTO :UPDATE :AUTO :DELETE :AUTO :DISPLAY T :TREE T
-    :IS-LEAF T :PARENT-TYPE :DIRECTORIES :FS-BACKED T :TYPE-ROLES ("parts")
-    :VIEWS (:MAIN (:TABLES (:FILES))) :FIELDS
-    (:NAME
-     (:TYPE :TEXT :IDENTITY T :PATH T :UI (:LABEL "File" :INPUT-TYPE :LINE)
-      :VALIDATIONS (:REQUIRED) :SOURCE (:VIEW :MAIN :COLUMN :NAME :AGG :FIRST)
-      :COLUMN T :NOT-NULL T :UNIQUE T)
-     :FILE
-     (:TYPE :FILE :UI (:LABEL "Select File" :INPUT-TYPE :FILE) :VALIDATIONS
-      (:REQUIRED)))
-    :LIST-FORM (:FIELDS T) :UPDATE-FORM (:FIELDS T) :ADD-FORM (:FIELDS T))
-   :PARTS
-   (:TABLE T :CREATE :AUTO :UPDATE :AUTO :DELETE :AUTO :DISPLAY T :TYPE-ROLES
-    ("parts") :VIEWS
-    (:MAIN (:TABLES (:PARTS :PART-FILES :FILES)) :FILES (:TABLES (:FILES)))
-    :FIELDS
-    (:NAME
-     (:TYPE :TEXT :IDENTITY T :UI (:LABEL "Part Number" :INPUT-TYPE :LINE)
-      :VALIDATIONS (:REQUIRED) :SOURCE (:VIEW :MAIN :COLUMN :NAME :AGG :FIRST)
-      :COLUMN T :NOT-NULL T :UNIQUE T)
-     :DESCRIPTION
-     (:TYPE :TEXT :UI (:LABEL "Part Description" :INPUT-TYPE :TEXT) :SOURCE
-      (:VIEW :MAIN :COLUMN :DESCRIPTION :AGG :FIRST) :COLUMN T :NOT-NULL NIL
-      :UNIQUE NIL)
-     :FILES
-     (:TYPE :LIST :UI (:LABEL "Images" :INPUT-TYPE :CHECKBOX-LIST) :VALIDATIONS
-      (:JOIN-ITEMS-EXIST) :SOURCE
-      (:VIEW :MAIN :TABLE :FILES :COLUMN :NAME :AGG :LIST) :SOURCE-ALL
-      (:VIEW :FILES :TABLE :FILES :COLUMN :NAME :AGG :LIST) :JOIN-TABLE
-      :PART-FILES))
-    :LIST-FORM (:FIELDS T) :UPDATE-FORM (:FIELDS T) :ADD-FORM (:FIELDS T))
-   :PART-FILES
-   (:TABLE T :IS-JOINER T :INTERNAL T :FIELDS
-    (:REFERENCE (:TARGET :PARTS) :REFERENCE (:TARGET :FILES)))))
+'(:title "To Do List"
+  :name "todos"
+  :version "0.1"
+  :domain "todo.demo.data-ui.com"
+  ;; WARNING: :repl must be nil in production
+  :repl t
+  :landing-page :todos
+  :types
+  (:todos
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users")
+      :views (:main (:tables (:todos :todo-tags :tags))
+               :tags (:tables (:tags)))
+      :fields
+      (:name 
+        (:type :text :identity t
+          :ui (:label "To Do" :input-type :line)
+          :validations (:required (:max-length :max 19))
+          :source (:view :main :column :name :agg :first)
+          :column t :not-null t :unique t)
+        :points
+        (:type :integer :default 0
+          :ui (:label "Points" :input-type :line)
+          :validations (:required)
+          :source (:view :main :column :points :agg :first)
+          :column t :not-null t)
+        :done
+        (:type :boolean :default :false
+          :ui (:label "Done" :input-type :check-box)
+          :source (:view :main :column :done :agg :first)
+          :column t :not-null t)
+        :tags
+        (:type :list
+          :ui (:label "Tags" :input-type :checkbox-list)
+          :validations (:join-items-exist)
+          :source (:view :main :table :tags :column :name :agg :list)
+          :source-all (:view :tags :table :tags :column :name :agg :list)
+          :join-table :todo-tags))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+
+    :tags
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users")
+      :fields 
+      (:name
+        (:type :text :identity t
+          ;; TODO: Add checks for :input-type value
+          :ui (:label "Tag" :input-type :line)
+          :validations (:required)
+          :source (:view :main :table :tags :column :name :agg :first)
+          :column t :not-null t :unique t))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+
+    :todo-tags
+    (:table t :is-joiner t :internal t
+      :fields
+      (:reference (:target :todos)
+        :reference (:target :tags)))))

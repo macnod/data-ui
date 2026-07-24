@@ -645,6 +645,35 @@ Notes:
       (is-true (uuid-p (be-delete :todos todo-id "admin")))
       (is-true (uuid-p (be-delete :tags tag-id "admin"))))))
 
+(test be-rec-includes-roles
+  "rec (used by /api/item) must include :roles in the returned record,
+  matching what list-result (used by /api/list) does. Without this, the
+  edit form shows no roles checked even though the list view shows them."
+  (let ((test-todo-name "rec-roles-test"))
+    ;; Cleanup
+    (be-delete :todos `((:todos :name :eq ,test-todo-name)) "admin")
+    (let* ((todo-id (be-insert :todos
+                     `(:name ,test-todo-name)
+                     "admin"
+                     :roles '("public" "logged-in"))))
+      ;; rec with :update-form (the form the edit form uses)
+      (let ((record (getf (be-rec todo-id "admin" :type-key :todos)
+                          :record)))
+        (is-true (getf record :roles)
+          "rec must include a :roles key in the record")
+        (is-true (member "public" (getf record :roles) :test 'equal)
+          "rec record must include the 'public' role")
+        (is-true (member "logged-in" (getf record :roles) :test 'equal)
+          "rec record must include the 'logged-in' role"))
+      ;; rec with :list-form should also include roles
+      (let ((record (getf (be-rec todo-id "admin"
+                           :form :list-form :type-key :todos)
+                          :record)))
+        (is-true (member "public" (getf record :roles) :test 'equal)
+          "rec :list-form record must include the 'public' role"))
+      ;; Cleanup
+      (is-true (uuid-p (be-delete :todos todo-id "admin"))))))
+
 (test be-val
   (let ((todo-name "test-be-val-todo")
          (tag-names '("test-be-val-tag-1" "test-be-val-tag-2")))

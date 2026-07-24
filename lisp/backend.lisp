@@ -1031,8 +1031,10 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
           :type type-key
           :fields (fe-fields type-key user)
           :record (car
-                    (view-result-values type-key field-keys view-result
-                      :user user))
+                    (add-roles-to-view
+                      type-key form user
+                      (view-result-values type-key field-keys view-result
+                        :user user)))
           :allowed-values (allowed-values type-key user))))))
 
 (defun insert-join-table-rows (type-key uuid data)
