@@ -32,6 +32,7 @@ restarting the image, but without quitting."
   (asdf:load-system :data-ui :force t)
   (in-package :data-ui)
   (init-database)
+  (reset-database)
   t)
 
 (defun main (&optional (model "default-model"))

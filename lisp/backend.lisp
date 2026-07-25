@@ -1147,8 +1147,14 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
   (let* ((m *compiled-model*)
           (source (u:tree-get m type-key :fields field-key :source))
           (x-type-key (getf source :table))
-          (x-field-key (getf source :column)))
-    (getf (be-list-column x-type-key x-field-key user) :values)))
+          (x-field-key (getf source :column))
+          (values (getf (be-list-column x-type-key x-field-key user) :values)))
+    (if (and
+          (equal type-key :users)
+          (equal field-key :roles)
+          (u:has values "logged-in"))
+      (remove-if (lambda (r) (equal r "logged-in")) values)
+      values)))
 
 (defun selectable-roles (type-key user)
   ":private: Returns the list of roles the current USER can assign on
@@ -1195,28 +1201,32 @@ type's :type-roles."
     (let* ((m *compiled-model*)
             (fields (u:tree-get m type-key form :fields))
             (base (u:tree-get m type-key :base)))
-      (pl:pdebug :in "add-roles-to-view"
-        :step 1
-        :type-key type-key
-        :form form
-        :fields fields
-        :abse base)
-      (if (show-roles-p type-key form user)
-        (loop
-          for record in view
-          for id = (getf record :id)
-          for resource-name = (id-to-resource-name id)
-          for log-1 = (pl:pdebug :in "add-roles-to-view"
-                        :step 2
-                        :type-key type-key
-                        :resource-name resource-name)
-          for roles = (remove-if
-                        (lambda (x)
-                          (or (equal x "admin")
+      (cond
+        ((show-roles-p type-key form user)
+          (loop
+            for record in view
+            for id = (getf record :id)
+            for resource-name = (id-to-resource-name id)
+            for roles = (remove-if
+                          (lambda (x)
+                            (or
+                              (equal x "admin")
+                              (equal x (a:exclusive-role-for "admin"))
                               (equal x (a:exclusive-role-for user))))
-                        (a:list-resource-role-names *rbac* resource-name))
-          collect (add-to-plist record (list :roles roles)))
-        view))))
+                          (a:list-resource-role-names *rbac* resource-name))
+            collect (add-to-plist record (list :roles roles))))
+        ((equal type-key :users)
+          (loop
+            for record in view
+            for user-name = (getf record :name)
+            for roles = (remove-if
+                          (lambda (x)
+                            (or
+                              (equal x "logged-in")
+                              (equal x (a:exclusive-role-for user-name))))
+                          (a:list-user-role-names *rbac* user-name))
+            collect (add-to-plist record (list :roles roles))))
+        (t view)))))
 
 (defun remove-existing-non-user-roles (user roles)
   (let* ((existing-roles (a:list-role-names *rbac*))
