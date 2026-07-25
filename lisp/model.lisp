@@ -713,10 +713,6 @@ so errors become 'failed: <message>' rather than silent thread death."
                               :ui (:label "Dark Mode" :input-type :check-box)
                               :source (:view :main :column :dark-mode :agg :first)
                               :column t :not-null t)
-                 :font-size (:type :integer :default 12
-                              :ui (:label "Font Size" :input-type :line)
-                              :source (:view :main :column :font-size :agg :first)
-                              :column t :not-null t)
                  :display-name (:type :text :default "(non specified)"
                                  :default-from :user
                                  :ui (:label "Real Name" :input-type :line)
