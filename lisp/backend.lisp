@@ -1023,10 +1023,7 @@ hashes never reach the frontend."
                                        type-key :fields key)
           for field-type = (getf field-def :type)
           when (member key fields)
-            appending (list key
-                            (if (eq field-type :password)
-                              nil
-                              val))
+            appending (list key (if (eq field-type :password) nil val))
           else
             appending (list key val))))
 
@@ -1045,7 +1042,8 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
       (let* ((m *compiled-model*)
               (type-key (if type-key type-key (id-to-type-key id)))
               (sql (u:tree-get m type-key :views :main :sql))
-              (where (add-where-clause sql (list (list type-key :id :eq id)) user))
+              (where (add-where-clause
+                       sql (list (list type-key :id :eq id)) user))
               (view-result (view-result type-key where))
               (field-keys (form-field-keys type-key form)))
         (list
@@ -1054,8 +1052,8 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
           :record (car
                     (add-roles-to-view
                       type-key form user
-                      (blank-password-fields
-                        type-key
+                      (mapcar
+                        (lambda (r) (blank-password-fields type-key r))
                         (view-result-values type-key field-keys view-result
                           :user user))))
           :allowed-values (allowed-values type-key user))))))

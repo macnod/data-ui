@@ -722,7 +722,7 @@ so errors become 'failed: <message>' rather than silent thread death."
                         :ui (:label "Bio" :input-type :text)
                         :source (:view :main :column :bio :agg :first)
                         :column t :not-null t))
-       :list-form (:fields (:user :dark-mode :font-size :display-name :bio))
+       :list-form (:fields (:user :dark-mode :display-name :bio))
        :update-form (:fields t)
        :add-form (:fields t))
 
