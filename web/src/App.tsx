@@ -1458,6 +1458,22 @@ function App() {
               )
             }
 
+            if (fieldMeta['input-type'] === 'password') {
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={formValues[f] || ''}
+                    onChange={e =>
+                      setFormValues({ ...formValues, [f]: e.target.value })
+                    }
+                  />
+                </div>
+              )
+            }
+
             if (fieldMeta['input-type'] === 'read-only') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>

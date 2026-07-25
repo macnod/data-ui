@@ -610,8 +610,10 @@ all the right fields when we perform inserts or updates."
                  type-key
                  form
                  user
-                 (view-result-values type-key field-keys view-result
-                   :user user))
+                 (mapcar (lambda (r)
+                           (blank-password-fields type-key r))
+                   (view-result-values type-key field-keys view-result
+                     :user user)))
       :allowed-values (allowed-values type-key user)
       :type-roles (u:tree-get *compiled-model* type-key :type-roles))
     (fe-fields type-key user)))
@@ -1011,6 +1013,23 @@ with the values in DATA."
     for key in update by #'cddr
     unless (equal key :main) collect key))
 
+(defun blank-password-fields (type-key record)
+  "Return RECORD with any :password-typed fields set to nil, so password
+hashes never reach the frontend."
+  (when record
+    (loop with fields = (user-fields type-key)
+          for (key val) on record by #'cddr
+          for field-def = (u:tree-get *compiled-model*
+                                       type-key :fields key)
+          for field-type = (getf field-def :type)
+          when (member key fields)
+            appending (list key
+                            (if (eq field-type :password)
+                              nil
+                              val))
+          else
+            appending (list key val))))
+
 (defun rec (id user &key (form :update-form) type-key (public t))
   ":private: Returns the TYPE-KEY record with the given ID, provided that it is
 accessible to USER. Given the IDs are UUIDs (globally unique), TYPE-KEY is
@@ -1035,8 +1054,10 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
           :record (car
                     (add-roles-to-view
                       type-key form user
-                      (view-result-values type-key field-keys view-result
-                        :user user)))
+                      (blank-password-fields
+                        type-key
+                        (view-result-values type-key field-keys view-result
+                          :user user))))
           :allowed-values (allowed-values type-key user))))))
 
 (defun insert-join-table-rows (type-key uuid data)
