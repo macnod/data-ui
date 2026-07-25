@@ -26,6 +26,14 @@ Safe to call from a REPL; does not block."
   (start-swank-server)
   (init-database))
 
+(defun hard-reset ()
+  "Reload all source files and reset the database. Nearly equivalent to
+restarting the image, but without quitting."
+  (asdf:load-system :data-ui :force t)
+  (in-package :data-ui)
+  (init-database)
+  t)
+
 (defun main (&optional (model "default-model"))
   "Container entry point. Initializes the process, loads MODEL (which
 starts the web server), then blocks forever to keep the process alive.
