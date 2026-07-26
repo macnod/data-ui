@@ -46,7 +46,6 @@ interface Field {
   label: string
   'widget': string
   path?: boolean
-  'render-as'?: string
   table?: string
   precision?: number
   'read-only'?: boolean
@@ -86,21 +85,19 @@ function formatNumber(
   return val.toFixed(field.precision)
 }
 
-// --- Render-as dispatch ---
+// --- Widget dispatch ---
 //
 // Each function handles one rendering context (list cell vs form).
-// To add a new render-as value, add a case here. 'text' is the default.
+// Dispatch is on `widget` only.
 
 function renderCellValue(
   val: any, field: Field
 ): React.ReactNode {
-  const renderAs = field['render-as'] || 'text'
   const widget = field['widget'] || ''
   const text = Array.isArray(val) ? val.join(', ')
     : formatNumber(val, field)
 
-  // Code widget or legacy render-as :code → monospace clamped cell
-  if (widget === 'code' || renderAs === 'code') {
+  if (widget === 'code') {
     return (
       <pre style={{
         margin: 0,
@@ -115,7 +112,7 @@ function renderCellValue(
     )
   }
 
-  if (widget === 'image-list' || renderAs === 'image-list') {
+  if (widget === 'image-list') {
     const paths: string[] = Array.isArray(val) ? val : []
     if (paths.length === 0) return text || ''
     return (
@@ -125,7 +122,7 @@ function renderCellValue(
     )
   }
 
-  if (widget === 'image' || renderAs === 'image') {
+  if (widget === 'image') {
     const path = typeof val === 'string' ? val : ''
     if (!path) return text || ''
     return (
@@ -135,7 +132,7 @@ function renderCellValue(
     )
   }
 
-  if (widget === 'stars' || renderAs === 'stars') {
+  if (widget === 'stars') {
     const num = typeof val === 'number' ? val
       : val ? Number(val) : null
     if (num == null || isNaN(num)) return ''
@@ -189,11 +186,9 @@ function renderFormField(
   field: Field, value: any,
   onChange: (v: string) => void
 ): React.ReactNode {
-  const renderAs = field['render-as'] || 'text'
   const widget = field['widget'] || ''
 
-  // Stars: dispatch via widget (preferred) or legacy render-as
-  if (widget === 'stars' || renderAs === 'stars') {
+  if (widget === 'stars') {
     const num = value ? Number(value) : null
     return (
       <StarRating
@@ -201,43 +196,6 @@ function renderFormField(
         interactive={true}
         onChange={onChange}
       />
-    )
-  }
-
-  // Temporary: render-as :code fallback for any field that
-  // still carries it but wasn't caught by widget dispatch.
-  // Remove in kill-render-as.org.
-  if (renderAs === 'code') {
-    return (
-      <textarea
-        value={value || ''}
-        onChange={e => onChange(e.target.value)}
-        rows={12}
-        style={{
-          width: '100%',
-          fontFamily: 'monospace',
-          fontSize: '0.95em'
-        }}
-      />
-    )
-  }
-
-  if (renderAs === 'image' && field.table) {
-    return (
-      <div style={{ display: 'flex', gap: '0.5rem',
-        alignItems: 'flex-start' }}>
-        <input
-          type="text"
-          value={value || ''}
-          onChange={e => onChange(e.target.value)}
-        />
-        {value && (
-          <ImagePreview
-            type={field.table}
-            path={String(value)}
-          />
-        )}
-      </div>
     )
   }
 
@@ -455,10 +413,9 @@ function renderReadOnlyField(
   field: Field,
   value: any
 ): React.ReactNode {
-  const renderAs = field['render-as'] || 'text'
   const widget = field['widget'] || ''
 
-  if (widget === 'image-list' || renderAs === 'image-list') {
+  if (widget === 'image-list') {
     const paths: string[] = Array.isArray(value) ? value : []
     return (
       <ThumbnailGrid
@@ -467,7 +424,7 @@ function renderReadOnlyField(
     )
   }
 
-  if (widget === 'image' || renderAs === 'image') {
+  if (widget === 'image') {
     const path = typeof value === 'string' ? value : ''
     if (!path) {
       return <div style={{ color: 'var(--muted-2)' }}>—</div>
@@ -479,7 +436,7 @@ function renderReadOnlyField(
     )
   }
 
-  if (widget === 'stars' || renderAs === 'stars') {
+  if (widget === 'stars') {
     const num = typeof value === 'number' ? value
       : value ? Number(value) : null
     if (num == null || isNaN(num))
@@ -1510,8 +1467,7 @@ function App() {
               )
             }
 
-            if (fieldMeta['widget'] === 'textarea'
-                || fieldMeta['widget'] === 'text') {
+            if (fieldMeta['widget'] === 'textarea') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
