@@ -270,7 +270,7 @@ Each `:button` field gets a companion `:<field>-status` column:
 | Column | `t` |
 | Default | `"idle"` |
 | Not-null | `t` |
-| UI | `(:label "<Button> Status" :widget :read-only)` |
+| UI | `(:label "<Button> Status" :widget :textbox :read-only t)` |
 | Source | `(:view :main :column <status-key> :agg :first)` |
 
 Status writes go through `be-set-field-value` only (the action path). The

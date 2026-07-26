@@ -221,13 +221,13 @@ name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "To Do" :widget :line)
+          :ui (:label "To Do" :widget :textbox)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
         (:type :integer :default 0
-          :ui (:label "Points" :widget :line)
+          :ui (:label "Points" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
@@ -254,7 +254,7 @@ name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "Tag" :widget :line)
+          :ui (:label "Tag" :widget :textbox)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
           :column t :not-null t :unique t))
@@ -432,11 +432,9 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:scope :user` on a field's `:source` to filter aggregated field values to the current user (e.g. "my rating")
 - `:identity t` marks a field as the natural key used for write-through lookups and unique indexes
 - `:write-to` declares related-table upserts from a field write (e.g. rating → ratings row); non-transactional in MVP
-- `:ui` hints (`:label`, `:widget`, `:render-as`, `:precision`) for frontend rendering
-- `:title` (top-level) — human-readable app title (e.g. "To Do List")
-- `:render-as` values: `:code`, `:image`, `:image-list`, `:stars` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview, star ratings)
-- `:precision` (under `:ui`) — digit count for JavaScript `toFixed` numeric display (e.g. average rating)
-- `:widget` values: `:line`, `:textbox`, `:select`, `:checkbox`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`, `:button`
+- `:ui` hints (`:label`, `:widget`, `:read-only`, `:precision`) for frontend rendering
+- `:widget` values: `:textbox`, `:textarea`, `:code`, `:stars`, `:select`, `:checkbox`, `:checkbox-list`, `:file`, `:hidden`, `:password`, `:button`, `:image`, `:image-list`
+- `:read-only t` on `:ui` renders a field's display variant instead of an editor (boolean flag, not a widget value)
 - `:button` field type with `:action` — clickable control on the update form that runs a registry action hook; compiler synthesizes a companion `:<field>-status` column
 - `:validations` common validation names or parameterized registry entries that validate form/field data
 - `:join-table` for many-to-many relationships
@@ -586,7 +584,7 @@ All endpoints stay **generic** — no per-type handler generation needed:
 
 React (or any frontend) fetches items with their schema and renders
 forms/lists automatically. The `:ui` plist on each field is the extension
-point — `:render-as`, `:widget`, `:precision`, and `:table` are consumed
+point — `:widget`, `:read-only`, `:precision`, and `:table` are consumed
 directly by the frontend components.
 
 
@@ -695,7 +693,7 @@ demonstrated end to end:
   write-through
   ratings (`:write-to`, `:identity`), action buttons (`:button`,
   `:action`), and UI hints for code blocks, images, image lists, and star
-  ratings (`:render-as`).
+  ratings (`:widget :stars`).
 - File handling: uploading, listing, and deleting files and directories
   works end-to-end (uploads use a two-phase flow: `multipart/form-data`
   POST to `/api/upload`, then a JSON `/api/insert` carrying the returned

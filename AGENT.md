@@ -251,11 +251,11 @@ nil), call `(init-database)` before running tests.
   - `:suppress-roles t` — type-level flag that suppresses the injected `roles`
     field in forms. Auto-set when `:user-setting t`; can also be set independently.
   - `:identity t` / `:write-to` — natural keys and related-table upserts
-  - `:render-as` UI hint (`:code`, `:image`, `:image-list`, `:stars`) — passed
-    through the `:ui` plist to the frontend for custom cell/form rendering
-  - `:widget` values now include `:textbox`, `:select`, `:read-only`,
-    `:file`, `:checkbox`, `:password`, `:hidden`, `:button` (in addition to
-    `:line`, `:checkbox-list`)
+  - `:widget` values: `:textbox`, `:textarea`, `:code`, `:stars`, `:select`,
+    `:file`, `:checkbox`, `:checkbox-list`, `:password`, `:hidden`, `:button`,
+    `:image`, `:image-list` — controls form rendering and list cell display
+  - `:read-only t` boolean on `:ui` — renders a field's display variant
+    instead of an editor (not a widget value)
   - `:button` field type with `:action` — clickable controls on update forms
     that invoke registry action hooks. Compiler synthesizes a companion
     `:<field>-status` column (default `"idle"`) to track action state.
@@ -431,7 +431,7 @@ Every `:button` field gets an auto-generated companion status column named
 `:<field>-status` (e.g. `:deploy` → `:deploy-status`):
 
 - `:type :text`, `:column t`, `:default "idle"`, `:not-null t`
-- `:ui (:widget :read-only)`
+- `:ui (:widget :textbox :read-only t)`
 - `:update nil` (blocks normal update path; status writes use `be-set-field-value`
   only)
 - `:source (:view :main :column <status-key> :agg :first)`
@@ -659,7 +659,7 @@ common purpose of validating input against a schema or contract.
 - Non-base types automatically receive a `roles` field (checkbox-list) in all forms, unless `:suppress-roles t` is set on the type (auto-set by `:user-setting t`)
 - The backend injects filtered `allowed-values.roles` so users only see roles they can assign
 - Forms are schema-driven; the frontend does not hard-code field lists
-- The `:ui` plist is passed through to the frontend verbatim — new UI hints (like `:render-as`) work without backend changes
+- The `:ui` plist is passed through to the frontend verbatim — new `:widget` values work without backend changes
 - `:button` fields are excluded from `:list-form` and `:add-form` by `fe-fields`; they appear only on `:update-form`
 - Delete uses the existing single-record-delete endpoint in a loop (acceptable for MVP)
 - Keep models small; hide RBAC complexity from model authors
@@ -676,9 +676,9 @@ common purpose of validating input against a schema or contract.
 - The app is intentionally simple — avoid adding heavy routing, state libraries, or styling until MVP is proven
 - All forms render from the schema returned by `/api/list`
 - Permission flags (`create`/`delete`/`update`) returned by `/api/list` control visibility of Add, Delete, and Edit controls
-- The `:ui` plist is the extension point for frontend rendering — `:render-as`, `:widget`, and `:table` are consumed by the React components
+- The `:ui` plist is the extension point for frontend rendering — `:widget`, `:read-only`, and `:table` are consumed by the React components
 - Button rendering: `:widget :button` triggers a `<button>` element on the edit form; `onClick` posts to `/api/actions`; the button is disabled while status is `running`
-- Image rendering: `:render-as :image` and `:render-as :image-list` trigger thumbnail grids with modal/lightbox preview; the `:table` key on the field tells the frontend which type to use for `/api/file` URLs
+- Image rendering: `:widget :image` and `:widget :image-list` trigger thumbnail grids with modal/lightbox preview; the `:table` key on the field tells the frontend which type to use for `/api/file` URLs
 
 ## Goals
 

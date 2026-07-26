@@ -115,7 +115,7 @@ Minimal skeleton:
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "To Do" :widget :line)
+          :ui (:label "To Do" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t))
@@ -358,17 +358,54 @@ keys injected by `fe-fields`). Unknown subkeys are harmless extension points.
 
 | Subkey | Values / meaning |
 |--------|------------------|
-| `:label` | display label string |
-| `:widget` | `:line` \| `:textbox` \| `:text` \| `:select` \| `:read-only` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` |
-| `:render-as` | `:code` \| `:image` \| `:image-list` \| `:stars` (default: plain text) |
+| `:label` | display label string (auto-generated from field key if omitted) |
+| `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:stars` \| `:select` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
+| `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:table` | **injected by `fe-fields`** from source table / type-key — used for `/api/file` URLs; do not set manually |
 
+Widget semantics:
+
+- `:textbox` — single-line `<input type="text">`
+- `:textarea` — multi-line `<textarea>` (~8 rows, resizable)
+- `:code` — monospace `<textarea>` (~12 rows)
+- `:stars` — interactive StarRating (editable) or static (read-only / list)
+- `:checkbox` — single boolean checkbox
+- `:checkbox-list` — multi-select from `allowed-values`
+- `:select` — `<select>` dropdown from `allowed-values`
+- `:file` — file input + two-phase upload
+- `:password` — masked password input
+- `:button` — action button (update form only)
+- `:hidden` — omitted from form entirely
+- `:image` — display thumbnail (always read-only for MVP)
+- `:image-list` — display thumbnail grid (always read-only for MVP)
+
+Compiler default injection (missing keys get safe compile-time defaults):
+
+- Missing `:widget` → compiler injects `:widget :textbox`
+- Missing `:read-only` on `:image` or `:image-list` → compiler injects
+  `:read-only t` (both are display-only for MVP)
+- Explicit `:read-only nil` on `:image` or `:image-list` → compile error
+  (editable image widgets are post-MVP)
+- Missing `:label` (when `:ui` is present) → humanized field key:
+  split on `-` / `_`, title-case each word, join with spaces
+  (e.g. `:average-rating` → "Average Rating", `:name` → "Name")
+- `:hidden` is never implied by omission — it must be set explicitly
+- Principle: the compiler injects safe defaults for missing keys so author
+  models stay small and syntax can simplify later (AI/no-code tiers)
+
+Abolished keys and values (compile-time errors if present):
+
+- `:input-type` — renamed to `:widget`
+- `:render-as` — deleted; presentation derives from `:widget`
+- `:form-control` — rejected name; never shipped
+- `:line` as a widget value — use `:textbox`
+- `:text` as a widget value — use `:textarea`
+- `:read-only` as a widget value — use `:read-only t` boolean flag
+
 Notes:
 
-- Missing `:widget` → field not emitted (except injected `:roles`)
 - `:widget :hidden` → excluded from `fe-fields`
-- `:text` and `:textbox` both appear in models; there is no compile-time enum check
 - `:widget :button` is required on button fields so the FE renders a control
 
 ### Foreign keys (`:target`)
@@ -378,7 +415,7 @@ Notes:
 (:type :text
   :autofill :user
   :force-sql-name "image_user"
-  :ui (:label "Owner" :widget :read-only)
+  :ui (:label "Owner" :widget :textbox :read-only t)
   :target :users
   :source (:view :main :table :users :column :name :agg :first)
   :source-all (:view :users :table :users :column :name :agg :list)
@@ -571,7 +608,7 @@ inserted or updated. Used by Model Bank ratings.
 ```lisp
 :rating
 (:type :integer
-  :ui (:label "My Rating" :widget :line :render-as :stars)
+  :ui (:label "My Rating" :widget :stars)
   :validations ((:in-range :min 1 :max 5))
   :source (:view :main :table :ratings :column :rating
            :scope :user :agg :first)
@@ -608,9 +645,9 @@ Model Bank:
    - **My Rating** — virtual/write-through field: `:source` from ratings with
      `:scope :user` and `:agg :first`; `:write-to` upserts the ratings row
      (`:book :this`, `:user :user`, `:rating :value`). UI label "My Rating",
-     `:render-as :stars`, `:validations ((:in-range :min 1 :max 5))`.
+     `:widget :stars`, `:validations ((:in-range :min 1 :max 5))`.
    - **Average (label "Rating")** — read-only `:type :real`, `:source` from
-     ratings with `:agg :avg`, `:render-as :stars`, optional `:precision 1`.
+     ratings with `:agg :avg`, `:widget :stars :read-only t`, optional `:precision 1`.
      No `:write-to`, no `:column` required on the parent.
 3. **Parent main view** must join the ratings table (and any M2M tables), e.g.
    `(:main (:tables (:books :book-authors :authors :ratings)))`.
@@ -665,7 +702,7 @@ error):
 | `:column` | `t` |
 | `:default` | `"idle"` |
 | `:not-null` | `t` |
-| `:ui` | `(:label "<ButtonLabel> Status" :widget :read-only)` |
+| `:ui` | `(:label "<ButtonLabel> Status" :widget :textbox :read-only t)` |
 | `:source` | `(:view :main :column :F-status :agg :first)` |
 
 Status writes go through `be-set-field-value` only.
@@ -704,7 +741,7 @@ Full contract and registered actions: `docs/hook-registry.md`.
   :fields
   (:name
     (:type :text :identity t :path t
-      :ui (:label "Directory" :widget :line)
+      :ui (:label "Directory" :widget :textbox)
       :validations (:required)
       :source (:view :main :column :name :agg :first)
       :column t :not-null t :unique t))
@@ -935,13 +972,13 @@ resolved `:category` / `:internal`.
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "To Do" :widget :line)
+          :ui (:label "To Do" :widget :textbox)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
         (:type :integer :default 0
-          :ui (:label "Points" :widget :line)
+          :ui (:label "Points" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
@@ -968,7 +1005,7 @@ resolved `:category` / `:internal`.
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "Tag" :widget :line)
+          :ui (:label "Tag" :widget :textbox)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
           :column t :not-null t :unique t))
@@ -988,7 +1025,7 @@ resolved `:category` / `:internal`.
 ```lisp
 :rating
 (:type :integer
-  :ui (:label "My Rating" :widget :line :render-as :stars)
+  :ui (:label "My Rating" :widget :stars)
   :validations ((:in-range :min 1 :max 5))
   :source (:view :main :table :ratings :column :rating
            :scope :user :agg :first)
@@ -998,8 +1035,7 @@ resolved `:category` / `:internal`.
               :rating :value))
 :average-rating
 (:type :real
-  :ui (:label "Rating" :widget :read-only
-       :render-as :stars :precision 1)
+  :ui (:label "Rating" :widget :stars :read-only t :precision 1)
   :source (:view :main :table :ratings :column :rating :agg :avg))
 ```
 
@@ -1024,7 +1060,7 @@ resolved `:category` / `:internal`.
   :fields
   (:name
     (:type :text :identity t :path t
-      :ui (:label "File" :widget :line)
+      :ui (:label "File" :widget :textbox)
       :validations (:required)
       :source (:view :main :column :name :agg :first)
       :column t :not-null t :unique t)
@@ -1055,7 +1091,9 @@ resolved `:category` / `:internal`.
 
 4. **View scope plist form** — validated, not implemented. Use `:scope :user`.
 
-5. **`:widget :text` vs `:textbox`** — both appear; no compile-time check.
+5. **Type→widget inference** — not implemented; all fields default to
+   `:textbox` regardless of `:type`. Smarter inference (e.g. `:type :text`
+   → `:textarea`) is an MVP Backlog item.
 
 6. **`:type :file` validation** — models comment that `:valid-file` should
    exist; it is not implemented yet.
@@ -1112,7 +1150,7 @@ resolved `:category` / `:internal`.
 `:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:default-from`
 `:css-value` `:primary-key` / joiner `:reference`
 
-**UI:** `:label` `:widget` `:render-as` `:precision`
+**UI:** `:label` `:widget` `:read-only` `:precision`
 
 **Source:** `:view` `:table` `:column` `:agg` `:scope`
 
