@@ -47,8 +47,7 @@
            :column t :not-null t :unique nil)
          :images
          (:type :list
-           :ui (:label "Images" :widget :textbox :read-only t
-                :render-as :image-list)
+           :ui (:label "Images" :widget :image-list)
            :source (:view :main :table :images :column :name :agg :distinct))
          :rating
          (:type :integer
@@ -80,7 +79,7 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "File" :widget :textbox :render-as :image)
+           :ui (:label "File" :widget :image)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)

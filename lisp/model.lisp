@@ -1322,6 +1322,24 @@ model."
             field-key type-key target id-field-count)))
       target)))
 
+(defun finalize-ui (ui)
+  "Post-process a field :ui plist for image widget rules.
+Inject :read-only t when missing on :image / :image-list.
+Reject explicit :read-only nil on those widgets (post-MVP feature)."
+  (let ((widget (getf ui :widget)))
+    (if (member widget '(:image :image-list))
+      (let ((ro (getf ui :read-only :missing)))
+        (cond
+          ((eq ro :missing)
+            (add-to-plist ui (list :read-only t)))
+          ((null ro)
+            (report-e "finalize-ui"
+              "Widget ~a is display-only for MVP; ~
+               :read-only nil is not allowed."
+              ~widget))
+          (t ui)))
+      ui)))
+
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
     with force-sql-name = (getf field-def :force-sql-name)
@@ -1391,11 +1409,16 @@ model."
     append (list attr (getf field-def attr)) into def
     finally
     (return
-      (append def new-def
-        (when is-button
-          (list
-            :compiled-hook compiled-hook
-            :status-field status-key))))))
+      (let* ((ui-val (getf def :ui))
+             (final-ui (when ui-val (finalize-ui ui-val)))
+             (final-def (if final-ui
+                          (add-to-plist def (list :ui final-ui))
+                          def)))
+        (append final-def new-def
+          (when is-button
+            (list
+              :compiled-hook compiled-hook
+              :status-field status-key)))))))
 
 (defun resolve-scope-alias (model type-key view-key table-key scope)
   "Resolve a :scope keyword on a field source to the alias key

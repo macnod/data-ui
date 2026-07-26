@@ -115,7 +115,7 @@ function renderCellValue(
     )
   }
 
-  if (renderAs === 'image-list') {
+  if (widget === 'image-list' || renderAs === 'image-list') {
     const paths: string[] = Array.isArray(val) ? val : []
     if (paths.length === 0) return text || ''
     return (
@@ -125,7 +125,7 @@ function renderCellValue(
     )
   }
 
-  if (renderAs === 'image') {
+  if (widget === 'image' || renderAs === 'image') {
     const path = typeof val === 'string' ? val : ''
     if (!path) return text || ''
     return (
@@ -458,11 +458,23 @@ function renderReadOnlyField(
   const renderAs = field['render-as'] || 'text'
   const widget = field['widget'] || ''
 
-  if (renderAs === 'image-list') {
+  if (widget === 'image-list' || renderAs === 'image-list') {
     const paths: string[] = Array.isArray(value) ? value : []
     return (
       <ThumbnailGrid
         type={field.table || ''} paths={paths}
+      />
+    )
+  }
+
+  if (widget === 'image' || renderAs === 'image') {
+    const path = typeof value === 'string' ? value : ''
+    if (!path) {
+      return <div style={{ color: 'var(--muted-2)' }}>—</div>
+    }
+    return (
+      <ImagePreview
+        type={field.table || ''} path={path}
       />
     )
   }
