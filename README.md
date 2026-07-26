@@ -233,7 +233,7 @@ name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :check-box)
+          :ui (:label "Done" :input-type :checkbox)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
         :tags
@@ -436,7 +436,7 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:title` (top-level) — human-readable app title (e.g. "To Do List")
 - `:render-as` values: `:code`, `:image`, `:image-list`, `:stars` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview, star ratings)
 - `:precision` (under `:ui`) — digit count for JavaScript `toFixed` numeric display (e.g. average rating)
-- `:input-type` values: `:line`, `:textbox`, `:select`, `:check-box`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`, `:button`
+- `:input-type` values: `:line`, `:textbox`, `:select`, `:checkbox`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`, `:button`
 - `:button` field type with `:action` — clickable control on the update form that runs a registry action hook; compiler synthesizes a companion `:<field>-status` column
 - `:validations` common validation names or parameterized registry entries that validate form/field data
 - `:join-table` for many-to-many relationships

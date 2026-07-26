@@ -130,7 +130,7 @@ validation, UI hints, RBAC roles:
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :check-box)
+          :ui (:label "Done" :input-type :checkbox)
           :column t :not-null t)
         :tags
         (:type :list

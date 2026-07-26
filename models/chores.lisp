@@ -55,7 +55,7 @@
           :column t :not-null t)
         :completed
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :check-box)
+          :ui (:label "Done" :input-type :checkbox)
           :source (:view :main :column :completed :agg :first)
           :column t :not-null t)
         :completed-by

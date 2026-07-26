@@ -27,7 +27,7 @@
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :check-box)
+          :ui (:label "Done" :input-type :checkbox)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
         :tags

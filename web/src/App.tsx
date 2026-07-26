@@ -1317,7 +1317,7 @@ function App() {
               : data.result['add-form'][f]
             const allowed = data.result['allowed-values']?.[f] || []
             const isCheckboxList = fieldMeta['input-type'] === 'checkbox-list'
-            const isCheckBox = fieldMeta['input-type'] === 'check-box'
+            const isCheckbox = fieldMeta['input-type'] === 'checkbox'
 
             if (isCheckboxList) {
               const selected = formValues[f] || []
@@ -1408,7 +1408,7 @@ function App() {
               )
             }
 
-            if (isCheckBox) {
+            if (isCheckbox) {
               const checked = !!formValues[f]
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>

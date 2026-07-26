@@ -359,7 +359,7 @@ keys injected by `fe-fields`). Unknown subkeys are harmless extension points.
 | Subkey | Values / meaning |
 |--------|------------------|
 | `:label` | display label string |
-| `:input-type` | `:line` \| `:textbox` \| `:text` \| `:select` \| `:read-only` \| `:file` \| `:check-box` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` |
+| `:input-type` | `:line` \| `:textbox` \| `:text` \| `:select` \| `:read-only` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` |
 | `:render-as` | `:code` \| `:image` \| `:image-list` \| `:stars` (default: plain text) |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:table` | **injected by `fe-fields`** from source table / type-key — used for `/api/file` URLs; do not set manually |
@@ -947,7 +947,7 @@ resolved `:category` / `:internal`.
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :check-box)
+          :ui (:label "Done" :input-type :checkbox)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
         :tags

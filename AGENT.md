@@ -254,7 +254,7 @@ nil), call `(init-database)` before running tests.
   - `:render-as` UI hint (`:code`, `:image`, `:image-list`, `:stars`) — passed
     through the `:ui` plist to the frontend for custom cell/form rendering
   - `:input-type` values now include `:textbox`, `:select`, `:read-only`,
-    `:file`, `:check-box`, `:password`, `:hidden`, `:button` (in addition to
+    `:file`, `:checkbox`, `:password`, `:hidden`, `:button` (in addition to
     `:line`, `:checkbox-list`)
   - `:button` field type with `:action` — clickable controls on update forms
     that invoke registry action hooks. Compiler synthesizes a companion

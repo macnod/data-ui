@@ -710,7 +710,7 @@ so errors become 'failed: <message>' rather than silent thread death."
                         :column t :not-null t :unique t)
                  :dark-mode (:type :boolean :default :false
                               :css-value t
-                              :ui (:label "Dark Mode" :input-type :check-box)
+                              :ui (:label "Dark Mode" :input-type :checkbox)
                               :source (:view :main :column :dark-mode :agg :first)
                               :column t :not-null t)
                  :display-name (:type :text :default "(non specified)"
@@ -774,7 +774,7 @@ so errors become 'failed: <message>' rather than silent thread death."
                         :source (:view :main :column :user :agg :first)
                         :column t :not-null t :unique t)
                  :value (:type :text
-                          :ui (:lable "Value" :input-type :line)
+                          :ui (:label "Value" :input-type :line)
                           :source (:view :main :column :value :agg :first)
                           :column t :not-null t :unique t)))))
 
