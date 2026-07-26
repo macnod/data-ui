@@ -59,7 +59,6 @@
       :fields 
       (:name
         (:type :text :identity t
-          ;; TODO: Add checks for :widget value
           :ui (:label "Tag" :widget :textbox)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)

@@ -236,10 +236,16 @@ both test-model and modelbank."
   (with-model "test-model" nil
     (run! 'secrets-suite)))
 
+(defun run-widget-tests ()
+  "Widget allow-list and UI emission tests."
+  (with-model "test-model" nil
+    (run! 'widget-suite)))
+
 (defun run-tests ()
   (run-backend-tests)
   (run-scoping-tests)
   (run-hook-registry-tests)
   (run-lifecycle-tests)
   (run-action-tests)
-  (run-secrets-tests))
+  (run-secrets-tests)
+  (run-widget-tests))

@@ -562,6 +562,11 @@ so errors become 'failed: <message>' rather than silent thread death."
 
 (defparameter *forms* '(:list-form :add-form :update-form))
 
+(defparameter *widgets*
+  '(:textbox :textarea :code :stars :checkbox :checkbox-list :select
+    :file :password :button :hidden :image :image-list)
+  "Allowed values for the :widget key on a field :ui plist.")
+
 (setq *base-model*
   `(:users
      (:table t :base t :built-in t
@@ -1322,23 +1327,96 @@ model."
             field-key type-key target id-field-count)))
       target)))
 
-(defun finalize-ui (ui)
-  "Post-process a field :ui plist for image widget rules.
-Inject :read-only t when missing on :image / :image-list.
-Reject explicit :read-only nil on those widgets (post-MVP feature)."
+(defun humanize-field-key (field-key)
+  "Convert a field key like :average-rating into a human label
+like \"Average Rating\". Splits on dashes and underscores,
+capitalizes each word, and joins with spaces."
+  (let ((name (string-downcase (string field-key))))
+    (with-output-to-string (out)
+      (loop
+        with capitalize-next = t
+        for ch across name
+        do
+        (cond
+          ((or (char= ch #\-) (char= ch #\_))
+            (write-char #\Space out)
+            (setq capitalize-next t))
+          (capitalize-next
+            (write-char (char-upcase ch) out)
+            (setq capitalize-next nil))
+          (t
+            (write-char ch out)))))))
+
+(defun valid-ui-keys (ui)
+  "Check that no dead/rejected keys are present on the :ui plist.
+Signals via report-e if any are found."
+  (loop for bad-key in '(:render-as :input-type :form-control)
+    when (u:has (u:plist-keys ui) bad-key)
+    do (report-e "valid-ui-keys"
+         "Rejected key ~s found on :ui plist. ~
+          Use :widget instead."
+         ~bad-key)))
+
+(defun valid-widget-value (widget)
+  "Check that WIDGET is a known widget keyword.
+Signals via report-e if not."
+  (unless (member widget *widgets*)
+    (report-e "valid-widget-value"
+      "Unknown :widget ~s. Must be one of: ~{~a~^, ~}."
+      ~widget *widgets*)))
+
+(defun valid-read-only-value (ui)
+  "Check that :read-only, if present, is t or nil.
+Signals via report-ve otherwise."
+  (let ((ro (getf ui :read-only :missing)))
+    (unless (or (eq ro :missing) (eq ro t) (null ro))
+      (report-ve "valid-read-only-value"
+        ":read-only must be t or nil, got ~s."
+        ~ro))))
+
+(defun finalize-ui (field-key ui)
+  "Compile-time gate for field :ui plists. Validates keys and
+widget values, then injects safe defaults:
+  - :widget defaults to :textbox when missing
+  - :label defaults to humanized field-key when missing
+  - :read-only defaults to t on :image / :image-list when missing
+Rejects:
+  - Dead keys (:render-as, :input-type, :form-control)
+  - Unknown widget values
+  - :read-only with non-boolean values
+  - :read-only nil on :image / :image-list (post-MVP)"
+  ;; Reject dead keys before anything else
+  (valid-ui-keys ui)
+  ;; Validate :read-only value if present
+  (valid-read-only-value ui)
+  ;; Validate widget if explicitly present
   (let ((widget (getf ui :widget)))
-    (if (member widget '(:image :image-list))
-      (let ((ro (getf ui :read-only :missing)))
+    (when widget
+      (valid-widget-value widget)))
+  ;; Inject defaults
+  (let* ((with-widget
+           (if (getf ui :widget)
+             ui
+             (add-to-plist ui (list :widget :textbox))))
+         (with-label
+           (if (getf with-widget :label)
+             with-widget
+             (add-to-plist with-widget
+               (list :label (humanize-field-key field-key)))))
+         (final-widget (getf with-label :widget)))
+    ;; Image read-only rules (existing logic)
+    (if (member final-widget '(:image :image-list))
+      (let ((ro (getf with-label :read-only :missing)))
         (cond
           ((eq ro :missing)
-            (add-to-plist ui (list :read-only t)))
+            (add-to-plist with-label (list :read-only t)))
           ((null ro)
             (report-e "finalize-ui"
               "Widget ~a is display-only for MVP; ~
                :read-only nil is not allowed."
-              ~widget))
-          (t ui)))
-      ui)))
+              ~final-widget))
+          (t with-label)))
+      with-label)))
 
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
@@ -1410,7 +1488,8 @@ Reject explicit :read-only nil on those widgets (post-MVP feature)."
     finally
     (return
       (let* ((ui-val (getf def :ui))
-             (final-ui (when ui-val (finalize-ui ui-val)))
+             (final-ui (when ui-val
+                         (finalize-ui new-field-key ui-val)))
              (final-def (if final-ui
                           (add-to-plist def (list :ui final-ui))
                           def)))
