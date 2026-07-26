@@ -15,24 +15,24 @@
       :fields
       (:title
         (:type :text :identity t
-          :ui (:label "Title" :widget :line)
+          :ui (:label "Title" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :title :agg :first)
           :column t :not-null t :unique t)
         :isbn
         (:type :text
-          :ui (:label "ISBN" :widget :line)
+          :ui (:label "ISBN" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :isbn :agg :first)
           :column t :not-null t :unique t)
         :description
         (:type :text
-          :ui (:label "Description" :widget :textbox)
+          :ui (:label "Description" :widget :textarea)
           :source (:view :main :column :description :agg :first)
           :column t)
         :rating
         (:type :integer
-          :ui (:label "My Rating" :widget :line :render-as :stars)
+          :ui (:label "My Rating" :widget :textbox :render-as :stars)
           :validations ((:in-range :min 1 :max 5))
           :source (:view :main :table :ratings :column :rating
                    :scope :user :agg :first)
@@ -63,7 +63,7 @@
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "Name" :widget :line)
+          :ui (:label "Name" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t))
@@ -98,7 +98,7 @@
           :column t :not-null t)
         :rating
         (:type :integer
-          :ui (:label "Rating" :widget :line :render-as :stars)
+          :ui (:label "Rating" :widget :textbox :render-as :stars)
           :validations ((:in-range :min 1 :max 5))
           :source (:view :main :table :ratings :column :rating :agg :first)
           :column t))

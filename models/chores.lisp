@@ -38,18 +38,18 @@
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "Chore" :widget :line)
+          :ui (:label "Chore" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :description
         (:type :text :default ""
-          :ui (:label "Description" :widget :textbox)
+          :ui (:label "Description" :widget :textarea)
           :source (:view :main :column :description :agg :first)
           :column t)
         :points
         (:type :integer :default 1
-          :ui (:label "Points" :widget :line)
+          :ui (:label "Points" :widget :textbox)
           :validations (:required (:in-range :min 1 :max 4))
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
@@ -85,13 +85,13 @@
           :column t :not-null t)
         :chore-count
         (:type :integer :default 0
-          :ui (:label "Chores Done" :widget :line)
+          :ui (:label "Chores Done" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :chore-count :agg :first)
           :column t :not-null t)
         :total-points
         (:type :integer :default 0
-          :ui (:label "Total Points" :widget :line)
+          :ui (:label "Total Points" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :total-points :agg :first)
           :column t :not-null t))

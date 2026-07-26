@@ -14,13 +14,13 @@
       :fields
       (:name 
         (:type :text :identity t
-          :ui (:label "To Do" :widget :line)
+          :ui (:label "To Do" :widget :textbox)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
         (:type :integer :default 0
-          :ui (:label "Points" :widget :line)
+          :ui (:label "Points" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
@@ -60,7 +60,7 @@
       (:name
         (:type :text :identity t
           ;; TODO: Add checks for :widget value
-          :ui (:label "Tag" :widget :line)
+          :ui (:label "Tag" :widget :textbox)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
           :column t :not-null t :unique t))

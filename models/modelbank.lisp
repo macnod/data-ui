@@ -15,7 +15,7 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "Directory" :widget :line)
+           :ui (:label "Directory" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t))
@@ -31,18 +31,18 @@
        :fields
        (:name
          (:type :text :identity t
-           :ui (:label "Model Name" :widget :line)
+           :ui (:label "Model Name" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
          :description
          (:type :text
-           :ui (:label "Model Description" :widget :textbox)
+           :ui (:label "Model Description" :widget :textarea)
            :source (:view :main :column :description :agg :first)
            :column t :not-null nil :unique nil)
          :model
          (:type :text
-           :ui (:label "Model Code" :widget :textbox :render-as :code)
+           :ui (:label "Model Code" :widget :code)
            :source (:view :main :column :model :agg :first)
            :column t :not-null t :unique nil)
          :images
@@ -51,7 +51,7 @@
            :source (:view :main :table :images :column :name :agg :distinct))
          :rating
          (:type :integer
-           :ui (:label "My Rating" :widget :line :render-as :stars)
+           :ui (:label "My Rating" :widget :textbox :render-as :stars)
            :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating
                     :scope :user :agg :first)
@@ -80,7 +80,7 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "File" :widget :line :render-as :image)
+           :ui (:label "File" :widget :textbox :render-as :image)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
@@ -140,7 +140,7 @@
            :column t :not-null t)
          :rating
          (:type :integer
-           :ui (:label "Rating" :widget :line :render-as :stars)
+           :ui (:label "Rating" :widget :textbox :render-as :stars)
            :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating :agg :first)
            :column t))

@@ -14,13 +14,13 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "Directory" :widget :line)
+           :ui (:label "Directory" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
          :bogus
          (:type :text :default ""
-           :ui (:label "Bogus" :widget :line)
+           :ui (:label "Bogus" :widget :textbox)
            :source (:view :main :column :name :agg :first)
            :column t))
        :list-form (:fields t)
@@ -36,7 +36,7 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "File" :widget :line)
+           :ui (:label "File" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
@@ -61,13 +61,13 @@
        :fields 
        (:name 
          (:type :text :identity t
-           :ui (:label "Part Number" :widget :line)
+           :ui (:label "Part Number" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
          :description
          (:type :text
-           :ui (:label "Part Description" :widget :text)
+           :ui (:label "Part Description" :widget :textarea)
            :source (:view :main :column :description :agg :first)
            :column t :not-null nil :unique nil)
          ;; TODO: This field should be able to have a different

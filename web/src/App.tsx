@@ -94,50 +94,54 @@ function renderCellValue(
   val: any, field: Field
 ): React.ReactNode {
   const renderAs = field['render-as'] || 'text'
+  const widget = field['widget'] || ''
   const text = Array.isArray(val) ? val.join(', ')
     : formatNumber(val, field)
 
-  switch (renderAs) {
-    case 'code':
-      return (
-        <pre style={{
-          margin: 0,
-          maxHeight: '4.5em',
-          overflow: 'hidden',
-          whiteSpace: 'pre-wrap',
-          fontSize: '0.85em',
-          fontFamily: 'monospace'
-        }}>
-          {text}
-        </pre>
-      )
-    case 'image-list': {
-      const paths: string[] = Array.isArray(val) ? val : []
-      if (paths.length === 0) return text || ''
-      return (
-        <ThumbnailGrid
-          type={field.table || ''} paths={paths} size={40}
-        />
-      )
-    }
-    case 'image': {
-      const path = typeof val === 'string' ? val : ''
-      if (!path) return text || ''
-      return (
-        <ThumbnailGrid
-          type={field.table || ''} paths={[path]} size={40}
-        />
-      )
-    }
-    case 'stars': {
-      const num = typeof val === 'number' ? val
-        : val ? Number(val) : null
-      if (num == null || isNaN(num)) return ''
-      return <StarRating value={num} />
-    }
-    default:
-      return text
+  // Code widget or legacy render-as :code → monospace clamped cell
+  if (widget === 'code' || renderAs === 'code') {
+    return (
+      <pre style={{
+        margin: 0,
+        maxHeight: '4.5em',
+        overflow: 'hidden',
+        whiteSpace: 'pre-wrap',
+        fontSize: '0.85em',
+        fontFamily: 'monospace'
+      }}>
+        {text}
+      </pre>
+    )
   }
+
+  if (renderAs === 'image-list') {
+    const paths: string[] = Array.isArray(val) ? val : []
+    if (paths.length === 0) return text || ''
+    return (
+      <ThumbnailGrid
+        type={field.table || ''} paths={paths} size={40}
+      />
+    )
+  }
+
+  if (renderAs === 'image') {
+    const path = typeof val === 'string' ? val : ''
+    if (!path) return text || ''
+    return (
+      <ThumbnailGrid
+        type={field.table || ''} paths={[path]} size={40}
+      />
+    )
+  }
+
+  if (renderAs === 'stars') {
+    const num = typeof val === 'number' ? val
+      : val ? Number(val) : null
+    if (num == null || isNaN(num)) return ''
+    return <StarRating value={num} />
+  }
+
+  return text
 }
 
 function ImagePreview({
@@ -186,8 +190,7 @@ function renderFormField(
 ): React.ReactNode {
   const renderAs = field['render-as'] || 'text'
 
-  // For now only 'code' gets special form treatment.
-  // Future render-as values (rating, image, etc.) will add cases.
+  // Stars still dispatched via render-as until stars.org
   if (renderAs === 'stars') {
     const num = value ? Number(value) : null
     return (
@@ -199,6 +202,9 @@ function renderFormField(
     )
   }
 
+  // Temporary: render-as :code fallback for any field that
+  // still carries it but wasn't caught by widget dispatch.
+  // Remove in kill-render-as.org.
   if (renderAs === 'code') {
     return (
       <textarea
@@ -1474,6 +1480,10 @@ function App() {
               )
             }
 
+            if (fieldMeta['widget'] === 'hidden') {
+              return null
+            }
+
             if (fieldMeta['widget'] === 'read-only') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
@@ -1481,6 +1491,44 @@ function App() {
                   {renderReadOnlyField(
                     fieldMeta, formValues[f]
                   )}
+                </div>
+              )
+            }
+
+            if (fieldMeta['widget'] === 'textarea'
+                || fieldMeta['widget'] === 'text') {
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <textarea
+                    value={formValues[f] || ''}
+                    onChange={e =>
+                      setFormValues({ ...formValues, [f]: e.target.value })
+                    }
+                    rows={8}
+                    style={{ width: '100%', resize: 'vertical' }}
+                  />
+                </div>
+              )
+            }
+
+            if (fieldMeta['widget'] === 'code') {
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <textarea
+                    value={formValues[f] || ''}
+                    onChange={e =>
+                      setFormValues({ ...formValues, [f]: e.target.value })
+                    }
+                    rows={12}
+                    style={{
+                      width: '100%',
+                      resize: 'vertical',
+                      fontFamily: 'monospace',
+                      fontSize: '0.95em'
+                    }}
+                  />
                 </div>
               )
             }

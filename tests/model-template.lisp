@@ -12,7 +12,7 @@
       :fields
       (:name
         (:type :text
-          :ui (:label ":model: name" :widget :line)
+          :ui (:label ":model: name" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)))

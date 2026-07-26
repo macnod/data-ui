@@ -584,7 +584,7 @@ so errors become 'failed: <message>' rather than silent thread death."
                 :roles (:tables (:roles)))
        :fields (:name (:type :text :identity t
                         :source (:view :main :column :name :agg :first)
-                        :ui (:label "Username" :widget :line)
+                        :ui (:label "Username" :widget :textbox)
                         :validations (:required :user-name)
                         :column t :not-null t :unique t)
                  :password (:type :password
@@ -597,7 +597,7 @@ so errors become 'failed: <message>' rather than silent thread death."
                           :default "no-email"
                           :force-sql-name "email"
                           :source (:view :main :column :email :agg :first)
-                          :ui (:label "Email" :widget :line)
+                          :ui (:label "Email" :widget :textbox)
                           :validations (:email)
                           :column t :not-null t)
                  :roles (:type :list
@@ -618,7 +618,7 @@ so errors become 'failed: <message>' rather than silent thread death."
        :views (:main (:tables (:resources :resource-roles :roles))
                 :roles (:tables (:roles)))
        :fields (:name (:type :text :identity t
-                        :ui (:label "Resource" :widget :line)
+                        :ui (:label "Resource" :widget :textbox)
                         :source (:view :main :column :name :agg :first)
                         :validations (:required)
                         :column t :not-null t :unique t)
@@ -643,7 +643,7 @@ so errors become 'failed: <message>' rather than silent thread death."
        :display t
        :type-roles ("logged-in" "permission-creator")
        :fields (:name (:type :text :identity t
-                        :ui (:label "Permission" :widget :line)
+                        :ui (:label "Permission" :widget :textbox)
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t))
        :list-form (:fields t)
@@ -660,7 +660,7 @@ so errors become 'failed: <message>' rather than silent thread death."
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
        :fields (:name (:type :text :identity t
-                        :ui (:label "Role" :widget :line)
+                        :ui (:label "Role" :widget :textbox)
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t)
                  :permissions (:type :list
@@ -715,11 +715,11 @@ so errors become 'failed: <message>' rather than silent thread death."
                               :column t :not-null t)
                  :display-name (:type :text :default "(non specified)"
                                  :default-from :user
-                                 :ui (:label "Real Name" :widget :line)
+                                 :ui (:label "Real Name" :widget :textbox)
                                  :source (:view :main :column :display-name :agg :first)
                                  :column t :not-null t)
                  :bio (:type :text :default "(non specified)"
-                        :ui (:label "Bio" :widget :text)
+                        :ui (:label "Bio" :widget :textarea)
                         :source (:view :main :column :bio :agg :first)
                         :column t :not-null t))
        :list-form (:fields (:user :dark-mode :display-name :bio))
@@ -744,15 +744,15 @@ so errors become 'failed: <message>' rather than silent thread death."
                                   :column :name :agg :first)
                         :column t :not-null t)
                  :name (:type :text
-                         :ui (:label "Name" :widget :line)
+                         :ui (:label "Name" :widget :textbox)
                          :source (:view :main :column :name :agg :first)
                          :column t :not-null t)
                  :value (:type :text
-                          :ui (:label "Value" :widget :line)
+                          :ui (:label "Value" :widget :textbox)
                           :source (:view :main :column :value :agg :first)
                           :column t :not-null t)
                  :description (:type :text
-                                :ui (:label "Description" :widget :line)
+                                :ui (:label "Description" :widget :textarea)
                                 :source (:view :main
                                           :column :description :agg :first)
                                 :column t))
@@ -768,13 +768,13 @@ so errors become 'failed: <message>' rather than silent thread death."
                         ;; TODO: We shouldn't need to have :ui hints for this
                         ;;       type, yet there are failures if we don't
                         ;;       include :ui here.
-                        :ui (:label "User" :widget :line)
+                        :ui (:label "User" :widget :textbox)
                         ;; TODO: A bad :view, :table, :column, or :agg should
                         ;;       raise a compile-time error.
                         :source (:view :main :column :user :agg :first)
                         :column t :not-null t :unique t)
                  :value (:type :text
-                          :ui (:label "Value" :widget :line)
+                          :ui (:label "Value" :widget :textbox)
                           :source (:view :main :column :value :agg :first)
                           :column t :not-null t :unique t)))))
 
