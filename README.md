@@ -221,24 +221,24 @@ name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "To Do" :input-type :line)
+          :ui (:label "To Do" :widget :line)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
         (:type :integer :default 0
-          :ui (:label "Points" :input-type :line)
+          :ui (:label "Points" :widget :line)
           :validations (:required)
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :checkbox)
+          :ui (:label "Done" :widget :checkbox)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
         :tags
         (:type :list
-          :ui (:label "Tags" :input-type :checkbox-list)
+          :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
           :source (:view :main :table :tags :column :name :agg :list)
           :source-all (:view :tags :table :tags :column :name :agg :list)
@@ -254,7 +254,7 @@ name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "Tag" :input-type :line)
+          :ui (:label "Tag" :widget :line)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
           :column t :not-null t :unique t))
@@ -276,7 +276,7 @@ This single definition aims to give you:
 - Automatic many-to-many relationship handling via declared joiner tables
 - Parameterized CRUD SQL ready for safe execution
 - Full RBAC protection on every operation (via `macnod/rbac`)
-- UI hints (`:label`, `:input-type`, form layouts) that a React frontend can read directly to generate dynamic forms and lists
+- UI hints (`:label`, `:widget`, form layouts) that a React frontend can read directly to generate dynamic forms and lists
 - A complete React frontend
 - Kubernetes manifests for easy, consistent, reproducible deployment
 
@@ -432,11 +432,11 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:scope :user` on a field's `:source` to filter aggregated field values to the current user (e.g. "my rating")
 - `:identity t` marks a field as the natural key used for write-through lookups and unique indexes
 - `:write-to` declares related-table upserts from a field write (e.g. rating → ratings row); non-transactional in MVP
-- `:ui` hints (`:label`, `:input-type`, `:render-as`, `:precision`) for frontend rendering
+- `:ui` hints (`:label`, `:widget`, `:render-as`, `:precision`) for frontend rendering
 - `:title` (top-level) — human-readable app title (e.g. "To Do List")
 - `:render-as` values: `:code`, `:image`, `:image-list`, `:stars` — trigger specialized frontend rendering (code blocks, thumbnail grids, lightbox preview, star ratings)
 - `:precision` (under `:ui`) — digit count for JavaScript `toFixed` numeric display (e.g. average rating)
-- `:input-type` values: `:line`, `:textbox`, `:select`, `:checkbox`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`, `:button`
+- `:widget` values: `:line`, `:textbox`, `:select`, `:checkbox`, `:checkbox-list`, `:read-only`, `:file`, `:hidden`, `:password`, `:button`
 - `:button` field type with `:action` — clickable control on the update form that runs a registry action hook; compiler synthesizes a companion `:<field>-status` column
 - `:validations` common validation names or parameterized registry entries that validate form/field data
 - `:join-table` for many-to-many relationships
@@ -586,7 +586,7 @@ All endpoints stay **generic** — no per-type handler generation needed:
 
 React (or any frontend) fetches items with their schema and renders
 forms/lists automatically. The `:ui` plist on each field is the extension
-point — `:render-as`, `:input-type`, `:precision`, and `:table` are consumed
+point — `:render-as`, `:widget`, `:precision`, and `:table` are consumed
 directly by the frontend components.
 
 

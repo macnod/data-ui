@@ -251,14 +251,14 @@ function is stored on the compiled field definition as `:compiled-hook`.
 ```lisp
 :deploy
 (:type :button
-  :ui (:label "Deploy Model" :input-type :button)
+  :ui (:label "Deploy Model" :widget :button)
   :action (:deploy-model :field :model))
 ```
 
 - `:type :button` — no storage column.
 - `:action` — a single registry form `(:keyword args...)`.
 - `:action` is valid **only** on `:type :button` (compile-time error otherwise).
-- `:ui` must include `:input-type :button`.
+- `:ui` must include `:widget :button`.
 
 ### Status field (auto-synthesized)
 
@@ -270,7 +270,7 @@ Each `:button` field gets a companion `:<field>-status` column:
 | Column | `t` |
 | Default | `"idle"` |
 | Not-null | `t` |
-| UI | `(:label "<Button> Status" :input-type :read-only)` |
+| UI | `(:label "<Button> Status" :widget :read-only)` |
 | Source | `(:view :main :column <status-key> :agg :first)` |
 
 Status writes go through `be-set-field-value` only (the action path). The

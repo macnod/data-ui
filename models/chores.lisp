@@ -38,29 +38,29 @@
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "Chore" :input-type :line)
+          :ui (:label "Chore" :widget :line)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :description
         (:type :text :default ""
-          :ui (:label "Description" :input-type :textbox)
+          :ui (:label "Description" :widget :textbox)
           :source (:view :main :column :description :agg :first)
           :column t)
         :points
         (:type :integer :default 1
-          :ui (:label "Points" :input-type :line)
+          :ui (:label "Points" :widget :line)
           :validations (:required (:in-range :min 1 :max 4))
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
         :completed
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :checkbox)
+          :ui (:label "Done" :widget :checkbox)
           :source (:view :main :column :completed :agg :first)
           :column t :not-null t)
         :completed-by
         (:type :list
-          :ui (:label "Completed By" :input-type :checkbox-list)
+          :ui (:label "Completed By" :widget :checkbox-list)
           :validations (:join-items-exist)
           :source (:view :main :table :users :column :name :agg :list)
           :source-all (:view :users :table :users :column :name :agg :list)
@@ -79,19 +79,19 @@
         (:type :text
           :target :users
           :identity t
-          :ui (:label "User" :input-type :select)
+          :ui (:label "User" :widget :select)
           :source (:view :main :table :users :column :name :agg :first)
           :source-all (:view :users :table :users :column :name :agg :list)
           :column t :not-null t)
         :chore-count
         (:type :integer :default 0
-          :ui (:label "Chores Done" :input-type :line)
+          :ui (:label "Chores Done" :widget :line)
           :validations (:required)
           :source (:view :main :column :chore-count :agg :first)
           :column t :not-null t)
         :total-points
         (:type :integer :default 0
-          :ui (:label "Total Points" :input-type :line)
+          :ui (:label "Total Points" :widget :line)
           :validations (:required)
           :source (:view :main :column :total-points :agg :first)
           :column t :not-null t))

@@ -14,13 +14,13 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "Directory" :input-type :line)
+           :ui (:label "Directory" :widget :line)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
          :bogus
          (:type :text :default ""
-           :ui (:label "Bogus" :input-type :line)
+           :ui (:label "Bogus" :widget :line)
            :source (:view :main :column :name :agg :first)
            :column t))
        :list-form (:fields t)
@@ -36,7 +36,7 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "File" :input-type :line)
+           :ui (:label "File" :widget :line)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
@@ -46,7 +46,7 @@
          ;;       check that the file path is correct, that the directory
          ;;       exists, and that the file doesn't already exist.
          (:type :file
-           :ui (:label "Select File" :input-type :file)
+           :ui (:label "Select File" :widget :file)
            :validations (:required)))
        :list-form (:fields t)
        :update-form (:fields t)
@@ -61,20 +61,20 @@
        :fields 
        (:name 
          (:type :text :identity t
-           :ui (:label "Part Number" :input-type :line)
+           :ui (:label "Part Number" :widget :line)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
          :description
          (:type :text
-           :ui (:label "Part Description" :input-type :text)
+           :ui (:label "Part Description" :widget :text)
            :source (:view :main :column :description :agg :first)
            :column t :not-null nil :unique nil)
          ;; TODO: This field should be able to have a different
          ;; name.
          :files
          (:type :list
-           :ui (:label "Images" :input-type :checkbox-list)
+           :ui (:label "Images" :widget :checkbox-list)
            :validations (:join-items-exist)
            :source (:view :main :table :files :column :name :agg :list)
            :source-all (:view :files :table :files :column :name :agg :list)

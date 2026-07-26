@@ -567,7 +567,7 @@ all the right fields when we perform inserts or updates."
                         (u:tree-get *compiled-model* type-key :fields)
                         (when (show-roles-p type-key form user)
                           `(:roles (:ui (:label "Roles"
-                                          :input-type "checkbox-list")))))
+                                          :widget "checkbox-list")))))
         and form-fields = (u:tree-get *compiled-model* type-key form :fields)
         for field-key in fields by #'cddr
         for field-def in (cdr fields) by #'cddr
@@ -582,8 +582,8 @@ all the right fields when we perform inserts or updates."
                  (equal form-fields t)
                  (member field-key form-fields)
                  non-base-roles-field)
-               (or (getf ui :input-type) non-base-roles-field)
-               (not (equal (getf ui :input-type) :hidden))
+               (or (getf ui :widget) non-base-roles-field)
+               (not (equal (getf ui :widget) :hidden))
                (not (and
                       (equal form :list-form)
                       (equal field-type :file)))

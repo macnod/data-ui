@@ -15,24 +15,24 @@
       :fields
       (:name 
         (:type :text :identity t
-          :ui (:label "To Do" :input-type :line)
+          :ui (:label "To Do" :widget :line)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
         (:type :integer :default 0
-          :ui (:label "Points" :input-type :line)
+          :ui (:label "Points" :widget :line)
           :validations (:required)
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :checkbox)
+          :ui (:label "Done" :widget :checkbox)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
         :tags
         (:type :list
-          :ui (:label "Tags" :input-type :checkbox-list)
+          :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
           :source (:view :main :table :tags :column :name :agg :list)
           :source-all (:view :tags :table :tags :column :name :agg :list)
@@ -48,8 +48,8 @@
       :fields 
       (:name
         (:type :text :identity t
-          ;; TODO: Add checks for :input-type value
-          :ui (:label "Tag" :input-type :line)
+          ;; TODO: Add checks for :widget value
+          :ui (:label "Tag" :widget :line)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
           :column t :not-null t :unique t))

@@ -115,7 +115,7 @@ Minimal skeleton:
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "To Do" :input-type :line)
+          :ui (:label "To Do" :widget :line)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t))
@@ -257,7 +257,7 @@ Under `:fields`, each entry is `field-key` → plist (except joiner
 | Key | Meaning |
 |-----|---------|
 | `:type` | Field type keyword (see below). Compile default: `:text` |
-| `:ui` | plist passed through to the frontend. **Required** for a column to participate in insert/update SQL and for `fe-fields` emission (needs `:input-type`) |
+| `:ui` | plist passed through to the frontend. **Required** for a column to participate in insert/update SQL and for `fe-fields` emission (needs `:widget`) |
 | `:column` | `t` → physical DB column. Forced `t` if `:target`; forced `nil` if `:type :button` |
 | `:default` | Default value. Booleans: `:true`/`:false`. Timestamps: `:now`. UUID: `:generate-uuid` |
 | `:not-null` | DDL `NOT NULL`. Forced if `:target` |
@@ -359,17 +359,17 @@ keys injected by `fe-fields`). Unknown subkeys are harmless extension points.
 | Subkey | Values / meaning |
 |--------|------------------|
 | `:label` | display label string |
-| `:input-type` | `:line` \| `:textbox` \| `:text` \| `:select` \| `:read-only` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` |
+| `:widget` | `:line` \| `:textbox` \| `:text` \| `:select` \| `:read-only` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` |
 | `:render-as` | `:code` \| `:image` \| `:image-list` \| `:stars` (default: plain text) |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:table` | **injected by `fe-fields`** from source table / type-key — used for `/api/file` URLs; do not set manually |
 
 Notes:
 
-- Missing `:input-type` → field not emitted (except injected `:roles`)
-- `:input-type :hidden` → excluded from `fe-fields`
+- Missing `:widget` → field not emitted (except injected `:roles`)
+- `:widget :hidden` → excluded from `fe-fields`
 - `:text` and `:textbox` both appear in models; there is no compile-time enum check
-- `:input-type :button` is required on button fields so the FE renders a control
+- `:widget :button` is required on button fields so the FE renders a control
 
 ### Foreign keys (`:target`)
 
@@ -378,7 +378,7 @@ Notes:
 (:type :text
   :autofill :user
   :force-sql-name "image_user"
-  :ui (:label "Owner" :input-type :read-only)
+  :ui (:label "Owner" :widget :read-only)
   :target :users
   :source (:view :main :table :users :column :name :agg :first)
   :source-all (:view :users :table :users :column :name :agg :list)
@@ -461,8 +461,8 @@ Only `:fields` is meaningful under each form:
 A field is emitted when:
 
 1. the form includes it (`t` or explicit list; non-base `:roles` always eligible when shown)
-2. it has `:ui :input-type` (or is injected roles)
-3. input-type is not `:hidden`
+2. it has `:ui :widget` (or is injected roles)
+3. widget is not `:hidden`
 4. not (`:list-form` and `:type :file`)
 5. not (`:list-form` or `:add-form` and `:type :button`)
 
@@ -483,7 +483,7 @@ Virtual list field on the owning type:
 ```lisp
 :tags
 (:type :list
-  :ui (:label "Tags" :input-type :checkbox-list)
+  :ui (:label "Tags" :widget :checkbox-list)
   :validations (:join-items-exist)
   :source (:view :main :table :tags :column :name :agg :list)
   :source-all (:view :tags :table :tags :column :name :agg :list)
@@ -571,7 +571,7 @@ inserted or updated. Used by Model Bank ratings.
 ```lisp
 :rating
 (:type :integer
-  :ui (:label "My Rating" :input-type :line :render-as :stars)
+  :ui (:label "My Rating" :widget :line :render-as :stars)
   :validations ((:in-range :min 1 :max 5))
   :source (:view :main :table :ratings :column :rating
            :scope :user :agg :first)
@@ -644,7 +644,7 @@ cases are still open (see AGENT.md).
 ```lisp
 :deploy
 (:type :button
-  :ui (:label "Deploy Model" :input-type :button)
+  :ui (:label "Deploy Model" :widget :button)
   :action (:deploy-model :field :model))
 ```
 
@@ -652,7 +652,7 @@ cases are still open (see AGENT.md).
 |-------------|--------|
 | `:type :button` | no storage column |
 | `:action` | single registry form (keyword or `(:name …params)`); **only** valid on buttons |
-| `:ui :input-type` | must be `:button` |
+| `:ui :widget` | must be `:button` |
 
 ### Status field (compiler-synthesized)
 
@@ -665,7 +665,7 @@ error):
 | `:column` | `t` |
 | `:default` | `"idle"` |
 | `:not-null` | `t` |
-| `:ui` | `(:label "<ButtonLabel> Status" :input-type :read-only)` |
+| `:ui` | `(:label "<ButtonLabel> Status" :widget :read-only)` |
 | `:source` | `(:view :main :column :F-status :agg :first)` |
 
 Status writes go through `be-set-field-value` only.
@@ -704,7 +704,7 @@ Full contract and registered actions: `docs/hook-registry.md`.
   :fields
   (:name
     (:type :text :identity t :path t
-      :ui (:label "Directory" :input-type :line)
+      :ui (:label "Directory" :widget :line)
       :validations (:required)
       :source (:view :main :column :name :agg :first)
       :column t :not-null t :unique t))
@@ -716,7 +716,7 @@ Full contract and registered actions: `docs/hook-registry.md`.
   :fields
   (:name (... :path t ...)
    :file (:type :file
-           :ui (:label "Select File" :input-type :file)
+           :ui (:label "Select File" :widget :file)
            :validations (:required)))
   ...)
 ```
@@ -935,24 +935,24 @@ resolved `:category` / `:internal`.
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "To Do" :input-type :line)
+          :ui (:label "To Do" :widget :line)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
         (:type :integer :default 0
-          :ui (:label "Points" :input-type :line)
+          :ui (:label "Points" :widget :line)
           :validations (:required)
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :checkbox)
+          :ui (:label "Done" :widget :checkbox)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
         :tags
         (:type :list
-          :ui (:label "Tags" :input-type :checkbox-list)
+          :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
           :source (:view :main :table :tags :column :name :agg :list)
           :source-all (:view :tags :table :tags :column :name :agg :list)
@@ -968,7 +968,7 @@ resolved `:category` / `:internal`.
       :fields
       (:name
         (:type :text :identity t
-          :ui (:label "Tag" :input-type :line)
+          :ui (:label "Tag" :widget :line)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)
           :column t :not-null t :unique t))
@@ -988,7 +988,7 @@ resolved `:category` / `:internal`.
 ```lisp
 :rating
 (:type :integer
-  :ui (:label "My Rating" :input-type :line :render-as :stars)
+  :ui (:label "My Rating" :widget :line :render-as :stars)
   :validations ((:in-range :min 1 :max 5))
   :source (:view :main :table :ratings :column :rating
            :scope :user :agg :first)
@@ -998,7 +998,7 @@ resolved `:category` / `:internal`.
               :rating :value))
 :average-rating
 (:type :real
-  :ui (:label "Rating" :input-type :read-only
+  :ui (:label "Rating" :widget :read-only
        :render-as :stars :precision 1)
   :source (:view :main :table :ratings :column :rating :agg :avg))
 ```
@@ -1008,7 +1008,7 @@ resolved `:category` / `:internal`.
 ```lisp
 :deploy
 (:type :button
-  :ui (:label "Deploy Model" :input-type :button)
+  :ui (:label "Deploy Model" :widget :button)
   :action (:deploy-model :field :model))
 ```
 
@@ -1024,13 +1024,13 @@ resolved `:category` / `:internal`.
   :fields
   (:name
     (:type :text :identity t :path t
-      :ui (:label "File" :input-type :line)
+      :ui (:label "File" :widget :line)
       :validations (:required)
       :source (:view :main :column :name :agg :first)
       :column t :not-null t :unique t)
     :file
     (:type :file
-      :ui (:label "Select File" :input-type :file)
+      :ui (:label "Select File" :widget :file)
       :validations (:required)))
   :list-form (:fields t)
   :update-form (:fields t)
@@ -1042,7 +1042,7 @@ resolved `:category` / `:internal`.
 ## Known gaps and gotchas
 
 1. **Obsolete patterns** — older notes mentioning `:checks-fn`, `:options-fn`,
-   root-level `:input-type`, or `:lookup-field` are dead. Use `:validations`,
+   root-level `:widget`, or `:lookup-field` are dead. Use `:validations`,
    `:source-all`, and `:ui` instead.
 
 2. **`:required` dual path** — field key `:required t` and/or
@@ -1055,7 +1055,7 @@ resolved `:category` / `:internal`.
 
 4. **View scope plist form** — validated, not implemented. Use `:scope :user`.
 
-5. **`:input-type :text` vs `:textbox`** — both appear; no compile-time check.
+5. **`:widget :text` vs `:textbox`** — both appear; no compile-time check.
 
 6. **`:type :file` validation** — models comment that `:valid-file` should
    exist; it is not implemented yet.
@@ -1112,7 +1112,7 @@ resolved `:category` / `:internal`.
 `:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:default-from`
 `:css-value` `:primary-key` / joiner `:reference`
 
-**UI:** `:label` `:input-type` `:render-as` `:precision`
+**UI:** `:label` `:widget` `:render-as` `:precision`
 
 **Source:** `:view` `:table` `:column` `:agg` `:scope`
 

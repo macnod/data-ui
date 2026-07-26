@@ -44,7 +44,7 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
 
 interface Field {
   label: string
-  'input-type': string
+  'widget': string
   path?: boolean
   'render-as'?: string
   table?: string
@@ -770,7 +770,7 @@ function App() {
   const submitForm = async () => {
     // Find file field if present
     const formDef = isEditMode ? data!.result['update-form'] : data!.result['add-form']
-    const fileField = Object.keys(formDef).find(f => formDef[f]['input-type'] === 'file')
+    const fileField = Object.keys(formDef).find(f => formDef[f]['widget'] === 'file')
     const fileValue = fileField ? formValues[fileField] : null
 
     if (fileField && fileValue instanceof File) {
@@ -1316,8 +1316,8 @@ function App() {
               ? data.result['update-form'][f]
               : data.result['add-form'][f]
             const allowed = data.result['allowed-values']?.[f] || []
-            const isCheckboxList = fieldMeta['input-type'] === 'checkbox-list'
-            const isCheckbox = fieldMeta['input-type'] === 'checkbox'
+            const isCheckboxList = fieldMeta['widget'] === 'checkbox-list'
+            const isCheckbox = fieldMeta['widget'] === 'checkbox'
 
             if (isCheckboxList) {
               const selected = formValues[f] || []
@@ -1424,7 +1424,7 @@ function App() {
               )
             }
 
-            if (fieldMeta['input-type'] === 'select') {
+            if (fieldMeta['widget'] === 'select') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
@@ -1443,7 +1443,7 @@ function App() {
               )
             }
 
-            if (fieldMeta['input-type'] === 'file') {
+            if (fieldMeta['widget'] === 'file') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
@@ -1458,7 +1458,7 @@ function App() {
               )
             }
 
-            if (fieldMeta['input-type'] === 'password') {
+            if (fieldMeta['widget'] === 'password') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
@@ -1474,7 +1474,7 @@ function App() {
               )
             }
 
-            if (fieldMeta['input-type'] === 'read-only') {
+            if (fieldMeta['widget'] === 'read-only') {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
@@ -1485,7 +1485,7 @@ function App() {
               )
             }
 
-            if (fieldMeta['input-type'] === 'button') {
+            if (fieldMeta['widget'] === 'button') {
               const statusKey = `${f}-status`
               const statusVal = editRecord?.[statusKey] || ''
               const isRunning = statusVal.startsWith('running')

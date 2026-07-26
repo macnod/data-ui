@@ -90,7 +90,7 @@ deploy.
    #+begin_src lisp
    :priority
    (:type :text
-     :ui (:label "Priority" :input-type :select))
+     :ui (:label "Priority" :widget :select))
    #+end_src
 
    That's it. You added a dropdown called "Priority" to your task

@@ -120,21 +120,21 @@ validation, UI hints, RBAC roles:
       :fields
       (:name
         (:type :text
-          :ui (:label "To Do" :input-type :line)
+          :ui (:label "To Do" :widget :line)
           :validations (:required)
           :column t :not-null t :unique t)
         :points
         (:type :integer :default 0
-          :ui (:label "Points" :input-type :line)
+          :ui (:label "Points" :widget :line)
           :validations (:required)
           :column t :not-null t)
         :done
         (:type :boolean :default :false
-          :ui (:label "Done" :input-type :checkbox)
+          :ui (:label "Done" :widget :checkbox)
           :column t :not-null t)
         :tags
         (:type :list
-          :ui (:label "Tags" :input-type :checkbox-list)
+          :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
           :join-table :todo-tags))
       :list-form (:fields t)
@@ -147,7 +147,7 @@ validation, UI hints, RBAC roles:
       :fields
       (:name
         (:type :text
-          :ui (:label "Tag" :input-type :line)
+          :ui (:label "Tag" :widget :line)
           :validations (:required)
           :column t :not-null t :unique t))
       :list-form (:fields t)
@@ -225,7 +225,7 @@ uploads, thumbnail grids for images with lightbox preview.
 
 UI hints flow from the model through the API to the frontend without
 backend changes: =:render-as :image= triggers image rendering,
-=:render-as :code= renders code blocks, =:input-type :select= renders
+=:render-as :code= renders code blocks, =:widget :select= renders
 a dropdown. The =:ui= plist is the extension point.
 
 ** One-Command Deployment

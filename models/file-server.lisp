@@ -17,13 +17,13 @@
       :fields
       (:name 
         (:type :text :identity t :path t
-          :ui (:label "Directory" :input-type :line)
+          :ui (:label "Directory" :widget :line)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :bogus
         (:type :text :default ""
-          :ui (:label "Bogus" :input-type :line)
+          :ui (:label "Bogus" :widget :line)
           :source (:view :main :column :name :agg :first)
           :column t))
       :list-form (:fields t)
@@ -38,13 +38,13 @@
       :fields
       (:name
         (:type :text :identity t :path t
-          :ui (:label "File" :input-type :line)
+          :ui (:label "File" :widget :line)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :file 
         (:type :file
-          :ui (:label "Select File" :input-type :file)
+          :ui (:label "Select File" :widget :file)
           :validations (:required)))
       :list-form (:fields t)
       :update-form (:fields t)

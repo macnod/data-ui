@@ -253,7 +253,7 @@ nil), call `(init-database)` before running tests.
   - `:identity t` / `:write-to` — natural keys and related-table upserts
   - `:render-as` UI hint (`:code`, `:image`, `:image-list`, `:stars`) — passed
     through the `:ui` plist to the frontend for custom cell/form rendering
-  - `:input-type` values now include `:textbox`, `:select`, `:read-only`,
+  - `:widget` values now include `:textbox`, `:select`, `:read-only`,
     `:file`, `:checkbox`, `:password`, `:hidden`, `:button` (in addition to
     `:line`, `:checkbox-list`)
   - `:button` field type with `:action` — clickable controls on update forms
@@ -413,7 +413,7 @@ transformation.
 ```lisp
 :deploy
 (:type :button
-  :ui (:label "Deploy Model" :input-type :button)
+  :ui (:label "Deploy Model" :widget :button)
   :action (:deploy-model :field :model))
 ```
 
@@ -421,7 +421,7 @@ transformation.
 - `:action` — a single registry form `(:keyword args...)` naming the hook to
   run. (The plan originally called this `:actions` plural; the implementation
   uses `:action` singular.)
-- `:ui` must include `:input-type :button` so `fe-fields` emits the field.
+- `:ui` must include `:widget :button` so `fe-fields` emits the field.
 - `:action` is valid **only** on `:type :button` fields (compile-time error
   otherwise).
 
@@ -431,7 +431,7 @@ Every `:button` field gets an auto-generated companion status column named
 `:<field>-status` (e.g. `:deploy` → `:deploy-status`):
 
 - `:type :text`, `:column t`, `:default "idle"`, `:not-null t`
-- `:ui (:input-type :read-only)`
+- `:ui (:widget :read-only)`
 - `:update nil` (blocks normal update path; status writes use `be-set-field-value`
   only)
 - `:source (:view :main :column <status-key> :agg :first)`
@@ -676,8 +676,8 @@ common purpose of validating input against a schema or contract.
 - The app is intentionally simple — avoid adding heavy routing, state libraries, or styling until MVP is proven
 - All forms render from the schema returned by `/api/list`
 - Permission flags (`create`/`delete`/`update`) returned by `/api/list` control visibility of Add, Delete, and Edit controls
-- The `:ui` plist is the extension point for frontend rendering — `:render-as`, `:input-type`, and `:table` are consumed by the React components
-- Button rendering: `:input-type :button` triggers a `<button>` element on the edit form; `onClick` posts to `/api/actions`; the button is disabled while status is `running`
+- The `:ui` plist is the extension point for frontend rendering — `:render-as`, `:widget`, and `:table` are consumed by the React components
+- Button rendering: `:widget :button` triggers a `<button>` element on the edit form; `onClick` posts to `/api/actions`; the button is disabled while status is `running`
 - Image rendering: `:render-as :image` and `:render-as :image-list` trigger thumbnail grids with modal/lightbox preview; the `:table` key on the field tells the frontend which type to use for `/api/file` URLs
 
 ## Goals

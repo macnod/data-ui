@@ -15,7 +15,7 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "Directory" :input-type :line)
+           :ui (:label "Directory" :widget :line)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t))
@@ -31,27 +31,27 @@
        :fields
        (:name
          (:type :text :identity t
-           :ui (:label "Model Name" :input-type :line)
+           :ui (:label "Model Name" :widget :line)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
          :description
          (:type :text
-           :ui (:label "Model Description" :input-type :textbox)
+           :ui (:label "Model Description" :widget :textbox)
            :source (:view :main :column :description :agg :first)
            :column t :not-null nil :unique nil)
          :model
          (:type :text
-           :ui (:label "Model Code" :input-type :textbox :render-as :code)
+           :ui (:label "Model Code" :widget :textbox :render-as :code)
            :source (:view :main :column :model :agg :first)
            :column t :not-null t :unique nil)
          :images
          (:type :list
-           :ui (:label "Images" :input-type :read-only :render-as :image-list)
+           :ui (:label "Images" :widget :read-only :render-as :image-list)
            :source (:view :main :table :images :column :name :agg :distinct))
          :rating
          (:type :integer
-           :ui (:label "My Rating" :input-type :line :render-as :stars)
+           :ui (:label "My Rating" :widget :line :render-as :stars)
            :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating
                     :scope :user :agg :first)
@@ -61,13 +61,13 @@
                        :rating :value))
          :average-rating
          (:type :real
-           :ui (:label "Rating" :input-type :read-only
+           :ui (:label "Rating" :widget :read-only
                 :render-as :stars :precision 1)
            :source (:view :main :table :ratings :column :rating
                     :agg :avg))
          :deploy
          (:type :button
-           :ui (:label "Deploy Model" :input-type :button)
+           :ui (:label "Deploy Model" :widget :button)
            :action (:deploy-model :field :model)))
        :list-form (:fields (:name :description :model :images :average-rating))
        :update-form (:fields t)
@@ -84,7 +84,7 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "File" :input-type :line :render-as :image)
+           :ui (:label "File" :widget :line :render-as :image)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
@@ -94,13 +94,13 @@
          ;;       check that the file path is correct, that the directory
          ;;       exists, and that the file does not already exist.
          (:type :file
-           :ui (:label "Select File" :input-type :file)
+           :ui (:label "Select File" :widget :file)
            :validations (:required))
          :user 
          (:type :text
            :autofill :user
            :force-sql-name "image_user"
-           :ui (:label "Owner" :input-type :read-only)
+           :ui (:label "Owner" :widget :read-only)
            :target :users
            :source (:view :main :table :users :column :name :agg :first)
            :source-all (:view :users :table :users :column :name :agg :list)
@@ -108,7 +108,7 @@
          :model
          (:type :text
            :force-sql-name "image_model"
-           :ui (:label "Model" :input-type :select)
+           :ui (:label "Model" :widget :select)
            :target :models
            :source (:view :main :table :models :column :name :agg :first)
            :source-all (:view :models :table :models :column :name :agg :list)
@@ -128,7 +128,7 @@
        (:model
          (:type :text :identity t
            :force-sql-name "rating_model"
-           :ui (:label "Model" :input-type :select)
+           :ui (:label "Model" :widget :select)
            :target :models
            :source (:view :main :table :models :column :name :agg :first)
            :source-all (:view :models :table :models :column :name :agg :list)
@@ -137,14 +137,14 @@
          (:type :text :identity t
            :autofill :user
            :force-sql-name "rating_user"
-           :ui (:label "User" :input-type :read-only)
+           :ui (:label "User" :widget :read-only)
            :target :users
            :source (:view :main :table :users :column :name :agg :first)
            :source-all (:view :users :table :users :column :name :agg :list)
            :column t :not-null t)
          :rating
          (:type :integer
-           :ui (:label "Rating" :input-type :line :render-as :stars)
+           :ui (:label "Rating" :widget :line :render-as :stars)
            :validations ((:in-range :min 1 :max 5))
            :source (:view :main :table :ratings :column :rating :agg :first)
            :column t))
