@@ -32,7 +32,7 @@
           :column t)
         :rating
         (:type :integer
-          :ui (:label "My Rating" :widget :textbox :render-as :stars)
+          :ui (:label "My Rating" :widget :stars)
           :validations ((:in-range :min 1 :max 5))
           :source (:view :main :table :ratings :column :rating
                    :scope :user :agg :first)
@@ -42,8 +42,7 @@
                       :rating :value))
         :average-rating
         (:type :real
-          :ui (:label "Rating" :widget :textbox :read-only t
-               :render-as :stars :precision 1)
+          :ui (:label "Rating" :widget :stars :read-only t :precision 1)
           :source (:view :main :table :ratings :column :rating :agg :avg))
         :authors
         (:type :list
@@ -98,7 +97,7 @@
           :column t :not-null t)
         :rating
         (:type :integer
-          :ui (:label "Rating" :widget :textbox :render-as :stars)
+          :ui (:label "Rating" :widget :stars)
           :validations ((:in-range :min 1 :max 5))
           :source (:view :main :table :ratings :column :rating :agg :first)
           :column t))

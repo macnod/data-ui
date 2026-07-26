@@ -135,7 +135,7 @@ function renderCellValue(
     )
   }
 
-  if (renderAs === 'stars') {
+  if (widget === 'stars' || renderAs === 'stars') {
     const num = typeof val === 'number' ? val
       : val ? Number(val) : null
     if (num == null || isNaN(num)) return ''
@@ -190,9 +190,10 @@ function renderFormField(
   onChange: (v: string) => void
 ): React.ReactNode {
   const renderAs = field['render-as'] || 'text'
+  const widget = field['widget'] || ''
 
-  // Stars still dispatched via render-as until stars.org
-  if (renderAs === 'stars') {
+  // Stars: dispatch via widget (preferred) or legacy render-as
+  if (widget === 'stars' || renderAs === 'stars') {
     const num = value ? Number(value) : null
     return (
       <StarRating
@@ -455,6 +456,7 @@ function renderReadOnlyField(
   value: any
 ): React.ReactNode {
   const renderAs = field['render-as'] || 'text'
+  const widget = field['widget'] || ''
 
   if (renderAs === 'image-list') {
     const paths: string[] = Array.isArray(value) ? value : []
@@ -465,7 +467,7 @@ function renderReadOnlyField(
     )
   }
 
-  if (renderAs === 'stars') {
+  if (widget === 'stars' || renderAs === 'stars') {
     const num = typeof value === 'number' ? value
       : value ? Number(value) : null
     if (num == null || isNaN(num))
