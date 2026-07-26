@@ -38,17 +38,43 @@
     (t
      (princ-to-string x))))
 
+(defvar *json-boolean-keys*
+  (make-hash-table :test 'eq)
+  "Registry of keys whose values must be serialized as JSON booleans.
+  When a key in this table has value T, emit \"true\"; when NIL, emit
+  \"false\".  Register new boolean keys with REGISTER-JSON-BOOLEAN-KEY.")
+
+(defun register-json-boolean-key (key)
+  "Mark KEY (a keyword symbol) as a boolean key for JSON serialization."
+  (setf (gethash key *json-boolean-keys*) t))
+
+(defun json-boolean-key-p (key)
+  "Return non-nil if KEY is a registered boolean key."
+  (nth-value 1 (gethash key *json-boolean-keys*)))
+
+;; Register known boolean keys
+(register-json-boolean-key :read-only)
+
 (defun plist-to-json-plist (plist)
   "Convert a plist to a JSON object."
   (with-output-to-string (s)
     (write-char #\{ s)
     (loop for (key value) on plist by #'cddr
           for first = t then nil
-          do (let ((key-str (format nil "~(~a~)" key))
-                   (val-str (plist-to-json-aux value)))
-               (unless first
-                 (write-char #\, s))
-               (format s "\"~a\":~a" key-str val-str)))
+          for key-sym = (if (keywordp key) key (u:make-keyword key))
+          for key-str = (format nil "~(~a~)" key)
+          for val-str = (cond
+                          ;; Registered boolean keys: emit true/false
+                          ((and (json-boolean-key-p key-sym)
+                             (eq value t))
+                           "true")
+                          ((and (json-boolean-key-p key-sym)
+                             (null value))
+                           "false")
+                          (t (plist-to-json-aux value)))
+          do (unless first
+               (write-char #\, s))
+             (format s "\"~a\":~a" key-str val-str))
     (write-char #\} s)))
 
 (defun plist-to-json-list (lst)

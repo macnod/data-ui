@@ -704,7 +704,7 @@ so errors become 'failed: <message>' rather than silent thread death."
        :fields (:user (:type :text :identity t
                         ;; TODO: This should not be needed. Fix compiler.
                         :force-sql-name "setting_user"
-                        :ui (:label "Login" :widget :read-only)
+                        :ui (:label "Login" :widget :textbox :read-only t)
                         :target :users
                         :source (:view :users :table :users :column :name :agg :first)
                         :column t :not-null t :unique t)
@@ -737,7 +737,7 @@ so errors become 'failed: <message>' rather than silent thread death."
                 :users (:tables (:users)))
        :fields (:user (:type :text
                         :force-sql-name "secret_user"
-                        :ui (:label "Login" :widget :read-only)
+                        :ui (:label "Login" :widget :textbox :read-only t)
                         :target :users
                         :autofill :user
                         :source (:view :users :table :users
@@ -1541,7 +1541,7 @@ not already exist.  Returns the augmented fields plist."
         `(,status-key
            (:type :text
              :column t
-             :ui (:label ,status-label :widget :read-only)
+             :ui (:label ,status-label :widget :textbox :read-only t)
              :source (:view :main :column ,status-key :agg :first)
              :default "idle"
              :not-null t))

@@ -49,6 +49,7 @@ interface Field {
   'render-as'?: string
   table?: string
   precision?: number
+  'read-only'?: boolean
 }
 
 interface ListResponse {
@@ -1484,7 +1485,7 @@ function App() {
               return null
             }
 
-            if (fieldMeta['widget'] === 'read-only') {
+            if (fieldMeta['read-only'] === true) {
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />

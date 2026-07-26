@@ -42,7 +42,7 @@
                       :rating :value))
         :average-rating
         (:type :real
-          :ui (:label "Rating" :widget :read-only
+          :ui (:label "Rating" :widget :textbox :read-only t
                :render-as :stars :precision 1)
           :source (:view :main :table :ratings :column :rating :agg :avg))
         :authors
@@ -91,7 +91,7 @@
         (:type :text :identity t
           :autofill :user
           :force-sql-name "rating_user"
-          :ui (:label "User" :widget :read-only)
+          :ui (:label "User" :widget :textbox :read-only t)
           :target :users
           :source (:view :main :table :users :column :name :agg :first)
           :source-all (:view :users :table :users :column :name :agg :list)
