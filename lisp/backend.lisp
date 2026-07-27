@@ -2457,10 +2457,12 @@ Signals a validation error if:
           (funcall set-status "running")
           ;; Run the hook (non-transactional MVP)
           (handler-case
-              (let ((result (funcall hook
-                              type-key field-key record user
-                              :status-field status-field
-                              :set-status set-status)))
+              (let* ((roles (a:list-user-role-names *rbac* user))
+                     (result (funcall hook
+                               type-key field-key record user
+                               :roles roles
+                               :status-field status-field
+                               :set-status set-status)))
                 (cond
                   ;; Async: worker owns status via set-status
                   ((and (listp result) (getf result :async))

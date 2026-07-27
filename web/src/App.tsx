@@ -993,14 +993,15 @@ function App() {
         const updated = json?.result?.record
         if (!updated) return
         setEditRecord(updated)
-        // Preserve any unsaved form edits except status fields,
-        // which come from the server.
+        // Merge all fields from the polled record into formValues.
+        // This keeps the form synced with server state so fields
+        // written by async workers (e.g. :model from Generate)
+        // appear without a page reload.  Safe because buttons are
+        // disabled while status is "running".
         setFormValues(prev => {
           const next = { ...prev }
           for (const k of Object.keys(updated)) {
-            if (k.endsWith('-status')) {
-              next[k] = updated[k]
-            }
+            next[k] = updated[k]
           }
           return next
         })

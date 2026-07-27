@@ -246,6 +246,11 @@ both test-model and modelbank."
   (with-model "m2m-test" #'seed-m2m-fixture
     (run! 'm2m-suite)))
 
+(defun run-generator-tests ()
+  "Generate-model hook tests."
+  ;; Pure function tests (no model needed)
+  (run! 'generator-suite))
+
 (defun seed-m2m-fixture ()
   "Seed tags and verify admin user exists for M2M runtime tests."
   (be-insert :tags '(:name "red") "admin")
@@ -261,4 +266,5 @@ both test-model and modelbank."
   (run-action-tests)
   (run-secrets-tests)
   (run-widget-tests)
-  (run-m2m-tests))
+  (run-m2m-tests)
+  (run-generator-tests))

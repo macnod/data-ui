@@ -39,4 +39,5 @@
                                 (:file "action-tests")
                                 (:file "secrets-tests")
                                 (:file "widget-tests")
-                                (:file "m2m-tests")))))
+                                (:file "m2m-tests")
+                                (:file "generator-tests")))))

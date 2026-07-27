@@ -44,7 +44,7 @@
          (:type :text
            :ui (:label "Model Code" :widget :code)
            :source (:view :main :column :model :agg :first)
-           :column t :not-null t :unique nil)
+           :column t :not-null nil :unique nil)
          :images
          (:type :list
            :ui (:label "Images" :widget :image-list)
@@ -67,7 +67,12 @@
          :deploy
          (:type :button
            :ui (:label "Deploy Model" :widget :button)
-           :action (:deploy-model :field :model)))
+           :action (:deploy-model :field :model))
+         :generate
+         (:type :button
+           :ui (:label "Generate Model" :widget :button)
+           :action (:generate-model :description-field :description
+                                    :model-field :model)))
        :list-form (:fields (:name :description :model :images :average-rating))
        :update-form (:fields t)
        :add-form (:fields (:name :description :model :images :rating)))

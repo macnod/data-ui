@@ -391,40 +391,47 @@ resolve-hook-form for error messages."
              (validation-error-string type-key field-key value
                (format nil "must be between ~d and ~d." min max)))))))))
 
-;;; ---------------------------------------------------------------------------
-;;; Action hooks
-;;; ---------------------------------------------------------------------------
-
-;;;
-;;; BEGIN Register hook :deploy-model
-;;;
-;;; :deploy-model — async deploy hook for Model Bank.
-;;;
-;;; Reads model text from a field (param :field), validates it in-process via
-;;; validate-model, then spawns a worker thread that writes the model to
-;;; models/<name>-<timestamp>.lisp, commits it, and shells out to
-;;; scripts/data-ui deploy with MODEL_FILE set.  Validation failures produce
-;;; an immediate "failed: <message>" without spawning a subprocess.
+(defun strip-leading-lisp-comments (text)
+  ":private: Removes any comment lines that may exist at the beginning of
+TEXT. Returns a new string that is like TEXT, but without the comments at the
+top. Note: this function retains comments in TEXT at are inside the lisp
+code (or model code), removing only those that precede any Lisp."
+  (loop with lines = (re:split "\\n" text)
+    for line in lines
+    for found = nil then (when clean-lines t)
+    for clean-line = (u:trim line)
+    when (or
+           found
+           (and
+             (not (u:starts-with clean-line ";"))
+             (not (zerop (length clean-line)))))
+    collect line into clean-lines
+    finally (return (format nil "~{~a~%~}" clean-lines))))
 
 (defun validate-deploy-model-text (model-text)
   ":private: Validate model text for the deploy-model hook.
-Returns (:ok model-plist) on success or (:error message) on failure."
+Returns (:ok model-plist) on success or (:error message) on failure.
+Skips leading ;; comment lines and blank lines before checking for
+the quoted plist."
   (flet ((ok (model-plist) (list :ok model-plist))
           (err (msg) (list :error msg)))
     (unless (and model-text (stringp model-text)
               (> (length (string-trim " " model-text)) 0))
       (return-from validate-deploy-model-text (err "model text is empty")))
-    (let ((trimmed (u:trim model-text)))
-      (unless (and (plusp (length trimmed))
-                (char= (char trimmed 0) #\'))
+    (let ((stripped (u:trim (strip-leading-lisp-comments model-text))))
+      (unless (plusp (length stripped))
+        (return-from validate-deploy-model-text
+          (err "model text contains only comments")))
+      (unless (char= (char stripped 0) #\')
         (return-from validate-deploy-model-text
           (err "model text must be a quoted plist (leading ')")))
-      (let ((model-plist (ignore-errors (read-from-string trimmed))))
+      (let ((model-plist (ignore-errors (read-from-string stripped))))
         (unless model-plist (return-from validate-deploy-model-text
                               (err "parse error in model text")))
         (let ((model-plist (cadr model-plist)))
-          (unless model-plist (return-from validate-deploy-model-text
-                                (err "parse error in model text")))
+          (unless (and model-plist (u:plistp model-plist))
+            (return-from validate-deploy-model-text
+              (err "parse error in model text")))
           (let ((types (getf model-plist :types)))
             (unless types
               (return-from validate-deploy-model-text
@@ -536,6 +543,13 @@ so errors become 'failed: <message>' rather than silent thread death."
           (format nil "failed: ~a"
             (subseq msg 0 (min (length msg) 180))))))))
 
+;; :deploy-model — async deploy hook for Model Bank.
+;;
+;; Reads model text from a field (param :field), validates it in-process via
+;; validate-model, then spawns a worker thread that writes the model to
+;; models/<name>-<timestamp>.lisp, commits it, and shells out to
+;; scripts/data-ui deploy with MODEL_FILE set.  Validation failures produce
+;; an immediate "failed: <message>" without spawning a subprocess.
 (register-hook :deploy-model :action
   '(:field :keyword)
   (lambda (&key field)
@@ -556,8 +570,248 @@ so errors become 'failed: <message>' rather than silent thread death."
                 :name "data-ui-deploy-model")
               (list :async t :message "Deploy started")))))))
 
+(defvar *generate-model-llm-override* nil
+  ":private: When non-nil, generate-model-llm-call calls this function instead
+of making an HTTP request.  Used by tests.  Should be a lambda accepting a
+description string and returning (:ok text) or (:error msg).")
+
+(defun admin-secret-value (name)
+  ":private: Return the :value string for admin's secret named NAME. Returns NIL
+if not found."
+  (loop 
+    with admin-secrets = (be-list :secrets "admin" :form :update-form)
+    with records = (getf admin-secrets :records)
+    for record in records
+    when (equal (getf record :name) name)
+    do (return (getf record :value))))
+
+(defun read-llm-config ()
+  ":private: Load and parse the admin llm-config secret. Returns
+(:ok config-plist) or (:error message). Requires keys :url, :model, :api-key.
+Optional :temperature (default 0.3) and :max-tokens (default 16384)."
+  (let* ((raw (u:trim (admin-secret-value "llm-config")))
+          (wrapped (when (and raw (not (zerop (length raw))))
+                     (if (u:starts-with raw "(")
+                       raw
+                       (format nil "(~a)" raw))))
+          (parsed (when wrapped
+                    (ignore-errors (read-from-string wrapped))))
+          (is-plist (when parsed (u:plistp parsed)))
+          (url (when is-plist (getf parsed :url)))
+          (model (when is-plist (getf parsed :model)))
+          (api-key (when is-plist (getf parsed :api-key)))
+          (temperature (when is-plist (getf parsed :temperature 0.3)))
+          (max-tokens (when is-plist (getf parsed :max-tokens 16384))))
+    (cond
+      ((not raw) '(:error "llm-config is not present"))
+      ((not parsed) '(:error "llm-config is not a valid plist"))
+      ((not url) '(:error "llm-config missing :url"))
+      ((not model) '(:error "llm-config missing :model"))
+      ((not api-key) '(:error "llm-config missing :api-key"))
+      ((or (not (numberp temperature))
+         (< temperature 0.0)
+         (> temperature 1.9))
+        `(:error ,(format nil "llm-config :temperature must be a floating ~
+                               number between 0.0 and 1.9")))
+      ((or (not (numberp max-tokens))
+         (< max-tokens 1024)
+         (> max-tokens 1000000))
+        `(:error ,(format nil "llm-config :max-tokens must be number between ~
+                               1024 and 1000000")))
+      (t (list :ok (list :url url :model model :api-key api-key
+                     :temperature temperature :max-tokens max-tokens))))))
+
+(defun generate-model-build-request-json
+    (model temperature max-tokens system-prompt description)
+  ":private: Build the OpenAI-compatible chat completions JSON body."
+  (plist-to-json
+    `(:model ,model
+       :temperature ,temperature
+       :max_tokens ,max-tokens
+       :messages ((:role "system" :content ,system-prompt)
+                   (:role "user"
+                     :content ,(format nil
+                                 "Generate a Data UI model for this ~
+                                 application description. Return ONLY ~
+                                 a quoted Common Lisp plist starting ~
+                                 with ', no markdown fences, no ~
+                                 explanation.~%~%~a"
+                                 description))))
+    :nil-value "false"))
+
+(defun generate-model-system-prompt ()
+  ":private: Return the model reference as the LLM system prompt."
+  (u:slurp (u:join-paths *package-root* "docs/model-reference.md")))
+
+(defun generate-model-llm-call (description)
+  ":private: Call the LLM to generate a model from DESCRIPTION.
+Returns (:ok model-text) or (:error message)."
+  (when *generate-model-llm-override*
+    (return-from generate-model-llm-call
+      (funcall *generate-model-llm-override* description)))
+  (let ((config-result (read-llm-config)))
+    (if (getf config-result :error)
+      (list :error (getf config-result :error))
+      (let* ((config (getf config-result :ok))
+             (url (getf config :url))
+             (api-key (getf config :api-key))
+             (model (getf config :model))
+             (temperature (getf config :temperature))
+             (max-tokens (getf config :max-tokens))
+             (system-prompt (generate-model-system-prompt)))
+        (handler-case
+          (let* ((body (generate-model-build-request-json
+                         model temperature max-tokens
+                         system-prompt description))
+                 (dr:*text-content-types*
+                   '((nil . "json")))
+                 (response (dr:http-request url
+                              :method :post
+                              :content-type "application/json"
+                              :accept "application/json"
+                              :additional-headers
+                              `(("Authorization" . ,(format nil "Bearer ~a"
+                                                       api-key)))
+                              :content body
+                              :connection-timeout 120)))
+            (generate-model-parse-llm-response response))
+          (error (e)
+            (list :error (format nil "LLM request failed: ~a" e))))))))
+
+(defun generate-model-parse-llm-response (response)
+  ":private: Extract the assistant message content from the LLM JSON
+response.  Returns (:ok text) or (:error message)."
+  (handler-case
+    (let* ((parsed (yason:parse response))
+           (choices (cdr (assoc "choices" parsed :test #'equal)))
+           (message (when choices
+                      (cdr (assoc "message"
+                             (first choices) :test #'equal))))
+           (content (when message
+                      (cdr (assoc "content" message :test #'equal)))))
+      (if content
+        (list :ok content)
+        (list :error "LLM response missing message content")))
+    (error (e)
+      (list :error (format nil "Failed to parse LLM response: ~a" e)))))
+
+(defun clean-llm-response (raw-text)
+  ":private: Strip markdown code fences and surrounding noise from
+RAW-TEXT.  Returns the cleaned string."
+  (let ((trimmed (u:trim raw-text)))
+    ;; If there are code fences, extract content between first and last
+    (if (re:scan "```" trimmed)
+      (let* ((no-leading
+               (re:regex-replace "(?s)^.*?```[a-zA-Z-]*\\s*"
+                 trimmed ""))
+             (no-trailing
+               (re:regex-replace "(?s)```.*$" no-leading "")))
+        (u:trim no-trailing))
+      trimmed)))
+
+(defun generate-model-header (description)
+  ":private: Build the ;; comment header for a generated model."
+  (let ((date (dt:timestamp-string))
+        (prompt (string-trim '(#\Newline #\Return #\Tab) description)))
+    (when (> (length prompt) 60)
+      (setf prompt (concatenate 'string (subseq prompt 0 57) "...")))
+    (format nil ";; Generated by Data UI Model Generator~%~
+                 ;; Created: ~a~%~
+                 ;; Prompt: ~a"
+      date prompt)))
+
+(defun apply-generated-model-text
+    (type-key record user model-field description model-text)
+  ":private: Clean + header + validate + write model text.
+Returns (:ok) or (:error message).  Does not touch status.
+On validation failure, :model is left untouched."
+  (let* ((cleaned (clean-llm-response model-text))
+         (header (generate-model-header description))
+         (full-text (format nil "~a~%~a" header cleaned))
+         (result (validate-deploy-model-text full-text)))
+    (if (getf result :error)
+      (list :error (getf result :error))
+      (progn
+        (be-set-field-value type-key (getf record :id)
+          model-field full-text user)
+        (list :ok t)))))
+
+(defun generate-model-async
+    (type-key record user description-field model-field
+     description set-status)
+  ":private: Worker body for the generate-model hook.  Calls the LLM,
+cleans the response, validates the model, writes it to :model, and
+updates status.  Wraps everything in a handler-case so errors become
+'failed: <message>' rather than silent thread death."
+  (handler-case
+    (multiple-value-bind (llm-result)
+      (generate-model-llm-call description)
+      (if (getf llm-result :error)
+        (funcall set-status
+          (format nil "failed: ~a"
+            (subseq (getf llm-result :error)
+              0 (min (length (getf llm-result :error)) 180))))
+        (let ((apply-result
+                (apply-generated-model-text
+                  type-key record user model-field
+                  description (getf llm-result :ok))))
+          (if (getf apply-result :error)
+            (funcall set-status
+              (format nil "failed: ~a"
+                (subseq (getf apply-result :error)
+                  0 (min (length (getf apply-result :error)) 180))))
+            (funcall set-status "complete")))))
+    (condition (c)
+      (let ((msg (format nil "~a" c)))
+        (pl:pinfo :in "generate-model-async"
+          :status "failed" :reason msg)
+        (funcall set-status
+          (format nil "failed: ~a"
+            (subseq msg 0 (min (length msg) 180))))))))
+
+;; :generate-model — async LLM-powered model generation hook.
+;;
+;; Reads a natural-language description from a field, sends it to an LLM
+;; (configured via admin secrets), validates the returned model plist, and
+;; writes it to the :model field.  Async like deploy.
+(register-hook :generate-model :action
+  '(:description-field :keyword :model-field :keyword)
+  (lambda (&key description-field model-field)
+    (lambda (type-key field-key record user
+             &key roles status-field set-status)
+      (declare (ignore type-key field-key status-field))
+      (block hook
+        ;; Role check: must have ai-user role
+        (unless (member "ai-user" roles :test #'equal)
+          (return-from hook
+            (list :status "failed"
+              :message "ai-user role required")))
+        ;; Description must be non-empty
+        (let ((description (getf record description-field)))
+          (unless (and description (stringp description)
+                    (> (length (string-trim " " description)) 0))
+            (return-from hook
+              (list :status "failed"
+                :message "description is empty")))
+          ;; LLM config must exist (fail fast on misconfiguration)
+          (let ((config-result (read-llm-config)))
+            (when (getf config-result :error)
+              (return-from hook
+                (list :status "failed"
+                  :message (getf config-result :error)))))
+          ;; Spawn async worker
+          (let ((override *generate-model-llm-override*))
+            (sb-thread:make-thread
+              (lambda ()
+                (let ((*generate-model-llm-override* override))
+                  (generate-model-async
+                    type-key record user description-field model-field
+                    description set-status)))
+              :name "data-ui-generate-model"))
+          (list :async t :message "Generation started"))))))
+
 ;;;
-;;; END Register hook :deploy-model
+;;; END Register hook :generate-model
 ;;;
 
 (defparameter *forms* '(:list-form :add-form :update-form))
@@ -753,7 +1007,7 @@ so errors become 'failed: <message>' rather than silent thread death."
                          :source (:view :main :column :name :agg :first)
                          :column t :not-null t)
                  :value (:type :text
-                          :ui (:label "Value" :widget :textbox)
+                          :ui (:label "Value" :widget :textarea)
                           :source (:view :main :column :value :agg :first)
                           :column t :not-null t)
                  :description (:type :text
@@ -1313,7 +1567,7 @@ model."
   (let ((target (getf field-def :target)))
     (when target
       (unless (u:has (u:plist-keys model) target)
-        (error "Unknown target ~s in type ~s, field ~s" 
+        (error "Unknown target ~s in type ~s, field ~s"
           target type-key field-key))
       (loop with fields = (u:tree-get model target :fields)
         for f-key in fields by #'cddr
@@ -1828,7 +2082,7 @@ needed. Returns the type-def with updated form."
           (let ((missing (loop
                            for button-key in button-keys
                            for status-key = (u:make-keyword
-                                              (format nil "~a-status" 
+                                              (format nil "~a-status"
                                                 button-key))
                            when (and (member button-key current-keys)
                                   (not (member status-key current-keys)))

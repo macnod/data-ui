@@ -22,12 +22,12 @@
                     (format out "\\u~4,'0x" (char-code char))
                     (write-char char out)))))))
 
-(defun plist-to-json-atom (x)
+(defun plist-to-json-atom (x &key (nil-value "[]"))
   "Convert an atom to its JSON representation."
   (cond
-    ((null x) "[]")                    ; nil -> empty array
+    ((null x) nil-value)
     ((eq x :false) "false")
-    ((eq x :true) "true")
+    ((or (eq x t) (eq x :true)) "true")
     ((eq x :null) "null")
     ((stringp x)
      (format nil "\"~a\"" (escape-json-string x)))
@@ -50,12 +50,12 @@
 
 (defun json-boolean-key-p (key)
   "Return non-nil if KEY is a registered boolean key."
-  (nth-value 1 (gethash key *json-boolean-keys*)))
+  (gethash key *json-boolean-keys*))
 
 ;; Register known boolean keys
 (register-json-boolean-key :read-only)
 
-(defun plist-to-json-plist (plist)
+(defun plist-to-json-plist (plist &key (nil-value "[]"))
   "Convert a plist to a JSON object."
   (with-output-to-string (s)
     (write-char #\{ s)
@@ -65,41 +65,43 @@
           for key-str = (format nil "~(~a~)" key)
           for val-str = (cond
                           ;; Registered boolean keys: emit true/false
-                          ((and (json-boolean-key-p key-sym)
+                          ((and 
+                             (json-boolean-key-p key-sym)
                              (eq value t))
                            "true")
-                          ((and (json-boolean-key-p key-sym)
+                          ((and
+                             (json-boolean-key-p key-sym)
                              (null value))
                            "false")
-                          (t (plist-to-json-aux value)))
+                          (t (plist-to-json-aux value :nil-value nil-value)))
           do (unless first
                (write-char #\, s))
              (format s "\"~a\":~a" key-str val-str))
     (write-char #\} s)))
 
-(defun plist-to-json-list (lst)
+(defun plist-to-json-list (lst &key (nil-value "[]"))
   "Convert a regular list (not a plist) to a JSON array."
   (with-output-to-string (s)
     (write-char #\[ s)
     (loop for el in lst
           for first = t then nil
-          do (let ((el-str (plist-to-json-aux el)))
+          do (let ((el-str (plist-to-json-aux el :nil-value nil-value)))
                (unless first
                  (write-char #\, s))
                (write-string el-str s)))
     (write-char #\] s)))
 
-(defun plist-to-json-aux (x)
+(defun plist-to-json-aux (x &key (nil-value "[]"))
   "Internal recursive dispatcher for plist-to-json."
   (cond
-    ((atom x) (plist-to-json-atom x))
-    ((u:plistp x) (plist-to-json-plist x))
+    ((atom x) (plist-to-json-atom x :nil-value nil-value))
+    ((u:plistp x) (plist-to-json-plist x :nil-value nil-value))
     (t (plist-to-json-list x))))
 
-(defun plist-to-json (data)
+(defun plist-to-json (data &key (nil-value "[]"))
   "Converts a nested plist (or regular list) into a JSON string according to the specified rules.
    Requires `u:plistp` to be available."
-  (plist-to-json-aux data))
+  (plist-to-json-aux data :nil-value nil-value))
 
 
 ;;
