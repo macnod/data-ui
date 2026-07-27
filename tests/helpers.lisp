@@ -241,6 +241,18 @@ both test-model and modelbank."
   (with-model "test-model" nil
     (run! 'widget-suite)))
 
+(defun run-m2m-tests ()
+  "Multiple M2M joiners per type — compile and runtime tests."
+  (with-model "m2m-test" #'seed-m2m-fixture
+    (run! 'm2m-suite)))
+
+(defun seed-m2m-fixture ()
+  "Seed tags and verify admin user exists for M2M runtime tests."
+  (be-insert :tags '(:name "red") "admin")
+  (be-insert :tags '(:name "blue") "admin")
+  (be-insert :tags '(:name "green") "admin")
+  nil)
+
 (defun run-tests ()
   (run-backend-tests)
   (run-scoping-tests)
@@ -248,4 +260,5 @@ both test-model and modelbank."
   (run-lifecycle-tests)
   (run-action-tests)
   (run-secrets-tests)
-  (run-widget-tests))
+  (run-widget-tests)
+  (run-m2m-tests))

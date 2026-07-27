@@ -883,14 +883,13 @@ fields that have non-NIL values for all HAVE-KEYS."
         (getf field-def attribute)
         field-def))))
 
-(defun fk-columns (model type-key)
-  (loop with fields = (u:tree-get model type-key :fields)
-    for field-key in fields by #'cddr
-    for field-def in (cdr fields) by #'cddr
-    for joiner = (getf field-def :join-table)
-    when joiner
-    append (fields-attribute
-             (u:tree-get model joiner :fields) '(:target) :name-sql)))
+(defun joiner-fk-columns (model joiner-type-key)
+  "Return (field-key . name-sql) pairs for JOINER-TYPE-KEY's
+:target columns only."
+  (fields-attribute
+    (u:tree-get model joiner-type-key :fields)
+    '(:target)
+    :name-sql))
 
 (defun insert-keys (model type-key)
   (loop
@@ -916,7 +915,6 @@ fields that have non-NIL values for all HAVE-KEYS."
                            (u:tree-get model :resources :fields :name :name-sql)))
     with main-columns = (cons '(:id . "id")
                           (fields-attribute fields '(:column :ui) :name-sql))
-    with fk-columns = (fk-columns model type-key)
     with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~}) returning id"
     for key in insert-keys
     for table-key = (case key
@@ -929,7 +927,7 @@ fields that have non-NIL values for all HAVE-KEYS."
                        (:main (if (u:tree-get model table-key :base)
                                 (cdr main-columns)
                                 main-columns))
-                       (otherwise fk-columns))
+                       (otherwise (joiner-fk-columns model table-key)))
     append (list key (cons
                        (format nil sql
                          table-name
@@ -954,14 +952,15 @@ fields that have non-NIL values for all HAVE-KEYS."
     with fields = (u:tree-get model type-key :fields)
     with update-keys = (update-keys model type-key)
     with columns = (fields-attribute fields '(:column :ui) :name-sql)
-    with fk-columns = (fk-columns model type-key)
     with main-sql = "update ~a set ~{~a = ~a~^, ~} where id = $~d"
     with delete-sql = "delete from ~a where ~{~a = ~a~^ and ~}"
     with insert-sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
     for key in update-keys by #'cddr
     for table in (cdr update-keys) by #'cddr
     for table-name = (table-name table (built-in-p table model))
-    for table-cols = (case key (:main columns) (otherwise fk-columns))
+    for table-cols = (case key
+                       (:main columns)
+                       (otherwise (joiner-fk-columns model table)))
     for sql = (case key
                 (:main main-sql)
                 (otherwise (list

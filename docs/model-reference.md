@@ -543,12 +543,11 @@ Joiner type:
   selector
 - Author `:internal t` on joiners is conventional but redundant (`:is-joiner`
   defaults internal)
-- **One M2M joiner per type (temporary limitation).** A type with
-  multiple `:join-table` list fields compiles, but the generated insert
-  SQL for each joiner incorrectly includes columns from all joiners on
-  the type (not just its own). This causes `be-insert` to fail. Until
-  the compiler bug is fixed, each type may have at most one M2M
-  relationship.
+- A type may have multiple M2M joiners (e.g. chores has both
+  `:chore-tags` and `:chore-users`). Each joiner's insert/update/delete
+  SQL is isolated to its own two FK columns. List field keys need not
+  match the target type key — `:source :table` identifies the other
+  side (e.g. `:completed-by` → `:users`).
 
 ### One-way M2M only (do not put list fields on both ends)
 
@@ -1125,11 +1124,6 @@ resolved `:category` / `:internal`.
 14. **No computed/composed fields** — cannot derive a stored identity
     (e.g. full name) from other columns without a lifecycle data-effect hook
     (`:compose-string` designed, not implemented).
-
-15. **Multiple M2M joiners per type** — compile but produce incorrect
-    insert SQL (columns from all joiners merged into each statement).
-    Limit types to one M2M joiner until the compiler is fixed (see
-    [Join tables](#join-tables-m2m)).
 
 ---
 

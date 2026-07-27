@@ -1,14 +1,9 @@
 ;; Purpose: Home chore tracker. Chores have points (1-4 difficulty),
-;;   a description, a completed flag, and a completed-by field (M2M to
-;;   users) for attributing completion. A scores table tracks per-user
-;;   point totals and chore counts. Scores are currently manual;
-;;   auto-aggregation requires lifecycle data-effect hooks (not yet
-;;   implemented — see data-ui-todo.org).
-;;
-;;   Tags were removed from this model due to a compiler bug: types
-;;   with multiple M2M joiners produce incorrect insert SQL. See
-;;   data-ui-todo.org ("Fix join-table insert SQL generation").
-;;   Tags will be reattached when that bug is fixed.
+;;   a description, a completed flag, tags, and a completed-by field
+;;   (M2M to users) for attributing completion. A scores table tracks
+;;   per-user point totals and chore counts. Scores are currently
+;;   manual; auto-aggregation requires lifecycle data-effect hooks
+;;   (not yet implemented — see data-ui-todo.org).
 ;; Author: Rose (via Data UI)
 ;; Created: 2025-07-10
 ;; Prompt: Create a web app that tracks chores in the home, and who
@@ -25,7 +20,7 @@
 ;;   table would be user, chore-count, and total points.
 '(:title "Home Chores"
   :name "chores"
-  :version "0.2"
+  :version "0.3"
   :domain "chores.demo.data-ui.com"
   :repl t
   :landing-page :chores
@@ -34,7 +29,10 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("chore-users")
-      :views (:main (:tables (:chores :chore-users :users)))
+      :views (:main (:tables (:chores :chore-tags :tags
+                          :chore-users :users))
+               :tags (:tables (:tags))
+               :users (:tables (:users)))
       :fields
       (:name
         (:type :text :identity t
@@ -58,6 +56,13 @@
           :ui (:label "Done" :widget :checkbox)
           :source (:view :main :column :completed :agg :first)
           :column t :not-null t)
+        :tags
+        (:type :list
+          :ui (:label "Tags" :widget :checkbox-list)
+          :validations (:join-items-exist)
+          :source (:view :main :table :tags :column :name :agg :list)
+          :source-all (:view :tags :table :tags :column :name :agg :list)
+          :join-table :chore-tags)
         :completed-by
         (:type :list
           :ui (:label "Completed By" :widget :checkbox-list)
@@ -65,6 +70,21 @@
           :source (:view :main :table :users :column :name :agg :list)
           :source-all (:view :users :table :users :column :name :agg :list)
           :join-table :chore-users))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+
+    :tags
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("chore-users")
+      :fields
+      (:name
+        (:type :text :identity t
+          :ui (:label "Tag" :widget :textbox)
+          :validations (:required)
+          :source (:view :main :table :tags :column :name :agg :first)
+          :column t :not-null t :unique t))
       :list-form (:fields t)
       :update-form (:fields t)
       :add-form (:fields t))
@@ -98,6 +118,12 @@
       :list-form (:fields t)
       :update-form (:fields t)
       :add-form (:fields t))
+
+    :chore-tags
+    (:table t :is-joiner t :internal t
+      :fields
+      (:reference (:target :chores)
+        :reference (:target :tags)))
 
     :chore-users
     (:table t :is-joiner t :internal t

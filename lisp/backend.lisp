@@ -863,13 +863,23 @@ VALUE unchanged."
   ":private: Returns a list of the values in VALUES that don't exist in the
 database for FIELD-KEY of TYPE-KEY. This is useful for validating that the
 values in a list of values for a field are valid before performing an insert
-or update that includes those values."
+or update that includes those values. For join-table list fields, resolves
+the target type and identity field from model metadata."
   (valid-type-key type-key)
   (valid-field-key type-key field-key)
   (valid-values-list values)
-  (loop for value in values
-    for id = (be-value-id type-key field-key value "admin")
-    when (not id) collect value))
+  (let* ((m *compiled-model*)
+         (field-def (u:tree-get m type-key :fields field-key))
+         (joiner (getf field-def :join-table))
+         (target-type (if joiner
+                        (u:tree-get field-def :source :table)
+                        type-key))
+         (target-field (if joiner
+                         (identity-field target-type)
+                         field-key)))
+    (loop for value in values
+      for id = (be-value-id target-type target-field value "admin")
+      when (not id) collect value)))
 
 (defun id-to-resource-name (id)
   ":private: Returns the resource name for the resource of type with
@@ -977,6 +987,8 @@ with the values in DATA."
     with update = (u:tree-get m type-key :update-sql)
     with join-keys = (join-keys type-key)
     for key in join-keys
+    for meta = (join-field-meta type-key key)
+    for other-type = (getf meta :other-type)
     for column = (u:tree-get m type-key :fields key :source :column)
     for existing-values = (getf record key)
     for new-values = (getf data key)
@@ -985,23 +997,23 @@ with the values in DATA."
     for q-delete = (u:tree-get update key :delete)
     for q-delete-sql = (car q-delete)
     for q-delete-keys = (cdr q-delete)
-    for q-delete-key-1 = (id-key type-key)
-    for q-delete-key-2 = (id-key key)
+    for q-delete-key-1 = (getf meta :owner-fk-key)
+    for q-delete-key-2 = (getf meta :other-fk-key)
     for q-insert = (u:tree-get update key :insert)
     for q-insert-sql = (car q-insert)
     for q-insert-keys = (cdr q-insert)
-    for q-insert-key-1 = (id-key type-key)
-    for q-insert-key-2 = (id-key key)
+    for q-insert-key-1 = (getf meta :owner-fk-key)
+    for q-insert-key-2 = (getf meta :other-fk-key)
     do
     ;; Delete
-    (loop for x-id in (list-ids key column to-delete)
+    (loop for x-id in (list-ids other-type column to-delete)
       for q-delete-values = (loop for k in q-delete-keys
                               when (equal k q-delete-key-1) collect id
                               when (equal k q-delete-key-2) collect x-id)
       for q-delete-query = (cons q-delete-sql q-delete-values)
       do (a:with-rbac (*rbac*) (a:rbac-query q-delete-query)))
     ;; Insert
-    (loop for x-id in (list-ids key column to-add)
+    (loop for x-id in (list-ids other-type column to-add)
       for q-insert-values = (loop for k in q-insert-keys
                               when (equal k q-insert-key-1) collect id
                               when (equal k q-insert-key-2) collect x-id)
@@ -1058,12 +1070,28 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
                           :user user))))
           :allowed-values (allowed-values type-key user))))))
 
+(defun join-field-meta (owner-type-key list-field-key)
+  "Return plist :other-type :owner-fk-key :other-fk-key for a
+:type :list field with :join-table. Derives all values from
+compiled model metadata — no naming convention assumptions."
+  (let* ((m *compiled-model*)
+         (field-def (u:tree-get m owner-type-key :fields list-field-key))
+         (joiner (getf field-def :join-table))
+         (other-type (u:tree-get field-def :source :table))
+         (owner-fk-key (id-key owner-type-key))
+         (other-fk-key (id-key other-type)))
+    (unless (and joiner other-type)
+      (report-e "join-field-meta"
+        "Field ~s on ~s is not a valid join-table list field"
+        ~list-field-key ~owner-type-key))
+    (list :other-type other-type
+          :owner-fk-key owner-fk-key
+          :other-fk-key other-fk-key)))
+
 (defun insert-join-table-rows (type-key uuid data)
   (loop
     with m = *compiled-model*
-    with uuid-key = (u:make-keyword
-                      (to-sql-identifier type-key
-                        :format-string "~a-id" :form :singular))
+    with uuid-key = (id-key type-key)
     with insert = (u:tree-get m type-key :insert-sql)
     with keys = (remove-if
                   (lambda (k) (member k '(:resource :main)))
@@ -1073,19 +1101,20 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
     for sql = (car qt)
     for param-keys = (cdr qt)
     for names = (getf data key)
-    for ref-type-key = (u:tree-get m type-key :fields key :source :table)
-    for value-ids = (list-ids ref-type-key (identity-field ref-type-key) names)
+    for meta = (join-field-meta type-key key)
+    for ref-type-key = (getf meta :other-type)
+    for value-key = (getf meta :other-fk-key)
+    for value-ids = (list-ids ref-type-key
+                        (identity-field ref-type-key) names)
     when value-ids do
-    (loop with value-key = (u:make-keyword
-                             (to-sql-identifier key
-                               :format-string "~a-id" :form :singular))
-      for value-id in value-ids
-      for params = (loop for key in param-keys
+    (loop for value-id in value-ids
+      for params = (loop for k in param-keys
                      collect (cond
-                               ((eq key uuid-key) uuid)
-                               ((eq key value-key) value-id)
-                               (t (error "Unknown param key ~s"
-                                    key))))
+                               ((eq k uuid-key) uuid)
+                               ((eq k value-key) value-id)
+                               (t (report-e "insert-join-table-rows"
+                                    "Unknown param key ~s in ~s"
+                                    ~k ~param-keys))))
       for query = (cons sql params)
       do
       (pl:pdebug :in "insert-join-table-rows"
@@ -1460,10 +1489,9 @@ for TYPE-KEY."
     with m = *compiled-model*
     with join-keys = (join-keys type-key)
     for key in join-keys
-    for column = (u:tree-get m type-key :fields key :source :column)
     for new-values = (or (getf data key)
-                       (u:tree-get m type-key :fields  key :default))
-    for unknown-values = (unknown-values key column new-values)
+                       (u:tree-get m type-key :fields key :default))
+    for unknown-values = (unknown-values type-key key new-values)
     for l = (length unknown-values)
     when unknown-values
     do (report-ve "valid-existing-join-data"
@@ -1762,9 +1790,7 @@ error:
       ((zerop (length result)) nil)
       ((> (length result) 1) (error "More than one match."))
       (t (let ((id (getf (car result) :id)))
-           (if (and is-base (not internal))
-             (when is-admin id)
-             (when (user-allowed-resource user id "read") id)))))))
+           (when (user-allowed-resource user id "read") id))))))
 
 (defun be-value-id (type-key field-key value user)
   ":public: Returns the ID of the record of type TYPE-KEY where FIELD-KEY has

@@ -38,4 +38,5 @@
                                 (:file "scoping-tests")
                                 (:file "action-tests")
                                 (:file "secrets-tests")
-                                (:file "widget-tests")))))
+                                (:file "widget-tests")
+                                (:file "m2m-tests")))))
