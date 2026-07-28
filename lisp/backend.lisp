@@ -541,6 +541,19 @@ all the right fields when we perform inserts or updates."
     (loop for role in to-add
       do (a:add-resource-role *rbac* resource role))))
 
+(defun user-defined-type-roles ()
+  ":private: Returns a deduplicated list of all roles associated with
+user-defined types (non-:built-in), excluding \"admin\"."
+  (remove "admin"
+    (remove-duplicates
+      (loop
+        for type-key in *compiled-model* by #'cddr
+        for type-def in (cdr *compiled-model*) by #'cddr
+        unless (u:tree-get type-def :built-in)
+        appending (get-type-roles type-key))
+      :test #'equal)
+    :test #'equal))
+
 (defun format-list-elements (list format-string)
   (mapcar
     (lambda (element) (format nil format-string element))
@@ -615,7 +628,13 @@ all the right fields when we perform inserts or updates."
                    (view-result-values type-key field-keys view-result
                      :user user)))
       :allowed-values (allowed-values type-key user)
-      :type-roles (u:tree-get *compiled-model* type-key :type-roles))
+      :type-roles (if (equal type-key :users)
+                    (remove-duplicates
+                      (append (u:tree-get *compiled-model* type-key
+                                :type-roles)
+                        (user-defined-type-roles))
+                      :test #'equal)
+                    (u:tree-get *compiled-model* type-key :type-roles)))
     (fe-fields type-key user)))
 
 ;;
