@@ -1058,11 +1058,15 @@ hashes never reach the frontend."
           else
             appending (list key val))))
 
-(defun rec (id user &key (form :update-form) type-key (public t))
+(defun rec (id user &key (form :update-form) type-key (public t)
+             (blank-passwords t))
   ":private: Returns the TYPE-KEY record with the given ID, provided that it is
 accessible to USER. Given the IDs are UUIDs (globally unique), TYPE-KEY is
 optional. However, providing TYPE-KEY helps the function avoid an extra database
-lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
+lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs.
+BLANK-PASSWORDS controls whether password hashes are nilled out before
+returning (default T for frontend safety; pass NIL for internal callers
+that need the real hash, e.g. be-update)."
   (valid-existing-user user)
   (when type-key (if public
                    (valid-be-type-key type-key)
@@ -1084,7 +1088,9 @@ lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs."
                     (add-roles-to-view
                       type-key form user
                       (mapcar
-                        (lambda (r) (blank-password-fields type-key r))
+                        (if blank-passwords
+                          (lambda (r) (blank-password-fields type-key r))
+                          #'identity)
                         (view-result-values type-key field-keys view-result
                           :user user))))
           :allowed-values (allowed-values type-key user))))))
@@ -1473,7 +1479,13 @@ value is of the correct type for its field key."
       ((and
          (not (getf field-def :base))
          (getf field-def :column))
-        (valid-value-type type-key field-key value))
+        ;; NIL is valid for nullable fields and for password fields
+        ;; on update (passwords are blanked before reaching the
+        ;; frontend; NIL means "keep existing hash").
+        (unless (and (null value)
+                     (or (not (getf field-def :not-null))
+                         (eq (getf field-def :type) :password)))
+          (valid-value-type type-key field-key value)))
       ((equal field-key :id)
         (valid-uuid value))
       ((and
@@ -2104,7 +2116,8 @@ update fails.
   (valid-user-roles user (remove-existing-non-user-roles user roles))
   (let* ((m *compiled-model*)
           (uuid (id-from-filters-and-data type-key filters data))
-          (record (getf (rec uuid user :type-key type-key) :record))
+          (record (getf (rec uuid user :type-key type-key :blank-passwords nil)
+                    :record))
           (sql (car (u:tree-get m type-key :update-sql :main)))
           (values (local-values-for-update type-key data record user :id uuid))
           (update-query (cons sql values))
