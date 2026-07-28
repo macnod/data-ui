@@ -663,35 +663,62 @@ Returns (:ok model-text) or (:error message)."
           (let* ((body (generate-model-build-request-json
                          model temperature max-tokens
                          system-prompt description))
-                 (dr:*text-content-types*
-                   '((nil . "json")))
-                 (response (dr:http-request url
-                              :method :post
-                              :content-type "application/json"
-                              :accept "application/json"
-                              :additional-headers
-                              `(("Authorization" . ,(format nil "Bearer ~a"
-                                                       api-key)))
-                              :content body
-                              :connection-timeout 120)))
+                 (raw-response (dr:http-request url
+                                  :method :post
+                                  :content-type "application/json"
+                                  :accept "application/json"
+                                  :force-binary t
+                                  :external-format-out :utf-8
+                                  :additional-headers
+                                  `(("Authorization" . ,(format nil "Bearer ~a"
+                                                           api-key)))
+                                  :content body
+                                  :connection-timeout 120))
+                 (response (flex:octets-to-string raw-response
+                              :external-format :utf-8)))
             (generate-model-parse-llm-response response))
           (error (e)
             (list :error (format nil "LLM request failed: ~a" e))))))))
 
+(defun gethash-openai-content (parsed)
+  ":private: Extract content from OpenAI-format response.
+Returns string or nil."
+  (let* ((choices (gethash "choices" parsed)))
+    (when (and choices (listp choices) choices)
+      (let* ((first-choice (first choices))
+             (message (when (hash-table-p first-choice)
+                        (gethash "message" first-choice))))
+        (when (and message (hash-table-p message))
+          (let ((content (gethash "content" message)))
+            (when (stringp content)
+              content)))))))
+
+(defun gethash-anthropic-content (parsed)
+  ":private: Extract text from Anthropic/GLM-format response.
+content is a list of {type:text, text:...} blocks.  Returns the
+concatenated text or nil."
+  (let ((content (gethash "content" parsed)))
+    (when (and content (listp content) content)
+      (let ((first-block (first content)))
+        (when (and (hash-table-p first-block)
+                   (string= (gethash "type" first-block) "text"))
+          (gethash "text" first-block))))))
+
 (defun generate-model-parse-llm-response (response)
   ":private: Extract the assistant message content from the LLM JSON
-response.  Returns (:ok text) or (:error message)."
+response.  Handles both OpenAI format (choices[].message.content) and
+Anthropic/GLM format (content[].text).  Returns (:ok text) or
+(:error message)."
   (handler-case
     (let* ((parsed (yason:parse response))
-           (choices (cdr (assoc "choices" parsed :test #'equal)))
-           (message (when choices
-                      (cdr (assoc "message"
-                             (first choices) :test #'equal))))
-           (content (when message
-                      (cdr (assoc "content" message :test #'equal)))))
+           ;; OpenAI format: choices[0].message.content (string)
+           (content (or (gethash-openai-content parsed)
+                        ;; GLM/Anthropic format: content[0].text
+                        (gethash-anthropic-content parsed))))
       (if content
         (list :ok content)
-        (list :error "LLM response missing message content")))
+        (list :error (format nil "LLM response missing message content. Raw: ~a"
+                       (subseq response 0 (min (length response) 500))))))
     (error (e)
       (list :error (format nil "Failed to parse LLM response: ~a" e)))))
 
