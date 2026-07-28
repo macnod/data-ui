@@ -91,7 +91,7 @@ authoritative reference; this is the guided tour.
 
     compile_default_model
 
-Before anything ships, the model in `models/default-model.lisp` must
+Before anything ships, the model in `models/<model-name>.lisp` must
 compile. The script starts a *throwaway* PostgreSQL container (its own
 container name and port 5446, so it never collides with your dev REPL
 database on 5444 or the test database on 5445), initializes the schema,
@@ -208,7 +208,7 @@ The only step that needs sudo. Details in
 
 Worth repeating with the actual flow drawn out:
 
-    models/default-model.lisp
+    models/<model-name>.lisp
         :name "todo" ──────────┬─→ namespace  dataui-todo
         :version "0.1" ────────┼─→ tag        todo-0.1-<git-hash>
         :domain "todo.demo..." ┼─→ HAProxy map entry + backend

@@ -457,27 +457,24 @@ Returns the relative file path (for the deploy script) and the model name."
       (write-string model-string out))
     (values (format nil "models/~a" filename) model-name model-path)))
 
-(defun deploy-model-git-commit (model-path default-model-path
-                                model-name repo-root)
-  ":private: Stage and commit the model files so the tree is clean
-for deploy.  Both the timestamped model file and
-models/default-model.lisp are staged."
+(defun deploy-model-git-commit (model-path model-name repo-root)
+  ":private: Stage and commit the model file so the tree is clean
+for deploy."
   (uiop:run-program (list "git" "add"
-                    (namestring model-path)
-                    (namestring default-model-path))
+                    (namestring model-path))
     :input nil :directory repo-root)
   (uiop:run-program (list "git" "commit" "-m"
                     (format nil "Deploy ~a" model-name))
     :input nil :directory repo-root))
 
-(defun deploy-model-run-script (package-root)
-  ":private: Run scripts/data-ui deploy. Returns (values stdout stderr
-exit-code).  Does not signal on non-zero exit — the caller inspects exit-code
-and stderr."
+(defun deploy-model-run-script (package-root model-name)
+  ":private: Run scripts/data-ui deploy <model-name>. Returns (values
+stdout stderr exit-code).  Does not signal on non-zero exit — the caller
+inspects exit-code and stderr."
   (let ((script-path (namestring
                        (merge-pathnames "scripts/data-ui" package-root)))
          (repo-root (namestring package-root)))
-    (uiop:run-program (list script-path "deploy")
+    (uiop:run-program (list script-path "deploy" model-name)
       :input nil
       :output :string :error-output :string
       :ignore-error-status t
@@ -513,14 +510,11 @@ so errors become 'failed: <message>' rather than silent thread death."
     (multiple-value-bind (model-file model-name model-path)
       (deploy-model-write-file model-plist package-root)
       (declare (ignore model-file))
-      (let ((default-model (merge-pathnames "models/default-model.lisp"
-                             package-root)))
-        (uiop:copy-file model-path default-model)
-        (deploy-model-git-commit
-          model-path default-model model-name
-          (namestring package-root)))
+      (deploy-model-git-commit
+        model-path model-name
+        (namestring package-root))
       (multiple-value-bind (stdout stderr exit-code)
-        (deploy-model-run-script package-root)
+        (deploy-model-run-script package-root model-name)
         (declare (ignore stdout))
         (if (zerop exit-code)
           (progn
@@ -2368,8 +2362,6 @@ of that file."
                   (format nil "~a.lisp" file))))
       (with-open-file (in path)
         (set-model (cadr (read in))))))
-  (:method ((file null))
-    (set-model "default-model"))
   (:documentation ":public: Sets the model to the given plist. If given a
 string instead of a plist, resolves the string to a file in the `models`
 directory, loads the plist from there, and then sets the model that

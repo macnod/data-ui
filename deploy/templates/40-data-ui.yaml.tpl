@@ -98,6 +98,8 @@ spec:
               value: "{{TAG}}"
             - name: DATAUI_ENVIRONMENT
               value: "{{ENV}}"
+            - name: MODEL_NAME
+              value: "{{MODEL_NAME}}"
             - name: SWANK_PORT #@repl
               value: "4005" #@repl
           ports:

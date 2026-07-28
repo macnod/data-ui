@@ -72,7 +72,6 @@ Conventions (`models/README.md`):
 | File | Role |
 |------|------|
 | `<name>.lisp` | Named application model |
-| `default-model.lisp` | What deploy mode runs; keep in sync with a named file |
 | `test-model.lisp` | Test fixture — do not change unless changing tests |
 
 Because the form starts with a quote, Lisp can `read` it. That is useful for

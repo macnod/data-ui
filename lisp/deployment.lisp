@@ -10,7 +10,7 @@
                      (asdf:system-relative-pathname :deployment #P""))))
     (subseq lisp-path 0 (- (length lisp-path) (length lisp-folder)))))
 
-(defun top-level-model-field (key-string &optional (model-file "default-model"))
+(defun top-level-model-field (key-string model-file)
   (let* ((path (format nil "~a/models/~a.lisp" *root* model-file))
           (model (with-open-file (in path) (cadr (read in))))
           (key (intern (string-upcase key-string) :keyword))
