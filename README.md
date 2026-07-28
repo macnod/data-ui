@@ -195,8 +195,7 @@ for those who want that power unmediated.
 
 ## Example Model
 
-This example matches `models/todos.lisp` (and `models/default-model.lisp`,
-which is an exact copy used by the deploy pipeline). Each file in the
+This example matches `models/todos.lisp`. Each file in the
 `models/` directory holds a bare model plist (no `defparameter` and no
 wrapping variable). The top-level keys (`:title`, `:name`, `:version`,
 `:domain`, `:repl`, `:landing-page`) carry the model's identity, and `:types` holds the type
@@ -589,6 +588,9 @@ directly by the frontend components.
 
 
 ## Development
+
+For full reference on the `scripts/data-ui` and `scripts/publish-data-ui`
+commands, see [scripts/README.md](scripts/README.md).
 
 - Start a repl-environment terminal
 

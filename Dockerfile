@@ -93,5 +93,5 @@ ENTRYPOINT [ \
     "ros", "run", "--", \
     "--disable-debugger", \
     "--eval", "(require :data-ui)", \
-    "--eval", "(data-ui::main \"default-model\")" \
+    "--eval", "(data-ui::main)" \
 ]

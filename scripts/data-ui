@@ -36,15 +36,17 @@ function usage {
     echo "docs     Generates the REAME file."
     echo "stop     Stops the database container and removes it. This is"
     echo "         normally not necessary."
-    echo "title    Get the default model's title"
+    echo "field    <model-name> <field-name>"
+    echo "         Read a top-level field from a model file."
     echo "debug    Runs the tests, printing all output from postgres and"
     echo "         docker compose."
-    echo "deploy   Builds the default model's Docker image, generates the"
+    echo "deploy   <model-name>"
+    echo "         Builds the model's Docker image, generates the"
     echo "         Kubernetes manifests, deploys the app to k3d, and routes"
     echo "         the model's domain to the app via HAProxy. Requires a"
     echo "         clean git tree and sudo (for HAProxy). Set DRY_RUN=1 to"
     echo "         stop after generating the manifests. The model is read"
-    echo "         from models/default-model.lisp. When run on a"
+    echo "         from models/<model-name>.lisp. When run on a"
     echo "         machine other than \$DEPLOY_HOST (default evo-x2), pushes"
     echo "         the current branch and tag to origin and re-runs the"
     echo "         deploy on \$DEPLOY_HOST over ssh, in the deploy clone at"
@@ -52,7 +54,8 @@ function usage {
     echo "         Deployment state (manifests, ports.lock, secrets) lives"
     echo "         outside the repo in \$DEPLOY_STATE_DIR (default"
     echo "         ~/.local/state/data-ui-deploy)."
-    echo "delete   Undeploys the default model's app: deletes its Kubernetes"
+    echo "delete   <model-name>"
+    echo "         Undeploys the model's app: deletes its Kubernetes"
     echo "         namespace and PVs, wipes its data on the host, removes its"
     echo "         HAProxy backend and map entry, and removes its deploy"
     echo "         state (including secrets). Asks for confirmation unless"
@@ -61,6 +64,14 @@ function usage {
     echo "traffic  Shows HAProxy's per-IP rate-limit counters (concurrent"
     echo "         connections, connection rate, request rate) and flags"
     echo "         clients near or over the limits. Requires sudo."
+    echo "snapshot Save or restore the database for model switching."
+    echo "         Subcommands: save [name], restore [name], list, drop [name]."
+    echo "         If [name] is omitted, defaults to the currently-loaded"
+    echo "         model name (e.g. 'modelbank'). Use a suffix for"
+    echo "         multiple snapshots of the same model: modelbank-1,"
+    echo "         modelbank-dev, etc. Typical: 'snapshot save' before"
+    echo "         set-model, 'snapshot restore' after switching back."
+    echo "         Snapshots live in ~/.local/state/data-ui-snapshots/."
     echo "help     Displays this help text."
 }
 
@@ -235,7 +246,7 @@ function export_docs_environment {
 function get_model_field {
     # top-level-model-field takes just the basename without extension.
     local model_base
-    model_base=$(basename "models/default-model.lisp" .lisp)
+    model_base=$(basename "models/${MODEL_NAME}.lisp" .lisp)
     ros run -- --disable-debugger \
         --load "lisp/deployment.lisp" \
         --eval '(in-package :deployment)' \
@@ -297,9 +308,9 @@ function export_deploy_db_environment {
     export LOG_FILE="tests/deploy-compile.log"
 }
 
-function compile_default_model {
+function compile_model {
     echo
-    echo "Compiling model from models/default-model.lisp..."
+    echo "Compiling model from models/${MODEL_NAME}.lisp..."
     # Runs the compilation phase of SET-MODEL (validation, SQL generation,
     # lambda compilation) against a throwaway database, skipping the
     # cluster-facing side effects (CREATE-TABLES, START-WEB-SERVER, etc).
@@ -311,7 +322,7 @@ function compile_default_model {
     start_postgres_quietly
     initialize_database_quietly
     local status=0
-    local model_file="models/default-model.lisp"
+    local model_file="models/${MODEL_NAME}.lisp"
     # Pin ASDF to this checkout so the deploy clone compiles its own
     # source rather than whatever other data-ui checkout is registered
     # in local-projects.
@@ -462,6 +473,7 @@ function render_template {
         -e "s|{{IMAGE}}|${IMAGE}|g" \
         -e "s|{{DOMAIN}}|${DOMAIN}|g" \
         -e "s|{{ENV}}|${DEPLOY_ENV}|g" \
+        -e "s|{{MODEL_NAME}}|${MODEL_NAME}|g" \
         -e "s|{{NODE_PORT}}|${NODE_PORT}|g" \
         -e "s|{{NODE_IP}}|${NODE_IP}|g" \
         -e "s|{{DB_PASSWORD}}|${DB_PASSWORD}|g" \
@@ -589,7 +601,7 @@ function remote_deploy {
         cd \"$DEPLOY_CHECKOUT\"
         git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --force
         git checkout --detach $sha
-        DRY_RUN='$DRY_RUN' scripts/data-ui deploy
+        DRY_RUN='$DRY_RUN' scripts/data-ui deploy '$MODEL_NAME'
     " || die "Remote deploy failed."
 }
 
@@ -600,7 +612,7 @@ function deploy {
         return
     fi
     [[ -n "$DRY_RUN" ]] || require_clean_tree
-    compile_default_model
+    compile_model
     gather_deploy_facts
     [[ -n "$DRY_RUN" ]] || create_deploy_tag
     NODE_IP=$(kubectl get nodes -o \
@@ -690,7 +702,7 @@ function undeploy {
         ssh -t "$DEPLOY_HOST" "
             set -e
             cd \"$DEPLOY_CHECKOUT\"
-            FORCE='$FORCE' scripts/data-ui delete
+            FORCE='$FORCE' scripts/data-ui delete '$MODEL_NAME'
         " || die "Remote delete failed."
         return
     fi
@@ -753,6 +765,104 @@ function undeploy {
     echo "  - Git release tags ${NAME}-*"
 }
 
+#
+# Database snapshots (for model switching)
+#
+
+SNAPSHOT_DIR="${HOME}/.local/state/data-ui-snapshots"
+
+# Detect the currently-loaded model name by querying the running
+# instance's /api/info endpoint. Falls back to "default" if the
+# server is down or unreachable.
+function detect_model_name {
+    local token
+    token=$(curl -s --max-time 3 \
+                "http://${HTTP_HOST}:${HTTP_PORT}/api/login" \
+                -H 'Content-Type: application/json' \
+                -d "{\"username\":\"admin\",\"password\":\"${ADMIN_PASSWORD}\"}" \
+        | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['result']['access-token'])
+except Exception:
+    sys.exit(1)
+" 2>/dev/null) || true
+    [[ -n "$token" ]] || true
+    curl -s --max-time 3 \
+         "http://${HTTP_HOST}:${HTTP_PORT}/api/info" \
+         -H "Authorization: Bearer ${token}" \
+        | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['result']['name'])
+except Exception:
+    sys.exit(1)
+" 2>/dev/null || echo "default"
+}
+
+function snapshot_save {
+    local name="${1:-$(detect_model_name)}"
+    local path="${SNAPSHOT_DIR}/${name}.dump"
+    mkdir -p "$SNAPSHOT_DIR"
+    pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+            --format=custom --no-owner --no-privileges \
+            --file="$path"
+    echo "Saved snapshot '${name}' → ${path}"
+}
+
+function snapshot_restore {
+    local name="${1:-$(detect_model_name)}"
+    local path="${SNAPSHOT_DIR}/${name}.dump"
+    if [[ ! -f "$path" ]]; then
+        echo "Error: snapshot '${name}' not found at ${path}" >&2
+        echo "Available snapshots:"
+        snapshot_list
+        exit 1
+    fi
+    # Drop the entire public schema (tables, functions, triggers,
+    # sequences) and recreate it so the restore is clean.
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+         -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT ALL ON SCHEMA public TO dataui;
+GRANT ALL ON SCHEMA public TO public;
+SQL
+    pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+               --no-owner --no-privileges --exit-on-error \
+               "$path"
+    echo "Restored snapshot '${name}' ← ${path}"
+}
+
+function snapshot_list {
+    if [[ ! -d "$SNAPSHOT_DIR" ]] \
+       || [[ -z "$(ls -A "$SNAPSHOT_DIR" 2>/dev/null)" ]]; then
+        echo "No snapshots found in ${SNAPSHOT_DIR}"
+        return
+    fi
+    echo "Snapshots in ${SNAPSHOT_DIR}:"
+    for f in "$SNAPSHOT_DIR"/*.dump; do
+        [[ -f "$f" ]] || continue
+        local base size
+        base=$(basename "$f" .dump)
+        size=$(du -h "$f" | cut -f1)
+        echo "  ${base}  (${size})"
+    done
+}
+
+function snapshot_drop {
+    local name="${1:-$(detect_model_name)}"
+    local path="${SNAPSHOT_DIR}/${name}.dump"
+    if [[ ! -f "$path" ]]; then
+        echo "Error: snapshot '${name}' not found" >&2
+        exit 1
+    fi
+    rm "$path"
+    echo "Deleted snapshot '${name}'"
+}
+
 case "$ACTION" in
     repl)
         export_repl_environment
@@ -801,7 +911,12 @@ case "$ACTION" in
         stop_database
         ;;
     field)
-        FIELD_NAME=$2
+        MODEL_NAME="$2"
+        FIELD_NAME="$3"
+        if [[ -z "$MODEL_NAME" ]]; then
+            echo "Model name required."
+            exit 1
+        fi
         if [[ -z "$FIELD_NAME" ]]; then
             echo "Field name required."
             exit 1
@@ -809,13 +924,50 @@ case "$ACTION" in
         get_model_field
         ;;
     deploy)
+        MODEL_NAME="$2"
+        [[ -n "$MODEL_NAME" ]] || die "Usage: $SCRIPT_NAME deploy <model-name>"
         deploy
         ;;
     delete)
+        MODEL_NAME="$2"
+        [[ -n "$MODEL_NAME" ]] || die "Usage: $SCRIPT_NAME delete <model-name>"
         undeploy
         ;;
     traffic)
         traffic
+        ;;
+    snapshot)
+        sub="${2:-}"
+        case "$sub" in
+            save)
+                export_repl_environment
+                snapshot_save "$3"
+                ;;
+            restore)
+                export_repl_environment
+                snapshot_restore "$3"
+                ;;
+            list)
+                snapshot_list
+                ;;
+            drop)
+                snapshot_drop "$3"
+                ;;
+            *)
+                echo "Usage: $SCRIPT_NAME snapshot {save|restore|list|drop} [name]"
+                echo
+                echo "Save or restore the database for model switching."
+                echo "  save [name]    Save current DB state"
+                echo "  restore [name] Restore a saved snapshot"
+                echo "  list           List available snapshots"
+                echo "  drop [name]    Delete a snapshot"
+                echo
+                echo "If [name] is omitted, defaults to the currently-loaded"
+                echo "model name (e.g. 'modelbank'). Use a suffix for multiple"
+                echo "snapshots: modelbank-1, modelbank-dev, etc."
+                exit 1
+                ;;
+        esac
         ;;
     help)
         usage

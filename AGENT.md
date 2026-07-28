@@ -224,8 +224,8 @@ nil), call `(init-database)` before running tests.
   https://todo.demo.data-ui.com via `scripts/data-ui deploy`.
 - Backend compilation, SQL generation, RBAC, and generic endpoints are working
 - `models/todos.lisp` contains an example model for a To Do list; load it with
-  `(set-model "todos")`. The deploy pipeline deploys `models/default-model.lisp`,
-  which is an exact copy of `todos.lisp`.
+  `(set-model "todos")`. The deploy pipeline deploys `models/todos.lisp` via
+  `scripts/data-ui deploy todos`.
 - Full CRUD works on **all** types — both the built-in RBAC types (users, roles,
   permissions, resources, etc.) and user-defined types
 - **Scoping** is implemented at both the view level and the field level.
@@ -312,7 +312,7 @@ nil), call `(init-database)` before running tests.
 ## Deployment (working; read this before touching it)
 
 `scripts/data-ui deploy` (renamed from `scripts/run.sh`) deploys
-`models/default-model.lisp` (exact copy of `todos.lisp`) to a k3d cluster on
+`models/todos.lisp` to a k3d cluster on
 the deploy host (`evo-x2`) behind HAProxy + TLS. Full detail in
 **docs/deployment.md**; session-by-session history of how it was built (with
 every bug and fix) in **~/.debug/deployment-work.md**. Key facts:

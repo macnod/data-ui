@@ -35,10 +35,11 @@ restarting the image, but without quitting."
   (reset-database)
   t)
 
-(defun main (&optional (model "default-model"))
+(defun main (&optional (model (u:getenv "MODEL_NAME")))
   "Container entry point. Initializes the process, loads MODEL (which
 starts the web server), then blocks forever to keep the process alive.
-Do not call from a REPL; use INIT and SET-MODEL instead."
+MODEL defaults to the MODEL_NAME environment variable. Do not call from
+a REPL; use INIT and SET-MODEL instead."
   (init)
   (set-model model)
   (loop (sleep 60)))
