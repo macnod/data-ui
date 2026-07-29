@@ -1312,13 +1312,14 @@ Notes:
          (expected (remove-if
                      (lambda (r)
                        (member r '("admin" "admin:exclusive"
-                                    "guest:exclusive")
+                                    "guest:exclusive" "settings")
                          :test 'equal))
                      all-roles)))
     (is (equal (u:safe-sort result) (u:safe-sort expected)))
     (is-false (member "admin" result :test 'equal))
     (is-false (member "admin:exclusive" result :test 'equal))
-    (is-false (member "guest:exclusive" result :test 'equal))))
+    (is-false (member "guest:exclusive" result :test 'equal))
+    (is-false (member "settings" result :test 'equal))))
 
 (test selectable-roles-non-admin
   "Non-admin sees own roles + public + type-roles, minus system exclusives."
