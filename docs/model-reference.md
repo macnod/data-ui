@@ -259,7 +259,7 @@ Under `:fields`, each entry is `field-key` → plist (except joiner
 | `:ui` | plist passed through to the frontend. **Required** for a column to participate in insert/update SQL and for `fe-fields` emission (needs `:widget`) |
 | `:column` | `t` → physical DB column. Forced `t` if `:target`; forced `nil` if `:type :button` |
 | `:default` | Default value. Booleans: `:true`/`:false`. Timestamps: `:now`. UUID: `:generate-uuid` |
-| `:not-null` | DDL `NOT NULL`. Forced if `:target` |
+| `:not-null` | DDL `NOT NULL`. Optional on `:target` fields (see [Foreign keys](#foreign-keys-target)) |
 | `:unique` | DDL `UNIQUE` |
 | `:identity` | Natural-key participant. See [Identity fields](#identity-fields) |
 | `:required` | Legacy: if truthy, compiler prepends `#'v-required`. Prefer `:validations (:required)` |
@@ -425,13 +425,17 @@ Notes:
 - Target type must have exactly one `:identity t` field
 - UI typically shows the identity display value (often `:name`), not the UUID
 - `:autofill :user` fills the current username on insert
-- **`:not-null` is forced to `t`** — the compiler ignores any explicit
-  `:not-null nil` (or missing `:not-null`) on `:target` fields. The
-  generated DDL always emits `not null`. This means `:target` fields
-  cannot represent an optional/nullable FK reference. If you need
-  "zero or one" or "zero or more" references to another type, use an
-  M2M list field (`:type :list` + `:join-table`) instead — the join
-  table can be empty, so the relationship is naturally optional.
+- **`:not-null` is optional** — the compiler respects the author's
+  `:not-null` setting on `:target` fields. Set `:not-null t` for a
+  required FK (the common case); omit it (or `:not-null nil`) for a
+  nullable / optional FK reference. When `:not-null` is absent, the
+  generated DDL omits `NOT NULL`, and the backend accepts `nil` /
+  `:null` values on insert and update (writing SQL `NULL`).
+  Validation (`v-type`, `value-type-p`) also passes `nil` for nullable
+  fields without complaint.
+- For "zero or more" references, use an M2M list field (`:type :list` +
+  `:join-table`) — the join table can be empty, so the relationship is
+  naturally optional.
 
 ### Identity fields
 
