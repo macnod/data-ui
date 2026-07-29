@@ -139,6 +139,13 @@ function renderCellValue(
     return <StarRating value={num} />
   }
 
+  if (widget === 'checkbox') {
+    const isTrue = val === true || val === 'true'
+    return isTrue
+      ? <span style={{ fontSize: '1.1em' }}>&#10003;</span>
+      : <span />
+  }
+
   return text
 }
 
@@ -442,6 +449,15 @@ function renderReadOnlyField(
     if (num == null || isNaN(num))
       return <div style={{ color: 'var(--muted-2)' }}>—</div>
     return <StarRating value={num} />
+  }
+
+  if (widget === 'checkbox') {
+    const isTrue = value === true || value === 'true'
+    return (
+      <div style={{ padding: '0.3rem 0' }}>
+        {isTrue ? '\u2713' : ''}
+      </div>
+    )
   }
 
   // Default read-only: plain text display

@@ -254,6 +254,10 @@ nil), call `(init-database)` before running tests.
   - `:widget` values: `:textbox`, `:textarea`, `:code`, `:stars`, `:select`,
     `:file`, `:checkbox`, `:checkbox-list`, `:password`, `:hidden`, `:button`,
     `:image`, `:image-list` — controls form rendering and list cell display
+  - `:options` on `:ui` — list of non-empty strings for static dropdown
+    values (requires `:widget :select`; mutually exclusive with `:target` /
+    `:join-table`; bare `:select` without `:options` or `:target` is a
+    compile error). See `models/static-select-test.lisp`
   - `:read-only t` boolean on `:ui` — renders a field's display variant
     instead of an editor (not a widget value)
   - `:button` field type with `:action` — clickable controls on update forms

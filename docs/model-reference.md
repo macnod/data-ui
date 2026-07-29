@@ -361,6 +361,7 @@ keys injected by `fe-fields`). Unknown subkeys are harmless extension points.
 | `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:stars` \| `:select` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
 | `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
+| `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
 | `:table` | **injected by `fe-fields`** from source table / type-key — used for `/api/file` URLs; do not set manually |
 
 Widget semantics:
@@ -371,7 +372,15 @@ Widget semantics:
 - `:stars` — interactive StarRating (editable) or static (read-only / list)
 - `:checkbox` — single boolean checkbox
 - `:checkbox-list` — multi-select from `allowed-values`
-- `:select` — `<select>` dropdown from `allowed-values`
+- `:select` — `<select>` dropdown. Two modes:
+  - **Relation** (default): options from `allowed-values` via `:target`
+    (foreign key). Requires `:target` + `:source` + `:source-all`.
+  - **Static**: options from `:options` (a list of non-empty strings).
+    Requires `:ui (:widget :select :options (...))`. No `:target` or
+    `:join-table`. The stored value is the option string itself.
+    See `models/static-select-test.lisp` for an example.
+  - A bare `:widget :select` with neither `:options` nor `:target`
+    is a compile error (empty dropdowns are not a valid mode).
 - `:file` — file input + two-phase upload
 - `:password` — masked password input
 - `:button` — action button (update form only)
@@ -1147,7 +1156,7 @@ resolved `:category` / `:internal`.
 `:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:default-from`
 `:css-value` `:primary-key` / joiner `:reference`
 
-**UI:** `:label` `:widget` `:read-only` `:precision`
+**UI:** `:label` `:widget` `:read-only` `:precision` `:options`
 
 **Source:** `:view` `:table` `:column` `:agg` `:scope`
 

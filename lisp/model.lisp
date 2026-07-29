@@ -62,6 +62,16 @@ returns S. If S is not a string or a number, this function returns NIL."
     (unless valid
       (validation-error-string type-key field-key value "is required."))))
 
+(defun v-options (type-key field-key value user)
+  (declare (ignore user))
+  (let ((options (u:tree-get *compiled-model*
+                  type-key :fields field-key :ui :options)))
+    (when (and options value (not (equal value :null)))
+      (unless (member value options :test #'equal)
+        (validation-error-string
+          type-key field-key value
+          (format nil "must be one of: ~{~a~^, ~}." options))))))
+
 (defun v-type (type-key field-key value user)
   (declare (ignore user))
   (let* ((field-def (u:tree-get *compiled-model* type-key :fields field-key))
@@ -1522,6 +1532,8 @@ necessary."
     (push #'v-type vfs)
     (when (u:tree-get model type-key :fields field-key :required)
       (push #'v-required vfs))
+    (when (u:tree-get model type-key :fields field-key :ui :options)
+      (push #'v-options vfs))
     vfs))
 
 (defparameter *lifecycle-keys*
@@ -1650,6 +1662,26 @@ Signals via report-ve otherwise."
         ":read-only must be t or nil, got ~s."
         ~ro))))
 
+(defun valid-options-value (ui)
+  "Check :options on :ui: non-empty list of non-empty strings;
+only legal with :widget :select."
+  (let ((options (getf ui :options :missing)))
+    (unless (eq options :missing)
+      (unless (and (listp options)
+                   options
+                   (every (lambda (s)
+                            (and (stringp s) (plusp (length s))))
+                          options))
+        (report-ve "valid-options-value"
+          ":options must be a non-empty list of non-empty ~
+           strings, got ~a"
+          ~options))
+      (let ((widget (getf ui :widget)))
+        (unless (eq widget :select)
+          (report-e "valid-options-value"
+            ":options is only valid with :widget :select, got ~s"
+            ~widget))))))
+
 (defun finalize-ui (field-key ui)
   "Compile-time gate for field :ui plists. Validates keys and
 widget values, then injects safe defaults:
@@ -1665,6 +1697,8 @@ Rejects:
   (valid-ui-keys ui)
   ;; Validate :read-only value if present
   (valid-read-only-value ui)
+  ;; Validate :options shape/widget if present
+  (valid-options-value ui)
   ;; Validate widget if explicitly present
   (let ((widget (getf ui :widget)))
     (when widget
@@ -1762,16 +1796,35 @@ Rejects:
     finally
     (return
       (let* ((ui-val (getf def :ui))
-             (final-ui (when ui-val
-                         (finalize-ui new-field-key ui-val)))
-             (final-def (if final-ui
-                          (add-to-plist def (list :ui final-ui))
-                          def)))
-        (append final-def new-def
-          (when is-button
-            (list
-              :compiled-hook compiled-hook
-              :status-field status-key)))))))
+             (ui-options (getf ui-val :options :missing))
+             (has-target (getf def :target))
+             (has-join-table (getf def :join-table))
+             (widget (getf ui-val :widget)))
+        ;; :options exclusive with relation sources
+        (when (and (not (eq ui-options :missing))
+                   (or has-target has-join-table))
+          (report-e "compile-field"
+            ":options is mutually exclusive with :target / ~
+             :join-table on field ~s of type ~s."
+            ~new-field-key ~type-key))
+        ;; :select requires a value source
+        (when (and (eq widget :select)
+                   (eq ui-options :missing)
+                   (not has-target))
+          (report-e "compile-field"
+            ":widget :select requires either :options or :target ~
+             on field ~s of type ~s."
+            ~new-field-key ~type-key))
+        (let* ((final-ui (when ui-val
+                           (finalize-ui new-field-key ui-val)))
+               (final-def (if final-ui
+                            (add-to-plist def (list :ui final-ui))
+                            def)))
+          (append final-def new-def
+            (when is-button
+              (list
+                :compiled-hook compiled-hook
+                :status-field status-key))))))))
 
 (defun resolve-scope-alias (model type-key view-key table-key scope)
   "Resolve a :scope keyword on a field source to the alias key
@@ -2228,6 +2281,11 @@ declared. Mirrors the previous runtime type-category logic."
          ((and
             (member (second key-path) '(:list-form :update-form :add-form))
             (equal key :fields))
+           t)
+         ((and
+            (equal key :options)
+            (member :ui key-path)
+            (listp sdef))
            t)
          ((u:plistp sdef)
            (preliminary-model-check def (append key-path (list key))))

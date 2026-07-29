@@ -1312,13 +1312,14 @@ Notes:
          (expected (remove-if
                      (lambda (r)
                        (member r '("admin" "admin:exclusive"
-                                    "guest:exclusive")
+                                    "guest:exclusive" "settings")
                          :test 'equal))
                      all-roles)))
     (is (equal (u:safe-sort result) (u:safe-sort expected)))
     (is-false (member "admin" result :test 'equal))
     (is-false (member "admin:exclusive" result :test 'equal))
-    (is-false (member "guest:exclusive" result :test 'equal))))
+    (is-false (member "guest:exclusive" result :test 'equal))
+    (is-false (member "settings" result :test 'equal))))
 
 (test selectable-roles-non-admin
   "Non-admin sees own roles + public + type-roles, minus system exclusives."
@@ -1358,6 +1359,22 @@ Notes:
       ;; Cleanup
       (be-delete :users
         `((:users :name :eq ,user)) "admin"))))
+
+(test allowed-values-for-field-excludes-settings-from-users-roles
+  "The :users type's :roles allowed-values excludes system internals
+like settings, admin, logged-in, and exclusive roles — same set as
+selectable-roles. This is the path the Add form hits for :users."
+  (let ((roles (getf (allowed-values :users "admin") :roles)))
+    (is-false (member "settings" roles :test 'equal))
+    (is-false (member "admin" roles :test 'equal))
+    (is-false (member "admin:exclusive" roles :test 'equal))
+    (is-false (member "guest:exclusive" roles :test 'equal))
+    (is-false (member "logged-in" roles :test 'equal))
+    (is-false (member (a:exclusive-role-for "admin") roles
+                :test 'equal))
+    ;; Normal roles are still present
+    (is-true (member "public" roles :test 'equal))
+    (is-true (member "user-creator" roles :test 'equal))))
 
 (test valid-user-roles-allows-exclusive-sharing
   "A user can assign another user's exclusive role for sharing."

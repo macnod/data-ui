@@ -1204,16 +1204,26 @@ compiled model metadata — no naming convention assumptions."
 
 (defun allowed-values-for-field (type-key field-key user)
   (let* ((m *compiled-model*)
-          (source (u:tree-get m type-key :fields field-key :source))
-          (x-type-key (getf source :table))
-          (x-field-key (getf source :column))
-          (values (getf (be-list-column x-type-key x-field-key user) :values)))
-    (if (and
-          (equal type-key :users)
-          (equal field-key :roles)
-          (u:has values "logged-in"))
-      (remove-if (lambda (r) (equal r "logged-in")) values)
-      values)))
+         (options (u:tree-get m type-key :fields field-key
+                    :ui :options)))
+    (if options
+      (copy-list options)
+      (let* ((source (u:tree-get m type-key :fields field-key :source))
+             (x-type-key (getf source :table))
+             (x-field-key (getf source :column))
+             (values (getf (be-list-column x-type-key x-field-key user)
+                           :values)))
+        (if (and (equal type-key :users)
+                 (equal field-key :roles))
+          (remove-if
+            (lambda (r)
+              (u:has
+                (list* "admin" "admin:exclusive" "guest:exclusive"
+                       "settings" "logged-in"
+                       (when user (list (a:exclusive-role-for user))))
+                r))
+            values)
+          values)))))
 
 (defun selectable-roles (type-key user)
   ":private: Returns the list of roles the current USER can assign on
@@ -1221,7 +1231,7 @@ TYPE-KEY. For admin, returns all roles minus system exclusives. For
 other users, returns the user's own roles plus \"public\" plus the
 type's :type-roles."
   (let ((system-exclusives
-          (list* "admin" "admin:exclusive" "guest:exclusive"
+          (list* "admin" "admin:exclusive" "guest:exclusive" "settings"
                  (when user
                    (list (a:exclusive-role-for user))))))
     (if (equal user "admin")
@@ -1243,7 +1253,9 @@ type's :type-roles."
     for field-def in (cdr fields) by #'cddr
     for join-table = (getf field-def :join-table)
     for target = (getf field-def :target)
-    when (and (or join-table target) (not (equal field-key :id)))
+    for ui-options = (u:tree-get field-def :ui :options)
+    when (and (or join-table target ui-options)
+              (not (equal field-key :id)))
     appending
     (list field-key (allowed-values-for-field type-key field-key user))
     into allowed
@@ -1268,10 +1280,11 @@ type's :type-roles."
             for resource-name = (id-to-resource-name id)
             for roles = (remove-if
                           (lambda (x)
-                            (or
-                              (equal x "admin")
-                              (equal x (a:exclusive-role-for "admin"))
-                              (equal x (a:exclusive-role-for user))))
+                            (u:has
+                              (list "admin" "settings"
+                                (a:exclusive-role-for "admin")
+                                (a:exclusive-role-for user))
+                              x))
                           (a:list-resource-role-names *rbac* resource-name))
             collect (add-to-plist record (list :roles roles))))
         ((equal type-key :users)
@@ -1280,9 +1293,10 @@ type's :type-roles."
             for user-name = (getf record :name)
             for roles = (remove-if
                           (lambda (x)
-                            (or
-                              (equal x "logged-in")
-                              (equal x (a:exclusive-role-for user-name))))
+                            (u:has
+                              (list "logged-in" "settings"
+                                (a:exclusive-role-for user-name))
+                              x))
                           (a:list-user-role-names *rbac* user-name))
             collect (add-to-plist record (list :roles roles))))
         (t view)))))
