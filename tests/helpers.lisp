@@ -138,8 +138,8 @@ SOURCE-DATA is a string. The string will be written to the file, and the file
 will not be a proper image file. But the file will exist and allow us to pass
 some tests.
 
-SOURCE-FILE is a file-system path to an existing image file. This file will
-be copied to the final location of the image file. If this value is specified
+SOURCE-FILE is a file-system path to an existing image file. This file will be
+copied to the final location of the image file. If this value is specified
 SOURCE-DATA will be ignored.
 "
 
@@ -190,7 +190,7 @@ SOURCE-DATA will be ignored.
   "Seed shared state for the scoping test suite. Creates 2 users (user-1,
 user-2), with appropriate roles and one model. Returns a plist, bound to 
 *fixture*, that looks like this:
-  (:users (\"user-1\" \"user-2\") :models (\"test-model\"))"
+  (:users (\"user-1\" \"user-2\") :models (\"model-1\"))"
   (th-make-user "user-1" :roles '("role-1"))
   (th-make-user "user-2" :roles '("role-1"))
   (th-make-model "model-1" "user-1" :roles '("role-1"))
@@ -200,71 +200,78 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
 ;; END Test Helpers
 ;;
 
-(defun run-backend-tests ()
-  (with-model "test-model" nil
-    (let ((results (append (run 'backend-suite)
-                     (run 'predicates-suite))))
-      (explain! results)
-      results)))
+(defun run-backend-tests (&optional collect)
+  (let ((results
+          (with-model "test-model" nil
+            (append (run 'backend-suite)
+                    (run 'predicates-suite)))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-scoping-tests ()
-  (with-model "modelbank" nil
-    (let ((results (run 'scoping-suite)))
-      (explain! results)
-      results)))
+(defun run-scoping-tests (&optional collect)
+  (let ((results
+          (with-model "modelbank" nil
+            (run 'scoping-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-hook-registry-tests ()
-  "Run hook registry unit tests (no model needed) then integration tests against
-both test-model and modelbank."
+(defun run-hook-registry-tests (&optional collect)
+  "Run hook registry unit tests (no model needed) then integration
+tests against both test-model and modelbank."
   (let ((results
           (append (run 'hook-registry-suite)
-            (with-model "test-model" nil
-              (run 'hook-registry-integration-suite))
-            (with-model "modelbank" nil
-              (run 'hook-registry-modelbank-suite)))))
+                  (with-model "test-model" nil
+                    (run 'hook-registry-integration-suite))
+                  (with-model "modelbank" nil
+                    (run 'hook-registry-modelbank-suite)))))
     (explain! results)
-    results))
+    (when collect results)))
 
-(defun run-lifecycle-tests ()
+(defun run-lifecycle-tests (&optional collect)
   "Run lifecycle hook tests."
-  (with-model "test-model" nil
-    (let ((results (run 'hook-registry-lifecycle-suite)))
-      (explain! results)
-      results)))
+  (let ((results
+          (with-model "test-model" nil
+            (run 'hook-registry-lifecycle-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-action-tests ()
+(defun run-action-tests (&optional collect)
   "Run action hook tests."
-  (with-model "test-model" nil
-    (let ((results (run 'action-suite)))
-      (explain! results)
-      results)))
+  (let ((results
+          (with-model "test-model" nil
+            (run 'action-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-secrets-tests ()
+(defun run-secrets-tests (&optional collect)
   "Run secrets type tests."
-  (with-model "test-model" nil
-    (let ((results (run 'secrets-suite)))
-      (explain! results)
-      results)))
+  (let ((results
+          (with-model "test-model" nil
+            (run 'secrets-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-widget-tests ()
+(defun run-widget-tests (&optional collect)
   "Widget allow-list and UI emission tests."
-  (with-model "test-model" nil
-    (let ((results (run 'widget-suite)))
-      (explain! results)
-      results)))
+  (let ((results
+          (with-model "test-model" nil
+            (run 'widget-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-m2m-tests ()
+(defun run-m2m-tests (&optional collect)
   "Multiple M2M joiners per type — compile and runtime tests."
-  (with-model "m2m-test" #'seed-m2m-fixture
-    (let ((results (run 'm2m-suite)))
-      (explain! results)
-      results)))
+  (let ((results
+          (with-model "m2m-test" #'seed-m2m-fixture
+            (run 'm2m-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-generator-tests ()
+(defun run-generator-tests (&optional collect)
   "Generate-model hook tests."
   (let ((results (run 'generator-suite)))
     (explain! results)
-    results))
+    (when collect results)))
 
 (defun seed-m2m-fixture ()
   "Seed tags and verify admin user exists for M2M runtime tests."
@@ -273,55 +280,69 @@ both test-model and modelbank."
   (be-insert :tags '(:name "green") "admin")
   nil)
 
-(defun run-nullable-fk-tests ()
+(defun run-nullable-fk-tests (&optional collect)
   "Nullable foreign-key field tests."
-  (with-model "nullable-fk-test" nil
-    (let ((results (run 'nullable-fk-suite)))
-      (explain! results)
-      results)))
+  (let ((results
+          (with-model "nullable-fk-test" nil
+            (run 'nullable-fk-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-static-options-tests ()
+(defun run-static-options-tests (&optional collect)
   "Static dropdown :options tests."
-  (with-model "static-select-test" nil
-    (let ((results (run 'static-options-suite)))
-      (explain! results)
-      results)))
+  (let ((results
+          (with-model "static-select-test" nil
+            (run 'static-options-suite))))
+    (explain! results)
+    (when collect results)))
 
-(defun run-form-fields-tests ()
+(defun run-form-fields-tests (&optional collect)
   "Compile-time form field validation tests."
   (let ((results (run 'form-fields-suite)))
     (explain! results)
-    results))
+    (when collect results)))
 
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
-Each run-* helper returns a list of FiveAM result objects; this
-function collects them, prints per-group reports via explain!, and
-then prints a final summary showing total checks, failures, and
-which groups had failures."
-  (let* ((groups
-           (list
-             (cons "backend"        (run-backend-tests))
-             (cons "scoping"        (run-scoping-tests))
-             (cons "hook-registry"  (run-hook-registry-tests))
-             (cons "lifecycle"      (run-lifecycle-tests))
-             (cons "action"         (run-action-tests))
-             (cons "secrets"        (run-secrets-tests))
-             (cons "widget"         (run-widget-tests))
-             (cons "m2m"            (run-m2m-tests))
-             (cons "generator"      (run-generator-tests))
-             (cons "nullable-fk"    (run-nullable-fk-tests))
-             (cons "static-options" (run-static-options-tests))
-             (cons "form-fields"    (run-form-fields-tests))))
-          (all-results (loop for g in groups append (cdr g)))
-          (total (length all-results))
-          (failed (loop for r in all-results
+Each run-* helper is called with collect t so its result objects
+are collected for counting. The summary shows total wall-clock time,
+total checks, failures, which groups had failures, and the 5 slowest
+groups."
+  (let* ((start (get-internal-real-time))
+         (timings nil)
+         (groups
+           (loop for (name . fn) in
+                 '(("backend"        . run-backend-tests)
+                   ("scoping"        . run-scoping-tests)
+                   ("hook-registry"  . run-hook-registry-tests)
+                   ("lifecycle"      . run-lifecycle-tests)
+                   ("action"         . run-action-tests)
+                   ("secrets"        . run-secrets-tests)
+                   ("widget"         . run-widget-tests)
+                   ("m2m"            . run-m2m-tests)
+                   ("generator"      . run-generator-tests)
+                   ("nullable-fk"    . run-nullable-fk-tests)
+                   ("static-options" . run-static-options-tests)
+                   ("form-fields"    . run-form-fields-tests))
+                 for t0 = (get-internal-real-time)
+                 for results = (funcall fn t)
+                 for elapsed = (/ (- (get-internal-real-time) t0)
+                                  internal-time-units-per-second)
+                 do (push (cons name elapsed) timings)
+                 collect (cons name results)))
+         (wall (/ (- (get-internal-real-time) start)
+                  internal-time-units-per-second))
+         (all-results (loop for g in groups append (cdr g)))
+         (total (length all-results))
+         (failed (loop for r in all-results
                     when (typep r 'fiveam::test-failure)
                     collect r))
-          (failed-groups (loop for g in groups
-                           unless (every #'fiveam::test-passed-p
-                                    (cdr g))
-                           collect (car g))))
+         (failed-groups (loop for g in groups
+                          unless (every #'fiveam::test-passed-p
+                                   (cdr g))
+                          collect (car g)))
+         (slowest (subseq (sort timings #'> :key #'cdr) 0
+                          (min 5 (length timings)))))
     (format t "~2&========================================~%")
     (if failed-groups
       (progn
@@ -330,4 +351,8 @@ which groups had failures."
           do (format t "  ~a~%" name)))
       (format t "All ~d checks passed across ~d groups.~%"
         total (length groups)))
+    (format t "Time: ~,2fs~%" wall)
+    (format t "Slowest groups:~%")
+    (loop for (name . secs) in slowest
+          do (format t "  ~a: ~,2fs~%" name secs))
     (format t "========================================~%")))
