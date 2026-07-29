@@ -263,6 +263,11 @@ both test-model and modelbank."
   (with-model "nullable-fk-test" nil
     (run! 'nullable-fk-suite)))
 
+(defun run-static-options-tests ()
+  "Static dropdown :options tests."
+  (with-model "static-select-test" nil
+    (run! 'static-options-suite)))
+
 (defun run-tests ()
   (run-backend-tests)
   (run-scoping-tests)
@@ -273,4 +278,5 @@ both test-model and modelbank."
   (run-widget-tests)
   (run-m2m-tests)
   (run-generator-tests)
-  (run-nullable-fk-tests))
+  (run-nullable-fk-tests)
+  (run-static-options-tests))

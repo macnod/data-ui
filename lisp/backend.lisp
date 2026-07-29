@@ -1204,16 +1204,21 @@ compiled model metadata — no naming convention assumptions."
 
 (defun allowed-values-for-field (type-key field-key user)
   (let* ((m *compiled-model*)
-          (source (u:tree-get m type-key :fields field-key :source))
-          (x-type-key (getf source :table))
-          (x-field-key (getf source :column))
-          (values (getf (be-list-column x-type-key x-field-key user) :values)))
-    (if (and
-          (equal type-key :users)
-          (equal field-key :roles)
-          (u:has values "logged-in"))
-      (remove-if (lambda (r) (equal r "logged-in")) values)
-      values)))
+         (options (u:tree-get m type-key :fields field-key
+                    :ui :options)))
+    (if options
+      (copy-list options)
+      (let* ((source (u:tree-get m type-key :fields field-key :source))
+             (x-type-key (getf source :table))
+             (x-field-key (getf source :column))
+             (values (getf (be-list-column x-type-key x-field-key user)
+                           :values)))
+        (if (and
+              (equal type-key :users)
+              (equal field-key :roles)
+              (u:has values "logged-in"))
+          (remove-if (lambda (r) (equal r "logged-in")) values)
+          values)))))
 
 (defun selectable-roles (type-key user)
   ":private: Returns the list of roles the current USER can assign on
@@ -1243,7 +1248,9 @@ type's :type-roles."
     for field-def in (cdr fields) by #'cddr
     for join-table = (getf field-def :join-table)
     for target = (getf field-def :target)
-    when (and (or join-table target) (not (equal field-key :id)))
+    for ui-options = (u:tree-get field-def :ui :options)
+    when (and (or join-table target ui-options)
+              (not (equal field-key :id)))
     appending
     (list field-key (allowed-values-for-field type-key field-key user))
     into allowed
