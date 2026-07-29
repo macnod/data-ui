@@ -268,8 +268,20 @@ tests against both test-model and modelbank."
     (when collect results)))
 
 (defun run-generator-tests (&optional collect)
-  "Generate-model hook tests."
-  (let ((results (run 'generator-suite)))
+  "Generate-model hook tests.
+
+Pure function tests run without any model.  Integration tests share a
+single modelbank-dev context (one reset-database + set-model) instead
+of one per test.  The integration tests are self-contained: they seed
+or delete the llm-config secret as needed, and th-gen-make-user is
+idempotent so repeated calls for the same user are safe."
+  (let ((results
+          (append
+            ;; Pure function tests (no model, no DB)
+            (run 'generator-pure-suite)
+            ;; Integration tests (single shared modelbank-dev context)
+            (with-model "modelbank-dev" nil
+              (run 'generator-integration-suite)))))
     (explain! results)
     (when collect results)))
 
