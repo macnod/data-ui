@@ -2327,6 +2327,13 @@ compiled model or signals an error."
           "admin"
           :roles roles)))))
 
+(defun list-models ()
+  (mapcar
+    (lambda (f) (u:filename-only (u:replace-extension f "")))
+    (u:directory-listing (u:join-paths *package-root* "models/")
+      :files-only t
+      :leaf-filter "(?i)\\.lisp$")))
+
 (defgeneric set-model (model)
   (:method ((model list))
     (loop
