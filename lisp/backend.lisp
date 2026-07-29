@@ -1204,26 +1204,26 @@ compiled model metadata — no naming convention assumptions."
 
 (defun allowed-values-for-field (type-key field-key user)
   (let* ((m *compiled-model*)
-         (options (u:tree-get m type-key :fields field-key
-                    :ui :options)))
+          (options (u:tree-get m type-key :fields field-key
+                     :ui :options)))
     (if options
       (copy-list options)
       (let* ((source (or (u:tree-get m type-key :fields field-key
-                                      :source-all)
-                             (u:tree-get m type-key :fields field-key
-                                      :source)))
-             (x-type-key (getf source :table))
-             (x-field-key (getf source :column))
-             (values (getf (be-list-column x-type-key x-field-key user)
-                           :values)))
+                           :source-all)
+                       (u:tree-get m type-key :fields field-key
+                         :source)))
+              (x-type-key (getf source :table))
+              (x-field-key (getf source :column))
+              (values (getf (be-list-column x-type-key x-field-key user)
+                        :values)))
         (if (and (equal type-key :users)
-                 (equal field-key :roles))
+              (equal field-key :roles))
           (remove-if
             (lambda (r)
               (u:has
                 (list* "admin" "admin:exclusive" "guest:exclusive"
-                       "settings" "logged-in"
-                       (when user (list (a:exclusive-role-for user))))
+                  "settings" "logged-in"
+                  (when user (list (a:exclusive-role-for user))))
                 r))
             values)
           values)))))
