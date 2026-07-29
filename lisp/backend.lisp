@@ -1213,11 +1213,16 @@ compiled model metadata — no naming convention assumptions."
              (x-field-key (getf source :column))
              (values (getf (be-list-column x-type-key x-field-key user)
                            :values)))
-        (if (and
-              (equal type-key :users)
-              (equal field-key :roles)
-              (u:has values "logged-in"))
-          (remove-if (lambda (r) (equal r "logged-in")) values)
+        (if (and (equal type-key :users)
+                 (equal field-key :roles))
+          (remove-if
+            (lambda (r)
+              (u:has
+                (list* "admin" "admin:exclusive" "guest:exclusive"
+                       "settings" "logged-in"
+                       (when user (list (a:exclusive-role-for user))))
+                r))
+            values)
           values)))))
 
 (defun selectable-roles (type-key user)
