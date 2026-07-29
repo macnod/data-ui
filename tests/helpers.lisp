@@ -202,54 +202,69 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
 
 (defun run-backend-tests ()
   (with-model "test-model" nil
-    (run! 'backend-suite)
-    (run! 'predicates-suite)))
+    (let ((results (append (run 'backend-suite)
+                     (run 'predicates-suite))))
+      (explain! results)
+      results)))
 
 (defun run-scoping-tests ()
   (with-model "modelbank" nil
-    (run! 'scoping-suite)))
+    (let ((results (run 'scoping-suite)))
+      (explain! results)
+      results)))
 
 (defun run-hook-registry-tests ()
   "Run hook registry unit tests (no model needed) then integration tests against
 both test-model and modelbank."
-  ;; Pure registry tests — no model required
-  (run! 'hook-registry-suite)
-  ;; Integration: test-model (todos with :required + :max-length)
-  (with-model "test-model" nil
-    (run! 'hook-registry-integration-suite))
-  ;; Integration: modelbank (:in-range on ratings)
-  (with-model "modelbank" nil
-    (run! 'hook-registry-modelbank-suite)))
+  (let ((results
+          (append (run 'hook-registry-suite)
+            (with-model "test-model" nil
+              (run 'hook-registry-integration-suite))
+            (with-model "modelbank" nil
+              (run 'hook-registry-modelbank-suite)))))
+    (explain! results)
+    results))
 
 (defun run-lifecycle-tests ()
   "Run lifecycle hook tests."
   (with-model "test-model" nil
-    (run! 'hook-registry-lifecycle-suite)))
+    (let ((results (run 'hook-registry-lifecycle-suite)))
+      (explain! results)
+      results)))
 
 (defun run-action-tests ()
   "Run action hook tests."
   (with-model "test-model" nil
-    (run! 'action-suite)))
+    (let ((results (run 'action-suite)))
+      (explain! results)
+      results)))
 
 (defun run-secrets-tests ()
   "Run secrets type tests."
   (with-model "test-model" nil
-    (run! 'secrets-suite)))
+    (let ((results (run 'secrets-suite)))
+      (explain! results)
+      results)))
 
 (defun run-widget-tests ()
   "Widget allow-list and UI emission tests."
   (with-model "test-model" nil
-    (run! 'widget-suite)))
+    (let ((results (run 'widget-suite)))
+      (explain! results)
+      results)))
 
 (defun run-m2m-tests ()
   "Multiple M2M joiners per type — compile and runtime tests."
   (with-model "m2m-test" #'seed-m2m-fixture
-    (run! 'm2m-suite)))
+    (let ((results (run 'm2m-suite)))
+      (explain! results)
+      results)))
 
 (defun run-generator-tests ()
   "Generate-model hook tests."
-  ;; Pure function tests (no model needed)
-  (run! 'generator-suite))
+  (let ((results (run 'generator-suite)))
+    (explain! results)
+    results))
 
 (defun seed-m2m-fixture ()
   "Seed tags and verify admin user exists for M2M runtime tests."
@@ -261,27 +276,58 @@ both test-model and modelbank."
 (defun run-nullable-fk-tests ()
   "Nullable foreign-key field tests."
   (with-model "nullable-fk-test" nil
-    (run! 'nullable-fk-suite)))
+    (let ((results (run 'nullable-fk-suite)))
+      (explain! results)
+      results)))
 
 (defun run-static-options-tests ()
   "Static dropdown :options tests."
   (with-model "static-select-test" nil
-    (run! 'static-options-suite)))
+    (let ((results (run 'static-options-suite)))
+      (explain! results)
+      results)))
 
 (defun run-form-fields-tests ()
   "Compile-time form field validation tests."
-  (run! 'form-fields-suite))
+  (let ((results (run 'form-fields-suite)))
+    (explain! results)
+    results))
 
 (defun run-tests ()
-  (run-backend-tests)
-  (run-scoping-tests)
-  (run-hook-registry-tests)
-  (run-lifecycle-tests)
-  (run-action-tests)
-  (run-secrets-tests)
-  (run-widget-tests)
-  (run-m2m-tests)
-  (run-generator-tests)
-  (run-nullable-fk-tests)
-  (run-static-options-tests)
-  (run-form-fields-tests))
+  "Run all test suites and print a consolidated summary at the end.
+Each run-* helper returns a list of FiveAM result objects; this
+function collects them, prints per-group reports via explain!, and
+then prints a final summary showing total checks, failures, and
+which groups had failures."
+  (let* ((groups
+           (list
+             (cons "backend"        (run-backend-tests))
+             (cons "scoping"        (run-scoping-tests))
+             (cons "hook-registry"  (run-hook-registry-tests))
+             (cons "lifecycle"      (run-lifecycle-tests))
+             (cons "action"         (run-action-tests))
+             (cons "secrets"        (run-secrets-tests))
+             (cons "widget"         (run-widget-tests))
+             (cons "m2m"            (run-m2m-tests))
+             (cons "generator"      (run-generator-tests))
+             (cons "nullable-fk"    (run-nullable-fk-tests))
+             (cons "static-options" (run-static-options-tests))
+             (cons "form-fields"    (run-form-fields-tests))))
+          (all-results (loop for g in groups append (cdr g)))
+          (total (length all-results))
+          (failed (loop for r in all-results
+                    when (typep r 'fiveam::test-failure)
+                    collect r))
+          (failed-groups (loop for g in groups
+                           unless (every #'fiveam::test-passed-p
+                                    (cdr g))
+                           collect (car g))))
+    (format t "~2&========================================~%")
+    (if failed-groups
+      (progn
+        (format t "~d/~d checks FAILED in:~%" (length failed) total)
+        (loop for name in failed-groups
+          do (format t "  ~a~%" name)))
+      (format t "All ~d checks passed across ~d groups.~%"
+        total (length groups)))
+    (format t "========================================~%")))
