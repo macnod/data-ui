@@ -71,8 +71,11 @@ Conventions (`models/README.md`):
 
 | File | Role |
 |------|------|
-| `<name>.lisp` | Named application model |
-| `test-model.lisp` | Test fixture — do not change unless changing tests |
+| `models/<name>.lisp` | Named application model |
+| `models/test/<name>.lisp` | Test fixture — do not change unless changing tests |
+
+`(set-model "<name>")` tries `models/<name>.lisp` first, then falls back
+to `models/test/<name>.lisp`.
 
 Because the form starts with a quote, Lisp can `read` it. That is useful for
 paren-balance checks; it is not how the compiler is invoked.
@@ -378,7 +381,7 @@ Widget semantics:
   - **Static**: options from `:options` (a list of non-empty strings).
     Requires `:ui (:widget :select :options (...))`. No `:target` or
     `:join-table`. The stored value is the option string itself.
-    See `models/static-select-test.lisp` for an example.
+    See `models/test/static-select-test.lisp` for an example.
   - A bare `:widget :select` with neither `:options` nor `:target`
     is a compile error (empty dropdowns are not a valid mode).
 - `:file` — file input + two-phase upload
@@ -1050,7 +1053,7 @@ resolved `:category` / `:internal`.
   :source (:view :main :table :ratings :column :rating :agg :avg))
 ```
 
-### 3. Button + action (modelbank-dev)
+### 3. Button + action (Model Bank)
 
 ```lisp
 :deploy

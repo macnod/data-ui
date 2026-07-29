@@ -2399,12 +2399,32 @@ compiled model or signals an error."
           "admin"
           :roles roles)))))
 
+(defun resolve-model-path (file)
+  "Resolve model name to a path: models/<name>.lisp, then
+models/test/<name>.lisp. Signals a report-e error if neither exists."
+  (let ((primary (u:join-paths *package-root* "models"
+                               (format nil "~a.lisp" file)))
+        (fallback (u:join-paths *package-root* "models" "test"
+                                (format nil "~a.lisp" file))))
+    (cond
+      ((u:file-exists-p primary) primary)
+      ((u:file-exists-p fallback) fallback)
+      (t (report-e "resolve-model-path"
+                   "Model file ~a.lisp not found in models/ or models/test/"
+                   ~file)))))
+
 (defun list-models ()
+  "Return model names from the top level of models/ only.
+Files under models/test/ are test fixtures and are excluded."
   (mapcar
     (lambda (f) (u:filename-only (u:replace-extension f "")))
-    (u:directory-listing (u:join-paths *package-root* "models/")
-      :files-only t
-      :leaf-filter "(?i)\\.lisp$")))
+    (remove-if
+      (lambda (path)
+        (search (u:join-paths *package-root* "models" "test")
+                (namestring path)))
+      (u:directory-listing (u:join-paths *package-root* "models/")
+        :files-only t
+        :leaf-filter "(?i)\\.lisp$"))))
 
 (defgeneric set-model (model)
   (:method ((model list))
@@ -2429,16 +2449,10 @@ compiled model or signals an error."
       (start-web-server)
       (return summary)))
   (:method ((file string))
-    "Accepts a file name (no path and no extension), computes the path of the
-file by prepending the model directory path to the file name, adds the extension
-'.lisp', reads the model from that file, and sets that model with SET-MODEL. For
-example, for the string `todos`, this function will compute the file path
-`/path/to/app/models/todos.lisp`, read that file, and set the model to the value
-of that file."
-    (let ((path (u:join-paths
-                  *package-root*
-                  "models"
-                  (format nil "~a.lisp" file))))
+    "Accepts a file name (no path and no extension), resolves the path
+via RESOLVE-MODEL-PATH (checking models/ then models/test/), reads the
+model from that file, and sets that model with SET-MODEL."
+    (let ((path (resolve-model-path file)))
       (with-open-file (in path)
         (set-model (cadr (read in))))))
   (:documentation ":public: Sets the model to the given plist. If given a

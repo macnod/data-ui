@@ -125,12 +125,15 @@ LIST-FORM, UPDATE-FORM, ADD-FORM are the form spec plists."
       :add-form '(:fields (:name)))))
 
 (test form-fields-all-existing-models-compile
-  "Every model in models/ passes form-field validation."
+  "Every model in models/ (including models/test/) passes form-field
+validation. Skips widgets.lisp (a template with :model: placeholders,
+not a loadable model)."
   (let ((model-dir (u:join-paths *package-root* "models")))
-    (loop for file in (directory (u:join-paths model-dir "*.lisp"))
+    (loop for file in (u:directory-listing model-dir
+                        :files-only t
+                        :leaf-filter "(?i)\\.lisp$")
           for stem = (pathname-name file)
-          unless (member stem '("static-select-test" "nullable-fk-test"
-                                "test-model" "widgets") :test #'string=)
+          unless (string= stem "widgets")
           do (finishes
                (with-open-file (in file)
                  (compile-model

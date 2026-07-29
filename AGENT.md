@@ -51,7 +51,7 @@ The goal is deterministic, repeatable development: change the model, recompile, 
 - `lisp/plist-json.lisp` – Plist ↔ JSON serialization
 - `lisp/deployment.lisp` – Model field extraction for deploy scripts
 - `lisp/startup.lisp`, `lisp/data-ui.lisp`, `lisp/data-ui-package.lisp` – System startup and package definition
-- `models/` – Example models, one per file (e.g. `todos.lisp`, `parts.lisp`, `file-server.lisp`, `modelbank.lisp`, `widgets.lisp`). Each file holds a bare model plist (no `defparameter`, no wrapping variable). Load one with `(set-model "todos")` — pass just the file name, with no path and no `.lisp` extension.
+- `models/` – Example models, one per file (e.g. `todos.lisp`, `parts.lisp`, `file-server.lisp`, `modelbank.lisp`, `widgets.lisp`). Each file holds a bare model plist (no `defparameter`, no wrapping variable). Load one with `(set-model "todos")` — pass just the file name, with no path and no `.lisp` extension. Test fixtures live under `models/test/`; `set-model` checks `models/` first, then falls back to `models/test/`. `list-models` returns top-level models only.
 - `web/` – React frontend (Vite + TypeScript)
 - `tests/` – FiveAM test suites: `predicate-tests.lisp`, `backend-tests.lisp`, `rest-tests.lisp`, `scoping-tests.lisp`, `action-tests.lisp`, plus `helpers.lisp` and `model-template.lisp`
 
@@ -257,7 +257,7 @@ nil), call `(init-database)` before running tests.
   - `:options` on `:ui` — list of non-empty strings for static dropdown
     values (requires `:widget :select`; mutually exclusive with `:target` /
     `:join-table`; bare `:select` without `:options` or `:target` is a
-    compile error). See `models/static-select-test.lisp`
+    compile error). See `models/test/static-select-test.lisp`
   - `:read-only t` boolean on `:ui` — renders a field's display variant
     instead of an editor (not a widget value)
   - `:button` field type with `:action` — clickable controls on update forms

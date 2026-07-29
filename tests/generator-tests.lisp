@@ -8,7 +8,7 @@
   :in generator-suite)
 
 (def-suite generator-integration-suite
-  :description "Integration tests (need modelbank-dev + DB)"
+  :description "Integration tests (need modelbank-test + DB)"
   :in generator-suite)
 
 ;;; Reusable valid model text for integration tests.
@@ -111,7 +111,7 @@ Hope this helps!"))))
     (is (search "..." header))))
 
 ;;; ---------------------------------------------------------------------------
-;;; Integration tests (need modelbank-dev + DB)
+;;; Integration tests (need modelbank-test + DB)
 ;;; ---------------------------------------------------------------------------
 
 (in-suite generator-integration-suite)

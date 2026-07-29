@@ -178,11 +178,13 @@ the compiled :wt type definition."
     (is (eq t (getf status-ui :read-only)))))
 
 (test widget-all-models-compile
-  "Every real model file in models/ compiles under the allow-list.
-Skips widgets.lisp (a template with :model: placeholders, not a
-loadable model)."
+  "Every real model file in models/ (including models/test/) compiles
+under the allow-list. Skips widgets.lisp (a template with :model:
+placeholders, not a loadable model)."
   (let ((model-dir (u:join-paths *package-root* "models")))
-    (loop for file in (directory (u:join-paths model-dir "*.lisp"))
+    (loop for file in (u:directory-listing model-dir
+                        :files-only t
+                        :leaf-filter "(?i)\\.lisp$")
           for stem = (pathname-name file)
           unless (string= stem "widgets")
           do (finishes
