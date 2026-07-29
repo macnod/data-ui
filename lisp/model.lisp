@@ -2191,6 +2191,17 @@ declared. Mirrors the previous runtime type-category logic."
         ((getf type-def :built-in) :system)
         (t :user)))))
 
+(defun valid-form-fields (type-key type-def)
+  (loop
+    for form-field in '(:list-form :add-form :update-form)
+    for field-keys = (u:tree-get type-def form-field :fields)
+    when (and field-keys (not (equal field-keys t)))
+    do (loop for field-key in field-keys
+         unless (u:tree-get type-def :fields field-key)
+         do (report-e "valid-form-fields"
+              "In type ~s, ~s contains an unknown field ~s"
+              ~type-key ~form-field ~field-key))))
+
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
@@ -2205,12 +2216,12 @@ declared. Mirrors the previous runtime type-category logic."
                               (ensure-action-on-buttons type-key raw-fields)
                               raw-fields))
           (augmented-fields (synthesize-status-fields type-key
-                             validated-fields))
+                              validated-fields))
           (augmented-model (if (eq augmented-fields validated-fields)
                              model
                              (let* ((td (getf model type-key))
-                                    (new-td (add-to-plist td
-                                              (list :fields augmented-fields))))
+                                     (new-td (add-to-plist td
+                                               (list :fields augmented-fields))))
                                (add-to-plist model
                                  (list type-key new-td)))))
           (fields (compile-fields type-key augmented-model))
@@ -2223,28 +2234,31 @@ declared. Mirrors the previous runtime type-category logic."
                    (getf type-def :type-roles '("admin"))))
           (category (compute-category type-def)))
     (validate-tree model type-key tree is-leaf parent-type fs-backed)
-    (let ((fields-with-path (mark-path-field type-key fs-backed fields))
-          (user-setting (getf type-def :user-setting))
-          (augmented-def (augment-update-form type-def fields)))
-      (add-to-plist
-        augmented-def
-        (append
-          (list
-            :internal internal
-            :create create
-            :type-roles roles
-            :category category
-            :table-name table-name
-            :fields fields-with-path
-            :tree tree
-            :is-leaf is-leaf
-            :parent-type parent-type
-            :fs-backed fs-backed
-            :user-setting user-setting
-            :suppress-roles
-              (or (getf type-def :suppress-roles) user-setting))
-          ;; Compiled lifecycle hooks override raw values on type-def
-          (compile-lifecycle-hooks model type-key))))))
+    (let* ((fields-with-path (mark-path-field type-key fs-backed fields))
+            (user-setting (getf type-def :user-setting))
+            (augmented-def (augment-update-form type-def fields))
+            (final-def (add-to-plist
+                         augmented-def
+                         (append
+                           (list
+                             :internal internal
+                             :create create
+                             :type-roles roles
+                             :category category
+                             :table-name table-name
+                             :fields fields-with-path
+                             :tree tree
+                             :is-leaf is-leaf
+                             :parent-type parent-type
+                             :fs-backed fs-backed
+                             :user-setting user-setting
+                             :suppress-roles
+                             (or (getf type-def :suppress-roles) user-setting))
+                           ;; Compiled lifecycle hooks override raw values on 
+                           ;; type-def
+                           (compile-lifecycle-hooks model type-key)))))
+      (valid-form-fields type-key final-def)
+      final-def)))
 
 (defun preliminary-model-check (&optional def key-path)
   (loop with current = (apply #'u:tree-get (cons def key-path))

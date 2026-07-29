@@ -42,4 +42,5 @@
                                 (:file "m2m-tests")
                                 (:file "generator-tests")
                                 (:file "nullable-fk-tests")
-                                (:file "static-options-tests")))))
+                                (:file "static-options-tests")
+                                (:file "form-fields-tests")))))

@@ -268,6 +268,10 @@ both test-model and modelbank."
   (with-model "static-select-test" nil
     (run! 'static-options-suite)))
 
+(defun run-form-fields-tests ()
+  "Compile-time form field validation tests."
+  (run! 'form-fields-suite))
+
 (defun run-tests ()
   (run-backend-tests)
   (run-scoping-tests)
@@ -279,4 +283,5 @@ both test-model and modelbank."
   (run-m2m-tests)
   (run-generator-tests)
   (run-nullable-fk-tests)
-  (run-static-options-tests))
+  (run-static-options-tests)
+  (run-form-fields-tests))
