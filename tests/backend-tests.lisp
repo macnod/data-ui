@@ -1376,6 +1376,43 @@ selectable-roles. This is the path the Add form hits for :users."
     (is-true (member "public" roles :test 'equal))
     (is-true (member "user-creator" roles :test 'equal))))
 
+(test allowed-values-for-field-prefers-source-all
+  "When :source-all is present, allowed-values-for-field uses its
+:table/:column rather than :source. Temporarily points :todos :tags
+:source-all at :users while :source stays on :tags."
+  (let* ((field (u:tree-get *compiled-model* :todos :fields :tags))
+         (orig-all (getf field :source-all)))
+    (be-insert :tags '(:name "src-all-tag-a") "admin")
+    (be-insert :tags '(:name "src-all-tag-b") "admin")
+    (unwind-protect
+         (progn
+           (setf (getf field :source-all)
+                 '(:view :users :table :users :column :name :agg :list))
+           (let ((vals (allowed-values-for-field :todos :tags "admin")))
+             (is-true (member "admin" vals :test #'equal))
+             (is-false (member "src-all-tag-a" vals :test #'equal))
+             (is-false (member "src-all-tag-b" vals :test #'equal))))
+      (setf (getf field :source-all) orig-all)
+      (ignore-errors
+        (be-delete :tags '((:tags :name :eq "src-all-tag-a")) "admin"))
+      (ignore-errors
+        (be-delete :tags '((:tags :name :eq "src-all-tag-b")) "admin")))))
+
+(test allowed-values-for-field-falls-back-to-source
+  "When :source-all is absent, allowed-values-for-field uses :source."
+  (let* ((field (u:tree-get *compiled-model* :todos :fields :tags))
+         (orig-all (getf field :source-all)))
+    (be-insert :tags '(:name "src-fallback-tag") "admin")
+    (unwind-protect
+         (progn
+           (setf (getf field :source-all) nil)
+           (let ((vals (allowed-values-for-field :todos :tags "admin")))
+             (is-true (member "src-fallback-tag" vals :test #'equal))))
+      (setf (getf field :source-all) orig-all)
+      (ignore-errors
+        (be-delete :tags '((:tags :name :eq "src-fallback-tag"))
+                   "admin")))))
+
 (test valid-user-roles-allows-exclusive-sharing
   "A user can assign another user's exclusive role for sharing."
   (let ((user "share-test-user")

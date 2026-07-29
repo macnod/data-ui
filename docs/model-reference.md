@@ -337,18 +337,21 @@ Requires the source table to expose a `:user` field in that view's aliases.
 
 ### `:source-all`
 
-Same shape as `:source`. **Intended** to feed `allowed-values` for dropdowns
-and checkbox lists (distinct from the row-display `:source`).
+Same shape as `:source`. Feeds `allowed-values` for dropdowns and checkbox
+lists (distinct from the row-display `:source`). Runtime prefers
+`:source-all` when present, otherwise falls back to `:source`.
 
 ```lisp
 :source     (:view :main :table :tags :column :name :agg :list)
 :source-all (:view :tags :table :tags :column :name :agg :list)
 ```
 
-**MVP runtime gap:** `allowed-values-for-field` currently reads the field's
-`:source` (table + column), not `:source-all`. Authors should still set both
-as in todos/modelbank so models stay correct when the runtime is fixed. Do not
-rely on `:source-all` alone to break cycles or change option lists today.
+`allowed-values-for-field` reads `:table` and `:column` from that plist and
+loads options via `be-list-column` on the related type. It does not use
+`:view`. Authors should still set both as in todos/modelbank: `:source` for
+row display, `:source-all` for the options contract. Preferring
+`:source-all` alone does not break bidirectional M2M recursion (see known
+gap on join tables).
 
 For M2M list fields, the column used for options and join lookup must be the
 **single identity field** of the related type (see [Identity fields](#identity-fields)).
@@ -592,7 +595,7 @@ via `list-result`. The request never completes, so the frontend never receives
 call, not a separate create-flag bug).
 
 `allowed-values-for-field` calls full `be-list` / `be-list-column` on the
-related type (and currently uses `:source`, not `:source-all`). There is no
+related type (preferring `:source-all`, else `:source`). There is no
 recursion guard.
 
 **Workaround:** one-directional M2M only. To show "books by this author,"
@@ -1132,11 +1135,7 @@ resolved `:category` / `:internal`.
     write-through / uniqueness, not checkbox-list lookup (see
     [Identity fields](#identity-fields)).
 
-13. **`:source-all` vs `:source` for allowed-values** — docs describe
-    `:source-all` as the options source; runtime still uses `:source`. Set
-    both; don't expect `:source-all` alone to drive options.
-
-14. **No computed/composed fields** — cannot derive a stored identity
+13. **No computed/composed fields** — cannot derive a stored identity
     (e.g. full name) from other columns without a lifecycle data-effect hook
     (`:compose-string` designed, not implemented).
 

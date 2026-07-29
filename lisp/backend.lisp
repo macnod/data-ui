@@ -1208,7 +1208,10 @@ compiled model metadata — no naming convention assumptions."
                     :ui :options)))
     (if options
       (copy-list options)
-      (let* ((source (u:tree-get m type-key :fields field-key :source))
+      (let* ((source (or (u:tree-get m type-key :fields field-key
+                                      :source-all)
+                             (u:tree-get m type-key :fields field-key
+                                      :source)))
              (x-type-key (getf source :table))
              (x-field-key (getf source :column))
              (values (getf (be-list-column x-type-key x-field-key user)
