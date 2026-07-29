@@ -309,7 +309,8 @@ actual column in the associated table, such as fields that have a non-nil
 up the values for each key, and returns the values as a string. Each value is
 chosen from DATA. If the value is not in DATA, then the value is taken from
 RECORD. If the value is not in RECORD, and the field key is :ID, then the value
-given in ID is used."
+given in ID is used.  When a nullable field is explicitly NIL in DATA, that NIL
+is respected (not overridden by the record value)."
   ;; Validations
   (valid-type-key type-key)
   ;; Collect data
@@ -317,11 +318,14 @@ given in ID is used."
     with main-update = (u:tree-get type-def :update-sql :main)
     for field-key in (cdr main-update)
     for field-def = (u:tree-get type-def :fields field-key)
-    for data-value = (getf data field-key)
+    for data-value = (getf data field-key '%%absent%%)
+    for data-has-key = (not (eq data-value '%%absent%%))
     for record-value = (getf record field-key)
     for default-value = (getf field-def :default)
     for id-value = (when (equal field-key :id) id)
-    for field-value = (or data-value record-value default-value id-value)
+    for field-value = (if data-has-key
+                        data-value
+                        (or record-value default-value id-value))
     for field-type = (getf field-def :type)
     for column = (getf field-def :column)
     when column
@@ -856,6 +860,7 @@ VALUE unchanged."
           (joiner (getf field-def :join-table)))
     (if (and target (not joiner))
       (cond
+        ((or (null value) (equal value :null)) :null)
         ((uuid-p value) value)
         ((listp value) value)
         ((not (stringp value))

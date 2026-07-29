@@ -258,6 +258,11 @@ both test-model and modelbank."
   (be-insert :tags '(:name "green") "admin")
   nil)
 
+(defun run-nullable-fk-tests ()
+  "Nullable foreign-key field tests."
+  (with-model "nullable-fk-test" nil
+    (run! 'nullable-fk-suite)))
+
 (defun run-tests ()
   (run-backend-tests)
   (run-scoping-tests)
@@ -267,4 +272,5 @@ both test-model and modelbank."
   (run-secrets-tests)
   (run-widget-tests)
   (run-m2m-tests)
-  (run-generator-tests))
+  (run-generator-tests)
+  (run-nullable-fk-tests))

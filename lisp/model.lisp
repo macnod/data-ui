@@ -64,25 +64,27 @@ returns S. If S is not a string or a number, this function returns NIL."
 
 (defun v-type (type-key field-key value user)
   (declare (ignore user))
-  (pl:pdebug :in "v-type" :step 1
-    :type-key type-key :field-key field-key :value value)
-  (let* ((field-type-key (u:tree-get *compiled-model*
-                           type-key :fields field-key :type))
-          (valid (case field-type-key
-                   (:text (valid-value-string value))
-                   (:password (valid-value-string value))
-                   (:real (parse-number value))
-                   (:integer (is-integer value))
-                   (:boolean (member (u:make-keyword value) '(:true :false)))
-                   (:uuid (re:scan *uuid-regex* value))
-                   (:timestamp (re:scan *timestamp-regex* value))
-                   (:list (and (listp value)
-                            (every #'valid-value-string value)))
-                   (otherwise nil))))
-    (unless valid
-      (validation-error-string
-        type-key field-key value
-        (format nil "must be a valid ~s." field-type-key)))))
+  (let* ((field-def (u:tree-get *compiled-model* type-key :fields field-key))
+         (not-null (getf field-def :not-null)))
+    (if (and (or (null value) (equal value :null)) (not not-null))
+      nil
+      (let* ((field-type-key (u:tree-get *compiled-model*
+                               type-key :fields field-key :type))
+              (valid (case field-type-key
+                       (:text (valid-value-string value))
+                       (:password (valid-value-string value))
+                       (:real (parse-number value))
+                       (:integer (is-integer value))
+                       (:boolean (member (u:make-keyword value) '(:true :false)))
+                       (:uuid (re:scan *uuid-regex* value))
+                       (:timestamp (re:scan *timestamp-regex* value))
+                       (:list (and (listp value)
+                                (every #'valid-value-string value)))
+                       (otherwise nil))))
+        (unless valid
+          (validation-error-string
+            type-key field-key value
+            (format nil "must be a valid ~s." field-type-key)))))))
 
 (defun v-user-name (type-key field-key value user)
   (declare (ignore user))
@@ -1708,9 +1710,7 @@ Rejects:
                      nil
                      (getf field-def :column)))
     and primary-key = (when (getf field-def :primary-key) "primary key")
-    and not-null = (if target
-                     "not null"
-                     (when (getf field-def :not-null) "not null"))
+    and not-null = (when (getf field-def :not-null) "not null")
     with references = (when target
                         (format nil "references ~a(id) on delete cascade"
                           (table-name target (built-in-p target model))))
@@ -1752,7 +1752,7 @@ Rejects:
                                    new-field-key field-def)
                        :type (or (getf field-def :type) :text)
                        :column column
-                       :not-null (if target t (getf field-def :not-null))
+                       :not-null (getf field-def :not-null)
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table

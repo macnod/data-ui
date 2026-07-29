@@ -40,4 +40,5 @@
                                 (:file "secrets-tests")
                                 (:file "widget-tests")
                                 (:file "m2m-tests")
-                                (:file "generator-tests")))))
+                                (:file "generator-tests")
+                                (:file "nullable-fk-tests")))))

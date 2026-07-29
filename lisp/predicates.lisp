@@ -82,11 +82,15 @@ returns NIL."
 
 (defun value-type-p (type-key field-key value)
   ":private: Returns T if VALUE is of the correct type for FIELD-KEY in
-TYPE-KEY"
-  (let* ((expected-type (u:tree-get *compiled-model* type-key :fields field-key
-                          :type))
-          (test (u:tree-get *field-types* expected-type :test)))
-    (when (and test (funcall test value)) t)))
+TYPE-KEY. NIL and :NULL are accepted for nullable fields (fields
+without :not-null t)."
+  (let* ((field-def (u:tree-get *compiled-model* type-key :fields field-key))
+         (not-null (getf field-def :not-null)))
+    (if (and (or (null value) (equal value :null)) (not not-null))
+      t
+      (let* ((expected-type (getf field-def :type))
+              (test (u:tree-get *field-types* expected-type :test)))
+        (when (and test (funcall test value)) t)))))
 
 (setf *field-types*
   `(:text (:general :text :sql "text" :test ,#'stringp)
