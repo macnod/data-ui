@@ -160,7 +160,7 @@ the unscoped average across all users."
         (is (= 4.0 (getf rec :average-rating)))))))
 
 ;;
-;; Write-path field validation tests — modelbank
+;; Write-path field validation tests — modelbank-test fixture
 ;;
 
 (test write-path-in-range-fails-on-insert

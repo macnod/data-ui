@@ -210,19 +210,19 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
 
 (defun run-scoping-tests (&optional collect)
   (let ((results
-          (with-model "modelbank" nil
+          (with-model "modelbank-test" nil
             (run 'scoping-suite))))
     (explain! results)
     (when collect results)))
 
 (defun run-hook-registry-tests (&optional collect)
   "Run hook registry unit tests (no model needed) then integration
-tests against both test-model and modelbank."
+tests against both test-model and modelbank-test."
   (let ((results
           (append (run 'hook-registry-suite)
                   (with-model "test-model" nil
                     (run 'hook-registry-integration-suite))
-                  (with-model "modelbank" nil
+                  (with-model "modelbank-test" nil
                     (run 'hook-registry-modelbank-suite)))))
     (explain! results)
     (when collect results)))
