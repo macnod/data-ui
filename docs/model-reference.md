@@ -350,8 +350,8 @@ lists (distinct from the row-display `:source`). Runtime prefers
 loads options via `be-list-column` on the related type. It does not use
 `:view`. Authors should still set both as in todos/modelbank: `:source` for
 row display, `:source-all` for the options contract. Preferring
-`:source-all` alone does not break bidirectional M2M recursion (see known
-gap on join tables).
+`:source-all` alone does not break bidirectional M2M (recursion is
+handled by the `:skip-allowed-values` flag in the backend).
 
 For M2M list fields, the column used for options and join lookup must be the
 **single identity field** of the related type (see [Identity fields](#identity-fields)).
@@ -567,42 +567,69 @@ Joiner type:
   match the target type key — `:source :table` identifies the other
   side (e.g. `:completed-by` → `:users`).
 
-### One-way M2M only (do not put list fields on both ends)
+### Bidirectional M2M (list fields on both ends)
 
-**Supported pattern** (todos, base users→roles):
+Both ends of a joiner may have `:type :list` fields. The backend breaks
+the `allowed-values` ↔ `be-list` recursion by skipping nested
+allowed-values computation when fetching column values in service of
+building options (`:skip-allowed-values t` on the inner `be-list-column`
+call).
+
+**Pattern** (both sides share one joiner):
 
 | Side | `:type :list` + `:join-table`? | Main view joins through joiner? |
 |------|--------------------------------|----------------------------------|
-| Owner (e.g. `:todos`, `:books`) | Yes | Yes — `(:owner :joiner :other)` |
-| Other (e.g. `:tags`, `:authors`) | **No** | **No** — default main view is the table alone |
+| Either end (e.g. `:books`) | Yes | Yes — `(:books :joiner :authors)` |
+| Other end (e.g. `:authors`) | Yes | Yes — `(:authors :joiner :books)` |
 | Joiner | n/a | `:is-joiner t` + two `:reference`s |
 
-**Do not** give both ends a `:type :list` field on the same joiner (e.g. books
-have `:authors` and authors have `:books`). That compiles, but **runtime
-stack-overflows** on `/api/list`:
+Each side needs:
+- A `:type :list` field with `:join-table` pointing at the shared joiner
+- `:source` joining through the joiner in the main view for row display
+- `:source-all` pointing at a named view on the other type for options
+- A named view (e.g. `:authors (:tables (:authors))`) for `:source-all`
 
+Example (abbreviated):
+
+```lisp
+:books
+(:table t
+  :views (:main (:tables (:books :book-authors :authors))
+           :authors (:tables (:authors)))
+  :fields
+  (:title (:type :text :identity t ...)
+    :authors (:type :list
+      :source (:view :main :table :authors :column :name :agg :list)
+      :source-all (:view :authors :table :authors
+                   :column :name :agg :list)
+      :join-table :book-authors))
+  ...)
+
+:authors
+(:table t
+  :views (:main (:tables (:authors :book-authors :books))
+           :books (:tables (:books)))
+  :fields
+  (:name (:type :text :identity t ...)
+    :books (:type :list
+      :source (:view :main :table :books :column :title :agg :list)
+      :source-all (:view :books :table :books
+                   :column :title :agg :list)
+      :join-table :book-authors))
+  ...)
+
+:book-authors
+(:table t :is-joiner t :internal t
+  :fields
+  (:reference (:target :books)
+    :reference (:target :authors)))
 ```
-be-list(:books)
-  → allowed-values → authors list field
-    → be-list-column(:authors …) → be-list(:authors)
-      → allowed-values → books list field
-        → be-list(:books)   ; infinite mutual recursion
-```
 
-Empty tables still hit this path: `be-list` always builds `allowed-values`
-via `list-result`. The request never completes, so the frontend never receives
-`create: true` and the Add button does not appear (symptom of the failed list
-call, not a separate create-flag bug).
+Both ends share **one** joiner type — do not invent a second joiner for
+the reverse direction.
 
-`allowed-values-for-field` calls full `be-list` / `be-list-column` on the
-related type (preferring `:source-all`, else `:source`). There is no
-recursion guard.
-
-**Workaround:** one-directional M2M only. To show "books by this author,"
-filter the books list (or wait for a backend fix that loads allowed-values
-without re-entering `be-list` / `allowed-values`).
-
-Base model follows the same rule: users have `:roles`, roles have
+Unidirectional M2M (list field on one end only) continues to work as
+before. Base model follows that pattern: users have `:roles`, roles have
 `:permissions` — not users↔roles both as list fields.
 
 ### M2M value resolution
@@ -1125,10 +1152,11 @@ resolved `:category` / `:internal`.
 10. **Joiner `:internal t`** — redundant with `:is-joiner` default; still
     conventional in examples.
 
-11. **Bidirectional M2M list fields** — compile but stack-overflow at
-    `/api/list` via `allowed-values` ↔ `be-list` recursion. Use one-way M2M
-    only (see [Join tables](#join-tables-m2m)). Compiler does not reject this
-    yet.
+11. ~~**Bidirectional M2M list fields**~~ — **Resolved.** Both ends of a
+    joiner may now have `:type :list` fields. The backend breaks the
+    `allowed-values` ↔ `be-list` recursion via a `:skip-allowed-values`
+    flag on the inner column fetch. See
+    [Bidirectional M2M](#bidirectional-m2m-list-fields-on-both-ends).
 
 12. **Reference identity is scalar** — types used as `:target` or M2M list
     targets need exactly one `:identity t` field. Composite identity is for

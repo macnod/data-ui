@@ -118,9 +118,8 @@ or forget setup steps.
   which resets the database and loads the model automatically).
 - `(run-action-tests)` — runs the action hook suite (button fields, `be-action`,
   status transitions, in-progress guard, permission checks, form exclusions).
-- `(run-modelbank-tests)` — runs the scoping suite using the `modelbank`
-  model. (This function is a placeholder name and will be cleaned up
-  post-MVP.)
+- `(run-scoping-tests)` — runs the scoping suite using the `modelbank-test`
+  fixture under `models/test/` (not the top-level `modelbank` demo).
 
 When you need a focused test run for a specific model or suite, add a
 new `run-*` function to `tests/helpers.lisp`. AI agents are explicitly
@@ -151,6 +150,15 @@ To add a new test suite (e.g. for a new feature), four files change:
    - Tests run inside `with-model`, which resets the database and
      recompiles with the specified model. Base types (from `*base-model*`)
      are present in every model, so you can test them with any model.
+   - **Test models only from `models/test/`.** Automated tests must
+     load fixtures under `models/test/` (e.g. `test-model`,
+     `m2m-test`, `static-select-test`). Do **not** point `with-model`
+     / `set-model` at top-level demo models (`todos`, `books`,
+     `chores`, `modelbank`, etc.). Those change with product work and
+     break tests. If a suite needs a shape that only exists in a demo,
+     copy a minimal stable fixture into `models/test/` instead.
+     Manual REPL smoke against a demo is fine; it is not part of the
+     suite.
    - Clean up any data you insert (delete test rows) so tests are
      order-independent.
    - `be-types` returns plists, not alists — use `(getf entry :name)`

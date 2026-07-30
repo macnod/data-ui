@@ -616,7 +616,8 @@ user-defined types (non-:built-in), excluding \"admin\"."
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
 
-(defun list-result (type-key user form &optional field-keys view-result)
+(defun list-result (type-key user form &key
+                    field-keys view-result skip-allowed-values)
   (add-to-plist
     (list
       :type-key type-key
@@ -631,7 +632,9 @@ user-defined types (non-:built-in), excluding \"admin\"."
                            (blank-password-fields type-key r))
                    (view-result-values type-key field-keys view-result
                      :user user)))
-      :allowed-values (allowed-values type-key user)
+      :allowed-values (if skip-allowed-values
+                        nil
+                        (allowed-values type-key user))
       :type-roles (if (equal type-key :users)
                     (remove-duplicates
                       (append (u:tree-get *compiled-model* type-key
@@ -1214,7 +1217,8 @@ compiled model metadata — no naming convention assumptions."
                          :source)))
               (x-type-key (getf source :table))
               (x-field-key (getf source :column))
-              (values (getf (be-list-column x-type-key x-field-key user)
+              (values (getf (be-list-column x-type-key x-field-key user
+                             :skip-allowed-values t)
                         :values)))
         (if (and (equal type-key :users)
               (equal field-key :roles))
@@ -1902,7 +1906,8 @@ database query."
 ;; database, with something like `array_agg(...) group by id` in the SQL.
 ;;
 ;; TODO: Add pagination support
-(defun be-list (type-key user &key (form :list-form) filters)
+(defun be-list (type-key user
+                &key (form :list-form) filters skip-allowed-values)
   ":public: Returns a list of records of type TYPE-KEY that match FILTERS and
 that USER has `read` permissions for. Each record is returned as a plist, where
 the keys are field keys and the values are the corresponding field values. The
@@ -1938,12 +1943,18 @@ following example returns a list of all the :todos records that have the tag
             (when ids
               (let* ((ids-query (add-ids-clause type-key sql ids))
                       (view-result (view-result type-key ids-query)))
-                (list-result type-key user form field-keys view-result))))
-          (list-result type-key user form field-keys view-result)))
-      (list-result type-key user form))))
+                (list-result type-key user form
+                             :field-keys field-keys :view-result view-result
+                             :skip-allowed-values skip-allowed-values))))
+          (list-result type-key user form
+                       :field-keys field-keys :view-result view-result
+                       :skip-allowed-values skip-allowed-values)))
+      (list-result type-key user form
+                   :skip-allowed-values skip-allowed-values))))
 
 ;; TODO: Add pagination support
-(defun be-list-column (type-key field-key user &key (form :list-form) filters)
+(defun be-list-column (type-key field-key user
+                       &key (form :list-form) filters skip-allowed-values)
   ":public: Returns a list of the values in FIELD-KEY for the records of type
 TYPE-KEY that match FILTERS and that USER has 'read' permissions for. This is
 like BE-LIST, but it returns a list of values instead of a list of records."
@@ -1955,7 +1966,8 @@ like BE-LIST, but it returns a list of values instead of a list of records."
     (valid-existing-uuid filters)
     (valid-filters filters))
   (let ((records (getf
-                   (be-list type-key user :form form :filters filters)
+                   (be-list type-key user :form form :filters filters
+                            :skip-allowed-values skip-allowed-values)
                    :records)))
     (add-to-plist
       (list

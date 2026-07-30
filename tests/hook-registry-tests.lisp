@@ -10,7 +10,7 @@
   :description "Hook registry integration with be-validate-field (test-model)")
 
 (def-suite hook-registry-modelbank-suite
-  :description "Hook registry integration with be-validate-field (modelbank)")
+  :description "Hook registry integration with be-validate-field (modelbank-test)")
 
 (in-suite hook-registry-suite)
 
