@@ -191,11 +191,9 @@ nil), call `(init-database)` before running tests.
   see, and **ask the human whether to start working on it**. It does **not**
   mean "begin researching or implementing immediately." Wait for explicit
   direction before starting any work.
-- **Tables in agent replies:** Prefer bullet lists or short definition
-  lists over markdown tables. If you do use a table, its expanded width
-  (full rendered row, not source line length) must not exceed 80
-  characters. Wider comparisons belong in nested bullets or prose — wide
-  tables wrap poorly in Emacs and terminals.
+- **Tables in agent replies:** Do **not** use markdown tables at all.
+  Prefer bullet lists, short definition lists, or nested bullets.
+  Tables wrap poorly in Emacs and terminals and are hard to read.
 
 ## AI Agent Workflow & Tooling
 - Use specialized file tools exclusively: `Glob`, `Grep`, `Read`, `Edit`, `Write` (never `Bash` for file inspection/editing)
