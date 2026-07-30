@@ -292,6 +292,28 @@ idempotent so repeated calls for the same user are safe."
   (be-insert :tags '(:name "green") "admin")
   nil)
 
+(defun seed-bi-m2m-fixture ()
+  "Seed authors and books without join rows for bi-m2m-test."
+  (be-insert :authors '(:name "A1") "admin")
+  (be-insert :authors '(:name "A2") "admin")
+  (be-insert :authors '(:name "A3") "admin")
+  (be-insert :books '(:title "B1") "admin")
+  (be-insert :books '(:title "B2") "admin")
+  (be-insert :books '(:title "B3") "admin")
+  nil)
+
+(defun run-bi-m2m-tests (&optional collect)
+  "Bidirectional M2M tests (models/test fixtures only)."
+  (let ((results
+          (append
+            (with-model "bi-m2m-test" #'seed-bi-m2m-fixture
+              (run 'bi-m2m-suite))
+            ;; One-way / multi-joiner regression: stable test fixture
+            (with-model "m2m-test" #'seed-m2m-fixture
+              (run 'bi-m2m-one-way-regression-suite)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-nullable-fk-tests (&optional collect)
   "Nullable foreign-key field tests."
   (let ((results
@@ -332,6 +354,7 @@ groups."
                    ("secrets"        . run-secrets-tests)
                    ("widget"         . run-widget-tests)
                    ("m2m"            . run-m2m-tests)
+                   ("bi-m2m"         . run-bi-m2m-tests)
                    ("generator"      . run-generator-tests)
                    ("nullable-fk"    . run-nullable-fk-tests)
                    ("static-options" . run-static-options-tests)

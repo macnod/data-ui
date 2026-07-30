@@ -40,6 +40,7 @@
                                 (:file "secrets-tests")
                                 (:file "widget-tests")
                                 (:file "m2m-tests")
+                                (:file "bi-m2m-tests")
                                 (:file "generator-tests")
                                 (:file "nullable-fk-tests")
                                 (:file "static-options-tests")
