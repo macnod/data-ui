@@ -259,37 +259,43 @@ keyword args and returns a validation/lifecycle/action function."
   "Validate PLIST against ENTRY's parameter schema.  Returns a plist of resolved
 keyword/value pairs.  Signals an error on missing or wrong-type params."
   (let ((schema (hook-entry-parameters entry))
-        (hook-name (hook-entry-name entry))
-        (result nil))
+         (hook-name (hook-entry-name entry))
+         (result nil))
     (loop for (key type) on schema by #'cddr
-          for val = (getf plist key)
-          unless val do
-          (report-ve "valid-hook-params"
-                     "Hook ~a requires parameter ~a"
-                     ~hook-name ~key)
-          do
-          (case type
-            (:integer
-              (let ((n (cond
-                         ((integerp val) val)
-                         ((stringp val)
-                          (ignore-errors
-                            (parse-integer val :junk-allowed nil)))
-                         (t nil))))
-                (unless n
-                  (report-ve "valid-hook-params"
-                             "Hook ~a parameter ~a must be an integer, got ~a"
-                             ~hook-name ~key ~val))
-                (setf (getf result key) n)))
-            (:number
-              (let ((n (parse-number val)))
-                (unless n
-                  (report-ve "valid-hook-params"
-                             "Hook ~a parameter ~a must be a number, got ~a"
-                             ~hook-name ~key ~val))
-                (setf (getf result key) n)))
-            (otherwise
-              (setf (getf result key) val))))
+      for val = (getf plist key)
+      unless val do
+      (report-ve "valid-hook-params"
+        "Hook ~a requires parameter ~a"
+        ~hook-name ~key)
+      do
+      (case type
+        (:integer
+          (let ((n (cond
+                     ((integerp val) val)
+                     ((stringp val)
+                       (ignore-errors
+                         (parse-integer val :junk-allowed nil)))
+                     (t nil))))
+            (unless n
+              (report-ve "valid-hook-params"
+                "Hook ~a parameter ~a must be an integer, got ~a"
+                ~hook-name ~key ~val))
+            (setf (getf result key) n)))
+        (:number
+          (let ((n (parse-number val)))
+            (unless n
+              (report-ve "valid-hook-params"
+                "Hook ~a parameter ~a must be a number, got ~a"
+                ~hook-name ~key ~val))
+            (setf (getf result key) n)))
+        (:string
+          (unless (stringp val)
+            (report-ve "valid-hook-params"
+              "Hook ~a parameter ~a must be a string, got ~a"
+              ~hook-name ~key ~val))
+          (setf (getf result key) val))
+        (otherwise
+          (setf (getf result key) val))))
     result))
 
 (defun resolve-hook-form (form &key (kind :validation)
@@ -402,6 +408,66 @@ resolve-hook-form for error messages."
             ((or (< num min) (> num max))
              (validation-error-string type-key field-key value
                (format nil "must be between ~d and ~d." min max)))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; :compose-string — lifecycle hook for server-side field composition
+;;; ---------------------------------------------------------------------------
+
+(defun compose-string-placeholders (format)
+  "Return a list of keyword placeholders found in FORMAT string.
+Placeholders match :[a-z][-a-z0-9]* (colon followed by lowercase word)."
+  (let ((matches nil))
+    (cl-ppcre:do-scans (match-start match-end
+                        reg-starts reg-ends
+                        ":[a-z][-a-z0-9]*"
+                        format)
+      (declare (ignore reg-starts reg-ends))
+      (push (u:make-keyword
+              (subseq format (1+ match-start) match-end))
+            matches))
+    (nreverse matches)))
+
+(defun compose-string-apply (format data)
+  "Apply FORMAT template against DATA plist, returning the composed string.
+Each :field-key placeholder is replaced with the stringified value
+(or empty string if missing/nil). Whitespace runs are collapsed and
+the result is trimmed."
+  (let ((result format))
+    ;; Replace each placeholder with its value
+    (dolist (key (compose-string-placeholders format))
+      (let ((val (getf data key)))
+        (setf result
+              (cl-ppcre:regex-replace-all
+                (format nil ":~(~a~)" key)
+                result
+                (if (and val (not (eq val :null)))
+                  (string val)
+                  "")))))
+    ;; Collapse whitespace runs and trim
+    (u:trim
+      (cl-ppcre:regex-replace-all "[ \\t]+" result " "))))
+
+(defun valid-compose-placeholders (type-key format into model)
+  "Validate that all placeholders in FORMAT name existing fields on TYPE-KEY,
+and that INTO names an existing field. Signals report-e on failure."
+  (let ((fields (u:plist-keys
+                  (u:tree-get model type-key :fields))))
+    (dolist (ph (compose-string-placeholders format))
+      (unless (u:has fields ph)
+        (report-e "valid-compose-placeholders"
+          "Unknown placeholder ~s in :compose-string format for type ~s."
+          ~ph ~type-key)))
+    (unless (u:has fields into)
+      (report-e "valid-compose-placeholders"
+        ":compose-string :into ~s is not a field on type ~s."
+        ~into ~type-key))))
+
+(register-hook :compose-string :lifecycle
+  '(:format :string :into :keyword)
+  (lambda (&key format into)
+    (lambda (type-key data user &key id roles record)
+      (declare (ignore type-key user id roles record))
+      (list into (compose-string-apply format data)))))
 
 (defun strip-leading-lisp-comments (text)
   ":private: Removes any comment lines that may exist at the beginning of
@@ -1545,6 +1611,15 @@ necessary."
   "Resolve all lifecycle slots for TYPE-KEY into lists of functions. Returns a
 plist of :key → function-list for each lifecycle slot that has a value in the
 model."
+  ;; Compile-time validation of :compose-string placeholders
+  (loop for key in *lifecycle-keys*
+        for raw = (getf (getf model type-key) key)
+        when raw
+        do (dolist (form (if (listp raw) raw (list raw)))
+             (when (and (consp form) (eq (car form) :compose-string))
+               (let ((fmt (getf (cdr form) :format))
+                     (into (getf (cdr form) :into)))
+                 (valid-compose-placeholders type-key fmt into model)))))
   (loop for key in *lifecycle-keys*
         for raw = (getf (getf model type-key) key)
         when raw
@@ -1790,7 +1865,8 @@ Rejects:
                        :reference (when (equal old-field-key :reference) t)
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
-                    :autofill :identity :default-from :css-value :action)
+                    :autofill :identity :default-from :css-value :action
+                    :compose)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally
@@ -2202,6 +2278,63 @@ declared. Mirrors the previous runtime type-category logic."
               "In type ~s, ~s contains an unknown field ~s"
               ~type-key ~form-field ~field-key))))
 
+(defun expand-compose-hooks (type-key type-def)
+  "Scan TYPE-DEF's fields for :compose and synthesize :compose-string
+lifecycle hook forms. Returns a plist of :pre-create / :pre-update
+hook lists to append after author-declared hooks.
+
+Validates:
+- Template is a non-empty string
+- Placeholders name existing fields on this type
+- No self-reference (placeholder matching the composed field)
+- No duplicate :compose-string into the same field via manual hooks"
+  (let ((fields (getf type-def :fields))
+        (compose-forms nil))
+    (loop for field-key in fields by #'cddr
+          for field-def in (cdr fields) by #'cddr
+          for template = (getf field-def :compose)
+          when template
+          do (let ((tpl (if (stringp template) template
+                          (report-e "expand-compose-hooks"
+                            ":compose on field ~s of type ~s must be a string."
+                            ~field-key ~type-key))))
+               (when (string= tpl "")
+                 (report-e "expand-compose-hooks"
+                   ":compose on field ~s of type ~s must be non-empty."
+                   ~field-key ~type-key))
+               ;; Validate placeholders
+               (let ((placeholders (compose-string-placeholders tpl)))
+                 (dolist (ph placeholders)
+                   (unless (u:has (u:plist-keys fields) ph)
+                     (report-e "expand-compose-hooks"
+                       "Unknown placeholder ~s in :compose on field ~s of type ~s."
+                       ~ph ~field-key ~type-key)))
+                 ;; Reject self-reference
+                 (when (member field-key placeholders)
+                   (report-e "expand-compose-hooks"
+                     "Self-reference in :compose on field ~s of type ~s."
+                     ~field-key ~type-key)))
+               ;; Check for duplicate manual :compose-string into same field
+               (dolist (lk '(:pre-create :pre-update))
+                 (let ((raw (getf type-def lk)))
+                   (when raw
+                     (dolist (form (if (listp raw) raw (list raw)))
+                       (when (and (consp form)
+                                  (eq (car form) :compose-string)
+                                  (eq (getf (cdr form) :into) field-key))
+                         (report-e "expand-compose-hooks"
+                           "Duplicate :compose-string into ~s on type ~s: ~
+                            field :compose and manual hook both target it."
+                           ~field-key ~type-key))))))
+               ;; Synthesize the hook form
+               (push (list :compose-string
+                           :format tpl :into field-key)
+                     compose-forms)))
+    ;; Return plist of hook lists to append
+    (when compose-forms
+      (let ((forms (nreverse compose-forms)))
+        (list :pre-create forms :pre-update forms)))))
+
 (defun compile-type-def (model type-key)
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
@@ -2237,6 +2370,22 @@ declared. Mirrors the previous runtime type-category logic."
     (let* ((fields-with-path (mark-path-field type-key fs-backed fields))
             (user-setting (getf type-def :user-setting))
             (augmented-def (augment-update-form type-def fields))
+            ;; Expand :compose sugar into lifecycle hook forms
+            (compose-hooks (expand-compose-hooks type-key type-def))
+            (compose-model (if compose-hooks
+                             (let ((td-with-hooks type-def))
+                               (loop for (lk forms) on compose-hooks by #'cddr
+                                     do (let ((existing (getf td-with-hooks lk)))
+                                          (setq td-with-hooks
+                                                (add-to-plist td-with-hooks
+                                                  (list lk
+                                                    (append
+                                                      (when (listp existing)
+                                                        existing)
+                                                      forms))))))
+                               (add-to-plist model
+                                 (list type-key td-with-hooks)))
+                             model))
             (final-def (add-to-plist
                          augmented-def
                          (append
@@ -2256,7 +2405,7 @@ declared. Mirrors the previous runtime type-category logic."
                              (or (getf type-def :suppress-roles) user-setting))
                            ;; Compiled lifecycle hooks override raw values on 
                            ;; type-def
-                           (compile-lifecycle-hooks model type-key)))))
+                           (compile-lifecycle-hooks compose-model type-key)))))
       (valid-form-fields type-key final-def)
       final-def)))
 
@@ -2292,6 +2441,12 @@ declared. Mirrors the previous runtime type-category logic."
             (equal key :type-roles)
             (listp sdef)
             t))
+         ((and
+            (member key '(:pre-create :post-create
+                          :pre-update :post-update
+                          :pre-delete :post-delete))
+            (listp sdef))
+           t)
          ((and
             (member (second key-path) '(:list-form :update-form :add-form))
             (equal key :fields))

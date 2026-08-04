@@ -265,6 +265,7 @@ Under `:fields`, each entry is `field-key` → plist (except joiner
 | `:not-null` | DDL `NOT NULL`. Optional on `:target` fields (see [Foreign keys](#foreign-keys-target)) |
 | `:unique` | DDL `UNIQUE` |
 | `:identity` | Natural-key participant. See [Identity fields](#identity-fields) |
+| `:compose` | Format string for server-side field composition. See [`:compose`](#compose) |
 | `:required` | Legacy: if truthy, compiler prepends `#'v-required`. Prefer `:validations (:required)` |
 | `:validations` | list of validation hook forms |
 | `:source` | how to read the field from a view |
@@ -479,12 +480,26 @@ column alone, so two "Cameron" rows collide (`23505` on
 
 **Workaround for structured names (first / middle / last):**
 
-1. **Preferred today:** one full-name field as the sole identity (e.g. `:name`
-   = "Donald Roy Cameron"). Optionally keep first/middle/last as ordinary
-   non-identity columns if you still want them on the form.
-2. **Not supported yet:** server-side compose of a hidden/read-only `:name`
-   from F/M/L via a lifecycle hook (`:compose-string`: designed, not
-   implemented; see `~/workbench/compose-string-investigation.org`).
+1. **Single full-name field:** one full-name field as the sole identity
+   (e.g. `:name` = "Donald Roy Cameron"). Optionally keep first/middle/last
+   as ordinary non-identity columns if you still want them on the form.
+2. **Composed identity field (preferred for structured names):** keep the
+   parts as ordinary fields and add a stored identity field whose value is
+   composed server-side via `:compose`. The compiler synthesizes
+   `:compose-string` lifecycle hooks for `:pre-create` and `:pre-update`
+   that build the composed value before validation and write:
+
+   ```lisp
+   :first-name (:type :text ...)
+   :middle-name (:type :text ...)
+   :last-name (:type :text ...)
+   :full-name (:type :text :identity t :unique t :not-null t
+                :compose ":first-name :middle-name :last-name"
+                :ui (:label "Full Name" :widget :textbox :read-only t)
+                ...)
+   ```
+
+   See [`:compose`](#compose) below for the format language and constraints.
 3. **Not supported yet:** multi-column reference lookup (composite identity
    as the M2M/FK display protocol).
 
@@ -492,6 +507,74 @@ column alone, so two "Cameron" rows collide (`23505` on
 give it one unique identity string. Use composite identity only for types that
 are write-through targets (or otherwise searched by full identity key sets),
 not for checkbox-list labels.
+
+---
+
+## `:compose`
+
+The `:compose` field attribute is sugar for the `:compose-string` lifecycle
+hook. It lets the compiler build a stored field value from other fields on the
+same type — most commonly to create a single composed identity string from
+structured parts (e.g. full name from first / middle / last).
+
+### Format
+
+```lisp
+:full-name (:type :text :identity t :unique t :not-null t
+             :compose ":first-name :middle-name :last-name"
+             :ui (:label "Full Name" :widget :textbox :read-only t)
+             :source (:view :main :column :full-name :agg :first)
+             :column t)
+```
+
+The `:compose` value is a **template string** using the same format language
+as `:compose-string`:
+
+- Placeholders are bare keyword tokens: `:first-name`, `:last-name`, etc.
+- Each placeholder is replaced by the string value of that field in the
+  record's data.
+- Missing, `nil`, or `:null` placeholders become empty string.
+- Whitespace is collapsed (runs of spaces → single space) and trimmed.
+
+### What the compiler does
+
+For each field with `:compose`, the compiler synthesizes `:compose-string`
+forms and appends them to the type's `:pre-create` and `:pre-update` hook
+lists **after** any author-declared hooks. The composed value is therefore
+available to validation and written to the database like any field value.
+
+### Constraints
+
+- **Placeholders must name existing fields** on the type (compile-time error).
+- **The `:into` target is the field itself** — no separate `:into` needed.
+- **Self-reference is a compile error** — a field's `:compose` template may
+  not reference itself.
+- **Duplicate is a compile error** — if a field has `:compose` *and* the same
+  field is targeted by a manual `:compose-string` hook (via `:pre-create` or
+  `:pre-update`), compilation fails.
+
+### Type-level `:compose-string` (alternative)
+
+For cases needing more control (e.g. composing into a field from a different
+hook, or conditional logic alongside composition), use the `:compose-string`
+lifecycle hook directly on `:pre-create` / `:pre-update`:
+
+```lisp
+:pre-create (:compose-string
+              :format ":first-name :middle-name :last-name"
+              :into :full-name)
+```
+
+See `docs/hook-registry.md` → Registered Lifecycle Hooks for the full
+`:compose-string` contract.
+
+### Form guidance
+
+- **`:add-form`:** omit the composed field. The server builds it from the
+  parts; showing it is redundant and it has no value until save.
+- **`:update-form`:** include the composed field with `:read-only t` so users
+  can see the derived value but not edit it directly (editing would be
+  overwritten on the next save).
 
 ---
 
@@ -868,7 +951,8 @@ Lifecycle may be a single form or a list. Validation is always a list.
 
 ```text
 validation: (type-key field-key value user) → nil | error-string
-lifecycle:  (type-key data user &key id roles record) → effect
+lifecycle:  (type-key data user &key id roles record) → nil | plist
+            nil = no change; plist = merge into data; non-plist = error
 action:     (type-key field-key record user &key roles status-field set-status)
             → nil | (:async t :message "…")
 ```
@@ -1163,9 +1247,10 @@ resolved `:category` / `:internal`.
     write-through / uniqueness, not checkbox-list lookup (see
     [Identity fields](#identity-fields)).
 
-13. **No computed/composed fields**: cannot derive a stored identity
-    (e.g. full name) from other columns without a lifecycle data-effect hook
-    (`:compose-string` designed, not implemented).
+13. ~~**No computed/composed fields**~~: **Resolved.** The `:compose` field
+    attribute and `:compose-string` lifecycle hook now support server-side
+    composition of stored field values (e.g. full name from first/middle/last).
+    See [`:compose`](#compose) and [Identity fields](#identity-fields).
 
 ---
 
@@ -1182,9 +1267,9 @@ resolved `:category` / `:internal`.
 **View:** `:tables` `:scope`
 
 **Field:** `:type` `:ui` `:column` `:default` `:not-null` `:unique` `:identity`
-`:required` `:validations` `:source` `:source-all` `:join-table` `:target`
-`:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:default-from`
-`:css-value` `:primary-key` / joiner `:reference`
+`:compose` `:required` `:validations` `:source` `:source-all` `:join-table`
+`:target` `:write-to` `:autofill` `:force-sql-name` `:path` `:action`
+`:default-from` `:css-value` `:primary-key` / joiner `:reference`
 
 **UI:** `:label` `:widget` `:read-only` `:precision` `:options`
 

@@ -336,6 +336,34 @@ idempotent so repeated calls for the same user are safe."
     (explain! results)
     (when collect results)))
 
+(defun run-compose-tests (&optional collect)
+  "Compose-string lifecycle hook and data-effect contract tests.
+Unit tests run bare (no model needed). Behavioral tests share a
+single compose-test context."
+  (let ((results
+          (append
+            ;; Pure unit tests (no model, no DB)
+            (run 'compose-unit-suite)
+            ;; Behavioral tests in shared context
+            (with-model "compose-test" nil
+              (run 'compose-suite)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-compose-sugar-tests (&optional collect)
+  "Field-level :compose sugar tests.
+Compile-error tests run bare. Behavioral tests share a single
+compose-sugar-test context."
+  (let ((results
+          (append
+            ;; Compile-error tests (no model needed)
+            (run 'compose-sugar-unit-suite)
+            ;; Behavioral tests in shared context
+            (with-model "compose-sugar-test" nil
+              (run 'compose-sugar-suite)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -358,7 +386,9 @@ groups."
                    ("generator"      . run-generator-tests)
                    ("nullable-fk"    . run-nullable-fk-tests)
                    ("static-options" . run-static-options-tests)
-                   ("form-fields"    . run-form-fields-tests))
+                   ("form-fields"    . run-form-fields-tests)
+                   ("compose"        . run-compose-tests)
+                   ("compose-sugar"  . run-compose-sugar-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

@@ -30,12 +30,25 @@ which contract the factory's returned function must conform to.
 ### Lifecycle contract
 
 ```
-(lambda (type-key data user &key id roles record) → ignored)
+(lambda (type-key data user &key id roles record) → nil | plist)
 ```
 
-- **Returns** are ignored today (no effect protocol yet).
-- **Invoked** per-record, not per-field. Receives the full write-data plist, not
-  a single value.
+- **Returns** drive the **data-effect contract**:
+  - `nil` → no change; `data` is passed through unchanged.
+  - plist → keys are **merged** into `data` (hook-supplied keys overwrite
+    existing ones). Only pre-create and pre-update hooks may affect the
+    write; post-hook merges are accepted but have no downstream write target.
+  - any other non-nil value → `report-e` (system error).
+- **`run-lifecycle-hooks`** returns the (possibly updated) data plist so the
+  caller can use the post-hook data for validation and SQL value extraction.
+- **`be-insert`**, **`be-insert-internal`**, and **`be-update`** run pre-create
+  / pre-update hooks **before** validation and use the post-hook data for both
+  validation and the SQL write.
+- **`full-data`** distinguishes "key absent from data" from "key is nil in
+  data" (sentinel pattern), so explicit nil values returned by hooks are
+  respected rather than overwritten by record fallbacks.
+- **Invoked** per-record, not per-field. Receives the full write-data plist,
+  not a single value.
 - **Keyword args** carry call-site context:
 
 | Site        | `:id`  | `:roles` | `:record` |
@@ -154,6 +167,7 @@ Each registry entry has a parameter schema: a plist of keyword → type tag.
 
 - `:integer`: parsed from integer or numeric string
 - `:number`: parsed via `parse-number`
+- `:string`: accepted if the value is a string; otherwise `report-ve`
 
 Any other type tag (including `:keyword`, used by `:deploy-model`) is
 **pass-through**: the raw value is accepted unchanged, with no type check.
@@ -203,20 +217,22 @@ raw model values.
 ### Runtime invocation
 
 All call sites use `run-lifecycle-hooks` (backend.lisp), which iterates
-the compiled function list and calls each hook with the unified contract:
+the compiled function list, calls each hook with the unified contract,
+merges any plist return values into `data`, and returns the updated
+data plist:
 
 ```
 (run-lifecycle-hooks hooks type-key data user
-  &key id roles record)
+  &key id roles record) → updated-data
 ```
 
 Call sites:
 
 | Function | Slots invoked |
 |----------|--------------|
-| `be-insert` | `:pre-create` (before write), `:post-create` (after write, with `:id new-id`) |
+| `be-insert` | `:pre-create` (before validation & write), `:post-create` (after write, with `:id new-id`) |
 | `be-insert-internal` | `:post-create` (after write, with `:id new-id`) |
-| `be-update` | `:pre-update` (before write), `:post-update` (after write-through) |
+| `be-update` | `:pre-update` (before validation & write), `:post-update` (after write-through) |
 | `be-delete` | `:pre-delete` (before write), `:post-delete` (after write) |
 
 ### Surface forms on lifecycle slots
@@ -237,6 +253,54 @@ Same as validation: both forms are accepted:
 Internal base-model lifecycle hooks use compiled function references
 (`#'foo`) which pass through `resolve-hook-form` as-is. This is an
 internal mechanism, not a model-author surface form.
+
+### Registered Lifecycle Hooks
+
+| Name | Parameters | Behavior |
+|------|------------|----------|
+| `:compose-string` | `:format` (`:string`), `:into` (`:keyword`) | Builds a string from a template and merges it into `data` under `:into`. See below. |
+
+#### `:compose-string`
+
+Composes a string from field values and stores it into a destination
+field — the foundation for derived/computed identity fields.
+
+```lisp
+:pre-create (:compose-string
+              :format ":first-name :middle-name :last-name"
+              :into :full-name)
+```
+
+**Parameters:**
+
+| Param | Type | Meaning |
+|-------|------|---------|
+| `:format` | `:string` | Template string with `:field-key` placeholders |
+| `:into` | `:keyword` | Destination field keyword (must be an existing field) |
+
+**Format language:**
+
+- Placeholders are bare keyword tokens in the string: `:first-name`,
+  `:last-name`, etc. They are **not** CL `format` directives.
+- Each placeholder is replaced by the string value of the corresponding
+  key in `data`.
+- Missing, `nil`, or `:null` placeholders become empty string.
+- Whitespace is collapsed (runs of spaces → single space) and trimmed.
+
+**Compile-time validation:**
+
+- Every placeholder in `:format` must name an existing field on the type.
+- `:into` must name an existing field on the type.
+
+**Runtime:** the hook returns a plist `(:<into> "composed string")`,
+which `run-lifecycle-hooks` merges into `data`. Because pre-create and
+pre-update hooks run **before** validation and SQL extraction, the
+composed value is validated and written like any author-supplied value.
+
+**Field-level `:compose` sugar:** the `:compose` field attribute is
+syntactic sugar that expands into `:compose-string` forms on both
+`:pre-create` and `:pre-update`. See `docs/model-reference.md` →
+Identity fields.
 
 
 ## Action Hooks

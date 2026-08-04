@@ -502,7 +502,8 @@ all the right fields when we perform inserts or updates."
     for field-key in fields
     for field-def = (u:tree-get *compiled-model* type-key :fields field-key)
     for default-value = (getf field-def :default)
-    for data-value = (getf data field-key)
+    for data-value = (getf data field-key '%%absent%%)
+    for data-has-key = (not (eq data-value '%%absent%%))
     for field-type = (getf field-def :type)
     for record-value = (getf record field-key)
     for autofill = (getf field-def :autofill)
@@ -513,10 +514,13 @@ all the right fields when we perform inserts or updates."
     ;; internal artifacts, not user-supplied data, and must not
     ;; flow back through validation.
     appending (list field-key
-                ;; Order is important here!
-                (or data-value
-                    (unless (eq field-type :password) record-value)
-                    autofill-value default-value))))
+                ;; When DATA explicitly provides a key (even nil),
+                ;; respect it. Only fall through to record/autofill/
+                ;; default when the key is absent from DATA.
+                (if data-has-key
+                  data-value
+                  (or (unless (eq field-type :password) record-value)
+                      autofill-value default-value)))))
 
 (defun uuid-exists-p (uuid)
   (valid-uuid uuid)
@@ -1979,18 +1983,46 @@ like BE-LIST, but it returns a list of values instead of a list of records."
           field-key
           (u:tree-get (fe-fields type-key user) form field-key))))))
 
+(defun merge-data-effect (current effect)
+  "Merge EFFECT plist into a copy of CURRENT plist. Each key in EFFECT
+overwrites the corresponding key in CURRENT, including keys whose value is
+nil. Returns the merged plist.
+
+Unlike add-to-plist (which uses OR for value lookup and therefore treats nil in
+the new plist as 'not specified'), this function treats nil as an intentional
+value. This is correct for lifecycle hook effects, where a hook may need to set
+a field to nil."
+  (loop with merged = (copy-list current)
+    for key in effect by #'cddr
+    for val in (cdr effect) by #'cddr
+    do (setf (getf merged key) val)
+    finally (return merged)))
+
 (defun run-lifecycle-hooks (hooks type-key data user
                            &key id roles record)
-  "Run a list of compiled lifecycle HOOKS with the unified contract.
-Each hook is called as (funcall hook type-key data user :id id
-:roles roles :record record)."
-  (loop for hook in hooks
-        when hook
-        ;; Contract: (type-key data user &key id roles record)
-        ;; See model.lisp "Lifecycle contract" and
-        ;; docs/hook-registry.md § "Lifecycle contract".
-        do (funcall hook type-key data user
-             :id id :roles roles :record record)))
+  "Run a list of compiled lifecycle HOOKS with the unified contract. Each hook
+is called as
+
+(funcall hook type-key data user :id id :roles roles :record record)
+
+Returns the (possibly updated) data plist. When a hook returns a plist, its keys
+are merged into the running data (overwriting).  When a hook returns nil, data
+is unchanged. Non-plist non-nil returns signal a report-e error.
+
+Only pre-create and pre-update call sites should capture the return value.
+Post-* and delete paths should ignore it."
+  (loop with current = data
+    for hook in hooks
+    when hook do
+    (let ((effect (funcall hook type-key current user
+                    :id id :roles roles :record record)))
+      (cond
+        ((null effect) nil)
+        ((u:plistp effect)
+          (setf current (merge-data-effect current effect)))
+        (t (report-e "run-lifecycle-hooks"
+             "Lifecycle hook returned non-plist effect ~s" ~effect))))
+    finally (return current)))
 
 ;; TODO: Transaction!
 (defun be-insert (type-key data user &key roles file-token)
@@ -2017,7 +2049,13 @@ kitchen\":
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (valid-file-token file-token)
-  (let ((data (full-data type-key data user)))
+  (let* ((m *compiled-model*)
+          (data (full-data type-key data user))
+          (pre-create (u:tree-get m type-key :pre-create))
+          ;; Pre-create hooks run before validation so they can fill
+          ;; required computed fields (e.g. :compose-string).
+          (data (run-lifecycle-hooks pre-create type-key data user
+                  :roles roles)))
     (valid-data type-key data)
     (let ((field-errors (validate-fields type-key data user)))
       (when field-errors
@@ -2029,17 +2067,13 @@ kitchen\":
         (progn
           (pl:pdebug :in "be-insert" :step 1
             :type-key type-key :status "validated")
-          (let* ((m *compiled-model*)
-                  (f (u:tree-get m type-key :create))
+          (let* ((f (u:tree-get m type-key :create))
                   (base (u:tree-get m type-key :base))
                   (internal (u:tree-get m type-key :internal))
                   (path-field (path-field type-key))
                   (logical-path (when path-field (getf data path-field)))
-                  (pre-create (u:tree-get m type-key :pre-create))
                   (post-create (u:tree-get m type-key :post-create)))
             (valid-new-directory type-key logical-path file-token user roles)
-            (run-lifecycle-hooks pre-create type-key data user
-              :roles roles)
             (when (and logical-path (not file-token))
               (store-directory type-key logical-path user roles))
             (let ((new-id (cond
@@ -2090,7 +2124,13 @@ not.
     :type-key type-key :data data :roles roles)
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
-  (let ((data (full-data type-key data user)))
+  (let* ((m *compiled-model*)
+          (pre-create (u:tree-get m type-key :pre-create))
+          (data (full-data type-key data user))
+          ;; Pre-create hooks run before validation so they can fill
+          ;; required computed fields (e.g. :compose-string).
+          (data (run-lifecycle-hooks pre-create type-key data user
+                  :roles roles)))
     (valid-data type-key data)
     (let ((field-errors (validate-fields type-key data user)))
       (when field-errors
@@ -2099,8 +2139,7 @@ not.
     (let ((id (id-from-data type-key data)))
       (if id
         (values id nil)
-        (let* ((m *compiled-model*)
-                (f (u:tree-get m type-key :create))
+        (let* ((f (u:tree-get m type-key :create))
                 (base (u:tree-get m type-key :base))
                 (internal (u:tree-get m type-key :internal))
                 (post-create (u:tree-get m type-key :post-create))
@@ -2152,20 +2191,22 @@ update fails.
           (uuid (id-from-filters-and-data type-key filters data))
           (record (getf (rec uuid user :type-key type-key :blank-passwords nil)
                     :record))
-          (sql (car (u:tree-get m type-key :update-sql :main)))
-          (values (local-values-for-update type-key data record user :id uuid))
-          (update-query (cons sql values))
-          (full-data (full-data type-key data user :record record))
           (pre-update (u:tree-get m type-key :pre-update))
-          (post-update (u:tree-get m type-key :post-update)))
+          (post-update (u:tree-get m type-key :post-update))
+          ;; Pre-update hooks run before validation so they can fill
+          ;; required computed fields (e.g. :compose-string).
+          (full-data (run-lifecycle-hooks pre-update type-key
+                        (full-data type-key data user :record record)
+                        user :id uuid :roles roles :record record))
+          (sql (car (u:tree-get m type-key :update-sql :main)))
+          (values (local-values-for-update type-key full-data record user
+                    :id uuid))
+          (update-query (cons sql values)))
     (valid-existing-join-data type-key full-data)
     (let ((field-errors (validate-fields type-key full-data user)))
       (when field-errors
         (report-ve "be-update"
           "Field validation failed:~{ ~a~}" ~field-errors)))
-    ;; Pre-update lifecycle hooks
-    (run-lifecycle-hooks pre-update type-key full-data user
-      :id uuid :roles roles :record record)
     ;; Update TYPE-KEY row (main update)
     (when (equal type-key :resources)
       (report-ve "be-update" "Can't update internal type :resources"))

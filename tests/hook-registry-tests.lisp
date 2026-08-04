@@ -222,7 +222,8 @@ with the unified contract, receiving :id on post-create."
           (declare (ignore roles record))
           (push (list :type-key type-key :data data :user user
                       :id id)
-                captured))))
+                captured)
+          nil)))
     ;; Inject the hook into the compiled :todos type
     (let* ((todos-def (getf *compiled-model* :todos))
            (compiled-hooks
@@ -252,7 +253,8 @@ with the unified contract, receiving :id on post-create."
         (lambda (type-key data user &key id roles record)
           (declare (ignore roles record))
           (push (list :type-key type-key :id id :user user)
-                captured))))
+                captured)
+          nil)))
     ;; Inject into :todos and run manually
     (let* ((todos-def (getf *compiled-model* :todos))
            (compiled-hooks

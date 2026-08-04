@@ -95,6 +95,12 @@ Lisp against the live image, so treat state-mutating forms with the same care yo
 would in a REPL, and remember the project rule that Lisp source outside `web/`
 and `tests/` is not modified without human permission.
 
+**Full image reload:** When you need to reload everything and reset the
+database (rather than reloading a single file), use `(hard-reset)` from
+`lisp/startup.lisp`. It runs `asdf:load-system :force t`,
+`init-database`, and `reset-database` in one call — no need to do the
+three steps manually.
+
 **Gotcha: reloading `rest.lisp` while the web server is running.**
 `start-web-server` (in `rest.lisp`) is guarded by `(unless *http-server* ...)`
 so it is a no-op if the server is already running. However, reloading
@@ -188,9 +194,14 @@ To add a new test suite (e.g. for a new feature), four files change:
 
 After creating or modifying a test file, reload it into the live image
 with `(load "~/common-lisp/data-ui/tests/secrets-tests.lisp")` before
-running. If you modified `helpers.lisp`, reload that too. If the live
-image was reloaded via `asdf:load-system` (which resets `*rbac*` to
-nil), call `(init-database)` before running tests.
+running. If you modified `helpers.lisp`, reload that too.
+
+**Full reload + database reset:** When you need to reload all source
+files and reset the database (e.g. after `asdf:load-system` resets
+`*rbac*` to nil), use `(hard-reset)` — defined in `lisp/startup.lisp`.
+It does `asdf:load-system :force t`, `init-database`, and
+`reset-database` in one call. Prefer this over manually calling the
+three steps individually.
 
 ## Interaction Conventions
 
@@ -257,6 +268,12 @@ nil), call `(init-database)` before running tests.
   - `:suppress-roles t` — type-level flag that suppresses the injected `roles`
     field in forms. Auto-set when `:user-setting t`; can also be set independently.
   - `:identity t` / `:write-to` — natural keys and related-table upserts
+  - `:compose` field attribute / `:compose-string` lifecycle hook —
+    server-side composition of stored field values (e.g. full name from
+    first/middle/last). `:compose` is sugar that expands to
+    `:compose-string` on `:pre-create` and `:pre-update`. See
+    `docs/model-reference.md` → `:compose` and `docs/hook-registry.md` →
+    Registered Lifecycle Hooks.
   - `:widget` values: `:textbox`, `:textarea`, `:code`, `:stars`, `:select`,
     `:file`, `:checkbox`, `:checkbox-list`, `:password`, `:hidden`, `:button`,
     `:image`, `:image-list` — controls form rendering and list cell display
@@ -391,7 +408,14 @@ All custom logic (validation, lifecycle, and actions) attaches via hooks that re
 single calling contract per kind.
 
 - Validation contract: `(lambda (type-key field-key value user) -> nil | error-string)`
-- Lifecycle contract (e.g.): `(lambda (type-key data user &key roles) -> effect)`
+- Lifecycle contract: `(lambda (type-key data user &key id roles record) -> nil | plist)`.
+  Return `nil` = no change; return a plist = keys are merged into `data`
+  (overwriting); non-plist non-nil = `report-e`. `run-lifecycle-hooks`
+  returns the updated data plist. Pre-create/pre-update hooks run
+  **before** validation and SQL extraction in `be-insert` / `be-update`,
+  so hook-supplied values are validated and written. This is the
+  **data-effect contract** that powers `:compose-string` and future
+  cross-table hooks.
 - Action contract: `(lambda (type-key field-key record user &key roles status-field set-status) -> result-plist-or-nil)`
 - Hooks are **lists**; multiple hooks may attach. The sole surface form:
   - `(:keyword args...)` — registry entry (data-only; AI/no-code/hosted tier)

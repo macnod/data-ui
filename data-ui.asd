@@ -44,4 +44,6 @@
                                 (:file "generator-tests")
                                 (:file "nullable-fk-tests")
                                 (:file "static-options-tests")
-                                (:file "form-fields-tests")))))
+                                (:file "form-fields-tests")
+                                (:file "compose-tests")
+                                (:file "compose-sugar-tests")))))
