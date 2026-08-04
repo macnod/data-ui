@@ -16,7 +16,7 @@ frontend takes a competent team two to eight weeks. With Data UI, it takes ten
 minutes. That is not an incremental improvement. It is a phase change.
 
 And the output isn't a prototype. It's a production application with
-industrial-grade RBAC, a real database, TLS, and a clean UI — the kind of thing
+industrial-grade RBAC, a real database, TLS, and a clean UI: the kind of thing
 that normally requires a senior developer's full attention for a sprint or
 three.
 
@@ -29,7 +29,7 @@ explosion/: every role × every resource × every operation, evolving over time.
 A 10-entity app with 5 roles has 150 permission checks to get right. Add an
 entity? That's 15 more checks. Add a role? That's 10 more. And every one of them
 has to stay consistent across the database schema, the API layer, the frontend,
-and the authorization middleware — /forever/, as the app evolves.
+and the authorization middleware, /forever/, as the app evolves.
 
 This is the part that breaks under iteration. Not because developers are
 careless, but because the invariant surface is too large for any human to hold
@@ -40,12 +40,12 @@ archaeological dig before you write a single line of logic.
 Every existing tool leaves this problem to you. Frameworks give you the
 pieces. Scaffolding generators produce opaque code you then maintain by
 hand. Low-code platforms bolt RBAC on as an afterthought. Nobody enforces the
-invariants globally, because nobody can — the invariant surface is too large for
+invariants globally, because nobody can; the invariant surface is too large for
 a human to track.
 
 Data UI's compiler does track it. That's the breakthrough. The model is small
 enough to reason about; the compiler guarantees its expansion is
-consistent. Every role, every resource, every operation — derived from the same
+consistent. Every role, every resource, every operation, derived from the same
 source of truth, every time you recompile.
 
 * What This Means for Developers
@@ -64,16 +64,16 @@ start being architects.
 
 ** Code review becomes meaningful again.
 
-When a typical application's pull request touches 12 files across the stack — a
+When a typical application's pull request touches 12 files across the stack: a
 migration, a model, a controller, a route, a middleware update, a React
-component, a form, a test — the reviewer is exhausted before they reach the
+component, a form, a test. The reviewer is exhausted before they reach the
 actual logic. They rubber-stamp because they have to.
 
 When the entire application is a 40-line model, code review takes 30 seconds and
 actually catches problems. You can see every entity, every field, every
 relationship, every validation rule, and every role definition in a single
 screen. You can /email/ the whole app to a colleague for review. That's not a
-metaphor — the model literally fits in an email.
+metaphor; the model literally fits in an email.
 
 ** Consistency is guaranteed, not aspirational.
 
@@ -86,7 +86,7 @@ development.
 In a Data UI application, consistency is a /compiler guarantee/. The model is
 the single source of truth. The database schema, the API behavior, the RBAC
 enforcement, and the frontend rendering are all derived from it. You cannot have
-a permission hole because there is no place for one to hide — every operation
+a permission hole because there is no place for one to hide; every operation
 passes through the same compiled RBAC layer, every time.
 
 ** Maintenance shrinks by an order of magnitude.
@@ -96,8 +96,8 @@ schema change requires updates to the ORM, the API, the frontend, the tests, and
 the deployment scripts. Each touch point is an opportunity for a bug. Each bug
 is a maintenance burden that compounds over time.
 
-In Data UI, you change the model and recompile. Everything downstream — schema,
-API, RBAC, frontend, deployment — updates deterministically. There is no drift
+In Data UI, you change the model and recompile. Everything downstream (schema,
+API, RBAC, frontend, deployment) updates deterministically. There is no drift
 because there is nothing to drift. The maintenance surface is the model, and the
 model is small.
 
@@ -105,8 +105,8 @@ model is small.
 
 ** The floor drops out of the cost of building an app.
 
-Today, if you need a custom application — a task tracker for your team, an
-inventory system for your business, a member directory for your club — your
+Today, if you need a custom application (a task tracker for your team, an
+inventory system for your business, a member directory for your club), your
 options are:
 
 1. Hire a developer or agency ($15,000–$40,000, 4–8 weeks)
@@ -117,8 +117,8 @@ options are:
 
 Data UI introduces a fifth option: /describe what you want and deploy/. The
 model is a structured list of fields and relationships. If you can fill out a
-form, you can edit a model. And the Model Bank — a shared library of ready-made
-models — means you probably don't even start from scratch. You find something
+form, you can edit a model. And the Model Bank (a shared library of ready-made
+models) means you probably don't even start from scratch. You find something
 close, copy it, add your fields, and deploy.
 
 This doesn't just save money. It /unlocks/ applications that were never worth
@@ -137,7 +137,7 @@ This is how open source transformed libraries: you don't write your own JSON
 parser, you use one that thousands of people have tested.  The Model Bank does
 the same for /entire applications/. A well-designed inventory model,
 battle-tested by a hundred businesses, becomes a building block that the next
-business starts from — not from scratch, but from /proven/.
+business starts from: not from scratch, but from /proven/.
 
 The result is a ratchet: every shared model raises the floor for everyone. The
 quality of the average application goes up because the average application
@@ -152,15 +152,15 @@ This is where it gets interesting.
 Today's AI can write a function, generate a component, or draft a
 migration. What it /cannot/ do is produce a 40,000-line application whose
 permissions remain globally consistent as the app evolves over months and
-years. The invariant surface is too large. The AI drifts, just like a human does
-— but faster, and with more confidence.
+years. The invariant surface is too large. The AI drifts, just like a human does,
+but faster, and with more confidence.
 
 Data UI puts the AI in the regime where it's strong and the compiler in the
 regime where the AI is weak.
 
-An AI can produce a 40-line model. It can read a plain-English description — "I
+An AI can produce a 40-line model. It can read a plain-English description ("I
 need an app to track book loans for my library, with borrower names, book
-titles, and due dates" — and emit a structured model that captures the entities,
+titles, and due dates") and emit a structured model that captures the entities,
 fields, and relationships. This is exactly the kind of task AI excels at: small,
 structured, reviewable output with clear semantics.
 
@@ -176,8 +176,8 @@ contract between the AI and the application. It's small enough for the AI to
 produce reliably. It's structured enough for the compiler to validate. And it's
 readable enough for a human to review before deploying.
 
-The hook registry extends this further. Custom logic — validation rules,
-lifecycle hooks — comes from a curated, parameterized vocabulary. The AI doesn't
+The hook registry extends this further. Custom logic (validation rules,
+lifecycle hooks) comes from a curated, parameterized vocabulary. The AI doesn't
 write arbitrary code; it selects from a defined set of capabilities and fills in
 parameters. The parameter schema serves triple duty: it validates the AI's
 output, it drives the no-code UI palette, and it functions as the AI's
@@ -186,7 +186,7 @@ function-calling spec.
 This is the architecture that makes AI a /reliable/ application builder, not
 just a code generator. The AI operates within a constrained vocabulary where its
 outputs are verifiable. The compiler enforces the invariants the AI can't. And
-the human reviews the result — a 40-line model, not a 40,000-line codebase —
+the human reviews the result (a 40-line model, not a 40,000-line codebase)
 before it goes live.
 
 ** The result: AI that ships, not just suggests.
@@ -197,7 +197,7 @@ human is still the assembler, the integrator, the guarantor of consistency.
 
 Data UI collapses that loop. The AI produces the model. The compiler produces
 the system. The human reviews and deploys. The AI isn't suggesting fragments of
-a larger system — it's producing the /entire/ application, in a form that's
+a larger system; it's producing the /entire/ application, in a form that's
 complete, consistent, and deployable.
 
 This is the difference between an AI that helps you write software and an AI
@@ -227,10 +227,10 @@ The result is a world where:
 
 * Why Now
 
-The pieces are in place. AI can produce structured output reliably — but only
-within a constrained vocabulary. Cloud infrastructure is commoditized — but
+The pieces are in place. AI can produce structured output reliably, but only
+within a constrained vocabulary. Cloud infrastructure is commoditized, but
 deployment is still the bottleneck. RBAC is non-negotiable for any real
-application — but it's still built by hand, every time.
+application, but it's still built by hand, every time.
 
 Data UI connects these pieces. It gives the AI a constrained vocabulary (the
 model format and hook registry). It eliminates the deployment bottleneck (one
@@ -238,7 +238,7 @@ command). And it makes RBAC a compiled guarantee, not a manual discipline.
 
 The compiler is working. The deployment pipeline is proven. The to-do app is
 live. What remains is covering the edge-cases, improving the user experience,
-building the ecosystem — the Model Bank, the hosted tier, the AI front door —
+building the ecosystem (the Model Bank, the hosted tier, the AI front door),
 and that is all effort, not research.
 
 The thesis is simple: /the model is the whole app/. Everything downstream is the
@@ -254,7 +254,7 @@ The argument of this document, compressed to its sharpest form:
    compiles into one just won.
 
 2. *Change one file. Recompile.* Every schema, every endpoint, every
-   permission check, every UI form updates together — because they
+   permission check, every UI form updates together, because they
    were never separate things.
 
 3. *Team, quarter, budget → email, one command.* An application that
@@ -272,7 +272,7 @@ The argument of this document, compressed to its sharpest form:
 
 6. *AI ships production applications.* AI can now ship production
    applications. Not suggest code. Not draft migrations. Ship. The
-   missing piece was never the AI — it was the invariant engine that
+   missing piece was never the AI; it was the invariant engine that
    lets the AI's output be trusted.
 
 ---

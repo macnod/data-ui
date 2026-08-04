@@ -1,7 +1,7 @@
 # Deploying a Data UI Application
 
 *From a model that fits on a napkin to a live, TLS-terminated, RBAC-backed
-web application — with one command.*
+web application, with one command.*
 
 This document explains everything about how Data UI deployment works: the
 big picture, the command, every moving part behind it, where the secrets
@@ -56,7 +56,7 @@ Kubernetes, no Helm charts. One box, one command.
 
 ## Quick Start
 
-On the deploy host (or any machine with ssh access to it — see
+On the deploy host (or any machine with ssh access to it; see
 [Deploying From Another Machine](#deploying-from-another-machine)):
 
     cd data-ui
@@ -95,8 +95,8 @@ Before anything ships, the model in `models/<model-name>.lisp` must
 compile. The script starts a *throwaway* PostgreSQL container (its own
 container name and port 5446, so it never collides with your dev REPL
 database on 5444 or the test database on 5445), initializes the schema,
-and runs the compilation phase of `set-model` — validation, SQL
-generation, lambda compilation — against it. Then the container is
+and runs the compilation phase of `set-model` (validation, SQL
+generation, lambda compilation) against it. Then the container is
 destroyed.
 
 If the model doesn't compile, the deploy dies right here, before a tag,
@@ -125,7 +125,7 @@ The script asks the model for its `:name`, `:title`, `:version`,
 
 An annotated git tag (`todo-0.1-6d8f586`) is created at HEAD. If the tag
 already exists *and points at HEAD*, it is reused (re-deploying the same
-commit is fine). If it exists and points elsewhere, the deploy aborts —
+commit is fine). If it exists and points elsewhere, the deploy aborts:
 a tag must never silently change meaning.
 
 ### 4. Allocate a NodePort
@@ -134,7 +134,7 @@ a tag must never silently change meaning.
 
 Each instance gets a stable NodePort (starting at 30300). The assignment
 is cached in `~/.local/state/data-ui-deploy/ports.lock`, but the cache is
-not the source of truth — the *cluster* is. If the lock file is missing,
+not the source of truth; the *cluster* is. If the lock file is missing,
 the port is recovered from the live Service. Only when neither exists is
 a new port assigned (lowest free port ≥ 30300, checked against both the
 lock file and every NodePort in the cluster).
@@ -155,7 +155,7 @@ of its own database.
     generate_manifests
 
 The templates in `deploy/templates/*.yaml.tpl` are rendered with plain
-`sed` substitution of `{{PLACEHOLDERS}}` — no templating engine, no
+`sed` substitution of `{{PLACEHOLDERS}}`: no templating engine, no
 dependencies, nothing to install. Two special cases:
 
 - Lines ending in `#@repl` survive (marker stripped) only when the
@@ -174,7 +174,7 @@ every release's exact manifests are preserved for inspection or rollback.
 
 A multi-stage Docker build:
 
-- **Stage 1 (node:22-slim):** `npm ci && npm run build` — the React
+- **Stage 1 (node:22-slim):** `npm ci && npm run build`, the React
   frontend, typechecked and bundled by Vite into static files.
 - **Stage 2 (ubuntu):** Roswell + SBCL + all Lisp dependencies, then the
   data-ui source. The system is **pre-compiled at build time** so
@@ -184,8 +184,8 @@ A multi-stage Docker build:
   unhandled error prints a backtrace and exits instead of waiting
   politely at a debugger prompt inside a container nobody is attached to.
 
-The image is then imported into the k3d cluster with `k3d image import` —
-no registry involved; nothing leaves the machine.
+The image is then imported into the k3d cluster with `k3d image import`,
+so no registry is involved and nothing leaves the machine.
 
 ### 8. Apply the manifests
 
@@ -217,10 +217,10 @@ Worth repeating with the actual flow drawn out:
 Change `:domain` in the model and redeploy: the new domain routes to the
 app. Bump `:version`: new tag, new release directory. Set `:repl nil`:
 the Swank listener vanishes from the deployment. The model is not *input
-to* the configuration — it *is* the configuration.
+to* the configuration; it *is* the configuration.
 
 (Note the TODO in the example model: `:repl` should be `nil` in
-production. The Swank port is never exposed through a Service either way —
+production. The Swank port is never exposed through a Service either way;
 it is reachable only via `kubectl port-forward`, which requires cluster
 credentials.)
 
@@ -257,7 +257,7 @@ Application *data* lives in a third place: the k3d cluster mounts
 `~/k3d/volumes/dataui` (host) at `/data/dataui` (node), and each
 instance's PersistentVolumes use
 `/data/dataui/<name>-<env>/{db,files}`. So even `k3d cluster delete`
-cannot destroy application data — it survives on the host filesystem.
+cannot destroy application data; it survives on the host filesystem.
 
 Three layers, three lifetimes:
 
@@ -271,9 +271,9 @@ Three layers, three lifetimes:
 
 Each instance has exactly three secrets, generated once at first deploy:
 
-- `DB_PASSWORD` — PostgreSQL password for the `dataui` user
-- `ADMIN_PASSWORD` — the application's `admin` login
-- `JWT_SECRET` — signs the API's access and refresh tokens
+- `DB_PASSWORD`: PostgreSQL password for the `dataui` user
+- `ADMIN_PASSWORD`: the application's `admin` login
+- `JWT_SECRET`: signs the API's access and refresh tokens
 
 ### Getting the admin password
 
@@ -287,14 +287,14 @@ machine with cluster access):
     kubectl get secret -n dataui-todo dataui-todo-secrets \
         -o jsonpath='{.data.admin-password}' | base64 -d; echo
 
-Both should agree. If they don't, trust the cluster — the file is a
+Both should agree. If they don't, trust the cluster: the file is a
 cache; the Secret is the truth. (This is a recurring design theme. When
 a cache and the cluster disagree, the cluster wins, the same way the
 dictionary wins at Scrabble.)
 
 A war story, so you don't repeat it: the very first end-to-end deploy
 "failed" with a wall of 401s. Backend verified healthy, JWTs verified
-valid, much head-scratching — the operator was logging in with the *old*
+valid, much head-scratching: the operator was logging in with the *old*
 admin password from a previous instance's secrets. If your freshly
 deployed app rejects you, read the password again, slowly.
 
@@ -313,7 +313,7 @@ instance that taught us is no longer with us.
 There is no rotation tooling yet. If you must rotate manually: update
 the Kubernetes Secret, update `secrets.env`, restart the deployment, and
 for `DB_PASSWORD` also `ALTER USER dataui PASSWORD ...` inside postgres
-— in that order of caution. For a demo instance, the clean-slate
+(in that order of caution). For a demo instance, the clean-slate
 procedure below is honestly less error-prone.
 
 ## The Kubernetes Manifests
@@ -334,7 +334,7 @@ The manifests, in apply order:
 Highlights of `40-data-ui.yaml`:
 
 - **An init container** waits for postgres to answer, then applies the
-  schema SQL — but only if the `users` table doesn't already exist, so
+  schema SQL, but only if the `users` table doesn't already exist, so
   restarts don't re-run it.
 - **The app container** gets its entire configuration through
   environment variables (12-factor style): DB coordinates, the three
@@ -343,7 +343,7 @@ Highlights of `40-data-ui.yaml`:
   (database initialization happens then); after startup succeeds, a
   `readinessProbe` (every 5s) gates traffic and a `livenessProbe`
   (every 15s) restarts a hung container. All three hit `GET /health`.
-- **Strategy `Recreate`**, because the files PVC is ReadWriteOnce — a
+- **Strategy `Recreate`**, because the files PVC is ReadWriteOnce: a
   rolling update would deadlock with old and new pods both claiming it.
 - **Swank lines** carry the `#@repl` marker in the template and exist
   only for REPL-enabled models.
@@ -395,7 +395,7 @@ nothing is reloaded and the old routing keeps working.
 One subtlety, learned in production (where else): `systemctl reload
 haproxy` re-execs the master process *with its original command line*.
 If `EXTRAOPTS` was just modified to add `-f /etc/haproxy/conf.d`, a
-reload will not pick that up — the running master has never heard of
+reload will not pick that up: the running master has never heard of
 conf.d, and your shiny new backend 503s while the NodePort works
 perfectly. The script handles this: the deploy that *first enables*
 conf.d does a full `systemctl restart`; every subsequent deploy does the
@@ -414,12 +414,12 @@ requires zero TLS work. That is the entire point.
   (`update-dns`) re-upserts the record if the host's IP changes,
   because residential ISPs consider a stable IP a premium feature.
 - **Certificate:** Let's Encrypt, obtained with certbot's Route 53
-  plugin. Wildcards require the DNS-01 challenge — certbot proves
+  plugin. Wildcards require the DNS-01 challenge: certbot proves
   domain control by creating a TXT record, which it can do because it
   holds an IAM access key for exactly one capability: editing records
   in the data-ui.com hosted zone. (The IAM user, `certbot-evo-x2`, can
   do nothing else. Least privilege isn't paranoia; it's just manners.)
-- **HAProxy:** the `:443` bind has `crt /etc/haproxy/certs/` —
+- **HAProxy:** the `:443` bind has `crt /etc/haproxy/certs/`,
   a *directory*. HAProxy loads every pem in it and uses SNI to pick the
   right certificate per hostname. New cert for a new domain family?
   Drop a pem in the directory, reload. No bind-line surgery.
@@ -433,7 +433,7 @@ hook, runs `certbot certonly --dns-route53` for `demo.data-ui.com` +
 validates, reloads. Run it once per deploy host and forget it.
 
 Note the wildcard covers `anything.demo.data-ui.com` but **not** the
-bare `demo.data-ui.com` — that's why the cert requests both names.
+bare `demo.data-ui.com`; that's why the cert requests both names.
 
 ### Renewal (the part where you do nothing)
 
@@ -487,7 +487,7 @@ Configuration knobs (environment variables, all with defaults):
     DRY_RUN=1 scripts/data-ui deploy
 
 Runs the model compile, fact gathering, port assignment, secrets
-handling, and manifest rendering — then stops. No tag, no image, no
+handling, and manifest rendering, then stops. No tag, no image, no
 cluster changes, no HAProxy. The rendered manifests sit in the release
 directory for your inspection. Make this a habit before any deploy that
 changes templates.
@@ -495,14 +495,14 @@ changes templates.
 ## Connecting a REPL to the Live App
 
 If the model was deployed with `:repl t`, the container runs a Swank
-server on port 4005 — reachable *only* through Kubernetes port
+server on port 4005, reachable *only* through Kubernetes port
 forwarding (it is never exposed via Service, NodePort, or HAProxy):
 
     kubectl -n dataui-todo port-forward deploy/dataui-todo 4005:4005
 
 Then in Emacs: `M-x slime-connect RET localhost RET 4005`, and you have
 a live REPL inside the running production container. Inspect the
-compiled model, poke RBAC state, debug a hook — the full Lisp experience
+compiled model, poke RBAC state, debug a hook: the full Lisp experience
 against the deployed instance. With great power, et cetera: this is the
 expert-tier escape hatch, and production models should ship `:repl nil`.
 
@@ -541,10 +541,10 @@ exits (`--disable-debugger`), so the evidence is always in `--previous`.
 ### Known failure modes
 
 - **CrashLoopBackOff with "permission 'create' already exists":** the
-  database is half-initialized — a previous first boot died partway
+  database is half-initialized: a previous first boot died partway
   through RBAC initialization (which is not yet idempotent; a post-MVP
-  fix). Recovery: clean slate (below). The classic trigger — an admin
-  password that failed rbac's complexity policy — is fixed, but other
+  fix). Recovery: clean slate (below). The classic trigger, an admin
+  password that failed rbac's complexity policy, is fixed, but other
   mid-init interruptions (OOM, node reboot) could reproduce it.
 - **503 from the domain, NodePort fine:** HAProxy doesn't know the
   backend. Almost always the conf.d/EXTRAOPTS reload-vs-restart issue,
@@ -560,7 +560,7 @@ exits (`--disable-debugger`), so the evidence is always in `--previous`.
 
 ## Starting Over: the Clean-Slate Procedure
 
-The fast path — delete the whole instance with one command:
+The fast path: delete the whole instance with one command:
 
     scripts/data-ui delete
 
@@ -572,7 +572,7 @@ deploy/record/delete rehearsal loop). Docker images and git release tags
 are left alone. A failed delete can simply be re-run; every step
 tolerates already-deleted resources.
 
-The manual equivalent, if you want to do it piecewise (or only partway —
+The manual equivalent, if you want to do it piecewise (or only partway;
 steps 1–3 are enough for a clean redeploy of the same instance):
 
     # 1. Remove the app and its namespace
@@ -592,12 +592,12 @@ steps 1–3 are enough for a clean redeploy of the same instance):
 
 Steps 2 and 3 are the ones people forget. A Released PV refuses to bind
 to a new claim, and stale postgres data under `/data/dataui` will be
-happily adopted by the new instance — old password and all. (Or skip the
+happily adopted by the new instance, old password and all. (Or skip the
 list entirely and use `scripts/data-ui delete`, which forgets nothing.)
 
 ---
 
 That's the machine. A napkin's worth of model in, a running application
-out: database, API, RBAC, frontend, TLS, DNS — all of it derived, none
+out: database, API, RBAC, frontend, TLS, DNS, all of it derived, none
 of it hand-maintained. The 10,000 lines you didn't write are the
 feature.

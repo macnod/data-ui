@@ -11,7 +11,7 @@ as a headline; together they tell the whole story.
    compiles into one just won.
 
 2. *Change one file. Recompile.* Every schema, every endpoint, every
-   permission check, every UI form updates together — because they
+   permission check, every UI form updates together, because they
    were never separate things.
 
 3. *Team, quarter, budget → email, one command.* An application that
@@ -41,7 +41,7 @@ middleware, create React components for each entity, write form
 validation, set up deployment, configure TLS, and pray you didn't
 leave a permission hole somewhere.
 
-Two weeks later, you have 40,000 lines of code to maintain — and the
+Two weeks later, you have 40,000 lines of code to maintain, and the
 next feature request means touching a dozen files across the stack to
 keep everything consistent.
 
@@ -61,7 +61,7 @@ operation, evolving over time. A 10-entity app with 5 roles has 150
 permission checks to get right. Add an entity? That's 15 more. Add a
 role? That's 10 more. And every one of them has to stay consistent
 across the database schema, the API layer, the frontend, and the
-authorization middleware — forever, as the app evolves.
+authorization middleware, forever, as the app evolves.
 
 This is the part that breaks under iteration. Not because developers
 are careless, but because the invariant surface is too large for any
@@ -73,29 +73,29 @@ you write a single line of logic.
 Existing tools don't solve this. Low-code platforms bolt RBAC on as an
 afterthought. Scaffolding generators produce opaque code you then have
 to maintain by hand. Frameworks give you the pieces but leave the
-assembly — and the invariant enforcement — to you.
+assembly, and the invariant enforcement, to you.
 
 * The Idea
 
 Express your /entire application/ as a small, reviewable artifact. Let
 a compiler guarantee the expansion is correct.
 
-The model is the DNA of the app. It's small — less than a page for
+The model is the DNA of the app. It's small: less than a page for
 many applications. It describes entities, relationships, UI hints, and
 validation rules. The compiler takes that model and produces:
 
 - **PostgreSQL** tables, views, and triggers (UUID keys, audit
   timestamps, auto-updating =updated_at=)
-- **Parameterized CRUD SQL** — no string concatenation, no SQL
+- **Parameterized CRUD SQL**: no string concatenation, no SQL
   injection surface
-- **Full RBAC** — users, roles, permissions, resources, all enforced
+- **Full RBAC**: users, roles, permissions, resources, all enforced
   on every operation, all manageable through the same UI as your data
-- **A generic REST API** — =/api/list=, =/api/insert=,
+- **A generic REST API**: =/api/list=, =/api/insert=,
   =api/update=, =/api/delete= work for /every/ type, including the
   RBAC types themselves
-- **A schema-driven React frontend** — forms, lists, validation, image
+- **A schema-driven React frontend**: forms, lists, validation, image
   handling, role management, all rendered from the model
-- **Kubernetes deployment** — one command, TLS, its own domain
+- **Kubernetes deployment**: one command, TLS, its own domain
 
 Change the model, recompile, redeploy. Everything stays
 consistent. The compiler is the enforcement mechanism you've been
@@ -103,7 +103,7 @@ missing.
 
 * What It Looks Like
 
-Here's a complete to-do application — entities, relationships,
+Here's a complete to-do application: entities, relationships,
 validation, UI hints, RBAC roles:
 
 #+begin_src lisp
@@ -182,19 +182,19 @@ And it's not a toy. This exact model is [[https://todo.demo.data-ui.com][live in
 
 PostgreSQL with UUID primary keys, audit timestamps (=created_at=,
 =updated_at=), automatic =updated_at= triggers, constraints, unique
-indexes, and smart joined views. No manual migrations — the schema is
+indexes, and smart joined views. No manual migrations: the schema is
 derived from the model, deterministically, every time.
 
 ** RBAC That's Actually Built In
 
-Users, roles, permissions, resources — all first-class types. You
+Users, roles, permissions, resources: all first-class types. You
 manage them through the same UI and API as your own data. Want to add
 a role to a user? Same operation as adding a tag to a to-do item. The
 RBAC library ([[https://github.com/macnod/rbac][macnod/rbac]]) is mature and battle-tested, and every
 single operation in Data UI passes through it.
 
 Users only see roles they can assign. Permission flags control which
-buttons appear in the UI. There is no separate admin layer — it's all
+buttons appear in the UI. There is no separate admin layer; it's all
 the same system.
 
 ** A Generic API
@@ -252,7 +252,7 @@ without breaking a running instance.
 Code generators produce code you have to read, understand, and
 maintain. Data UI /compiles/ your model into a running system. The
 generated artifacts (SQL, views, API behavior) are deterministic
-outputs of the model — you don't edit them, you change the model and
+outputs of the model; you don't edit them, you change the model and
 recompile. This is the same relationship you have with a compiler:
 you don't hand-edit assembly.
 
@@ -260,7 +260,7 @@ you don't hand-edit assembly.
 
 The entire application fits in a code review. You can read it in under
 a minute. You can email it to a colleague. You can diff it. This is
-not an accident — it's the core design constraint. The model stays
+not an accident; it's the core design constraint. The model stays
 small; the compiler does the heavy lifting.
 
 ** RBAC is foundational, not bolted on.
@@ -275,7 +275,7 @@ forgotten corners of the codebase.
 
 Need validation beyond the built-ins? Attach hooks via the registry:
 
-- *Registry entries* (data-only): =(:max-length :max 20)= — parameterized,
+- *Registry entries* (data-only): =(:max-length :max 20)=, parameterized,
   serializable, AI-consumable
 - *Custom registry entries* (expert tier): write your own factory in
   Lisp via =register-hook=, then use it as data in any model
@@ -311,12 +311,12 @@ Data UI serves two audiences through a single compiler:
 
 - *Expert / self-hosting tier* (open source, MIT). Full power. Raw
   Lisp lambdas as hooks. Override any lifecycle operation. The
-  guardrail is your own judgment. This is a shotgun — it doesn't stop
+  guardrail is your own judgment. This is a shotgun; it doesn't stop
   you from doing what you want.
 
 - *AI / no-code / hosted tier* (coming post-MVP). Pure data models
   (YAML/JSON). Hooks from a curated, parameterized registry. No
-  raw-code escape hatch. The constraint /is/ the product — it makes
+  raw-code escape hatch. The constraint /is/ the product; it makes
   the tier safe to operate and consumable by an AI.
 
 Both tiers reduce to the same contract before anything runs. The
@@ -342,7 +342,7 @@ This is not a slide deck. It's a working system:
 - Full pipeline proven end to end: model → compile → deploy → live app
 - The to-do model is deployed and serving real users at
   https://todo.demo.data-ui.com
-- Full CRUD on all types — user-defined and built-in RBAC
+- Full CRUD on all types: user-defined and built-in RBAC
 - JWT authentication (access + refresh tokens)
 - View-level scoping (= :scope :user=) for per-user data filtering
 - Tree-structured types with filesystem backing (directories, file storage)
@@ -359,14 +359,14 @@ TypeScript (Vite). The database is PostgreSQL. The RBAC library is
 * The Roadmap
 
 MVP target: **December 2026.** A 30-second video that goes from nothing
-— no database, no code — to a deployed, working application.
+(no database, no code) to a deployed, working application.
 
 The riskiest milestones are already behind us: the compiler, RBAC
 integration, the generic API, and the deployment pipeline are all
 working in production. What remains is effort-bounded, not
 research-bounded.
 
-The priority is **Model Bank** — a model-sharing application with
+The priority is **Model Bank**, a model-sharing application with
 relationships, ownership, image association, and ratings. It's the
 fitness function for the MVP: if Data UI can build Model Bank
 significantly faster than any alternative, the thesis is proven.
@@ -374,8 +374,8 @@ significantly faster than any alternative, the thesis is proven.
 **Explicitly deferred past MVP** (so the claim stays honest):
 transactions and rollback around primary writes, hooks, and
 write-through; idempotent database initialization; and the hosted
-YAML/JSON + AI front door. The open engine is a shotgun — power without
-training wheels — until those land.
+YAML/JSON + AI front door. The open engine is a shotgun: power without
+training wheels, until those land.
 
 Post-MVP: hosted service with YAML/JSON input and AI prompts, the
 curated hook registry, a marketplace of shareable models, and managed
@@ -409,7 +409,7 @@ Minutes later, your app is on the internet, behind SSL, with its own domain name
 
 Data UI is not another framework. It's not a low-code platform. It's a
 /compiler/ that turns a small, reviewable model into a complete,
-RBAC-backed, deployed application — deterministically, every time.
+RBAC-backed, deployed application, deterministically, every time.
 
 The model is the whole app. The compiler guarantees it's correct. One
 command puts it on the internet.

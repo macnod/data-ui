@@ -18,14 +18,14 @@ Here's what has changed, in plain terms:
 - You don't /maintain/ a Data UI application the way you used to. You
   keep the short description up to date, and the running application
   is always a perfect reflection of it. There's no separate pile of
-  code to keep in sync. The idea of "maintenance" — as a recurring
-  cost and a source of bugs — essentially disappears.
+  code to keep in sync. The idea of "maintenance" (as a recurring
+  cost and a source of bugs) essentially disappears.
 
 * You Need an App. You Don't Need a Developer.
 
 You have an idea. A task tracker for your team. A shared inventory
 for your business. A directory of members for your club. You know
-exactly what it should do — a list of items, a few fields, maybe
+exactly what it should do: a list of items, a few fields, maybe
 categories, maybe the ability to upload photos.
 
 So you start looking into how to build it, and here's what you find:
@@ -35,19 +35,19 @@ and someone who understands all of it. The quotes come back at
 $15,000. Or $40,000. Or "we can get you an MVP in eight weeks."
 
 Data UI does all of it. You describe what you want in a short file,
-run one command, and your application is live on the internet — with
-user accounts, with permissions, with a clean interface — in minutes.
+run one command, and your application is live on the internet, with
+user accounts, with permissions, with a clean interface, in minutes.
 
 No developer required.
 
 * What Do You Mean, "Describe It"?
 
-Think of it like a recipe. A recipe doesn't build the cake — it
+Think of it like a recipe. A recipe doesn't build the cake; it
 /tells you/ what goes into the cake. Data UI works the same way. You
 write a short description of your data:
 
 - What things does your app track? (Tasks, products, members,
-  recipes, properties — whatever you need)
+  recipes, properties, whatever you need)
 - What fields does each thing have? (A name, a description, a
   checkbox for "done," a category, a photo)
 - How do they relate? (A task can have tags, a product belongs to a
@@ -56,14 +56,14 @@ write a short description of your data:
 That description is called a /model/. It's a single file, usually
 shorter than this page. From that file, Data UI builds everything:
 the database, the user interface, the login system, the permissions,
-the web server, the security — all of it.
+the web server, the security, all of it.
 
 * But I Don't Know How to Write Code
 
 Here's the part that surprises people: **you don't have to start from
 scratch.**
 
-Data UI has something called the **Model Bank** — a library of
+Data UI has something called the **Model Bank**, a library of
 ready-made models that other people have created and shared. It works
 like an app store, but instead of downloading finished apps, you
 browse models: short descriptions of applications that are ready to
@@ -107,7 +107,7 @@ most of that time is you deciding what fields you want.
 * What If I Get Stuck?
 
 The model format is designed to be readable. It's not code in the
-traditional sense — there are no functions, no logic, no control
+traditional sense: there are no functions, no logic, no control
 flow. It's a structured list of /what your data looks like/, written
 in a format that's mostly just keywords and values.
 
@@ -115,8 +115,8 @@ If you can fill out a form, you can edit a model. And because models
 are small (often under a page), you can see the whole thing at once
 and understand what each part does.
 
-Post-MVP, Data UI will also accept models in YAML and JSON — formats
-that are even more approachable for non-technical users — and will
+Post-MVP, Data UI will also accept models in YAML and JSON, formats
+that are even more approachable for non-technical users, and will
 offer an AI assistant that can generate or modify models from plain
 English descriptions. "I need an app to track book loans for my
 library, with borrower names, book titles, and due dates" will
@@ -131,14 +131,14 @@ extra effort on your part:
 
 People sign up, log in, and manage their own accounts. Secure
 passwords. Session management. Token-based authentication. You don't
-configure any of it — it's just there.
+configure any of it; it's just there.
 
 ** Permissions and Roles
 
 Not everyone should see everything. Data UI handles this from the
 start. You can have admins who can do anything, regular users who can
 only see their own data, or any role structure you need. And you
-manage roles through the same simple interface as everything else —
+manage roles through the same simple interface as everything else:
 assigning a role to a user is as easy as checking a box.
 
 ** A Clean, Working Interface
@@ -157,7 +157,7 @@ use your app immediately.
 
 ** A Real Database
 
-Your data is stored in PostgreSQL — an industrial-strength database
+Your data is stored in PostgreSQL, an industrial-strength database
 used by major companies worldwide. It's not a spreadsheet or a flat
 file. It's the real thing, with proper constraints, data integrity,
 and backup capability.
@@ -165,20 +165,20 @@ and backup capability.
 * How Is This Possible?
 
 The secret is that most applications are mostly the same. A task
-tracker, an inventory system, a member directory — they all have the
+tracker, an inventory system, a member directory: they all have the
 same bones: lists of things, fields on those things, relationships
 between things, user accounts, and permissions. What changes is the
 specifics: /which/ things, /which/ fields, /which/ relationships.
 
 Data UI captures the specifics in a small model and handles all the
-common machinery itself. It's a /compiler/ — the same kind of tool
+common machinery itself. It's a /compiler/: the same kind of tool
 that turns source code into running software, but instead of
 translating programming instructions, it translates your data
 description into a complete, working application.
 
 This is why the model stays small: you only describe what's /unique/
-about your app. Everything else — the database setup, the API, the
-security, the deployment — is the compiler's job.
+about your app. Everything else (the database setup, the API, the
+security, the deployment) is the compiler's job.
 
 * How Is This Different from [Other Tool]?
 
@@ -198,7 +198,7 @@ tools. Here's what makes Data UI different:
 - *Data UI* puts your entire application in a single, small,
   human-readable file. You can email it. You can put it in version
   control. You can hand it to someone else and they can understand
-  it. And because it's open source, you can run it anywhere — no
+  it. And because it's open source, you can run it anywhere, with no
   vendor lock-in.
 
 The model /is/ the application. There's nothing else to maintain.
@@ -244,19 +244,19 @@ Data UI is in active development, with a target MVP date of December
 - One-command deployment to a live server with TLS
 - A growing library of example models
 
-The Model Bank — the shared library of ready-to-use models — is the
+The Model Bank, the shared library of ready-to-use models, is the
 current focus, because it's the key to making Data UI useful for
 people who don't write code.
 
 * What's Coming
 
-- **YAML and JSON model input** — edit models in formats that are
+- **YAML and JSON model input**: edit models in formats that are
   even friendlier than the current Lisp syntax
-- **AI-assisted model creation** — describe your app in plain English
+- **AI-assisted model creation**: describe your app in plain English
   and get a model you can review and deploy
-- **The Model Bank marketplace** — browse, share, fork, and customize
+- **The Model Bank marketplace**: browse, share, fork, and customize
   models from a community library
-- **Managed hosting** — one-click deploy without setting up a server
+- **Managed hosting**: one-click deploy without setting up a server
 
 * The Bottom Line
 

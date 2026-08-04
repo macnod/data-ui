@@ -9,10 +9,10 @@ Tagline: **"Your whole app, in an email."**
 
 This document is the author-facing vocabulary. Companion docs:
 
-- `docs/hook-registry.md` — validation, lifecycle, and action hook contracts
-- `docs/model-accessors.md` — REPL/debug accessors and deploy metadata readers
-- `docs/deployment.md` — how top-level keys drive `scripts/data-ui deploy`
-- `AGENT.md` — architecture, MVP status, and agent workflow
+- `docs/hook-registry.md`: validation, lifecycle, and action hook contracts
+- `docs/model-accessors.md`: REPL/debug accessors and deploy metadata readers
+- `docs/deployment.md`: how top-level keys drive `scripts/data-ui deploy`
+- `AGENT.md`: architecture, MVP status, and agent workflow
 
 Sources of truth: `lisp/model.lisp`, `lisp/backend.lisp`, `lisp/predicates.lisp`,
 `lisp/database.lisp`, and the example models in `models/`.
@@ -21,7 +21,7 @@ Sources of truth: `lisp/model.lisp`, `lisp/backend.lisp`, `lisp/predicates.lisp`
 
 ## File form and loading
 
-Each file under `models/` is a **bare quoted plist** — no `defparameter`, no
+Each file under `models/` is a **bare quoted plist**: no `defparameter`, no
 wrapping variable:
 
 ### File header (recommended)
@@ -30,10 +30,10 @@ Precede the model plist with a `;;` comment block that states what the
 model is for and where it came from. Put it above the opening quote.
 Include:
 
-1. **Purpose** — what the app does (a few sentences is fine)
-2. **Author** — who wrote it
-3. **Created** — creation date
-4. **Prompt** — if an AI produced the model, the prompt that was used
+1. **Purpose**: what the app does (a few sentences is fine)
+2. **Author**: who wrote it
+3. **Created**: creation date
+4. **Prompt**: if an AI produced the model, the prompt that was used
 
 Example:
 
@@ -72,7 +72,7 @@ Conventions (`models/README.md`):
 | File | Role |
 |------|------|
 | `models/<name>.lisp` | Named application model |
-| `models/test/<name>.lisp` | Test fixture — do not change unless changing tests |
+| `models/test/<name>.lisp` | Test fixture; do not change unless changing tests |
 
 `(set-model "<name>")` tries `models/<name>.lisp` first, then falls back
 to `models/test/<name>.lisp`.
@@ -96,7 +96,7 @@ Recognized keys: `*top-level-keys*` =
 | `:name` | yes | string `^[a-z][-a-z0-9]*` | deploy tag/namespace `dataui-<name>` |
 | `:version` | yes | string (semver-ish) | image tag |
 | `:domain` | yes | FQDN-like string | HAProxy map, TLS host |
-| `:repl` | no (default `nil`) | boolean | Swank port iff `t` — **nil in production** |
+| `:repl` | no (default `nil`) | boolean | Swank port iff `t`; **nil in production** |
 | `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-base type the user can access |
 | `:types` | yes | plist of type-key → type-def | compiler |
 
@@ -156,15 +156,15 @@ Under `:types`, each entry is `type-key` → plist.
 | `:built-in` | Built-in table name (no `rt_` prefix) | base-model / secrets |
 | `:internal` | Hidden from public BE API | default = `:is-joiner`; joiners are internal |
 | `:is-joiner` | M2M join table | fields are `:reference` pairs; no public CRUD SQL |
-| Lifecycle slots | Custom logic | `:pre-create` `:post-create` `:pre-update` `:post-update` `:pre-delete` `:post-delete` — see [Hooks](#hooks) |
+| Lifecycle slots | Custom logic | `:pre-create` `:post-create` `:pre-update` `:post-update` `:pre-delete` `:post-delete`; see [Hooks](#hooks) |
 
 ### CRUD strategy values
 
 For author models, use `:auto` or `nil`:
 
-- `:auto` — generated SQL path (`insert-normal` / update / `remove-resource`, with FS branches when applicable)
-- `nil` — operation disabled
-- raw functions — internal base-model escape hatch only; prefer lifecycle hooks
+- `:auto`: generated SQL path (`insert-normal` / update / `remove-resource`, with FS branches when applicable)
+- `nil`: operation disabled
+- raw functions: internal base-model escape hatch only; prefer lifecycle hooks
 
 ### Type roles
 
@@ -186,8 +186,8 @@ participates in RBAC also receives `"admin"`.
 | `:roles` | `("logged-in" "role-creator")` | Same pattern |
 | `:settings` | `("settings")` | Gated behind the `settings` role |
 | `:secrets` | `("settings")` | Same as settings |
-| `:resources` | *(none — internal, no CRUD)* | |
-| `:tokens` | *(none — internal)* | |
+| `:resources` | *(none; internal, no CRUD)* | |
+| `:tokens` | *(none; internal)* | |
 
 Types with no explicit `:type-roles` default to `("admin")`. The `"admin"`
 role is always appended by `add-type-roles` regardless of what the model
@@ -201,9 +201,9 @@ defaults you are replacing.
 `:category` is an author-facing key, not reserved. Valid values:
 `:user`, `:settings`, `:system`.
 
-- `:settings` — type appears under the frontend Settings tab (e.g. `:secrets`)
-- `:system` — Admin / system group
-- `:user` — main app type selector
+- `:settings`: type appears under the frontend Settings tab (e.g. `:secrets`)
+- `:system`: Admin / system group
+- `:user`: main app type selector
 
 If `:category` is omitted, it is derived:
 
@@ -240,7 +240,7 @@ set `:category :settings` without `:user-setting`.
 (via the users join / user id). Distinct from [field-level scope](#field-level-scope).
 
 A plist form of scope is accepted by validation (`valid-view-scope`) but **not**
-implemented at runtime — use the keyword `:user`.
+implemented at runtime; use the keyword `:user`.
 
 Compiler injects per view (not author-set): `:sql`, `:aliases`, `:columns`,
 normalized `:scope`.
@@ -252,7 +252,7 @@ Joiners get no views.
 ## Fields
 
 Under `:fields`, each entry is `field-key` → plist (except joiner
-`:reference` entries — see [Join tables](#join-tables-m2m)).
+`:reference` entries; see [Join tables](#join-tables-m2m)).
 
 ### Core field keys
 
@@ -275,7 +275,7 @@ Under `:fields`, each entry is `field-key` → plist (except joiner
 | `:autofill` | currently only `:user` → current username at write time |
 | `:force-sql-name` | override generated column name string (e.g. `"rating_user"`) |
 | `:path` | marks the FS path field on fs-backed types (at most one per type) |
-| `:action` | **only** on `:type :button` — single action hook form |
+| `:action` | **only** on `:type :button`; single action hook form |
 | `:default-from` | `:user` → copy username when creating user-setting rows |
 | `:css-value` | `t` → included in CSS-vars API (e.g. settings `:dark-mode`) |
 | `:primary-key` | DDL primary key (injected on `:id`) |
@@ -368,17 +368,17 @@ keys injected by `fe-fields`). Unknown subkeys are harmless extension points.
 | `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
-| `:table` | **injected by `fe-fields`** from source table / type-key — used for `/api/file` URLs; do not set manually |
+| `:table` | **injected by `fe-fields`** from source table / type-key; used for `/api/file` URLs; do not set manually |
 
 Widget semantics:
 
-- `:textbox` — single-line `<input type="text">`
-- `:textarea` — multi-line `<textarea>` (~8 rows, resizable)
-- `:code` — monospace `<textarea>` (~12 rows)
-- `:stars` — interactive StarRating (editable) or static (read-only / list)
-- `:checkbox` — single boolean checkbox
-- `:checkbox-list` — multi-select from `allowed-values`
-- `:select` — `<select>` dropdown. Two modes:
+- `:textbox`: single-line `<input type="text">`
+- `:textarea`: multi-line `<textarea>` (~8 rows, resizable)
+- `:code`: monospace `<textarea>` (~12 rows)
+- `:stars`: interactive StarRating (editable) or static (read-only / list)
+- `:checkbox`: single boolean checkbox
+- `:checkbox-list`: multi-select from `allowed-values`
+- `:select`: `<select>` dropdown. Two modes:
   - **Relation** (default): options from `allowed-values` via `:target`
     (foreign key). Requires `:target` + `:source` + `:source-all`.
   - **Static**: options from `:options` (a list of non-empty strings).
@@ -387,12 +387,12 @@ Widget semantics:
     See `models/test/static-select-test.lisp` for an example.
   - A bare `:widget :select` with neither `:options` nor `:target`
     is a compile error (empty dropdowns are not a valid mode).
-- `:file` — file input + two-phase upload
-- `:password` — masked password input
-- `:button` — action button (update form only)
-- `:hidden` — omitted from form entirely
-- `:image` — display thumbnail (always read-only for MVP)
-- `:image-list` — display thumbnail grid (always read-only for MVP)
+- `:file`: file input + two-phase upload
+- `:password`: masked password input
+- `:button`: action button (update form only)
+- `:hidden`: omitted from form entirely
+- `:image`: display thumbnail (always read-only for MVP)
+- `:image-list`: display thumbnail grid (always read-only for MVP)
 
 Compiler default injection (missing keys get safe compile-time defaults):
 
@@ -404,18 +404,18 @@ Compiler default injection (missing keys get safe compile-time defaults):
 - Missing `:label` (when `:ui` is present) → humanized field key:
   split on `-` / `_`, title-case each word, join with spaces
   (e.g. `:average-rating` → "Average Rating", `:name` → "Name")
-- `:hidden` is never implied by omission — it must be set explicitly
+- `:hidden` is never implied by omission; it must be set explicitly
 - Principle: the compiler injects safe defaults for missing keys so author
   models stay small and syntax can simplify later (AI/no-code tiers)
 
 Abolished keys and values (compile-time errors if present):
 
-- `:input-type` — renamed to `:widget`
-- `:render-as` — deleted; presentation derives from `:widget`
-- `:form-control` — rejected name; never shipped
-- `:line` as a widget value — use `:textbox`
-- `:text` as a widget value — use `:textarea`
-- `:read-only` as a widget value — use `:read-only t` boolean flag
+- `:input-type`: renamed to `:widget`
+- `:render-as`: deleted; presentation derives from `:widget`
+- `:form-control`: rejected name; never shipped
+- `:line` as a widget value: use `:textbox`
+- `:text` as a widget value: use `:textarea`
+- `:read-only` as a widget value: use `:read-only t` boolean flag
 
 Notes:
 
@@ -440,7 +440,7 @@ Notes:
 - Target type must have exactly one `:identity t` field
 - UI typically shows the identity display value (often `:name`), not the UUID
 - `:autofill :user` fills the current username on insert
-- **`:not-null` is optional** — the compiler respects the author's
+- **`:not-null` is optional**: the compiler respects the author's
   `:not-null` setting on `:target` fields. Set `:not-null t` for a
   required FK (the common case); omit it (or `:not-null nil`) for a
   nullable / optional FK reference. When `:not-null` is absent, the
@@ -449,7 +449,7 @@ Notes:
   Validation (`v-type`, `value-type-p`) also passes `nil` for nullable
   fields without complaint.
 - For "zero or more" references, use an M2M list field (`:type :list` +
-  `:join-table`) — the join table can be empty, so the relationship is
+  `:join-table`); the join table can be empty, so the relationship is
   naturally optional.
 
 ### Identity fields
@@ -459,9 +459,9 @@ type is used**:
 
 | Use | Multiple `:identity t` fields? | Mechanism |
 |-----|--------------------------------|-----------|
-| Uniqueness / write-through search | **Yes** — all identity columns form one composite unique index `ix_<table>_identity` | `create-table-sql`, `search-sql`, `identity-keys` |
-| Type is a **`:target`** of an FK | **No** — exactly one identity field | `valid-target` (compile error otherwise) |
-| Type is the other side of an **M2M** list | **No** — join insert/update resolves checkbox values via `identity-field` → single key, then `list-ids` | `insert-join-table-rows`, `update-join-tables` |
+| Uniqueness / write-through search | **Yes**: all identity columns form one composite unique index `ix_<table>_identity` | `create-table-sql`, `search-sql`, `identity-keys` |
+| Type is a **`:target`** of an FK | **No**: exactly one identity field | `valid-target` (compile error otherwise) |
+| Type is the other side of an **M2M** list | **No**: join insert/update resolves checkbox values via `identity-field` → single key, then `list-ids` | `insert-join-table-rows`, `update-join-tables` |
 
 **Composite identity is real** (Model Bank `:ratings` uses `:book` + `:user`
 both `:identity t`). That works because ratings are matched by write-through
@@ -483,7 +483,7 @@ column alone, so two "Cameron" rows collide (`23505` on
    = "Donald Roy Cameron"). Optionally keep first/middle/last as ordinary
    non-identity columns if you still want them on the form.
 2. **Not supported yet:** server-side compose of a hidden/read-only `:name`
-   from F/M/L via a lifecycle hook (`:compose-string` — designed, not
+   from F/M/L via a lifecycle hook (`:compose-string`: designed, not
    implemented; see `~/workbench/compose-string-investigation.org`).
 3. **Not supported yet:** multi-column reference lookup (composite identity
    as the M2M/FK display protocol).
@@ -564,7 +564,7 @@ Joiner type:
 - A type may have multiple M2M joiners (e.g. chores has both
   `:chore-tags` and `:chore-users`). Each joiner's insert/update/delete
   SQL is isolated to its own two FK columns. List field keys need not
-  match the target type key — `:source :table` identifies the other
+  match the target type key; `:source :table` identifies the other
   side (e.g. `:completed-by` → `:users`).
 
 ### Bidirectional M2M (list fields on both ends)
@@ -579,8 +579,8 @@ call).
 
 | Side | `:type :list` + `:join-table`? | Main view joins through joiner? |
 |------|--------------------------------|----------------------------------|
-| Either end (e.g. `:books`) | Yes | Yes — `(:books :joiner :authors)` |
-| Other end (e.g. `:authors`) | Yes | Yes — `(:authors :joiner :books)` |
+| Either end (e.g. `:books`) | Yes | Yes: `(:books :joiner :authors)` |
+| Other end (e.g. `:authors`) | Yes | Yes: `(:authors :joiner :books)` |
 | Joiner | n/a | `:is-joiner t` + two `:reference`s |
 
 Each side needs:
@@ -625,12 +625,12 @@ Example (abbreviated):
     :reference (:target :authors)))
 ```
 
-Both ends share **one** joiner type — do not invent a second joiner for
+Both ends share **one** joiner type; do not invent a second joiner for
 the reverse direction.
 
 Unidirectional M2M (list field on one end only) continues to work as
 before. Base model follows that pattern: users have `:roles`, roles have
-`:permissions` — not users↔roles both as list fields.
+`:permissions`; not users↔roles both as list fields.
 
 ### M2M value resolution
 
@@ -679,28 +679,28 @@ Rules (`write-to` in `model.lisp`):
 ### Ratings pattern (my rating + average)
 
 A plain integer `:rating` column on the parent type only stores one value per
-row — not per-user ratings and not an average. For multi-user ratings, follow
+row, not per-user ratings and not an average. For multi-user ratings, follow
 Model Bank:
 
 1. **Separate `:ratings` type** with composite identity (e.g. `:book` +
    `:user`, or `:model` + `:user`), each a `:target` FK, plus a `:rating`
    integer column. Include those types in views as needed.
 2. **On the parent type (e.g. `:books`):**
-   - **My Rating** — virtual/write-through field: `:source` from ratings with
+   - **My Rating**: virtual/write-through field; `:source` from ratings with
      `:scope :user` and `:agg :first`; `:write-to` upserts the ratings row
      (`:book :this`, `:user :user`, `:rating :value`). UI label "My Rating",
      `:widget :stars`, `:validations ((:in-range :min 1 :max 5))`.
-   - **Average (label "Rating")** — read-only `:type :real`, `:source` from
+   - **Average (label "Rating")**: read-only `:type :real`, `:source` from
      ratings with `:agg :avg`, `:widget :stars :read-only t`, optional `:precision 1`.
      No `:write-to`, no `:column` required on the parent.
 3. **Parent main view** must join the ratings table (and any M2M tables), e.g.
    `(:main (:tables (:books :book-authors :authors :ratings)))`.
 4. **Forms:**
-   - list: average only (not my-rating) — e.g.
+   - list: average only (not my-rating), e.g.
      `(:fields (:title :isbn :description :average-rating :authors))`
-   - add: my-rating, not average —
+   - add: my-rating, not average:
      `(:fields (:title :isbn :description :rating :authors))`
-   - update: both — `(:fields t)` is fine
+   - update: both; `(:fields t)` is fine
 
 Write-through target identity keys in `:write-to` must match the ratings type
 field names (`:book` / `:user` / `:rating`, not hard-coded `:model` unless the
@@ -713,7 +713,7 @@ See `models/modelbank.lisp` for the canonical example.
 1. Primary insert/update **commits first**
 2. Expand tags → `search-sql` on target identities
 3. Update if found, else insert resource + row
-4. Best-effort `handler-case` — errors are logged, not rolled back
+4. Best-effort `handler-case`; errors are logged, not rolled back
 
 **MVP:** not transactional with the primary write. Clear-to-NULL and other edge
 cases are still open (see AGENT.md).
@@ -820,7 +820,7 @@ Behavior:
 ## Hooks
 
 All custom logic attaches via the **registry** (data-only forms). Raw lambdas
-are not an author surface — register a custom hook with `register-hook` instead.
+are not an author surface; register a custom hook with `register-hook` instead.
 Details: `docs/hook-registry.md`.
 
 ### Surface forms
@@ -846,12 +846,12 @@ Lifecycle may be a single form or a list. Validation is always a list.
 
 | Name | Params | Behavior |
 |------|--------|----------|
-| `:required` | — | reject empty/nil |
-| `:user-name` | — | username policy |
-| `:password` | — | password policy |
-| `:email` | — | email format |
-| `:join-items-exist` | — | each list item exists |
-| `:exists` | — | single referenced value exists |
+| `:required` | n/a | reject empty/nil |
+| `:user-name` | n/a | username policy |
+| `:password` | n/a | password policy |
+| `:email` | n/a | email format |
+| `:join-items-exist` | n/a | each list item exists |
+| `:exists` | n/a | single referenced value exists |
 | `:max-length` | `:max` integer | string length ≤ max (no-op if empty) |
 | `:in-range` | `:min` `:max` integers | numeric inclusive (no-op if empty) |
 
@@ -1121,49 +1121,49 @@ resolved `:category` / `:internal`.
 
 ## Known gaps and gotchas
 
-1. **Obsolete patterns** — older notes mentioning `:checks-fn`, `:options-fn`,
+1. **Obsolete patterns**: older notes mentioning `:checks-fn`, `:options-fn`,
    root-level `:widget`, or `:lookup-field` are dead. Use `:validations`,
    `:source-all`, and `:ui` instead.
 
-2. **`:required` dual path** — field key `:required t` and/or
+2. **`:required` dual path**: field key `:required t` and/or
    `:validations (:required)`. Prefer the validations form (what all current
    models use).
 
-3. **Field `:update nil`** — documented for status fields in AGENT.md but **not**
+3. **Field `:update nil`**: documented for status fields in AGENT.md but **not**
    retained by `compile-field`. Status protection is practical (read-only UI +
    `be-set-field-value`), not a compiler-enforced update block.
 
-4. **View scope plist form** — validated, not implemented. Use `:scope :user`.
+4. **View scope plist form**: validated, not implemented. Use `:scope :user`.
 
-5. **Type→widget inference** — not implemented; all fields default to
+5. **Type→widget inference**: not implemented; all fields default to
    `:textbox` regardless of `:type`. Smarter inference (e.g. `:type :text`
    → `:textarea`) is an MVP Backlog item.
 
-6. **`:type :file` validation** — models comment that `:valid-file` should
+6. **`:type :file` validation**: models comment that `:valid-file` should
    exist; it is not implemented yet.
 
-7. **Diamond join graphs** — unsupported.
+7. **Diamond join graphs**: unsupported.
 
-8. **Write-through clear-to-NULL** and **transactions** — post-MVP / open.
+8. **Write-through clear-to-NULL** and **transactions**: post-MVP / open.
 
-9. **`:source-sel`** — handled in stage-2 plumbing but unused by any model;
+9. **`:source-sel`**: handled in stage-2 plumbing but unused by any model;
    treat as unfinished.
 
-10. **Joiner `:internal t`** — redundant with `:is-joiner` default; still
+10. **Joiner `:internal t`**: redundant with `:is-joiner` default; still
     conventional in examples.
 
-11. ~~**Bidirectional M2M list fields**~~ — **Resolved.** Both ends of a
+11. ~~**Bidirectional M2M list fields**~~: **Resolved.** Both ends of a
     joiner may now have `:type :list` fields. The backend breaks the
     `allowed-values` ↔ `be-list` recursion via a `:skip-allowed-values`
     flag on the inner column fetch. See
     [Bidirectional M2M](#bidirectional-m2m-list-fields-on-both-ends).
 
-12. **Reference identity is scalar** — types used as `:target` or M2M list
+12. **Reference identity is scalar**: types used as `:target` or M2M list
     targets need exactly one `:identity t` field. Composite identity is for
     write-through / uniqueness, not checkbox-list lookup (see
     [Identity fields](#identity-fields)).
 
-13. **No computed/composed fields** — cannot derive a stored identity
+13. **No computed/composed fields**: cannot derive a stored identity
     (e.g. full name) from other columns without a lifecycle data-effect hook
     (`:compose-string` designed, not implemented).
 

@@ -1,6 +1,6 @@
 # Hook Registry
 
-All custom logic in Data UI — validation, lifecycle, and actions — attaches via
+All custom logic in Data UI (validation, lifecycle, and actions) attaches via
 hooks that reduce to one of three calling contracts. The registry is the
 curated, parameterized vocabulary that makes hooks expressible as pure data (no
 raw code required), enabling the AI / no-code / hosted tier.
@@ -40,16 +40,16 @@ which contract the factory's returned function must conform to.
 
 | Site        | `:id`  | `:roles` | `:record` |
 |-------------|--------|----------|-----------|
-| pre-create  | —      | roles    | —         |
-| post-create | new-id | roles    | —         |
+| pre-create  |        | roles    |           |
+| post-create | new-id | roles    |           |
 | pre-update  | uuid   | roles    | record    |
-| post-update | uuid   | roles    | —         |
-| pre-delete  | uuid   | —        | record    |
-| post-delete | uuid   | —        | record    |
+| post-update | uuid   | roles    |           |
+| pre-delete  | uuid   |          | record    |
+| post-delete | uuid   |          | record    |
 
 All six lifecycle slots are compiled at model-compile time into function lists
 on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks`
-(backend.lisp) — no registry lookup occurs at runtime.
+(backend.lisp); no registry lookup occurs at runtime.
 
 
 ### Action contract
@@ -70,17 +70,17 @@ on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks`
 |-----|---------|
 | `roles` | Reserved on the contract; **`be-action` does not pass it today** (always default/`nil`). Do not rely on it in MVP hooks. |
 | `status-field` | Keyword of the companion status column (e.g. `:deploy-status`) |
-| `set-status` | `(lambda (message) ...)` — sole way for hooks to write status |
+| `set-status` | `(lambda (message) ...)`; sole way for hooks to write status |
 
 - **Status protocol:** the framework sets `"running"` before calling the hook.
   For sync hooks (no `:async t`), the framework auto-sets `"complete"` on
   success or `"failed: <message>"` on error. For async hooks, the worker must
   call `set-status` with a terminal value.
 - **Never call** `be-update` or direct SQL from inside an action hook to write
-  status — use `set-status` only.
+  status; use `set-status` only.
 
 Action hooks are compiled at model-compile time and stored on the compiled
-field definition as `:compiled-hook`. The runtime calls them via `be-action` —
+field definition as `:compiled-hook`. The runtime calls them via `be-action`;
 no registry lookup occurs at runtime.
 
 
@@ -98,7 +98,7 @@ Defined in `lisp/model.lisp`:
 | `resolve-hook-list` | Resolve a list of forms into a list of functions       |
 
 Registry lookup is **compile-time only.** At runtime, the compiled model holds
-resolved function lists — no registry access occurs.
+resolved function lists; no registry access occurs.
 
 
 ## Hook Forms
@@ -152,8 +152,8 @@ Range and length validators are no-ops on empty/nil values. Use
 Each registry entry has a parameter schema: a plist of keyword → type tag.
 `valid-hook-params` special-cases:
 
-- `:integer` — parsed from integer or numeric string
-- `:number` — parsed via `parse-number`
+- `:integer`: parsed from integer or numeric string
+- `:number`: parsed via `parse-number`
 
 Any other type tag (including `:keyword`, used by `:deploy-model`) is
 **pass-through**: the raw value is accepted unchanged, with no type check.
@@ -195,10 +195,10 @@ raw model values.
 |------|-----------------|---------|
 | `:post-create` | `#'add-user-setting-rows` | Creates a per-user settings row on user creation |
 | `:pre-delete` | `#'remove-user-setting-rows` | Cleans up settings row on user deletion |
-| `:pre-create` | — | — |
-| `:post-delete` | — | — |
-| `:pre-update` | — | — |
-| `:post-update` | — | — |
+| `:pre-create` |   |   |
+| `:post-delete` |   |   |
+| `:pre-update` |   |   |
+| `:post-update` |   |   |
 
 ### Runtime invocation
 
@@ -221,7 +221,7 @@ Call sites:
 
 ### Surface forms on lifecycle slots
 
-Same as validation — both forms are accepted:
+Same as validation: both forms are accepted:
 
 ```lisp
 ;; Keyword (zero-arg registry entry, :lifecycle kind)
@@ -255,8 +255,8 @@ function is stored on the compiled field definition as `:compiled-hook`.
   :action (:deploy-model :field :model))
 ```
 
-- `:type :button` — no storage column.
-- `:action` — a single registry form `(:keyword args...)`.
+- `:type :button`: no storage column.
+- `:action`: a single registry form `(:keyword args...)`.
 - `:action` is valid **only** on `:type :button` (compile-time error otherwise).
 - `:ui` must include `:widget :button`.
 

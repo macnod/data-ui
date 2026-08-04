@@ -6,7 +6,7 @@ RBAC-protected applications.
 
 ## The Gap in the Market
 
-Existing tools occupy points along a spectrum — from raw frameworks
+Existing tools occupy points along a spectrum, from raw frameworks
 (Rails, Django) to low-code platforms (Directus, Budibase) to AI code
 generators (Bolt.new, v0). Each addresses a slice of the problem:
 scaffolding CRUD, or wrapping a database with an API, or generating
@@ -16,7 +16,7 @@ data model to deployed, secured, multi-user application.
 The gaps are not at the margins. They are structural:
 
 - **RBAC is bolted on, not compiled in.** Every platform treats
-  permissions as a separate configuration layer — something you set up
+  permissions as a separate configuration layer: something you set up
   after the app exists, per table, per role, per operation. Nobody
   compiles RBAC from the data model itself, let alone guarantees that
   every role × resource × operation combination is consistent as the
@@ -25,11 +25,11 @@ The gaps are not at the margins. They are structural:
   or you can deploy an app, but the same tool does not do both from the
   same artifact. The model doesn't know its own domain. TLS
   certificates, Kubernetes manifests, HAProxy routing, persistent
-  volumes — these are manual operations layered on top, not properties
+  volumes. These are manual operations layered on top, not properties
   of the model.
 - **Custom logic breaks the model.** When an application needs
   validation hooks, lifecycle behavior, or write-through to related
-  tables, every tool falls back to imperative code — Python
+  tables, every tool falls back to imperative code: Python
   controllers, JavaScript functions, shell scripts. The model is no
   longer the whole application. The guarantees evaporate.
 - **Output is code, not a compiled artifact.** AI generators produce
@@ -40,7 +40,7 @@ The gaps are not at the margins. They are structural:
 
 Data UI is not a better version of these tools. It is a different
 category: a compiler that takes a small declarative model and produces
-a complete, running application — database schema, RBAC enforcement,
+a complete, running application: database schema, RBAC enforcement,
 REST API, React frontend, validation hooks compiled to native code, and
 one-command deployment to TLS at the model's own domain. The model is
 the application. The compiler guarantees consistency across the entire
@@ -58,7 +58,7 @@ The model declares its own domain:
 (:domain "todo.demo.data-ui.com")
 ```
 
-One command — `scripts/data-ui deploy` — compiles the model, builds a
+One command, `scripts/data-ui deploy`, compiles the model, builds a
 Docker image, renders Kubernetes manifests, provisions PostgreSQL with
 persistent volumes, obtains and renews a Let's Encrypt TLS certificate
 via DNS-01, configures HAProxy routing, and brings the application live
@@ -69,7 +69,7 @@ and repeatable.
 and "deploy the app with TLS to your domain" as separate problems solved
 by separate tools:
 
-- **Frappe** requires a full server setup — bench, nginx, certbot,
+- **Frappe** requires a full server setup: bench, nginx, certbot,
   supervisor, Redis. The "Frappe installation" is legendary for its
   complexity. Frappe Cloud is a managed service, not a deploy action in
   the framework.
@@ -77,33 +77,33 @@ by separate tools:
   separate product, not a capability of the open-source engine.
 - **Supabase** hosts your backend but does not deploy your frontend or
   configure your domain.
-- **PocketBase** is a single binary you run somewhere — hosting, TLS,
+- **PocketBase** is a single binary you run somewhere: hosting, TLS,
   and domain configuration are entirely on you.
 - **Bolt.new, v0, Lovable** generate code in a browser sandbox.
   Deployment to Vercel or Netlify is a separate step; TLS and domain
   configuration are manual.
-- **Hasura, Appsmith, Retool, Budibase** — none deploy a complete
+- **Hasura, Appsmith, Retool, Budibase**: none deploy a complete
   application (frontend + backend + database) to your own domain with
   TLS from a single declarative artifact.
 
 Data UI collapses build and deploy into one model. The 30-second demo
-isn't "here's a running dev server" — it's "here's a live, TLS-secured,
+isn't "here's a running dev server"; it's "here's a live, TLS-secured,
 publicly accessible application."
 
 
-### 2. Native compilation — the compiled model is executable machine code
+### 2. Native compilation: the compiled model is executable machine code
 
 Data UI runs on SBCL (Steel Bank Common Lisp), which compiles to native
-machine code. The compiler's output — `*compiled-model*` — is not just a
+machine code. The compiler's output, `*compiled-model*`, is not just a
 data structure describing the application. It is a live, executable
 artifact containing:
 
-- The application specification (types, fields, views, relationships) — data
-- The deployment configuration (domain, version, identity) — data
+- The application specification (types, fields, views, relationships): data
+- The deployment configuration (domain, version, identity): data
 - The executable application logic (CRUD functions, RBAC checks,
-  validation) — native machine code
+  validation): native machine code
 - Compiled hook lambdas (validation and lifecycle hooks authored in the
-  model) — native machine code
+  model): native machine code
 
 All in one structure. No interpreter. No VM. No JIT warmup. The generic
 backend functions (`be-list`, `be-insert`, `be-update`, etc.) are
@@ -113,14 +113,14 @@ compiled model at compile time.
 
 Every comparable tool runs on an interpreter or managed runtime:
 
-- **Frappe** — Python (CPython interpreter) + MariaDB + Redis + WSGI
+- **Frappe**: Python (CPython interpreter) + MariaDB + Redis + WSGI
   server + nginx. Five moving parts.
-- **Directus** — Node.js (V8 JIT). Warm-up overhead, garbage collection
+- **Directus**: Node.js (V8 JIT). Warm-up overhead, garbage collection
   pauses.
-- **Supabase** — PostgREST (Haskell) + Node.js edge functions.
-- **PocketBase** — Go (compiled, but no REPL, no interactive development,
+- **Supabase**: PostgREST (Haskell) + Node.js edge functions.
+- **PocketBase**: Go (compiled, but no REPL, no interactive development,
   no homoiconicity).
-- **Bolt.new, v0, Lovable** — generate JavaScript/TypeScript that runs
+- **Bolt.new, v0, Lovable**: generate JavaScript/TypeScript that runs
   on V8.
 
 Data UI's deployment footprint is a single native process plus
@@ -132,33 +132,33 @@ operational surface is smaller.
 ### 3. The model is an API for a non-human consumer
 
 Data UI's model format is explicitly designed for AI consumption. An AI
-does not write arbitrary code into a Data UI application — it selects
+does not write arbitrary code into a Data UI application; it selects
 from a defined vocabulary (the hook registry) and fills parameters,
 exactly as it fills a function call. The compiler guarantees the result
 is consistent.
 
 This is structurally different from every other approach:
 
-- **AI code generators (Bolt.new, v0, Lovable, Replit Agent)** — the AI
+- **AI code generators (Bolt.new, v0, Lovable, Replit Agent)**: the AI
   produces imperative source code. The output is not reproducible from a
   compact spec. There is no invariant enforcement. A smarter model does
   not close this gap; it just drifts more eloquently.
-- **Low-code platforms (Directus, Budibase, Appsmith, Retool)** — not
+- **Low-code platforms (Directus, Budibase, Appsmith, Retool)**: not
   designed for AI consumption at all. Configuration is visual and
   manual, stored in databases, not in reviewable text artifacts.
-- **Frappe** — DocTypes are JSON metadata (good), but custom logic
+- **Frappe**: DocTypes are JSON metadata (good), but custom logic
   requires Python controllers (code). No structured hook vocabulary for
   AI to select from.
-- **Hasura DDN** — declarative metadata (HML) is compact and
+- **Hasura DDN**: declarative metadata (HML) is compact and
   structured, but there is no frontend, no deployment, and no hook
   system for custom logic.
-- **A2UI (Google)** — a declarative JSON protocol for AI-driven UI
-  rendering. Interesting, but UI-only — no database, no API, no auth, no
+- **A2UI (Google)**: a declarative JSON protocol for AI-driven UI
+  rendering. Interesting, but UI-only: no database, no API, no auth, no
   deployment.
 
 Data UI is the only system where an AI can produce a small, structured
 model and the compiler expands it into a complete, consistent,
-deployed application — database, API, RBAC, frontend, TLS, domain —
+deployed application: database, API, RBAC, frontend, TLS, domain,
 with no code generation and no drift.
 
 
@@ -287,7 +287,7 @@ specific in practice:
 **You can build and deploy a real application in minutes, not days.**
 Starting from an existing model, a few minutes to tweak, test, and
 deploy. Starting from scratch, perhaps 30 minutes. Either way, the
-result is not a dev server or a sandbox preview — it is a live,
+result is not a dev server or a sandbox preview; it is a live,
 TLS-secured, publicly accessible application at its own domain, backed
 by PostgreSQL, with full RBAC enforcement, a REST API, and a React
 frontend, all from a single model file that fits in an email.
@@ -301,7 +301,7 @@ multi-hour exercise, and that is before you have written a single
 DocType.
 
 The gap is not incremental. It is categorical. When the model *is* the
-application — schema, logic, permissions, deployment, domain — the
+application (schema, logic, permissions, deployment, domain), the
 compiler guarantees that the deployed system is consistent with the
 specification. There is no imperative code to drift, no separate
 permission configuration to forget, no deployment checklist to get

@@ -1,12 +1,12 @@
-# Model Accessors — Retention Notes
+# Model Accessors: Retention Notes
 
 These function families in `lisp/model.lisp` have **no in-codebase callers** but
 are intentionally retained. Do not remove them in dead-code sweeps.
 
-## `model-*-for` — Debugging / REPL Accessors
+## `model-*-for`: Debugging / REPL Accessors
 
 Convenience wrappers around `u:tree-get` on `*compiled-model*`. They exist for
-REPL inspection and ad-hoc debugging — printing a type's compiled definition,
+REPL inspection and ad-hoc debugging: printing a type's compiled definition,
 inspecting generated SQL, checking field attributes, etc.
 
 | Function | Purpose |
@@ -32,7 +32,7 @@ Example REPL usage:
 ;; => (:name :text :completed :boolean :created-at :timestamp ...)
 ```
 
-## `model-` Top-Level Accessors — Used by Deployment Scripts
+## `model-` Top-Level Accessors: Used by Deployment Scripts
 
 These read top-level model metadata (`:name`, `:title`, `:version`, `:domain`,
 `:repl`) from `*top-level-settings*` (populated during `set-model`). They are
