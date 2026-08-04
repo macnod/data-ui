@@ -2,15 +2,9 @@
 
 **Your whole app, in an email.**
 
-Describe your data once. Get a deployed, RBAC-backed application —
-deterministically. Manage users, roles, and permissions live, in the running
-app.
+Describe your data once. Get a deployed, RBAC-backed application, deterministically. Manage users, roles, and permissions live, in the running app.
 
-This is no longer just a thesis. As of July 2026, the full pipeline works
-end to end: a one-page model compiles into a complete application —
-PostgreSQL, REST API, RBAC, React frontend — and **one command deploys it
-to Kubernetes behind TLS at its own domain**. The first deployed instance
-is a to-do app whose entire description fits on a napkin.
+This is no longer just a thesis. As of July 2026, the full pipeline works end to end: a one-page model compiles into a complete application, PostgreSQL, REST API, RBAC, React frontend, and **one command deploys it to Kubernetes behind TLS at its own domain**. The first deployed instance is a to-do app whose entire description fits on a napkin.
 
 Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
@@ -41,90 +35,46 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
 ## The Big Idea
 
-Building solid, evolving, RBAC-heavy collaborative applications requires holding
-a web of invariants — every role against every resource against every operation,
-changing over time — consistent across thousands of lines of code. This is the
-part that is genuinely hard, and it is the part that breaks under iteration,
-whether the iteration is done by a human or by an AI.
+Building solid, evolving, RBAC-heavy collaborative applications requires holding a web of invariants: every role against every resource against every operation, changing over time, consistent across thousands of lines of code. This is the part that is genuinely hard, and it is the part that breaks under iteration, whether the iteration is done by a human or by an AI.
 
-Data UI lets you express the **entire** application as a small, reviewable
-artifact that fits comfortably in the body of an email, and **guarantees** that
-the expansion of that artifact into a running system is correct. You describe
-your application (entities, relationships, UI hints, etc.) once. The compiler
-produces the database, the API, the RBAC enforcement, the frontend, and the
-deployment — deterministically, with no per-type boilerplate and no hidden
-permission bugs.
+Data UI lets you express the **entire** application as a small, reviewable artifact that fits comfortably in the body of an email, and **guarantees** that the expansion of that artifact into a running system is correct. You describe your application (entities, relationships, UI hints, etc.) once. The compiler produces the database, the API, the RBAC enforcement, the frontend, and the deployment, deterministically, with no per-type boilerplate and no hidden permission bugs.
 
-Change the model, recompile, and everything updates consistently. The model is
-the DNA of the application. At less than a page of code for many applications,
-that DNA is tiny compared to the many thousands of lines that would otherwise
-be needed to describe such an application.
+Change the model, recompile, and everything updates consistently. The model is the DNA of the application. At less than a page of code for many applications, that DNA is tiny compared to the many thousands of lines that would otherwise be needed to describe such an application.
 
 
 ## The Thesis in Six Lines
 
-> The 40,000-line application is dead. The 40-line model that compiles into
-> one just won.
+> The 40,000-line application is dead. The 40-line model that compiles into one just won.
 
-> Change one file. Recompile. Every schema, every endpoint, every permission
-> check, every UI form updates together — because they were never separate
-> things.
+> Change one file. Recompile. Every schema, every endpoint, every permission check, every UI form updates together, because they were never separate things.
 
-> An application that once required a team, a quarter, and a budget now fits
-> in the body of an email and deploys in one command.
+> An application that once required a team, a quarter, and a budget now fits in the body of an email and deploys in one command.
 
-> Before Data UI: "We'll need a backend engineer, a frontend engineer, a
-> DevOps person, and six weeks." After Data UI: "I just sent you the model."
+> Before Data UI: "We'll need a backend engineer, a frontend engineer, a DevOps person, and six weeks." After Data UI: "I just sent you the model."
 
-> You don't maintain a Data UI application. You maintain a 40-line
-> description, and the running system is a pure function of that description.
-> The concept of "maintenance" as we know it just disappeared.
+> You don't maintain a Data UI application. You maintain a 40-line description, and the running system is a pure function of that description. The concept of "maintenance" as we know it just disappeared.
 
-> Data UI is the only product that lets an AI effectively author complete,
-> UI-administrable, row-level RBAC applications. AI can now ship production
-> applications. Not suggest code. Not draft migrations. Ship. The missing piece
-> was never the AI — it was the invariant engine that lets the AI's output be
-> trusted.
+> Data UI is the only product that lets an AI effectively author complete, UI-administrable, row-level RBAC applications. AI can now ship production applications. Not suggest code. Not draft migrations. Ship. The missing piece was never the AI. It was the invariant engine that lets the AI's output be trusted.
 
 
 ## Why AI Needs Data UI
 
-The bottleneck in building this class of application is not code generation. A
-modern AI can emit plausible code all day. The bottleneck is **specification
-compression and invariant enforcement**.
+The bottleneck in building this class of application is not code generation. A modern AI can emit plausible code all day. The bottleneck is **specification compression and invariant enforcement**.
 
-An AI is good at producing a 40-line model. It is bad at producing a 40,000-line
-application whose permissions remain globally consistent as the application
-evolves, because it pattern-matches locally and drifts globally — it has no
-enforcement mechanism. A smarter model does not close this gap; it just drifts
-more eloquently.
+An AI is good at producing a 40-line model. It is bad at producing a 40,000-line application whose permissions remain globally consistent as the application evolves, because it pattern-matches locally and drifts globally, it has no enforcement mechanism. A smarter model does not close this gap; it just drifts more eloquently.
 
-Data UI closes the gap by reducing the dimensionality of the thing that has to
-be gotten right. With Data UI, the AI operates in the regime where it is strong
-— producing a small, structured model — and the compiler handles the regime
-where the AI is weak — expanding that model into a system with globally
-consistent RBAC and relational integrity.
+Data UI closes the gap by reducing the dimensionality of the thing that has to be gotten right. With Data UI, the AI operates in the regime where it is strong (producing a small, structured model) and the compiler handles the regime where the AI is weak (expanding that model into a system with globally consistent RBAC and relational integrity).
 
-This is the same relationship a programmer has with a type checker: even a
-superhuman programmer benefits from offloading invariant-enforcement to a
-deterministic tool. **AI needs a substrate like this — and Data UI is it.**
+This is the same relationship a programmer has with a type checker: even a superhuman programmer benefits from offloading invariant-enforcement to a deterministic tool. **AI needs a substrate like this, and Data UI is it.**
 
-In practice this means the model format is an API for a non-human consumer. An AI
-does not write arbitrary code into a Data UI application; it selects from a
-defined vocabulary and fills in parameters, exactly as it fills a tool call. See
-[Hooks and the Registry](#hooks-and-the-registry).
+In practice this means the model format is an API for a non-human consumer. An AI does not write arbitrary code into a Data UI application; it selects from a defined vocabulary and fills in parameters, exactly as it fills a tool call. See [Hooks and the Registry](#hooks-and-the-registry).
 
 
 ## Overview
 
-If you aim to develop solid, dependable, performant, maintainable,
-database-backed, ready-to-deploy applications that include full support for
-Role-Based Access Control (RBAC), and you want a deterministic development
-process (no countless iterations with an AI only to have to fix the difficult
-problems yourself in the end), then Data UI is your friend.
+If you aim to develop solid, dependable, performant, maintainable, database-backed, ready-to-deploy applications that include full support for Role-Based Access Control (RBAC), and you want a deterministic development process (no countless iterations with an AI only to have to fix the difficult problems yourself in the end), then Data UI is your friend.
 
-Data UI is a Common Lisp system that takes a simple nested plist model and
-**compiles it** into a full, production-ready data application:
+Data UI is a Common Lisp system that takes a simple nested plist model and **compiles it** into a full, production-ready data application:
 
 - PostgreSQL tables (with defaults, constraints, triggers)
 - Smart joined views for lists and forms
@@ -139,12 +89,7 @@ Data UI is a Common Lisp system that takes a simple nested plist model and
 - Complete React frontend
 - Kubernetes manifests for deployment
 
-No manual migrations. No per-type boilerplate. Change the model, call
-`(set-model "todos")`, and everything updates deterministically. And this
-is not a half-built promise: write the model, compile it, run
-`scripts/data-ui deploy`, and minutes later your application is serving
-real users over TLS at its own domain. We know because that is exactly
-how the [live demo](#deployment) got there.
+No manual migrations. No per-type boilerplate. Change the model, call `(set-model "todos")`, and everything updates deterministically. And this is not a half-built promise: write the model, compile it, run `scripts/data-ui deploy`, and minutes later your application is serving real users over TLS at its own domain. We know because that is exactly how the [live demo](#deployment) got there.
 
 
 ## Core Philosophy
@@ -157,51 +102,25 @@ You describe your entities, relations, and UI behavior in one place. Then, Data 
 4. Produces ready-to-run SQL and pre-compiled validation logic
 5. Stores everything in `*compiled-model*` for fast runtime use
 
-Generic endpoints like `/api/list?type=todos` work for **any** type — including
-the built-in RBAC tables themselves.
+Generic endpoints like `/api/list?type=todos` work for **any** type, including the built-in RBAC tables themselves.
 
 ### Two tiers, one engine
 
 Data UI deliberately supports two audiences through a single compiler:
 
-- **The expert, self-hosting tier.** Written in Common Lisp, the open-source
-  engine gives you full power. You can write custom registry entries (hook
-  factories in Lisp), override lifecycle ops (`:create` / `:update` /
-  `:delete`) with your own functions, and do anything the language allows.
-  The guardrail here is your own experience and judgment. This tier is a
-  shotgun: it does not stop you from doing whatever you want.
+- **The expert, self-hosting tier.** Written in Common Lisp, the open-source engine gives you full power. You can write custom registry entries (hook factories in Lisp), override lifecycle ops (`:create` / `:update` / `:delete`) with your own functions, and do anything the language allows. The guardrail here is your own experience and judgment. This tier is a shotgun: it does not stop you from doing whatever you want.
 
-- **The AI / no-code / hosted tier.** Here the model is pure data (YAML or JSON),
-  hooks are chosen from a curated, parameterized registry, and there is no
-  raw-code escape hatch. This constraint is not a limitation — it *is* what makes
-  the tier safe to operate at scale and consumable by an AI. When a hosted user
-  needs power beyond the data vocabulary, the escape valve is to self-host the
-  open engine.
+- **The AI / no-code / hosted tier.** Here the model is pure data (YAML or JSON), hooks are chosen from a curated, parameterized registry, and there is no raw-code escape hatch. This constraint is not a limitation. It *is* what makes the tier safe to operate at scale and consumable by an AI. When a hosted user needs power beyond the data vocabulary, the escape valve is to self-host the open engine.
 
-Both tiers reduce to the same contract before anything runs, so the compiler
-never special-cases one against the other.
+Both tiers reduce to the same contract before anything runs, so the compiler never special-cases one against the other.
 
-**Why Common Lisp stays.** Despite its age, Common Lisp remains the most
-powerful programming language in a purely technical sense. Its object system,
-condition system, live image, incremental compilation of running code to
-efficient machine code, and full programmability have no real peers. Without
-that power gap, Data UI would not exist.
+**Why Common Lisp stays.** Despite its age, Common Lisp remains the most powerful programming language in a purely technical sense. Its object system, condition system, live image, incremental compilation of running code to efficient machine code, and full programmability have no real peers. Without that power gap, Data UI would not exist.
 
-That the power of Common Lisp is invisible to most working programmers
-is itself a moat: it keeps casual competitors out while steering
-sophisticated users who want the capability without becoming a Lisp shop
-straight to the hosted product. The open engine remains fully available
-for those who want that power unmediated.
+That the power of Common Lisp is invisible to most working programmers is itself a moat: it keeps casual competitors out while steering sophisticated users who want the capability without becoming a Lisp shop straight to the hosted product. The open engine remains fully available for those who want that power unmediated.
 
 ## Example Model
 
-This example matches `models/todos.lisp`. Each file in the
-`models/` directory holds a bare model plist (no `defparameter` and no
-wrapping variable). The top-level keys (`:title`, `:name`, `:version`,
-`:domain`, `:repl`, `:landing-page`) carry the model's identity, and `:types` holds the type
-definitions. Load the model with `(set-model "todos")` — pass just the file
-name, with no path and no `.lisp` extension. Prefer `:repl nil` in production
-(see [Deployment](#deployment)).
+This example matches `models/todos.lisp`. Each file in the `models/` directory holds a bare model plist (no `defparameter` and no wrapping variable). The top-level keys (`:title`, `:name`, `:version`, `:domain`, `:repl`, `:landing-page`) carry the model's identity, and `:types` holds the type definitions. Load the model with `(set-model "todos")`, pass just the file name, with no path and no `.lisp` extension. Prefer `:repl nil` in production (see [Deployment](#deployment)).
 
 ```lisp
 (:title "To Do List"
@@ -279,14 +198,11 @@ This single definition aims to give you:
 - A complete React frontend
 - Kubernetes manifests for easy, consistent, reproducible deployment
 
-The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and associated
-join tables) is automatically included from `*base-model*`. A user settings table is also
-included.
+The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and associated join tables) is automatically included from `*base-model*`. A user settings table is also included.
 
 ### Example Compilation Results
 
-This section presents some tiny pieces of the resulting enriched model, after
-compilation with `(set-model "todos")`.
+This section presents some tiny pieces of the resulting enriched model, after compilation with `(set-model "todos")`.
 
 #### Create Table SQL for `:todos`
 
@@ -399,27 +315,17 @@ from rt_tags"
 
 ## How It Works
 
-- `set-model` (in `lisp/model.lisp`) — Compiles the model, enriches it, generates all SQL/views, and stores the result in `*compiled-model*`.
-- **Compilation** — Adds default fields, resolves `:reference` into proper foreign keys, builds joined view SQL, prepares parameterized CRUD statements.
-- **Runtime** — Generic backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-item`, etc. in `lisp/backend.lisp`) pull pre-generated SQL from the compiled model.
-- **RBAC** — Every operation is gated by `user-allowed` from the rbac library. RBAC tables are treated exactly like your own types, so you can manage users, roles, permissions, and resource access through the same UI/API.
-- **Validation** — Parameterized registry entries or common validator keywords (with support for lists). Pre-compiled during `set-model`. Separate validation functions are available.
+- `set-model` (in `lisp/model.lisp`): Compiles the model, enriches it, generates all SQL/views, and stores the result in `*compiled-model*`.
+- **Compilation**: Adds default fields, resolves `:reference` into proper foreign keys, builds joined view SQL, prepares parameterized CRUD statements.
+- **Runtime**: Generic backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-item`, etc. in `lisp/backend.lisp`) pull pre-generated SQL from the compiled model.
+- **RBAC**: Every operation is gated by `user-allowed` from the rbac library. RBAC tables are treated exactly like your own types, so you can manage users, roles, permissions, and resource access through the same UI/API.
+- **Validation**: Parameterized registry entries or common validator keywords (with support for lists). Pre-compiled during `set-model`. Separate validation functions are available.
 
 ### What `*compiled-model*` actually is
 
-The compiler stores its output in `*compiled-model*` — a single structure
-that is simultaneously the application specification (data), the
-deployment configuration (data), and the executable application logic
-(native machine code). SBCL compiles every backend function, every RBAC
-check, and every hook — including validation, lifecycle, and action hooks
-— to native x86-64 or ARM instructions.
-No interpreter. No VM. No JIT warmup. When a validation hook runs, it
-calls a function pointer to compiled code that was placed in the model
-at compile time. The model is not just a description of the application;
-it *is* the application, in executable form.
+The compiler stores its output in `*compiled-model*`, a single structure that is simultaneously the application specification (data), the deployment configuration (data), and the executable application logic (native machine code). SBCL compiles every backend function, every RBAC check, and every hook, including validation, lifecycle, and action hooks, to native x86-64 or ARM instructions. No interpreter. No VM. No JIT warmup. When a validation hook runs, it calls a function pointer to compiled code that was placed in the model at compile time. The model is not just a description of the application; it *is* the application, in executable form.
 
-For a detailed comparison of Data UI's approach against existing tools,
-see [Competitive Landscape](docs/competitive-landscape.md).
+For a detailed comparison of Data UI's approach against existing tools, see [Competitive Landscape](docs/competitive-landscape.md).
 
 
 ## Key Model Features
@@ -434,7 +340,7 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:ui` hints (`:label`, `:widget`, `:read-only`, `:precision`) for frontend rendering
 - `:widget` values: `:textbox`, `:textarea`, `:code`, `:stars`, `:select`, `:checkbox`, `:checkbox-list`, `:file`, `:hidden`, `:password`, `:button`, `:image`, `:image-list`
 - `:read-only t` on `:ui` renders a field's display variant instead of an editor (boolean flag, not a widget value)
-- `:button` field type with `:action` — clickable control on the update form that runs a registry action hook; compiler synthesizes a companion `:<field>-status` column
+- `:button` field type with `:action`: clickable control on the update form that runs a registry action hook; compiler synthesizes a companion `:<field>-status` column
 - `:validations` common validation names or parameterized registry entries that validate form/field data
 - `:join-table` for many-to-many relationships
 - `:is-joiner t` for explicit join tables
@@ -443,7 +349,7 @@ see [Competitive Landscape](docs/competitive-landscape.md).
 - `:autofill :user` to auto-populate a field with the current username
 - `:user-setting t` (type-level) to mark per-user settings types; auto-sets `:suppress-roles t` and derives category `:settings` if omitted
 - `:suppress-roles t` (type-level) to suppress the injected `roles` field in forms
-- `:category` (type-level) to place a type in the selector: `:user`, `:settings` (Settings tab), or `:system`. Author key — not reserved to built-ins
+- `:category` (type-level) to place a type in the selector: `:user`, `:settings` (Settings tab), or `:system`. Author key, not reserved to built-ins
 - `:type-roles` to declare which roles can access a type
 - `:landing-page` (top-level) to declare which type the frontend shows on load (resolved per-user via `be-landing-page`)
 - `:force-sql-name` to override the generated SQL column name
@@ -458,20 +364,16 @@ Hook contracts and builtins: [docs/hook-registry.md](docs/hook-registry.md).
 
 ## Hooks and the Registry
 
-Custom logic — validation, lifecycle, and **actions** — attaches through
-**hooks**. Every hook reduces to a single calling contract per kind before it
-runs, so the compiler treats them uniformly.
+Custom logic (validation, lifecycle, and **actions**) attaches through **hooks**. Every hook reduces to a single calling contract per kind before it runs, so the compiler treats them uniformly.
 
 Hooks are expressed through the registry (the sole author surface form):
 
-| Form in the model            | Who writes the Lisp                  | Tier                       | Status        |
-|------------------------------|--------------------------------------|----------------------------|---------------|
-| `(:keyword args...)`         | the registry author (you/community)  | AI / no-code / hosted      | Supported     |
-| `:keyword`                   | the registry author (zero-arg entry) | AI / no-code / hosted      | Supported     |
+| Form in the model    | Who writes the Lisp                  | Tier                  | Status    |
+|----------------------|--------------------------------------|-----------------------|-----------|
+| `(:keyword args...)` | the registry author (you/community)  | AI / no-code / hosted | Supported |
+| `:keyword`           | the registry author (zero-arg entry) | AI / no-code / hosted | Supported |
 
-Raw lambdas are not a model-author form; they exist only as an internal
-pass-through for base-model lifecycle functions. Expert/self-host power users
-extend the vocabulary with `register-hook`, not by embedding code in the model.
+Raw lambdas are not a model-author form; they exist only as an internal pass-through for base-model lifecycle functions. Expert/self-host power users extend the vocabulary with `register-hook`, not by embedding code in the model.
 
 ### The contracts
 
@@ -489,35 +391,15 @@ An **action** hook conforms to:
              &key roles status-field set-status)
       -> nil | plist)
 
-Validation: return `nil` on success or an error string on failure. Lifecycle:
-return value is ignored today. Action: return `nil` (or any non-async result)
-for sync completion, or `(:async t :message "...")` so a worker owns status via
-`set-status`. Hooks are lists where the slot allows multiple entries; each
-reduces to its kind's contract.
+Validation: return `nil` on success or an error string on failure. Lifecycle: return value is ignored today. Action: return `nil` (or any non-async result) for sync completion, or `(:async t :message "...")` so a worker owns status via `set-status`. Hooks are lists where the slot allows multiple entries; each reduces to its kind's contract.
 
-Action hooks attach to `:button` fields on the **update form only**. The
-compiler synthesizes a companion `:<field>-status` column (`idle` → `running`
-→ `complete` | `failed: <reason>`). `POST /api/actions` invokes them via
-`be-action`. Details: [docs/hook-registry.md](docs/hook-registry.md).
+Action hooks attach to `:button` fields on the **update form only**. The compiler synthesizes a companion `:<field>-status` column (`idle` → `running` → `complete` | `failed: <reason>`). `POST /api/actions` invokes them via `be-action`. Details: [docs/hook-registry.md](docs/hook-registry.md).
 
-> **MVP caveat — transactions deferred:** lifecycle hooks are **not**
-> transaction-wrapped. If one hook in a list fails, the operation fails
-> **without rollback** of the primary write or earlier hooks. The same
-> rule applies to write-through (`:write-to`): the primary row commits
-> first; related-table upserts run after and are best-effort. Action hooks
-> are likewise non-transactional; a process restart can leave status stuck
-> at `running` (no job queue in MVP — operator resets manually). Transactions
-> and rollback (including idempotent database initialization) are
-> deliberately deferred to post-MVP. The eventual transaction boundary is
-> intended to wrap primary write + hook list + write-through as a unit;
-> design hooks with that future in mind, and never assume atomicity in
-> MVP code or docs.
+> **MVP caveat: transactions deferred:** lifecycle hooks are **not** transaction-wrapped. If one hook in a list fails, the operation fails **without rollback** of the primary write or earlier hooks. The same rule applies to write-through (`:write-to`): the primary row commits first; related-table upserts run after and are best-effort. Action hooks are likewise non-transactional; a process restart can leave status stuck at `running` (no job queue in MVP, operator resets manually). Transactions and rollback (including idempotent database initialization) are deliberately deferred to post-MVP. The eventual transaction boundary is intended to wrap primary write + hook list + write-through as a unit; design hooks with that future in mind, and never assume atomicity in MVP code or docs.
 
 ### The registry: parameterized, data-only hooks
 
-The registry provides parameterized, data-only hooks for validations,
-lifecycle, and actions. A registry entry is a named factory that **closes over
-parameters supplied as data** and returns a contract-conforming closure.
+The registry provides parameterized, data-only hooks for validations, lifecycle, and actions. A registry entry is a named factory that **closes over parameters supplied as data** and returns a contract-conforming closure.
 
 For example, a maximum-length validation written as pure data:
 
@@ -538,8 +420,7 @@ is backed by a registry entry whose Lisp lives in the engine, written once:
             (format nil "must be at most ~d characters." max)))))))
 ```
 
-The model author wrote only data — `(:max-length :max 20)` — which serializes
-cleanly to YAML or JSON. The same pattern applies to lifecycle and action hooks:
+The model author wrote only data, `(:max-length :max 20)`, which serializes cleanly to YAML or JSON. The same pattern applies to lifecycle and action hooks:
 
 ```lisp
 :post-create (:add-user-settings)                       ; zero-arg entry
@@ -562,13 +443,11 @@ The parameter schema does triple duty:
 - it serves as the **function-calling spec** an AI uses to select and parameterize
   a hook.
 
-This is the mechanism that makes the model AI-consumable: an AI does not write
-hooks, it picks registry entries and fills parameters. The Lisp lives in the
-registry; the model author — human or AI — writes only data.
+This is the mechanism that makes the model AI-consumable: an AI does not write hooks, it picks registry entries and fills parameters. The Lisp lives in the registry; the model author, human or AI, writes only data.
 
 ## API Approach
 
-All endpoints stay **generic** — no per-type handler generation needed:
+All endpoints stay **generic**, no per-type handler generation needed:
 
 - `GET /api/list?type=todos` → RBAC-gated results from the compiled view, including schema (`list-form`, `add-form`, `update-form`, `allowed-values`) and permission flags (`create`, `delete`, `update`)
 - `GET /api/item`, `/api/id`, `/api/value`, `/api/value-id`, `/api/column` → targeted data retrieval
@@ -581,10 +460,7 @@ All endpoints stay **generic** — no per-type handler generation needed:
 - `GET /api/file` → file serving (with token auth)
 - `GET /health` → health check
 
-React (or any frontend) fetches items with their schema and renders
-forms/lists automatically. The `:ui` plist on each field is the extension
-point — `:widget`, `:read-only`, `:precision`, and `:table` are consumed
-directly by the frontend components.
+React (or any frontend) fetches items with their schema and renders forms/lists automatically. The `:ui` plist on each field is the extension point, `:widget`, `:read-only`, `:precision`, and `:table` are consumed directly by the frontend components.
 
 
 ## Development
@@ -619,8 +495,7 @@ commands, see [scripts/README.md](scripts/README.md).
 
 ## Deployment
 
-Deployment is part of the compiler's promise, not an afterthought. The
-model itself declares the application's identity:
+Deployment is part of the compiler's promise, not an afterthought. The model itself declares the application's identity:
 
 ```lisp
 (:title "To Do List"
@@ -639,257 +514,121 @@ and one command turns that into a running, public application:
 scripts/data-ui deploy
 ```
 
-Behind that command: the model is compile-checked against a throwaway
-database, the release is tagged from the model's version plus the git
-hash, a Docker image is built (React frontend compiled in one stage,
-precompiled SBCL runtime in another), Kubernetes manifests are rendered
-from templates and applied to a k3d cluster (each instance in its own
-namespace, with its own PostgreSQL and persistent volumes), and HAProxy
-routing is updated so the model's `:domain` serves the app over TLS — a
-wildcard Let's Encrypt certificate that renews itself.
+Behind that command: the model is compile-checked against a throwaway database, the release is tagged from the model's version plus the git hash, a Docker image is built (React frontend compiled in one stage, precompiled SBCL runtime in another), Kubernetes manifests are rendered from templates and applied to a k3d cluster (each instance in its own namespace, with its own PostgreSQL and persistent volumes), and HAProxy routing is updated so the model's `:domain` serves the app over TLS, a wildcard Let's Encrypt certificate that renews itself.
 
-The deploy is deterministic and repeatable: every fact is derived from
-the model and the git commit. Secrets and port assignments are generated
-once and thereafter recovered from the live cluster, so a deploy can be
-re-run from a fresh machine without breaking a running instance.
+The deploy is deterministic and repeatable: every fact is derived from the model and the git commit. Secrets and port assignments are generated once and thereafter recovered from the live cluster, so a deploy can be re-run from a fresh machine without breaking a running instance.
 
-`:repl t` works and exposes Swank for the instance (reachable over an SSH
-tunnel). Prefer `:repl nil` in production — it is an extra attack surface
-even behind a tunnel.
+`:repl t` works and exposes Swank for the instance (reachable over an SSH tunnel). Prefer `:repl nil` in production, it is an extra attack surface even behind a tunnel.
 
-The full story — every step, every file, where the admin password lives,
-how cert renewal works, troubleshooting — is in
-[docs/deployment.md](docs/deployment.md).
+The full story, every step, every file, where the admin password lives, how cert renewal works, troubleshooting, is in [docs/deployment.md](docs/deployment.md).
 
 
 ## Current Status (July 2026)
 
-The project is in active development, and the core claim is now
-demonstrated end to end:
+The project is in active development, and the core claim is now demonstrated end to end:
 
-- **The full pipeline works: model → compiled application → deployed,
-  TLS-terminated, RBAC-backed app at its own domain.** The example to-do
-  model is live in production on a k3d cluster, deployed with a single
-  command.
-- Full CRUD operations work via the backend, REST API, and frontend React
-  code, across **all** types — both the built-in RBAC types (users, roles,
-  permissions, resources, etc.) and user-defined types.
+- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model is live in production on a k3d cluster, deployed with a single command.
+- Full CRUD operations work via the backend, REST API, and frontend React code, across **all** types, both the built-in RBAC types (users, roles, permissions, resources, etc.) and user-defined types.
 - JWT-based authentication (access + refresh tokens) protects the API.
-- **Scoping** is implemented at both the view level and the field level.
-  View-level `:scope :user` filters `be-list` results to records owned by
-  the current user. Field-level scoping (`:scope :user` on a field's
-  `:source`) filters aggregated field values to the current user (e.g.
-  "my rating" on Model Bank). It does not control field visibility or
-  editability in the UI.
-- **Write-through** (`:write-to` + `:identity t`) is implemented: related-
-  table upserts run from `be-insert` / `be-update` (best-effort, non-
-  transactional). Used by Model Bank ratings. Some edge cases (e.g.
-  clear-to-NULL) remain open.
-- **Action hooks** (`:button` fields + `:action`, `POST /api/actions`,
-  companion status column, sync/async protocol) are implemented. The
-  `:deploy-model` registry entry powers Model Bank deploy-from-record.
-- **Model features in active use** (exercised by `models/modelbank.lisp`):
-  tree-structured types with filesystem backing (`:tree`, `:is-leaf`,
-  `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated
-  fields (`:autofill :user`), per-user settings types (`:user-setting`),
-  write-through
-  ratings (`:write-to`, `:identity`), action buttons (`:button`,
-  `:action`), and UI hints for code blocks, images, image lists, and star
-  ratings (`:widget :stars`).
-- File handling: uploading, listing, and deleting files and directories
-  works end-to-end (uploads use a two-phase flow: `multipart/form-data`
-  POST to `/api/upload`, then a JSON `/api/insert` carrying the returned
-  `file-token`). File **update** is not yet implemented and may be
-  deferred past the MVP.
-- React frontend: log in, navigate as a user, perform CRUD with RBAC
-  enforcement, manage roles, upload and preview images (thumbnail grids
-  with modal/lightbox), inline edit mode, action buttons on update forms.
-  The UI works but needs polish — this is a current focus.
-- Tests for compilation, predicates, backend, REST, scoping, and actions
-  are in `tests/` (FiveAM): `predicate-tests.lisp`, `backend-tests.lisp`,
-  `rest-tests.lisp`, `scoping-tests.lisp`, `action-tests.lisp`, plus
-  `helpers.lisp` and `model-template.lisp`. One view-level scoping
-  behavioral test remains flaky / TODO.
+- **Scoping** is implemented at both the view level and the field level. View-level `:scope :user` filters `be-list` results to records owned by the current user. Field-level scoping (`:scope :user` on a field's `:source`) filters aggregated field values to the current user (e.g. "my rating" on Model Bank). It does not control field visibility or editability in the UI.
+- **Write-through** (`:write-to` + `:identity t`) is implemented: related- table upserts run from `be-insert` / `be-update` (best-effort, non- transactional). Used by Model Bank ratings. Some edge cases (e.g. clear-to-NULL) remain open.
+- **Action hooks** (`:button` fields + `:action`, `POST /api/actions`, companion status column, sync/async protocol) are implemented. The `:deploy-model` registry entry powers Model Bank deploy-from-record.
+- **Model features in active use** (exercised by `models/modelbank.lisp`): tree-structured types with filesystem backing (`:tree`, `:is-leaf`, `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated fields (`:autofill :user`), per-user settings types (`:user-setting`), write-through ratings (`:write-to`, `:identity`), action buttons (`:button`, `:action`), and UI hints for code blocks, images, image lists, and star ratings (`:widget :stars`).
+- File handling: uploading, listing, and deleting files and directories works end-to-end (uploads use a two-phase flow: `multipart/form-data` POST to `/api/upload`, then a JSON `/api/insert` carrying the returned `file-token`). File **update** is not yet implemented and may be deferred past the MVP.
+- React frontend: log in, navigate as a user, perform CRUD with RBAC enforcement, manage roles, upload and preview images (thumbnail grids with modal/lightbox), inline edit mode, action buttons on update forms. The UI works but needs polish; this is a current focus.
+- Tests for compilation, predicates, backend, REST, scoping, and actions are in `tests/` (FiveAM): `predicate-tests.lisp`, `backend-tests.lisp`, `rest-tests.lisp`, `scoping-tests.lisp`, `action-tests.lisp`, plus `helpers.lisp` and `model-template.lisp`. One view-level scoping behavioral test remains flaky / TODO.
 
-Model compilation, SQL generation for tables/views/triggers, RBAC
-integration, validation, CRUD, write-through, action hooks, and Kubernetes
-deployment are implemented and exercised. Work continues on Model Bank
-completion, write-through edge cases, UI refinement, and additional
-example models.
+Model compilation, SQL generation for tables/views/triggers, RBAC integration, validation, CRUD, write-through, action hooks, and Kubernetes deployment are implemented and exercised. Work continues on Model Bank completion, write-through edge cases, UI refinement, and additional example models.
 
 Deliberately deferred to post-MVP (do not assume these exist today):
 
-- **Transactions and rollback.** Lifecycle hooks and action hooks are not
-  transaction-wrapped. A failing hook fails the operation without
-  rolling back the primary write or earlier hooks. Write-through
-  (`:write-to`) follows the same rule: primary write commits first;
-  related-table upserts are best-effort. Idempotent database
-  initialization is also deferred (see deployment Trap 1).
-- Single-statement `ON CONFLICT` upserts (blocked on the two-phase
-  resource insert).
+- **Transactions and rollback.** Lifecycle hooks and action hooks are not transaction-wrapped. A failing hook fails the operation without rolling back the primary write or earlier hooks. Write-through (`:write-to`) follows the same rule: primary write commits first; related-table upserts are best-effort. Idempotent database initialization is also deferred (see deployment Trap 1).
+- Single-statement `ON CONFLICT` upserts (blocked on the two-phase resource insert).
 - YAML/JSON model input and the hosted AI front door.
 
-See [Hooks and the Registry](#hooks-and-the-registry) and
-[docs/hook-registry.md](docs/hook-registry.md) for the hook contracts and
-the MVP atomicity caveat. Model vocabulary:
-[docs/model-reference.md](docs/model-reference.md).
+See [Hooks and the Registry](#hooks-and-the-registry) and [docs/hook-registry.md](docs/hook-registry.md) for the hook contracts and the MVP atomicity caveat. Model vocabulary: [docs/model-reference.md](docs/model-reference.md).
 
-See `lisp/model.lisp` for the current `*base-model*` and the `models/`
-directory for example models (one per file, e.g. `todos.lisp`,
-`modelbank.lisp`, `widgets.lisp`), each loadable with
-`(set-model "todos")`, `lisp/backend.lisp` for the `be-*` API,
-`lisp/rest.lisp` for HTTP endpoints, and the `tests/` directory for
-usage examples. Contributions welcome — this is early stage!
+See `lisp/model.lisp` for the current `*base-model*` and the `models/` directory for example models (one per file, e.g. `todos.lisp`, `modelbank.lisp`, `widgets.lisp`), each loadable with `(set-model "todos")`, `lisp/backend.lisp` for the `be-*` API, `lisp/rest.lisp` for HTTP endpoints, and the `tests/` directory for usage examples. Contributions welcome; this is early stage!
 
 
 ## Road to MVP
 
-**Target: a complete MVP by the end of December 2026, including a
-30-second video that goes from nothing — no database, no code — to a
-deployed, working application.**
+**Target: a complete MVP by the end of December 2026, including a 30-second video that goes from nothing, no database, no code, to a deployed, working application.**
 
 Odds of hitting the date: **strong.** The reasoning, plainly:
 
-- The riskiest milestones are already behind us. The compiler, RBAC
-  integration, generic API, write-through, and — as of July — the entire
-  deployment pipeline are working in production. These were the
-  make-or-break items; everything that could have invalidated the core
-  thesis has instead confirmed it.
-- What remains is effort-bounded, not research-bounded: finishing Model
-  Bank (the fitness function), hardening write-through edge cases, UI
-  polish, and the video itself. None of it requires solving an open
-  problem; five months remain for work measured in weeks.
-- The main schedule risks are scope creep and polish perfectionism. The
-  mitigations are written down: file update may ship after MVP,
-  **transactions and rollback are explicitly post-MVP** (hooks and
-  write-through are not atomic with the primary write today), and the UI
-  bar is "clean and demo-ready," not "design award." Frontend polish is
-  deliberately sequenced after compiler/backend capability work because
-  frontend changes are cheaper.
+- The riskiest milestones are already behind us. The compiler, RBAC integration, generic API, write-through, and, as of July, the entire deployment pipeline are working in production. These were the make-or-break items; everything that could have invalidated the core thesis has instead confirmed it.
+- What remains is effort-bounded, not research-bounded: finishing Model Bank (the fitness function), hardening write-through edge cases, UI polish, and the video itself. None of it requires solving an open problem; five months remain for work measured in weeks.
+- The main schedule risks are scope creep and polish perfectionism. The mitigations are written down: file update may ship after MVP, **transactions and rollback are explicitly post-MVP** (hooks and write-through are not atomic with the primary write today), and the UI bar is "clean and demo-ready," not "design award." Frontend polish is deliberately sequenced after compiler/backend capability work because frontend changes are cheaper.
 
-**Model Bank is the priority function.** The MVP must prove that real,
-non-trivial applications can be built on Data UI significantly faster
-than any alternative — and the way to prove that is to build one.
-Model Bank (a model-sharing application with relationships, ownership,
-image association, and ratings) is that application. Gaps surfaced by
-building Model Bank are, by definition, the highest-priority work.
+**Model Bank is the priority function.** The MVP must prove that real, non-trivial applications can be built on Data UI significantly faster than any alternative, and the way to prove that is to build one. Model Bank (a model-sharing application with relationships, ownership, image association, and ratings) is that application. Gaps surfaced by building Model Bank are, by definition, the highest-priority work.
 
 
 ## Goals & Vision
 
-Data UI exists to solve a problem that existing low-code and backend tools handle
-poorly: building production-grade, multi-user applications that allow users to
-interact with each other, share resources, and that require robust, evolving
-role-based access control.
+Data UI exists to solve a problem that existing low-code and backend tools handle poorly: building production-grade, multi-user applications that allow users to interact with each other, share resources, and that require robust, evolving role-based access control.
 
-Most collaborative applications — internal tools, client portals, team
-workspaces, resource-sharing systems — need fine-grained permissions that change
-over time. Current low-code platforms either offer weak or bolted-on RBAC, or
-they generate large amounts of opaque code that must be manually finished and
-maintained. The result is slow iteration, hidden permission bugs, and painful
-refactoring when requirements change.
+Most collaborative applications (internal tools, client portals, team workspaces, resource-sharing systems) need fine-grained permissions that change over time. Current low-code platforms either offer weak or bolted-on RBAC, or they generate large amounts of opaque code that must be manually finished and maintained. The result is slow iteration, hidden permission bugs, and painful refactoring when requirements change.
 
-Data UI takes a different approach. You describe your data model, relationships,
-and UI hints in one small, reviewable plist. The system compiles this
-into:
+Data UI takes a different approach. You describe your data model, relationships, and UI hints in one small, reviewable plist. The system compiles this into:
 
 - PostgreSQL tables, views, and triggers
 - Parameterized CRUD operations with full RBAC enforcement
 - A complete schema-driven React frontend
 - Generic REST endpoints that work for every type, including the built-in RBAC types themselves
 
-Because RBAC entities (users, roles, permissions) are treated as first-class
-types, permission changes are made through the same interface as any other data —
-no separate admin layer or model edits required.
+Because RBAC entities (users, roles, permissions) are treated as first-class types, permission changes are made through the same interface as any other data, no separate admin layer or model edits required.
 
-The model acts as the DNA of the application. Small, auditable changes produce
-deterministic, system-wide updates. This makes iteration fast and safe: refine
-your vision by editing the model rather than rewriting code.
+The model acts as the DNA of the application. Small, auditable changes produce deterministic, system-wide updates. This makes iteration fast and safe: refine your vision by editing the model rather than rewriting code.
 
-For custom logic and external integrations, Data UI provides typed hooks that
-receive pre-evaluated authorization context and a well-defined payload.
-Developers attach behavior without rebuilding the core application architecture.
+For custom logic and external integrations, Data UI provides typed hooks that receive pre-evaluated authorization context and a well-defined payload. Developers attach behavior without rebuilding the core application architecture.
 
-The result is a tool that lets technical users, small teams, and AI agents build
-reliable, RBAC-protected collaborative applications much faster and with greater
-long-term maintainability than traditional development or existing low-code
-platforms.
+The result is a tool that lets technical users, small teams, and AI agents build reliable, RBAC-protected collaborative applications much faster and with greater long-term maintainability than traditional development or existing low-code platforms.
 
-**MVP target: December 2026.** A minimal but production-capable system that
-delivers a complete RBAC-protected application (database, React frontend, and
-Kubernetes deployment) from a small model in under 30 minutes. The MVP ships with
-a 30-second video that goes from nothing to a deployed app. The deployment
-pipeline — historically the riskiest part of such a promise — is already
-working in production; see [Road to MVP](#road-to-mvp).
+**MVP target: December 2026.** A minimal but production-capable system that delivers a complete RBAC-protected application (database, React frontend, and Kubernetes deployment) from a small model in under 30 minutes. The MVP ships with a 30-second video that goes from nothing to a deployed app. The deployment pipeline, historically the riskiest part of such a promise, is already working in production; see [Road to MVP](#road-to-mvp).
 
-After the MVP, planned work includes a hosted service with JSON/YAML model input
-and AI prompts, a curated hook registry as the AI-and-no-code escape hatch, the
-marketplace described below, and professional support services.
+After the MVP, planned work includes a hosted service with JSON/YAML model input and AI prompts, a curated hook registry as the AI-and-no-code escape hatch, the marketplace described below, and professional support services.
 
 
 ## The Marketplace
 
-The marketplace is the growth engine. It does three things at once: it solves
-onboarding by making the first experience *copy a working thing* rather than
-*author from a blank page*; it creates network effects; and it becomes a
-retrieval corpus that both humans and AI draw from — find a near-fit model, adapt
-it, change the appearance, deploy.
+The marketplace is the growth engine. It does three things at once: it solves onboarding by making the first experience *copy a working thing* rather than *author from a blank page*; it creates network effects; and it becomes a retrieval corpus that both humans and AI draw from, find a near-fit model, adapt it, change the appearance, deploy.
 
-Creating a new application becomes: find a model in the marketplace, copy it,
-modify it slightly, optionally restyle it, and deploy.
+Creating a new application becomes: find a model in the marketplace, copy it, modify it slightly, optionally restyle it, and deploy.
 
 We pursue the marketplace in two forms:
 
-- **(a) An open-source reference Marketplace.** Its job is not to be the product —
-  it is to be the **proof**. You can stare at a fraction of a page of model and
-  realize it represents the entire Marketplace application. Its smallness is the
-  point and is defended as a feature. Being open and copyable, it is also the
-  canonical first entry in the corpus — the template everyone forks.
+- **(a) An open-source reference Marketplace.** Its job is not to be the product, it is to be the **proof**. You can stare at a fraction of a page of model and realize it represents the entire Marketplace application. Its smallness is the point and is defended as a feature. Being open and copyable, it is also the canonical first entry in the corpus, the template everyone forks.
 
-- **(b) A closed-source, production-grade Marketplace.** This is where iteration
-  and revenue live: YAML/JSON model input, AI prompts, the corpus, search,
-  hosting, and one-click deploy.
+- **(b) A closed-source, production-grade Marketplace.** This is where iteration and revenue live: YAML/JSON model input, AI prompts, the corpus, search, hosting, and one-click deploy.
 
-The line between them is crisp: the open reference app **is** the application
-logic; the closed product adds **operational** concerns (hosting, AI front door,
-billing, scaling, moderation) that are infrastructure, not application. Keeping
-that line clear is what lets the proof and the product reinforce each other
-rather than undercut the central claim.
+The line between them is crisp: the open reference app **is** the application logic; the closed product adds **operational** concerns (hosting, AI front door, billing, scaling, moderation) that are infrastructure, not application. Keeping that line clear is what lets the proof and the product reinforce each other rather than undercut the central claim.
 
 
 ## Business & Monetization
 
-The Data UI **engine** is and will remain fully open source under the MIT license.
-The core (model compiler, SQL generation, RBAC integration, CRUD layer, the
-reference Marketplace) is free for anyone to use, self-host, or modify.
+The Data UI **engine** is and will remain fully open source under the MIT license. The core (model compiler, SQL generation, RBAC integration, CRUD layer, the reference Marketplace) is free for anyone to use, self-host, or modify.
 
-The **hosting** is a separate, closed-source product. Initially it has no
-raw-code escape hatch: models are pure data, hooks come from the curated
-registry. When a hosted user needs power beyond the data vocabulary, the escape
-valve is to self-host the open engine.
+The **hosting** is a separate, closed-source product. Initially it has no raw-code escape hatch: models are pure data, hooks come from the curated registry. When a hosted user needs power beyond the data vocabulary, the escape valve is to self-host the open engine.
 
-Initially we will focus on building custom applications for clients while
-dogfooding the tool on our own projects.
+Initially we will focus on building custom applications for clients while dogfooding the tool on our own projects.
 
-After the MVP, to fund continued development and provide additional value to
-users, we plan to provide:
+After the MVP, to fund continued development and provide additional value to users, we plan to provide:
 
 - A user-friendly YAML/JSON + visual modeling frontend, plus AI prompts (for those who prefer not to write Lisp models)
 - Managed hosting (one-click deploy, updates, backups, scaling)
 - The production-grade Marketplace
 - Professional support, SLAs, and custom development services for clients
 
-If you're building internal tools or client apps and want help, feel free to
-reach out. Contributions and feedback are very welcome — this is still early
-stage!
+If you're building internal tools or client apps and want help, feel free to reach out. Contributions and feedback are very welcome; this is still early stage!
 
 
 ## Related Repositories
 
-- [macnod/rbac](https://github.com/macnod/rbac) — Mature RBAC library with users, roles, permissions, resources, and comprehensive query functions.
-- [macnod/dc-ds](https://github.com/macnod/dc-ds) - Nested data structure navigation and operations.
-- [macnod/p-log](https://github.com/macnod/p-log) - Simple logging library with support for multiple backends and structured logs.
-- [macnod/dc-eclectic](https://github.com/macnod/dc-eclectic) - A collection of utilities and helpers for Common Lisp development.
+- [macnod/rbac](https://github.com/macnod/rbac): Mature RBAC library with users, roles, permissions, resources, and comprehensive query functions.
+- [macnod/dc-ds](https://github.com/macnod/dc-ds): Nested data structure navigation and operations.
+- [macnod/p-log](https://github.com/macnod/p-log): Simple logging library with support for multiple backends and structured logs.
+- [macnod/dc-eclectic](https://github.com/macnod/dc-eclectic): A collection of utilities and helpers for Common Lisp development.
 
 
 ## License
