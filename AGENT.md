@@ -210,9 +210,9 @@ three steps individually.
   see, and **ask the human whether to start working on it**. It does **not**
   mean "begin researching or implementing immediately." Wait for explicit
   direction before starting any work.
-- **Tables in agent replies:** Do **not** use markdown tables at all.
-  Prefer bullet lists, short definition lists, or nested bullets.
-  Tables wrap poorly in Emacs and terminals and are hard to read.
+- **No Org tables in replies.** Global HARD rule: see
+  `~/r/elisp/ai/global.md`. Do not restate at length here.
+
 
 ## AI Agent Workflow & Tooling
 - Use specialized file tools exclusively: `Glob`, `Grep`, `Read`, `Edit`, `Write` (never `Bash` for file inspection/editing)
