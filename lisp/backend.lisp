@@ -614,17 +614,20 @@ user-defined types (non-:built-in), excluding \"admin\"."
         append (list field-key (add-to-plist (list
                                                :default default
                                                :path path
-                                               :table table)
+                                               :table table
+                                               :sortable (getf field-def :sortable)
+                                               :searchable (getf field-def :searchable))
                                  ui))))))
 
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
 
 (defun list-result (type-key user form &key
-                    field-keys view-result skip-allowed-values)
+                    field-keys view-result total skip-allowed-values)
   (add-to-plist
     (list
       :type-key type-key
+      :total (or total 0)
       :create (true-or-false type-key :create)
       :update (true-or-false type-key :update)
       :delete (true-or-false type-key :delete)
@@ -1897,25 +1900,243 @@ database query."
     (let ((record (rec id user :form form :type-key type-key)))
       (u:tree-get record :record field-key))))
 
-;; This function relies on a single query when there are no filters and on 2
-;; queries where there are filters. This is necessary with the current approach
-;; because the first query returns N rows, then the code collapses those rows
-;; into some number <= N. The orginal result contains multiple rows for some
-;; given ID when the ID is associated with multiple items in another table (one
-;; row for each association). The code that collapses the results reduces the
-;; number of rows to the number of distinct IDs in the result, converting the
-;; associated values into lists for the field that holds the associations.  This
-;; is bad, because the second query does something like `where id in (...)`.
-;; Eventually we'll need to fix this so that the collapsing occurs in the
-;; database, with something like `array_agg(...) group by id` in the SQL.
-;;
-;; TODO: Add pagination support
+;;;
+;;; Phase A: ID selection with paging, sorting, and filtering.
+;;;
+;;; Phase A selects a page of primary IDs using fast indexed queries on base
+;;; columns (WHERE / ORDER BY / LIMIT / OFFSET). Join-table filters are also in
+;;; Phase A via JOIN + WHERE so that paging is honest.  Phase B then hydrates
+;;; only those IDs.
+;;;
+;;; See docs/todo.org item 2 and workbench/list-plan/02-id-first-phase-a.org.
+
+(defparameter +max-limit+ 200
+  "Server-side maximum for the LIMIT clause in be-list.")
+
+(defun clamp-limit (limit)
+  ":private: Clamp LIMIT to the server-side maximum. Returns nil when LIMIT is
+nil (meaning no limit / all rows). Otherwise clamps to [1, +max-limit+]."
+  (when limit
+    (min (max limit 1) +max-limit+)))
+
+(defun phase-a-select-sql (type-key filters)
+  ":private: Returns the base SQL string for Phase A — either the simple SELECT
+id FROM <table> or the SELECT DISTINCT ... JOIN version when filters reference
+joined tables."
+  (let ((m *compiled-model*))
+    (if (filters-require-join-p type-key filters)
+      (u:tree-get m type-key :views :main :phase-a-join-sql)
+      (u:tree-get m type-key :views :main :phase-a-base-sql))))
+
+(defun phase-a-order-by-column (type-key sort)
+  ":private: Returns the table-qualified column name for the sort field, or nil
+if SORT is nil. Validates that the field is marked :sortable t."
+  (when sort
+    (let* ((field-key (car sort))
+           (field-def (u:tree-get *compiled-model* type-key :fields field-key)))
+      (unless field-def
+        (report-ve "phase-a-order-by-column"
+          "Cannot sort on unknown field ~s for type ~s."
+          ~field-key ~type-key))
+      (unless (getf field-def :sortable)
+        (report-ve "phase-a-order-by-column"
+          "Field ~s is not sortable for type ~s."
+          ~field-key ~type-key))
+      (u:tree-get field-def :source :column-name))))
+
+(defun phase-a-build-order-by (type-key sort)
+  ":private: Returns an ORDER BY clause string for the Phase A query. SORT is
+nil or a plist (:field-key :asc|:desc). Defaults to ORDER BY id when SORT is
+nil."
+  (if sort
+    (let* ((column (phase-a-order-by-column type-key sort))
+            (direction (or (cadr sort) :asc)))
+      (unless (member direction '(:asc :desc))
+        (report-ve "phase-a-build-order-by"
+          "Invalid sort direction ~s. Use :asc or :desc." ~direction))
+      (format nil " order by ~a ~a" column direction))
+    (let ((table (u:tree-get *compiled-model* type-key :table-name)))
+      (format nil " order by ~a.id" table))))
+
+(defun phase-a-build-count-sql (base-sql where-result)
+  ":private: Transforms the Phase A base SQL + WHERE into a COUNT query.
+Replaces the SELECT clause with COUNT(*) or COUNT(DISTINCT ...) depending on
+whether the base SQL contains a JOIN."
+  (let* ((where-sql (car where-result))
+          (where-params (cdr where-result))
+          (has-join-p (search " join " base-sql :test #'char-equal))
+          (table (if has-join-p
+                   (let ((distinct-pos (search "select distinct "
+                                         base-sql :test #'char-equal)))
+                     (subseq base-sql
+                       (length "select distinct ")
+                       (search " from" base-sql :test #'char-equal)))
+                   (subseq base-sql
+                     (length "select ")
+                     (search " from" base-sql :test #'char-equal))))
+          (count-expr (if has-join-p
+                        (format nil "count(distinct ~a)" table)
+                        "count(*)"))
+          ;; Extract the FROM ... portion from the WHERE-augmented SQL.
+          ;; The WHERE result is base-sql + "where ..." appended.
+          (from-pos (search " from" where-sql :test #'char-equal))
+          (from-portion (subseq where-sql from-pos))
+          (count-sql (format nil "select ~a ~a" count-expr from-portion)))
+    (cons count-sql where-params)))
+
+(defun escape-ilike-pattern (term)
+  ":private: Escape LIKE metacharacters in TERM for use with
+ILIKE ... ESCAPE '\\'. Escapes backslash, then %, then _. Does not wrap
+in %...%; the caller does."
+  (with-output-to-string (out)
+    (loop for c across (or term "")
+      do (case c
+           (#\\ (write-string "\\\\" out))
+           (#\% (write-string "\\%" out))
+           (#\_ (write-string "\\_" out))
+           (t (write-char c out))))))
+
+(defun phase-a-search-clause (type-key search start-index)
+  ":private: Build a parenthesized OR ILIKE group for :search.
+Returns nil when SEARCH is blank/whitespace-only. Otherwise returns
+(cons fragment pattern) where FRAGMENT is
+
+  \"(col1 ILIKE $N ESCAPE '\\\\' OR col2 ILIKE $N ESCAPE '\\\\')\"
+
+and PATTERN is the escaped term wrapped in %...%. One bind param is reused.
+
+Invariant: FRAGMENT never contains the substring \" from\"
+(phase-a-build-count-sql slices where-sql at \" from\"). No search index:
+leading % defeats btree.
+
+Non-blank SEARCH on a type with zero :searchable-fields signals report-ve."
+  (let ((trimmed (when search (u:trim search))))
+    (when (and trimmed (plusp (length trimmed)))
+      (let ((cols (u:tree-get *compiled-model* type-key :searchable-fields)))
+        (unless cols
+          (report-ve "phase-a-search-clause"
+            "Type ~s has no searchable fields." ~type-key))
+        (let* ((pattern (format nil "%~a%" (escape-ilike-pattern trimmed)))
+                (preds (mapcar
+                         (lambda (col)
+                           (format nil "~a ILIKE $~d ESCAPE '\\'"
+                             col start-index))
+                         cols))
+                (fragment (format nil "(~{~a~^ OR ~})" preds)))
+          (cons fragment pattern))))))
+
+(defun phase-a-query (type-key filters sort limit offset user
+                       &key search)
+  ":private: Build and execute Phase A — select a page of primary IDs.
+Returns (values ids total).
+
+FILTERS is the full filter list (user filters + RBAC ids + scope).
+SORT is nil or (:field-key :asc|:desc).
+LIMIT is nil (no limit) or an integer (already clamped).
+OFFSET is an integer.
+SEARCH is nil or a non-blank string matched with ILIKE against the type's
+:searchable-fields (OR group), before paging."
+  (let* ((base-sql (phase-a-select-sql type-key filters))
+          (where-result (add-where-clause base-sql filters user))
+          (where-sql (car where-result))
+          (where-params (cdr where-result))
+          ;; Splice search OR-group into WHERE before ORDER BY / LIMIT / count.
+          (search-clause (phase-a-search-clause type-key search
+                           (next-param-index where-sql)))
+          (where-sql
+            (if search-clause
+              (if (string= base-sql where-sql)
+                (format nil "~a~%where~%  ~a~%" where-sql (car search-clause))
+                (format nil "~a  and ~a~%" where-sql (car search-clause)))
+              where-sql))
+          (where-params
+            (if search-clause
+              (append where-params (list (cdr search-clause)))
+              where-params))
+          (where-result (cons where-sql where-params))
+          (order-by (phase-a-build-order-by type-key sort))
+          ;; Build page SQL: ORDER BY always; LIMIT/OFFSET only when limit is
+          ;; non-nil.
+          (page-sql
+            (if limit
+              (format nil "~a~a~%limit $~a offset $~a"
+                where-sql order-by
+                (next-param-index where-sql)
+                (1+ (next-param-index where-sql)))
+              (format nil "~a~a" where-sql order-by)))
+          (page-params
+            (if limit
+              (append where-params (list limit offset))
+              where-params))
+          (page-query (cons page-sql page-params))
+          ;; Count query: same WHERE/JOIN, no ORDER BY/LIMIT/OFFSET.
+          (count-result (phase-a-build-count-sql base-sql where-result))
+          (count-query count-result))
+    (pl:pdebug :in "phase-a-query"
+      :base-sql base-sql
+      :page-sql page-sql
+      :count-sql (car count-query))
+    (let ((ids (a:with-rbac (*rbac*)
+                 (a:rbac-query page-query :column)))
+           (total (a:with-rbac (*rbac*)
+                    (a:rbac-query count-query :single))))
+      (values ids total))))
+
+;;;
+;;; be-list - Phase A -> Phase B flow.
+;;;
+;;; Phase A selects a page of primary IDs (fast, indexed, with join-filter
+;;; pushdown). Phase B hydrates only those IDs via the view-result path. All
+;;; filtering happens in Phase A; Phase B does not re-apply filters.
+;;;
+
+(defun reorder-to-match (records ids)
+  ":private: Reorder RECORDS (plists with :ID) to match the order of IDS.
+Phase B (hydration) does not preserve the order from Phase A; this function
+restores it."
+  (loop for id in ids
+    for record = (find id records :key (lambda (r) (getf r :id)) :test #'equal)
+    when record collect record))
+
+(defun phase-b-hydrate (type-key ids user &key 
+                         form field-keys total skip-allowed-values)
+  ":private: Hydrate and collapse the given ID set.
+
+Runs the existing join query with WHERE id IN (ids), collapses fan-out via
+aggregate-values, and returns the list-result plist. No filters are applied
+here; all filtering happened in Phase A. The only WHERE condition is id IN
+(phase-a-ids).
+
+Record order is restored to match the Phase A ID order via reorder-to-match,
+because the WHERE id IN (...) query does not guarantee row ordering in
+PostgreSQL."
+  (let* ((m *compiled-model*)
+          (sql (u:tree-get m type-key :views :main :sql))
+          (ids-query (add-ids-clause type-key sql ids))
+          (view-result (view-result type-key ids-query))
+          (result (list-result type-key user form
+                    :field-keys field-keys
+                    :view-result view-result
+                    :total total
+                    :skip-allowed-values skip-allowed-values)))
+    (setf (getf result :records)
+      (reorder-to-match (getf result :records) ids))
+    result))
+
 (defun be-list (type-key user
-                &key (form :list-form) filters skip-allowed-values)
-  ":public: Returns a list of records of type TYPE-KEY that match FILTERS and
-that USER has `read` permissions for. Each record is returned as a plist, where
-the keys are field keys and the values are the corresponding field values. The
-following example returns a list of all the :todos records that have the tag
+                 &key (form :list-form) filters
+                 (limit 20) (offset 0) sort
+                 (search nil)
+                 skip-allowed-values)
+  ":public: Returns a list of records of TYPE-KEY that match FILTERS and that
+USER has `read` permissions for. Each record is returned as a plist, where the
+keys are field keys and the values are the corresponding field values.
+
+Supports paging via LIMIT (default 20, max 200) and OFFSET (default 0).
+SORT is nil or a plist (:field-key :asc|:desc).
+SEARCH is nil or a string; matched with ILIKE against :searchable fields.
+
+The following example returns a list of all the :todos records that have the tag
 'chores' and that the user 'admin' has permission to read:
 
     `(be-list :todos \"admin\" :filters '((:tags :name :eq \"chores\")))`"
@@ -1925,40 +2146,46 @@ following example returns a list of all the :todos records that have the tag
   (if (uuid-p filters)
     (valid-existing-uuid filters)
     (valid-filters filters))
+  ;; Validate search early so empty-rbac short-circuit still 400s on
+  ;; non-empty search against a type with zero searchable fields.
+  (phase-a-search-clause type-key search 1)
   (let* ((m *compiled-model*)
           (user-roles (a:list-user-role-names *rbac* user))
           (type-roles (u:tree-get m type-key :type-roles))
-          (ids (if (base-resource-type-key-p type-key)
-                 (when (u:has-some user-roles type-roles)
-                   (let ((table (table-name type-key)))
-                     (a:with-rbac (*rbac*)
-                       (db:query (format nil "select id from ~a" table)
-                         :column))))
-                 (user-read-type-ids user type-key))))
-    (pl:pdebug :in "be-list" :filters filters)
-    (if ids
-      (let* ((all-filters (filters-for-be-list type-key ids filters user))
-              (sql (u:tree-get m type-key :views :main :sql))
-              (where (add-where-clause sql all-filters user))
-              (view-result (view-result type-key where))
+          (page-limit (clamp-limit limit))
+          (rbac-ids (if (base-resource-type-key-p type-key)
+                      (when (u:has-some user-roles type-roles)
+                        (let ((table (table-name type-key)))
+                          (a:with-rbac (*rbac*)
+                            (db:query (format nil "select id from ~a" table)
+                              :column))))
+                      (user-read-type-ids user type-key))))
+    (pl:pdebug :in "be-list" :filters filters :limit page-limit :offset offset)
+    (if rbac-ids
+      (let* ((all-filters (filters-for-be-list type-key rbac-ids filters user))
               (field-keys (form-field-keys type-key form)))
-        (if (filters-require-join-p type-key filters)
-          (let ((ids (view-result-ids type-key field-keys view-result)))
-            (when ids
-              (let* ((ids-query (add-ids-clause type-key sql ids))
-                      (view-result (view-result type-key ids-query)))
-                (list-result type-key user form
-                             :field-keys field-keys :view-result view-result
-                             :skip-allowed-values skip-allowed-values))))
-          (list-result type-key user form
-                       :field-keys field-keys :view-result view-result
-                       :skip-allowed-values skip-allowed-values)))
+        ;; Phase A: select a page of IDs + total count.
+        (multiple-value-bind (ids total)
+          (phase-a-query type-key all-filters sort page-limit offset user
+            :search search)
+          (if ids
+            ;; Phase B: hydrate only the page IDs.
+            (phase-b-hydrate type-key ids user
+              :form form :field-keys field-keys
+              :total total :skip-allowed-values skip-allowed-values)
+            ;; Empty page — return empty result with total count.
+            (list-result type-key user form
+              :field-keys field-keys
+              :total total
+              :skip-allowed-values skip-allowed-values))))
       (list-result type-key user form
-                   :skip-allowed-values skip-allowed-values))))
+        :skip-allowed-values skip-allowed-values))))
 
-;; TODO: Add pagination support
 (defun be-list-column (type-key field-key user
-                       &key (form :list-form) filters skip-allowed-values)
+                       &key (form :list-form) 
+                        sort limit offset
+                        filters search
+                        skip-allowed-values)
   ":public: Returns a list of the values in FIELD-KEY for the records of type
 TYPE-KEY that match FILTERS and that USER has 'read' permissions for. This is
 like BE-LIST, but it returns a list of values instead of a list of records."
@@ -1971,7 +2198,9 @@ like BE-LIST, but it returns a list of values instead of a list of records."
     (valid-filters filters))
   (let ((records (getf
                    (be-list type-key user :form form :filters filters
-                            :skip-allowed-values skip-allowed-values)
+                     :limit limit :offset offset :sort sort
+                     :search search
+                     :skip-allowed-values skip-allowed-values)
                    :records)))
     (add-to-plist
       (list

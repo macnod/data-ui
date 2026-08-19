@@ -46,4 +46,6 @@
                                 (:file "static-options-tests")
                                 (:file "form-fields-tests")
                                 (:file "compose-tests")
-                                (:file "compose-sugar-tests")))))
+                                (:file "compose-sugar-tests")
+                                (:file "sortable-tests")
+                                (:file "searchable-tests")))))

@@ -21,26 +21,35 @@ Starts a Common Lisp REPL (via Roswell) with the Data UI system loaded
 and initialized. Starts a PostgreSQL container, initializes the
 database, builds the frontend, and starts a Swank server.
 
-- **Swank port:** 4010
-- **HTTP port:** 8081
-- **Database port:** 5444
+Without `[profile]`, uses built-in dev defaults (HTTP 8081, Swank
+4010, DB 5444) and does not create a profile.
+
+With `[profile]`, loads
+`~/.local/state/data-ui-host/<profile>/profile.env` (complete
+partition) and auto `set-model` when `MODEL_NAME` is set.
 
 Connect to the REPL from Emacs using `M-x slime-connect` (or your
 preferred Slime client) on the reported Swank port. When you exit the
 REPL, the database container is stopped automatically.
 
-**Example:**
+**Examples:**
 
     scripts/data-ui repl
+    scripts/data-ui repl modelbank
 
 #### `db`
 
 Starts the PostgreSQL database container, initializes it, and opens an
 interactive `psql` session. Useful for manual database inspection.
 
-**Example:**
+Without `[profile]`, uses the same built-in dev defaults as `repl`
+and does not create a profile. With `[profile]`, uses that profile's
+database settings.
+
+**Examples:**
 
     scripts/data-ui db
+    scripts/data-ui db modelbank
 
 #### `psql`
 
@@ -48,9 +57,103 @@ Connects to the REPL database via `psql` without starting or stopping
 the container. Use this when the REPL is already running and you want
 to inspect the database alongside it.
 
-**Example:**
+Without `[profile]`, uses built-in dev defaults. With `[profile]`,
+loads that profile and connects to its database.
+
+**Examples:**
 
     scripts/data-ui psql
+    scripts/data-ui psql modelbank
+
+#### `create-profile`
+
+Creates a host profile for a top-level model. The model must exist
+as `models/<model>.lisp` (test fixtures under `models/test/` are not
+accepted). The profile name defaults to the model name; pass a second
+argument for a different profile name.
+
+    scripts/data-ui create-profile <model> [profile]
+
+Behavior:
+
+- Fails if the profile already exists (no `--force`; use
+  `delete-profile` first)
+- Allocates free HTTP / Swank / DB ports, skipping reserved ports
+  (unnamed repl, tests, deploy compile), ports claimed by other
+  profiles' `profile.env` files, and live listeners
+- Generates fresh secrets and prints the admin password on stdout
+- Writes `profile.env` (mode 600) with absolute paths; hyphens in the
+  profile name become underscores in `DB_NAME` / `DB_USER` (the
+  container name stays hyphenated)
+- Does not start Postgres or the REPL
+
+**Examples:**
+
+    scripts/data-ui create-profile todos
+    scripts/data-ui create-profile todos todos-2
+
+#### `delete-profile`
+
+Deletes a host profile: runs `docker compose down --volumes` for its
+database project and removes the profile directory.
+
+    scripts/data-ui delete-profile <profile>
+
+Behavior:
+
+- Refuses if the profile's HTTP or DB port is listening (exit the
+  REPL first)
+- Asks you to type the profile name to confirm, unless `FORCE=1`
+- Removes the profile's HAProxy exposure if present (on `DEPLOY_HOST`;
+  otherwise prints "HAProxy cleanup skipped")
+- Leaves snapshots and deploy state alone (matching snapshots are
+  mentioned, not deleted)
+- Does not touch the unnamed-repl, test, or deploy containers
+
+**Examples:**
+
+    scripts/data-ui delete-profile todos
+    FORCE=1 scripts/data-ui delete-profile todos-2
+
+#### `expose-profile`
+
+Makes a locally-run host profile reachable from the outside through
+the existing HAProxy TLS front door:
+`https://<model :domain>` → `127.0.0.1:<HTTP_PORT>`.
+
+    scripts/data-ui expose-profile <profile>
+
+Behavior:
+
+- Primary profiles only (profile name equals its `MODEL_NAME`;
+  `modelbank` yes, `modelbank-2` no)
+- Requires `sudo` and must run on `DEPLOY_HOST` (default `evo-x2`),
+  from a checkout containing `models/<model>.lisp` (and `ros`)
+- The hostname comes from the model's `:domain`; the model must have
+  one, or the profile cannot be exposed
+- Refuses if the domain is claimed by a deployed instance (use
+  `delete` first) or by another profile (use `unexpose-profile`
+  first); re-exposing the same profile is idempotent
+- TLS is covered by the existing `*.demo.data-ui.com` wildcard
+  certificate — no TLS work needed
+- Warns (does not fail) if the profile is not listening yet;
+  expose-then-start is the intended workflow
+
+**Example:**
+
+    scripts/data-ui expose-profile modelbank
+
+#### `unexpose-profile`
+
+Removes a profile's HAProxy exposure (backend drop-in and map
+entry). Idempotent: prints "not exposed" and exits 0 when there is
+nothing to remove. Requires `sudo` and must run on `DEPLOY_HOST`.
+
+    scripts/data-ui unexpose-profile <profile>
+
+**Example:**
+
+    scripts/data-ui unexpose-profile modelbank
 
 #### `tests`
 
@@ -133,12 +236,12 @@ secrets) lives outside the repo in
 
 **Examples:**
 
-    scripts/data-ui deploy
-    DRY_RUN=1 scripts/data-ui deploy
+    scripts/data-ui deploy todos
+    DRY_RUN=1 scripts/data-ui deploy todos
 
 #### `delete`
 
-Undeploys the default model's app. Deletes the Kubernetes namespace
+Undeploys the named model's app. Deletes the Kubernetes namespace
 and persistent volumes, wipes application data on the host, removes the
 HAProxy backend and map entry, and removes deploy state (including
 secrets). Asks for confirmation unless `FORCE=1` is set.
@@ -147,8 +250,8 @@ Docker images and git release tags are left in place.
 
 **Examples:**
 
-    scripts/data-ui delete
-    FORCE=1 scripts/data-ui delete
+    scripts/data-ui delete todos
+    FORCE=1 scripts/data-ui delete todos
 
 #### `traffic`
 
@@ -176,7 +279,10 @@ Subcommands:
 If `[name]` is omitted, the script auto-detects the currently-loaded
 model name by querying the running instance's `/api/info` endpoint.
 Snapshots are stored as `pg_dump` custom-format files in
-`~/.local/state/data-ui-snapshots/`.
+`~/.local/state/data-ui-snapshots/`. A snapshot name resolves a host
+profile when
+`~/.local/state/data-ui-host/<name>/profile.env` exists
+(suffix strip falls back to the profile prefix).
 
 **Typical workflow:**
 
@@ -210,6 +316,49 @@ schema partially rebuilt (same as any `pg_restore`).
 #### `help`
 
 Displays the built-in help text.
+
+### Host profiles
+
+Named local instances live under `~/.local/state/data-ui-host/`. A
+profile exists if and only if `<name>/profile.env` exists. Profile
+identity is the directory name. Create profiles with `create-profile`
+and destroy them with `delete-profile`. A primary profile can be made
+publicly reachable through HAProxy with `expose-profile` (and removed
+again with `unexpose-profile`).
+
+Unnamed `repl` / `db` / `psql` still use built-in dev defaults
+(HTTP 8081, Swank 4010, DB 5444, `tests/shared-files/`) and do not
+create a profile.
+
+`profile.env` is the complete partition. Required keys:
+
+- `HTTP_PORT`, `SWANK_PORT`, `SWANK_INTERFACE`
+- `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+- `DB_CONTAINER`, `DB_SERVICE`, `DB_DOCKER_COMPOSE`
+- `ADMIN_PASSWORD`, `JWT_SECRET`
+- `DOCUMENT_ROOT`, `FS_TEMP_DIRECTORY`, `LOG_FILE`
+- `MODEL_NAME`
+
+Optional keys:
+
+- `HTTP_HOST`, `DB_HOST`, `WEB_DIRECTORY`, `LOG_SEVERITY`, `RUN_TESTS`
+
+Per-profile runtime files live beside `profile.env`:
+
+- `repl.log`, `start.log`, `fifo`
+- `files/` (`DOCUMENT_ROOT`)
+- `temp/` (`FS_TEMP_DIRECTORY`)
+
+Host-wide files (`tests-run.log`, later `ports.lock`) stay at the
+root of `data-ui-host/`. Local file data does not live under
+`~/k3d/volumes/`; that tree is for cluster PVs.
+
+Postgres data for a named profile lives in the named Docker volume
+`${DB_CONTAINER}-pgdata` (for modelbank: `pg-data-ui-modelbank-pgdata`).
+`repl` / `db` stop the container on exit but keep that volume.
+Unnamed `repl` uses the same compose file, so its volume is
+`pg-data-ui-repl-pgdata`. Tests use a separate compose file with no
+named volume.
 
 ### Environment Variables
 

@@ -54,6 +54,9 @@
 
 ;; Register known boolean keys
 (register-json-boolean-key :read-only)
+(register-json-boolean-key :searchable)
+(register-json-boolean-key :sortable)
+
 
 (defun plist-to-json-plist (plist &key (nil-value "[]"))
   "Convert a plist to a JSON object."

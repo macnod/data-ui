@@ -93,12 +93,16 @@ Recognized keys: `*top-level-keys*` =
 | Key | Required | Value | Consumed by |
 |-----|----------|-------|-------------|
 | `:title` | yes | string (display title; restricted charset) | page title, deploy |
-| `:name` | yes | string `^[a-z][-a-z0-9]*` | deploy tag/namespace `dataui-<name>` |
+| `:name` | yes | string `^[a-z][-a-z0-9]*`; `profile` and `profile-*` are reserved | deploy tag/namespace `dataui-<name>` |
 | `:version` | yes | string (semver-ish) | image tag |
 | `:domain` | yes | FQDN-like string | HAProxy map, TLS host |
 | `:repl` | no (default `nil`) | boolean | Swank port iff `t`; **nil in production** |
 | `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-base type the user can access |
 | `:types` | yes | plist of type-key → type-def | compiler |
+
+`:name` values `profile` and `profile-*` are reserved for host-profile
+HAProxy backends (`scripts/data-ui expose-profile`); models using them
+fail compilation. Similar words (e.g. `profiles`) are fine.
 
 Minimal skeleton:
 
@@ -277,6 +281,8 @@ Under `:fields`, each entry is `field-key` → plist (except joiner
 | `:force-sql-name` | override generated column name string (e.g. `"rating_user"`) |
 | `:path` | marks the FS path field on fs-backed types (at most one per type) |
 | `:action` | **only** on `:type :button`; single action hook form |
+| `:sortable` | `t` → column is eligible for `ORDER BY` in list queries. Only valid on `:column t` fields. Compiler emits a sort index when no covering index exists |
+| `:searchable` | `t` → column is included in free-text `:search` (ILIKE OR-group in Phase A). Only valid on `:type :text` base columns without `:target`. Independent of `:sortable`. Distinct from type-level `:search-sql` (write-through identity lookup). Serialized as a JSON boolean (`true`/`false`, never `[]`). Base `:users` marks `:name` and `:email` searchable. |
 | `:default-from` | `:user` → copy username when creating user-setting rows |
 | `:css-value` | `t` → included in CSS-vars API (e.g. settings `:dark-mode`) |
 | `:primary-key` | DDL primary key (injected on `:id`) |
@@ -1011,7 +1017,7 @@ Always merged into every compiled model:
 
 | Type | Flags | Notes |
 |------|-------|-------|
-| `:users` | base, built-in | custom create/delete; settings row lifecycle |
+| `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` |
 | `:resources` | base, built-in, internal | no CRUD |
 | `:permissions` | base, built-in | |
 | `:roles` | base, built-in | |
@@ -1268,8 +1274,8 @@ resolved `:category` / `:internal`.
 
 **Field:** `:type` `:ui` `:column` `:default` `:not-null` `:unique` `:identity`
 `:compose` `:required` `:validations` `:source` `:source-all` `:join-table`
-`:target` `:write-to` `:autofill` `:force-sql-name` `:path` `:action`
-`:default-from` `:css-value` `:primary-key` / joiner `:reference`
+`:target` `:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:sortable`
+`:searchable` `:default-from` `:css-value` `:primary-key` / joiner `:reference`
 
 **UI:** `:label` `:widget` `:read-only` `:precision` `:options`
 

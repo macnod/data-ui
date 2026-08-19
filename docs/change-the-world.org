@@ -117,30 +117,30 @@ options are:
 
 Data UI introduces a fifth option: /describe what you want and deploy/. The
 model is a structured list of fields and relationships. If you can fill out a
-form, you can edit a model. And the Model Bank (a shared library of ready-made
-models) means you probably don't even start from scratch. You find something
-close, copy it, add your fields, and deploy.
+form, you can edit a model. And once the Model Bank exists (a shared library of
+ready-made models), you probably won't even start from scratch. You'll find
+something close, copy it, add your fields, and deploy.
 
 This doesn't just save money. It /unlocks/ applications that were never worth
 building because the cost was too high. Every small business, every club, every
 school, every community organization has a dozen apps it would use if someone
 could build them. Data UI makes those apps possible.
 
-** The Model Bank creates a new kind of software ecosystem.
+** The Model Bank will create a new kind of software ecosystem.
 
-The Model Bank is more than a template gallery. It's a /forkable/ library of
-application logic. When you find a model that's close to what you need, you copy
-it and adapt it. Your adaptation might be useful to someone else, who copies
-/yours/ and adapts further.
+The vision for the Model Bank is more than a template gallery. It's a planned
+/forkable/ library of application logic. When you find a model that's close to
+what you need, you'll copy it and adapt it. Your adaptation might be useful to
+someone else, who copies /yours/ and adapts further.
 
 This is how open source transformed libraries: you don't write your own JSON
-parser, you use one that thousands of people have tested.  The Model Bank does
-the same for /entire applications/. A well-designed inventory model,
-battle-tested by a hundred businesses, becomes a building block that the next
-business starts from: not from scratch, but from /proven/.
+parser, you use one that thousands of people have tested. The Model Bank aims to
+do the same for /entire applications/. A well-designed inventory model,
+battle-tested by a hundred businesses, will become a building block that the
+next business starts from: not from scratch, but from /proven/.
 
-The result is a ratchet: every shared model raises the floor for everyone. The
-quality of the average application goes up because the average application
+The result will be a ratchet: every shared model raises the floor for everyone.
+The quality of the average application goes up because the average application
 starts from a good model, not from a blank page.
 
 * What This Means for AI-Assisted Development
@@ -208,8 +208,8 @@ that /writes software/.
 Each of these changes is significant on its own. Together, they compound.
 
 When developers stop writing boilerplate, they build more features. When code
-review takes 30 seconds, more people review. When the Model Bank has a proven
-model for your use case, you start from a higher floor. When AI can produce a
+review takes 30 seconds, more people review. When the Model Bank offers a proven
+model for your use case, you'll start from a higher floor. When AI can produce a
 complete, deployable model from a plain-English description, the cost of
 building an app approaches the cost of /describing/ one.
 

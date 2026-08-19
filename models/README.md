@@ -21,6 +21,5 @@ By convention, each model file is named after the model it defines
 `(set-model "<name>")` tries `models/<name>.lisp` first, then falls back
 to `models/test/<name>.lisp`. Top-level wins on name collision.
 
-`modelbank-dev.lisp` is the development variant (top-level).
 `modelbank-test.lisp` under `test/` is the copy used by the generator
 test suite.

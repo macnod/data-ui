@@ -61,7 +61,13 @@ The frontend is intentionally minimal and schema-driven. It consumes `list-form`
 
 ## Feature and Issue Tracking
 
-Features, issues, and TODOs are tracked in **`~/workbench/data-ui-todo.org`** (an org-mode file with `TODO` / `DONE` states and tag-based categorization). This is the canonical backlog for MVP work, MVP backlog, and post-MVP items. Refer to it when deciding what to work on next.
+Features, issues, and TODOs are tracked in **`docs/todo.org`** (an org-mode file with `TODO` / `DONE` states and tag-based categorization). This is the canonical backlog for MVP work, MVP backlog, and post-MVP items. Refer to it when deciding what to work on next.
+
+Every item carries a `:PROPERTIES:` drawer with date stamps:
+- `:CREATED:` — date the item was added (org inactive timestamp, e.g. `[2026-08-10 Sun]`)
+- `:COMPLETED:` — date the item was marked `DONE` (same format; absent on `TODO` items)
+
+When adding a new item, include a `:PROPERTIES:` drawer with `:CREATED:` set to today's date. When marking an item `DONE`, add (or update) `:COMPLETED:` with today's date.
 
 ## Live Introspection: `eval-in-data-ui`
 
@@ -238,7 +244,7 @@ three steps individually.
 
 - **End-to-end pipeline proven (June 2026): model → compile → deploy →
   live app.** The to-do model is deployed and working at
-  https://todo.demo.data-ui.com via `scripts/data-ui deploy`.
+  https://todo.demo.data-ui.com via `scripts/data-ui deploy todos`.
 - Backend compilation, SQL generation, RBAC, and generic endpoints are working
 - `models/todos.lisp` contains an example model for a To Do list; load it with
   `(set-model "todos")`. The deploy pipeline deploys `models/todos.lisp` via
@@ -338,7 +344,7 @@ three steps individually.
  
 ## Deployment (working; read this before touching it)
 
-`scripts/data-ui deploy` (renamed from `scripts/run.sh`) deploys
+`scripts/data-ui deploy todos` (renamed from `scripts/run.sh`) deploys
 `models/todos.lisp` to a k3d cluster on
 the deploy host (`evo-x2`) behind HAProxy + TLS. Full detail in
 **docs/deployment.md**; session-by-session history of how it was built (with
@@ -361,7 +367,7 @@ every bug and fix) in **~/.debug/deployment-work.md**. Key facts:
   DNS-01), auto-renewing via certbot.timer + the hook in
   `deploy/letsencrypt-haproxy-hook.sh`. One-time host setup:
   `deploy/setup-tls.sh`.
-- `DRY_RUN=1 scripts/data-ui deploy` renders manifests and stops —
+- `DRY_RUN=1 scripts/data-ui deploy todos` renders manifests and stops —
   use it before any template change.
 - **Trap 1:** rbac's `initialize-database` is NOT idempotent. If first
   boot dies mid-init, the instance wedges ("permission 'create' already
@@ -586,6 +592,10 @@ deploy cycle.
   and shell commands (=u:shell-command-= family). This is a partial
   list; browse the source in the =dc-eclectic= Quicklisp local
   project for the full API.
+- **Prefer =u:tree-get= over nested =getf= calls.** When accessing
+  deeply nested plist values, use =(u:tree-get tree :a :b :c)= instead
+  of =(getf (getf (getf tree :a) :b) :c)=. It is cleaner, more
+  readable, and consistent with the =u:= preference above.
 - **Prefer explicit parameter passing over dynamic (special) variables.**
   Dynamic variables (`*foo*`) are reserved for values that are truly
   global to the entire system (e.g. `*compiled-model*`, `*rbac*`).

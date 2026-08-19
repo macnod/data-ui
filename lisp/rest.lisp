@@ -402,13 +402,71 @@ validates and user exists. Otherwise, logs a message and returns NIL."
     do (return form-key)
     finally (abort-bad-request "Form not found" :form form-string)))
 
+(defun parse-page-param (value name default)
+  ":private: Parse a string VALUE as a non-negative integer for paging.
+Returns DEFAULT when VALUE is nil or empty. Returns 400 on invalid input."
+  (cond
+    ((or (null value) (zerop (length value))) default)
+    ((re:scan "^\\d+$" value) (parse-integer value))
+    (t (abort-bad-request
+         (format nil "Parameter '~a' must be a non-negative integer." name)
+         :name name :value value))))
+
+(defun parse-sort-param (sort-string type-key)
+  ":private: Parse a sort string like \"field:asc\" or \"field:desc\".
+Returns nil when SORT-STRING is nil or empty. Returns a plist
+(:field-key :asc|:desc). Returns 400 on invalid field, non-sortable
+field, or bad direction."
+  (cond
+    ((or (null sort-string) (zerop (length sort-string))) nil)
+    (t
+      (let* ((parts (u:split-n-trim sort-string ":"))
+             (field-string (car parts))
+             (direction-string (or (cadr parts) "asc"))
+             (field-key (u:make-keyword field-string))
+             (direction-key (u:make-keyword direction-string))
+             (field-def (u:tree-get *compiled-model*
+                           type-key :fields field-key)))
+        (unless field-def
+          (abort-bad-request
+            (format nil "Unknown sort field '~a' for type '~a'."
+              field-string type-key)
+            :sort sort-string :type type-key))
+        (unless (getf field-def :sortable)
+          (abort-bad-request
+            (format nil "Field '~a' is not sortable for type '~a'."
+              field-string type-key)
+            :sort sort-string :type type-key))
+        (unless (member direction-key '(:asc :desc))
+          (abort-bad-request
+            (format nil "Invalid sort direction '~a'. Use 'asc' or 'desc'."
+              direction-key)
+            :sort sort-string))
+        (list field-key direction-key)))))
+
+(defun parse-search-param (value)
+  ":private: Parse a search query string. Returns nil when VALUE is nil, empty,
+or whitespace-only. Trims whitespace and silently clamps to 200 characters."
+  (cond
+    ((or (null value) (zerop (length value))) nil)
+    (t (let* ((trimmed (u:trim value))
+               (clamped (if (> (length trimmed) 200)
+                          (subseq trimmed 0 200)
+                          trimmed)))
+         (when (plusp (length clamped))
+           clamped)))))
+
 (h:define-easy-handler (health :uri "/health") ()
   (format nil "OK~%"))
 
 (h:define-easy-handler (rest-list :uri "/api/list" :default-request-type :get)
   (type
     (filters :init-form nil)
-    (form :init-form "list-form"))
+    (form :init-form "list-form")
+    (limit :init-form nil)
+    (offset :init-form nil)
+    (sort :init-form nil)
+    (search :init-form nil))
   ":public: Endpoint for listing items.
 
 Method
@@ -433,15 +491,39 @@ form
 
 Optional. The name of the form to use for rendering the output. This will be
 converted to a keyword and used to look up the form in the model.  Valid values
-are 'list-form', 'update-form', and 'add-form'."
+are 'list-form', 'update-form', and 'add-form'.
+
+limit
+
+Optional. Maximum number of records to return (default 20, max 200).
+
+offset
+
+Optional. Number of records to skip (default 0).
+
+sort
+
+Optional. Sort specification: \"field:asc\" or \"field:desc\".
+Direction defaults to ascending if omitted.
+
+search
+
+Optional. Free-text search term matched with ILIKE against fields marked
+:searchable t. Blank/whitespace is ignored. Clamped to 200 characters."
   (let* ((type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
           (filters-parsed (parse-filters filters))
           (form-key (when form (parse-form form)))
+          (limit-val (parse-page-param limit "limit" 20))
+          (offset-val (parse-page-param offset "offset" 0))
+          (sort-val (parse-sort-param sort type-key))
+          (search-val (parse-search-param search))
           (result (handler-case
                     (be-list type-key user
-                      :form form-key :filters filters-parsed)
+                      :form form-key :filters filters-parsed
+                      :limit limit-val :offset offset-val :sort sort-val
+                      :search search-val)
                     (validation-error (e)
                       (abort-bad-request e :type type :filters filters
                         :form form))
@@ -1322,6 +1404,7 @@ index.html so client-side routing can take over."
   (when (and restart *http-server*) (stop-web-server))
   (unless *http-server*
     (setf *http-server* (make-instance 'fs-acceptor
+                          :address *http-host*
                           :port *http-port*
                           :document-root *doc-root*))
     (setf

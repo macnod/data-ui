@@ -1,4 +1,4 @@
-#+TITLE: Data UI: Describe Your App, Click, and It's Live
+#+TITLE: Data UI: Your Whole App, in an Email
 #+AUTHOR: Donnie
 #+DATE: 2026
 
@@ -60,18 +60,19 @@ the web server, the security, all of it.
 
 * But I Don't Know How to Write Code
 
-Here's the part that surprises people: **you don't have to start from
+Here's the part that surprises people: **you won't have to start from
 scratch.**
 
-Data UI has something called the **Model Bank**, a library of
-ready-made models that other people have created and shared. It works
-like an app store, but instead of downloading finished apps, you
-browse models: short descriptions of applications that are ready to
-deploy.
+Data UI will have something called the **Model Bank**, a library of
+ready-made models that other people have created and shared. It will
+work like an app store, but instead of downloading finished apps,
+you'll browse models: short descriptions of applications that are
+ready to deploy. The Model Bank is currently the top development
+priority — it's being built, but isn't available just yet.
 
-**Here's what the process looks like:**
+**Here's what the process will look like when it's ready:**
 
-1. *Browse the Model Bank.* You see a to-do list app, an inventory
+1. *Browse the Model Bank.* You'll see a to-do list app, an inventory
    tracker, a member directory, a recipe collection, a project
    board. Each one is a working application, described in a small
    file.
@@ -101,8 +102,9 @@ deploy.
 5. *Deploy.* One command. Your customized app is live on the
    internet, with its own address, behind encryption, ready to use.
 
-**From idea to live app, the whole thing can take ten minutes.** And
-most of that time is you deciding what fields you want.
+**From idea to live app, the whole thing will be able to take ten
+minutes.** And most of that time will be you deciding what fields you
+want.
 
 * What If I Get Stuck?
 
@@ -130,8 +132,8 @@ extra effort on your part:
 ** User Accounts and Login
 
 People sign up, log in, and manage their own accounts. Secure
-passwords. Session management. Token-based authentication. You don't
-configure any of it; it's just there.
+passwords. Session management. JWT-based authentication (access and refresh
+tokens). You don't configure any of it; it's just there.
 
 ** Permissions and Roles
 
@@ -207,9 +209,9 @@ The model /is/ the application. There's nothing else to maintain.
 
 Let's say you run a small library and want to track book loans.
 
-You browse the Model Bank and find a "Member Directory" model. It
-tracks people with names, emails, and phone numbers. Close, but you
-need more.
+When the Model Bank is ready, you'll browse it and find a "Member
+Directory" model. It tracks people with names, emails, and phone
+numbers. Close, but you need more.
 
 You copy the model and add:
 
@@ -227,8 +229,8 @@ understand. You deploy, and now you have:
 - A loan tracker that shows who has what and when it's due
 - Admin controls so only you can mark loans as returned
 
-Total time: maybe thirty minutes, and most of that was you thinking
-about what fields you wanted.
+Total time: maybe thirty minutes, and most of that will be you
+thinking about what fields you wanted.
 
 * What's Ready Right Now
 
@@ -244,9 +246,10 @@ Data UI is in active development, with a target MVP date of December
 - One-command deployment to a live server with TLS
 - A growing library of example models
 
-The Model Bank, the shared library of ready-to-use models, is the
-current focus, because it's the key to making Data UI useful for
-people who don't write code.
+The Model Bank — a shared library of ready-to-use models that anyone
+can browse, copy, and customize — is the current focus and is being
+actively built. It's the key to making Data UI useful for people who
+don't write code.
 
 * What's Coming
 
@@ -265,7 +268,9 @@ running application. You don't need to hire a developer. You don't
 need to learn to code. You don't need to spend weeks or thousands of
 dollars.
 
-Find a model that's close. Copy it. Add your fields. Deploy.
+Once the Model Bank is ready, you'll find a model that's close, copy
+it, add your fields, and deploy. Until then, you can start from a
+sample model and customize it.
 
 That's it.
 

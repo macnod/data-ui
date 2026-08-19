@@ -3,76 +3,609 @@
 SCRIPT_NAME=$(basename $0)
 ACTION=$1
 
-export ADMIN_PASSWORD="admin-password-1"
-export HTTP_HOST="127.0.0.1"
-export DB_HOST="127.0.0.1"
-export DB_INIT_TEMPLATE="tests/init-template.sql"
-export DB_INIT_SQL="tests/init.sql"
-export DB_NAME="dataui"
-export DB_USER="dataui"
-export DB_PASSWORD="dataui-password"
+# Defaults only (profiles and export_* may override). Use := so pre-set
+# values survive; deploy-compile keeps unconditional assignments.
+: "${ADMIN_PASSWORD:=admin-password-1}"
+: "${HTTP_HOST:=127.0.0.1}"
+: "${DB_HOST:=127.0.0.1}"
+: "${DB_INIT_TEMPLATE:=tests/init-template.sql}"
+: "${DB_INIT_SQL:=tests/init.sql}"
+: "${DB_NAME:=dataui}"
+: "${DB_USER:=dataui}"
+: "${DB_PASSWORD:=dataui-password}"
+: "${DOCUMENT_ROOT:=tests/shared-files/}"
+: "${FS_TEMP_DIRECTORY:=tests/temp-uploads/}"
+export ADMIN_PASSWORD HTTP_HOST DB_HOST DB_INIT_TEMPLATE DB_INIT_SQL \
+       DB_NAME DB_USER DB_PASSWORD DOCUMENT_ROOT FS_TEMP_DIRECTORY
 export PGPASSWORD="$DB_PASSWORD"
-export DOCUMENT_ROOT="tests/shared-files/"
-export FS_TEMP_DIRECTORY="tests/temp-uploads/"
 
 TIMEOUT=60
 SLEEP_INTERVAL=1
 SLEEP_MAX=10
 
-sed "s/:database_name:/$DB_NAME/" $DB_INIT_TEMPLATE > $DB_INIT_SQL
+HOST_STATE_DIR="${HOME}/.local/state/data-ui-host"
+SNAPSHOT_DIR="${HOME}/.local/state/data-ui-snapshots"
+
+function profile_dir {
+    echo "${HOST_STATE_DIR}/${1}"
+}
+
+function profile_env_path {
+    echo "${HOST_STATE_DIR}/${1}/profile.env"
+}
+
+function valid_profile_name {
+    local name="$1"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] \
+        || die "Invalid profile name '${name}'"
+}
+
+function pg_ident {
+    # Postgres identifiers cannot contain hyphens.
+    echo "${1//-/_}"
+}
+
+function model_file_path {
+    # Top-level models only; no models/test/ fallback.
+    echo "models/${1}.lisp"
+}
 
 function usage {
-    echo "Usage:"
-    echo "    $SCRIPT_NAME {command}"
+    cat <<EOF
+Usage:
+    $SCRIPT_NAME {command}
+
+Commands:
+
+repl [profile]
+    Starts a Common Lisp REPL (using Roswell) that loads the test file at
+    \$TEST_FILE, but doesn't run the tests. You can connect to the REPL with a
+    client like Slime at the reported Swank port. With [profile], loads
+    ~/.local/state/data-ui-host/<profile>/profile.env (complete partition) and
+    auto set-model when MODEL_NAME is set.
+
+db [profile]
+    Start the PostgreSQL database for the profile (or dev) and connect to it;
+    quiet-stop on exit.
+
+psql [profile]
+    Connect to an already-running PostgreSQL for the profile (or dev). Does not
+    start or stop the database.
+
+create-profile <model> [profile]
+    Create a host profile for a top-level model (models/<model>.lisp). Profile
+    name defaults to the model name. Fails if the profile already exists (no
+    --force). Allocates free HTTP/Swank/DB ports, generates secrets, prints the
+    admin password, and writes profile.env (mode 600). Does not start Postgres
+    or the REPL.
+
+delete-profile <profile>
+    Delete a host profile: stops its Docker compose project with volumes and
+    removes the profile directory. Refuses if the profile's HTTP or DB port is
+    listening (exit the REPL first). Asks to type the profile name unless
+    FORCE=1. Snapshots and deploy state are left alone.
+
+list-profiles
+    List host profiles with model, ports, and whether the instance is running
+    (HTTP port listening).
+
+expose-profile <profile>
+    Make a locally-run host profile reachable from the outside through the
+    existing HAProxy TLS front door:
+    https://<model :domain> -> 127.0.0.1:<HTTP_PORT>. Primary profiles only
+    (profile name == model name). Requires sudo and must run on \$DEPLOY_HOST
+    (default evo-x2), from a checkout containing models/<model>.lisp (and ros).
+    TLS is covered by the existing *.demo.data-ui.com wildcard. Refuses if the
+    domain is claimed by a deployed instance: 'delete' it first. Warns (does not
+    fail) if the profile is not listening yet.
+
+unexpose-profile <profile>
+    Remove a profile's HAProxy exposure (backend file and map entry).
+    Idempotent: prints 'not exposed' and exits 0 if there is nothing to remove.
+    Requires sudo and must run on \$DEPLOY_HOST. 'delete-profile' does this
+    cleanup automatically.
+
+tests
+    Runs all the tests and reports success or failure.
+
+docs
+    Generates the README file.
+
+stop
+    Stops the database container and removes it. This is normally not necessary.
+
+field <model-name> <field-name>
+    Read a top-level field from a model file.
+
+debug
+    Runs the tests, printing all output from postgres and docker compose.
+
+deploy <model-name>
+    Builds the model's Docker image, generates the Kubernetes manifests, deploys
+    the app to k3d, and routes the model's domain to the app via HAProxy.
+    Requires a clean git tree and sudo (for HAProxy). Set DRY_RUN=1 to stop
+    after generating the manifests. The model is read from
+    models/<model-name>.lisp. When run on a machine other than \$DEPLOY_HOST
+    (default evo-x2), pushes the current branch and tag to origin and re-runs
+    the deploy on \$DEPLOY_HOST over ssh, in the deploy clone at
+    \$DEPLOY_CHECKOUT (default \$HOME/deploy/data-ui). Deployment state
+    (manifests, ports.lock, secrets) lives outside the repo in
+    \$DEPLOY_STATE_DIR (default ~/.local/state/data-ui-deploy).
+
+delete <model-name>
+    Undeploys the model's app: deletes its Kubernetes namespace and PVs, wipes
+    its data on the host, removes its HAProxy backend and map entry, and removes
+    its deploy state (including secrets). Asks for confirmation unless FORCE=1
+    is set. Requires sudo (for HAProxy). Docker images and git release tags are
+    left in place.
+
+traffic
+    Shows HAProxy's per-IP rate-limit counters (concurrent connections,
+    connection rate, request rate) and flags clients near or over the limits.
+    Requires sudo.
+
+snapshot list
+         save [name]
+         restore [name]
+         drop [name]
+    Save or restore the database for model switching. If [name] is omitted,
+    defaults to the currently-loaded model name (e.g. 'modelbank'). Use a suffix
+    for multiple snapshots of the same model: modelbank-1, modelbank-2, etc.
+    Snapshot names resolve a host profile when
+    ~/.local/state/data-ui-host/<name>/profile.env exists (suffix strip falls
+    back to the profile prefix). Snapshots live in
+    ~/.local/state/data-ui-snapshots/.
+
+help
+    Displays this help text.
+EOF
+}
+
+function die {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+function render_init_sql {
+    sed "s/:database_name:/${DB_NAME}/" "$DB_INIT_TEMPLATE" > "$DB_INIT_SQL"
+}
+
+function list_profiles {
+    local d
+    [[ -d "$HOST_STATE_DIR" ]] || return
+    for d in "$HOST_STATE_DIR"/*/; do
+        [[ -f "${d}profile.env" ]] || continue
+        basename "$d"
+    done
+}
+
+function show_profiles {
+    local name env model http swank db status
+    local names
+    names=$(list_profiles)
+    if [[ -z "$names" ]]; then
+        echo "No host profiles in ${HOST_STATE_DIR}"
+        return
+    fi
+    printf '%-12s %-12s %-5s %-6s %-5s %s\n' \
+           "PROFILE" "MODEL" "HTTP" "SWANK" "DB" "STATUS"
+    for name in $names; do
+        env="$(profile_env_path "$name")"
+        model=$(grep -oP '^MODEL_NAME=\K.*' "$env")
+        http=$(grep -oP '^HTTP_PORT=\K\d+' "$env")
+        swank=$(grep -oP '^SWANK_PORT=\K\d+' "$env")
+        db=$(grep -oP '^DB_PORT=\K\d+' "$env")
+        if ss -ltn 2>/dev/null | awk '{print $4}' \
+               | grep -qE "[:.]${http}\$"; then
+            status="running"
+        else
+            status="stopped"
+        fi
+        printf '%-12s %-12s %-5s %-6s %-5s %s\n' \
+               "$name" "$model" "$http" "$swank" "$db" "$status"
+    done
+}
+
+#
+# Profile port allocation
+#
+
+# Ports reserved for the unnamed repl, tests, and deploy compile.
+RESERVED_PORTS="8081 8082 4010 4011 5444 5445 5446"
+
+function listening_ports {
+    ss -ltn 2>/dev/null | awk '{print $4}' \
+        | grep -oE '[0-9]+$' | sort -u
+}
+
+function claimed_profile_ports {
+    # Parse port lines from other profiles; never source them.
+    local env
+    [[ -d "$HOST_STATE_DIR" ]] || return
+    for env in "$HOST_STATE_DIR"/*/profile.env; do
+        [[ -f "$env" ]] || continue
+        grep -E '^(HTTP_PORT|SWANK_PORT|DB_PORT)=' "$env" \
+            | cut -d= -f2
+    done
+}
+
+TAKEN_PORTS=""
+
+function collect_taken_ports {
+    # One pass: reserved ports, other profiles' claims, live listeners.
+    TAKEN_PORTS=$(printf '%s\n%s\n%s\n' \
+                      "$RESERVED_PORTS" \
+                      "$(claimed_profile_ports)" \
+                      "$(listening_ports)" | sort -u)
+}
+
+function port_taken {
+    printf '%s\n' "$TAKEN_PORTS" | grep -qx "$1"
+}
+
+function next_free_port {
+    local port="$1"
+    while port_taken "$port"; do
+        port=$(( port + 1 ))
+        if (( port > 65535 )); then
+            die "No free port found starting at ${1}"
+        fi
+    done
+    echo "$port"
+}
+
+function allocate_profile_ports {
+    collect_taken_ports
+    HTTP_PORT=$(next_free_port 8083)
+    SWANK_PORT=$(next_free_port 4012)
+    DB_PORT=$(next_free_port 5447)
+}
+
+function generate_profile_secrets {
+    DB_PASSWORD=$(openssl rand -hex 16)
+    # rbac's password policy requires a letter, a digit, and a
+    # punctuation character; the suffix guarantees all three.
+    ADMIN_PASSWORD=$(openssl rand -hex 8)-a1
+    JWT_SECRET=$(openssl rand -hex 16)
+}
+
+function write_profile_env {
+    local dir="$1"
+    cat > "$(profile_env_path "$PROFILE_NAME")" <<ENV
+HTTP_PORT=${HTTP_PORT}
+SWANK_PORT=${SWANK_PORT}
+SWANK_INTERFACE=127.0.0.1
+DB_PORT=${DB_PORT}
+DB_NAME=${DB_NAME}
+DB_USER=${DB_USER}
+DB_PASSWORD=${DB_PASSWORD}
+DB_CONTAINER=pg-data-ui-${PROFILE_NAME}
+DB_SERVICE=pg-data-ui-repl
+DB_DOCKER_COMPOSE=tests/docker-compose-pg-data-ui-repl.yaml
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+JWT_SECRET=${JWT_SECRET}
+DOCUMENT_ROOT=${dir}/files
+FS_TEMP_DIRECTORY=${dir}/temp
+LOG_FILE=${dir}/repl.log
+MODEL_NAME=${MODEL_NAME}
+HTTP_HOST=127.0.0.1
+DB_HOST=127.0.0.1
+WEB_DIRECTORY=web/dist
+LOG_SEVERITY=DEBUG
+RUN_TESTS=false
+ENV
+    chmod 600 "$(profile_env_path "$PROFILE_NAME")"
+}
+
+function create_profile {
+    MODEL_NAME="$1"
+    PROFILE_NAME="${2:-$1}"
+    [[ -n "$MODEL_NAME" ]] || { usage; exit 1; }
+    valid_profile_name "$MODEL_NAME"
+    valid_profile_name "$PROFILE_NAME"
+    if [[ ! -f "$(model_file_path "$MODEL_NAME")" ]]; then
+        die "No top-level model '${MODEL_NAME}' (looked for $(model_file_path "$MODEL_NAME"))"
+    fi
+    if [[ -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
+        die "Profile '${PROFILE_NAME}' already exists. Use '$SCRIPT_NAME delete-profile ${PROFILE_NAME}' first."
+    fi
+    allocate_profile_ports
+    generate_profile_secrets
+    DB_NAME=$(pg_ident "$PROFILE_NAME")
+    DB_USER=$DB_NAME
+    local dir
+    dir=$(profile_dir "$PROFILE_NAME")
+    mkdir -p "${dir}/files" "${dir}/temp"
+    write_profile_env "$dir"
+    echo "Created profile '${PROFILE_NAME}'"
+    echo "  model:      ${MODEL_NAME}"
+    echo "  HTTP port:  ${HTTP_PORT}"
+    echo "  Swank port: ${SWANK_PORT}"
+    echo "  DB port:    ${DB_PORT}"
+    echo "  DB name:    ${DB_NAME}"
+    echo "  DB user:    ${DB_USER}"
+    echo "  DB container: pg-data-ui-${PROFILE_NAME}"
+    echo "  Admin:      admin / ${ADMIN_PASSWORD}"
     echo
-    echo "Commands:"
-    echo "repl     Starts a Common Lisp REPL (using Roswell) that loads the"
-    echo "         test file at $TEST_FILE, but doesn't run the tests. You"
-    echo "         can connect to the REPL with the a client like Slime at"
-    echo "         the reported Swank port."
-    echo "db       Start the PostgreSQL database and connect to it."
-    echo "psql     Connect to the PostgreSQL database for the REPL."
-    echo "tests    Runs all the tests and reports success or failure."
-    echo "docs     Generates the REAME file."
-    echo "stop     Stops the database container and removes it. This is"
-    echo "         normally not necessary."
-    echo "field    <model-name> <field-name>"
-    echo "         Read a top-level field from a model file."
-    echo "debug    Runs the tests, printing all output from postgres and"
-    echo "         docker compose."
-    echo "deploy   <model-name>"
-    echo "         Builds the model's Docker image, generates the"
-    echo "         Kubernetes manifests, deploys the app to k3d, and routes"
-    echo "         the model's domain to the app via HAProxy. Requires a"
-    echo "         clean git tree and sudo (for HAProxy). Set DRY_RUN=1 to"
-    echo "         stop after generating the manifests. The model is read"
-    echo "         from models/<model-name>.lisp. When run on a"
-    echo "         machine other than \$DEPLOY_HOST (default evo-x2), pushes"
-    echo "         the current branch and tag to origin and re-runs the"
-    echo "         deploy on \$DEPLOY_HOST over ssh, in the deploy clone at"
-    echo "         \$DEPLOY_CHECKOUT (default \$HOME/deploy/data-ui)."
-    echo "         Deployment state (manifests, ports.lock, secrets) lives"
-    echo "         outside the repo in \$DEPLOY_STATE_DIR (default"
-    echo "         ~/.local/state/data-ui-deploy)."
-    echo "delete   <model-name>"
-    echo "         Undeploys the model's app: deletes its Kubernetes"
-    echo "         namespace and PVs, wipes its data on the host, removes its"
-    echo "         HAProxy backend and map entry, and removes its deploy"
-    echo "         state (including secrets). Asks for confirmation unless"
-    echo "         FORCE=1 is set. Requires sudo (for HAProxy). Docker"
-    echo "         images and git release tags are left in place."
-    echo "traffic  Shows HAProxy's per-IP rate-limit counters (concurrent"
-    echo "         connections, connection rate, request rate) and flags"
-    echo "         clients near or over the limits. Requires sudo."
-    echo "snapshot Save or restore the database for model switching."
-    echo "         Subcommands: save [name], restore [name], list, drop [name]."
-    echo "         If [name] is omitted, defaults to the currently-loaded"
-    echo "         model name (e.g. 'modelbank'). Use a suffix for"
-    echo "         multiple snapshots of the same model: modelbank-1,"
-    echo "         modelbank-dev, etc. Typical: 'snapshot save' before"
-    echo "         set-model, 'snapshot restore' after switching back."
-    echo "         Snapshots live in ~/.local/state/data-ui-snapshots/."
-    echo "help     Displays this help text."
+    echo "Next: $SCRIPT_NAME repl ${PROFILE_NAME}"
+}
+
+function delete_profile {
+    PROFILE_NAME="$1"
+    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME delete-profile <profile>"
+    valid_profile_name "$PROFILE_NAME"
+    if [[ ! -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
+        local available
+        available=$(list_profiles | tr '\n' ' ')
+        die "Unknown profile '${PROFILE_NAME}'. Available: ${available:-"(none)"}"
+    fi
+    # Load so compose project, ports, and DB_CONTAINER are known.
+    load_profile "$PROFILE_NAME"
+    local port
+    for port in "$HTTP_PORT" "$DB_PORT"; do
+        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
+            die "Profile '${PROFILE_NAME}' appears to be running (port ${port} in use). Exit the REPL first, then retry."
+        fi
+    done
+    if [[ -z "$FORCE" ]]; then
+        local reply
+        read -r -p "Type the profile name ('${PROFILE_NAME}') to confirm: " reply
+        [[ "$reply" == "$PROFILE_NAME" ]] || die "Confirmation did not match; aborting."
+    fi
+    # HAProxy cleanup for an exposed profile. Paths first (delete_profile
+    # never ran export_deploy_environment). No host guard: deleting a
+    # laptop-local profile that was never exposed must stay possible.
+    haproxy_env
+    if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
+        echo "HAProxy cleanup skipped (not on ${DEPLOY_HOST})."
+        echo "If '${PROFILE_NAME}' is exposed, run '$SCRIPT_NAME unexpose-profile ${PROFILE_NAME}' on ${DEPLOY_HOST}."
+    elif profile_is_exposed "$PROFILE_NAME"; then
+        remove_profile_exposure "$PROFILE_NAME"
+        haproxy_validate_and_reload "" tolerant
+        echo "Removed HAProxy exposure for '${PROFILE_NAME}'."
+    fi
+    # Tolerate a project that was never started.
+    compose down --remove-orphans --volumes &>/dev/null || true
+    rm -rf "$(profile_dir "$PROFILE_NAME")"
+    local snapshots=()
+    if [[ -f "${SNAPSHOT_DIR}/${PROFILE_NAME}.dump" ]]; then
+        snapshots+=("${PROFILE_NAME}.dump")
+    fi
+    local f
+    for f in "${SNAPSHOT_DIR}/${PROFILE_NAME}-"*.dump; do
+        [[ -f "$f" ]] && snapshots+=("$(basename "$f")")
+    done
+    if (( ${#snapshots[@]} > 0 )); then
+        echo "Leaving snapshot(s): ${snapshots[*]}"
+        echo "Use '$SCRIPT_NAME snapshot drop <name>' to remove them."
+    fi
+    echo "Deleted profile '${PROFILE_NAME}'."
+    echo "Deploy state and snapshots were not touched."
+}
+
+#
+# Profile exposure (HAProxy front door for a local instance)
+#
+
+function profile_backend_name {
+    echo "dataui-profile-${1}"
+}
+
+function profile_conf_path {
+    echo "${HAPROXY_CONF_D}/dataui-profile-${1}.cfg"
+}
+
+function require_haproxy_host {
+    [[ "$(hostname)" == "$DEPLOY_HOST" ]] \
+        || die "$1 must run on ${DEPLOY_HOST} (this is $(hostname))."
+}
+
+function profile_domain {
+    # The public hostname comes from the model's :domain (pure file
+    # read via lisp/deployment.lisp; no database). MODEL_NAME is read
+    # from the profile env, not sourced.
+    local name="$1" model domain
+    model=$(grep -oP '^MODEL_NAME=\K.*' "$(profile_env_path "$name")")
+    [[ -n "$model" ]] || die "Profile '${name}' has no MODEL_NAME."
+    if [[ ! -f "$(model_file_path "$model")" ]]; then
+        die "No top-level model '${model}' (looked for $(model_file_path "$model"))."
+    fi
+    MODEL_NAME="$model" FIELD_NAME="domain" get_model_field >/dev/null 2>&1 \
+        || die "Could not read :domain from $(model_file_path "$model")."
+    domain=$(MODEL_NAME="$model" model_field domain)
+    [[ -n "$domain" && "$domain" != "NIL" ]] \
+        || die "Model '${model}' has no :domain; cannot expose."
+    echo "$domain"
+}
+
+function remove_profile_exposure {
+    # Drop the conf.d backend and every map line pointing at it (exact
+    # second-field match, never a substring). No validate/reload here;
+    # the caller decides and does it.
+    local name="$1"
+    sudo rm -f "$(profile_conf_path "$name")"
+    haproxy_map_delete_backend "$(profile_backend_name "$name")"
+}
+
+function profile_is_exposed {
+    # Backend-keyed: a map entry whose second field equals our backend,
+    # or the conf.d file. Survives a :domain change after expose.
+    local name="$1"
+    [[ -f "$(profile_conf_path "$name")" ]] && return 0
+    [[ -f "$HAPROXY_MAP" ]] || return 1
+    awk -v b="$(profile_backend_name "$name")" \
+        '$2 == b { found = 1 } END { exit !found }' "$HAPROXY_MAP"
+}
+
+function expose_profile {
+    PROFILE_NAME="$1"
+    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME expose-profile <profile>"
+    valid_profile_name "$PROFILE_NAME"
+    if [[ ! -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
+        local available
+        available=$(list_profiles | tr '\n' ' ')
+        die "Unknown profile '${PROFILE_NAME}'. Available: ${available:-"(none)"}"
+    fi
+    haproxy_env
+    require_haproxy_host "expose-profile"
+    local model_name
+    model_name=$(grep -oP '^MODEL_NAME=\K.*' "$(profile_env_path "$PROFILE_NAME")")
+    if [[ "$PROFILE_NAME" != "$model_name" ]]; then
+        die "Only the primary profile (name == model) can be exposed; '${PROFILE_NAME}' runs model '${model_name}'."
+    fi
+    local domain http_port
+    domain=$(profile_domain "$PROFILE_NAME")
+    http_port=$(grep -oP '^HTTP_PORT=\K\d+' "$(profile_env_path "$PROFILE_NAME")")
+    [[ -n "$http_port" ]] || die "Profile '${PROFILE_NAME}' has no HTTP_PORT."
+    # One domain, one owner: refuse to hijack a deployed instance's map
+    # line. Re-exposing our own profile backend is fine (step below
+    # first purges any stale domain from an earlier expose).
+    local backend owner
+    backend="$(profile_backend_name "$PROFILE_NAME")"
+    if [[ -f "$HAPROXY_MAP" ]]; then
+        owner=$(awk -v d="$domain" '$1 == d { print $2; exit }' "$HAPROXY_MAP")
+        if [[ -n "$owner" && "$owner" != "$backend" ]]; then
+            if [[ "$owner" == dataui-profile-* ]]; then
+                local other="${owner#dataui-profile-}"
+                die "Domain ${domain} is claimed by host profile '${other}'; run '$SCRIPT_NAME unexpose-profile ${other}' first."
+            fi
+            die "Domain ${domain} is claimed by deployed instance backend '${owner}'; run '$SCRIPT_NAME delete' on that instance first."
+        fi
+    fi
+    local need_restart
+    need_restart=$(haproxy_bootstrap)
+    # Backend config via temp file + install (never a predictable /tmp
+    # path, never a sudo tee heredoc pipe).
+    local tmp
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' RETURN
+    cat > "$tmp" <<CFG
+backend ${backend}
+    mode http
+    option forwardfor
+    option httpchk GET /health
+    server ${backend} 127.0.0.1:${http_port} check inter 2000 rise 2 fall 3
+CFG
+    sudo install -m 644 "$tmp" "$(profile_conf_path "$PROFILE_NAME")"
+    # Purge stale lines for our backend (a changed :domain must not
+    # leave the old host routing), then add the fresh entry.
+    haproxy_map_delete_backend "$backend"
+    echo "${domain} ${backend}" | sudo tee -a "$HAPROXY_MAP" >/dev/null
+    haproxy_validate_and_reload "$need_restart"
+    if ! ss -ltn 2>/dev/null | awk '{print $4}' \
+           | grep -qE "[:.]${http_port}\$"; then
+        echo "WARNING: profile '${PROFILE_NAME}' is not listening on ${http_port} yet; start it with '$SCRIPT_NAME repl ${PROFILE_NAME}'." >&2
+    fi
+    echo "Exposed '${PROFILE_NAME}': https://${domain} -> 127.0.0.1:${http_port}"
+}
+
+function unexpose_profile {
+    PROFILE_NAME="$1"
+    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME unexpose-profile <profile>"
+    valid_profile_name "$PROFILE_NAME"
+    if [[ ! -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
+        local available
+        available=$(list_profiles | tr '\n' ' ')
+        die "Unknown profile '${PROFILE_NAME}'. Available: ${available:-"(none)"}"
+    fi
+    haproxy_env
+    require_haproxy_host "unexpose-profile"
+    if ! profile_is_exposed "$PROFILE_NAME"; then
+        echo "Profile '${PROFILE_NAME}' is not exposed."
+        return 0
+    fi
+    # No haproxy_bootstrap here: enabling conf.d as a side effect of a
+    # remove would be wrong, and exposure implies it is already on.
+    remove_profile_exposure "$PROFILE_NAME"
+    haproxy_validate_and_reload ""
+    echo "Removed HAProxy exposure for '${PROFILE_NAME}'."
+}
+
+function load_profile {
+    local name="$1"
+    valid_profile_name "$name"
+    local path
+    path="$(profile_env_path "$name")"
+    if [[ ! -f "$path" ]]; then
+        local available
+        available=$(list_profiles | tr '\n' ' ')
+        die "Unknown profile '${name}'. Available: ${available:-"(none)"}"
+    fi
+    # shellcheck disable=SC1090
+    set -a
+    # shellcheck source=/dev/null
+    source "$path"
+    set +a
+
+    local required key
+    required=(
+        HTTP_PORT SWANK_PORT SWANK_INTERFACE DB_PORT DB_NAME DB_USER
+        DB_PASSWORD DB_CONTAINER DB_SERVICE DB_DOCKER_COMPOSE
+        ADMIN_PASSWORD JWT_SECRET DOCUMENT_ROOT FS_TEMP_DIRECTORY
+        LOG_FILE MODEL_NAME
+    )
+    for key in "${required[@]}"; do
+        if [[ -z "${!key}" ]]; then
+            die "Profile '${name}' missing required key: ${key}"
+        fi
+    done
+
+    export HTTP_PORT SWANK_PORT SWANK_INTERFACE DB_PORT DB_NAME DB_USER \
+           DB_PASSWORD DB_CONTAINER DB_SERVICE DB_DOCKER_COMPOSE \
+           ADMIN_PASSWORD JWT_SECRET DOCUMENT_ROOT FS_TEMP_DIRECTORY \
+           LOG_FILE MODEL_NAME
+    # Optional keys profiles may set
+    [[ -n "${HTTP_HOST:-}" ]] && export HTTP_HOST
+    [[ -n "${DB_HOST:-}" ]] && export DB_HOST
+    [[ -n "${WEB_DIRECTORY:-}" ]] && export WEB_DIRECTORY
+    [[ -n "${LOG_SEVERITY:-}" ]] && export LOG_SEVERITY
+    [[ -n "${RUN_TESTS:-}" ]] && export RUN_TESTS
+
+    export PGPASSWORD="$DB_PASSWORD"
+    render_init_sql
+}
+
+function resolve_snapshot_profile {
+    # Resolve env from snapshot name: exact profile, then strip trailing
+    # -<segment> repeatedly; else dev defaults.
+    local name="$1"
+    local candidate="$name"
+    while true; do
+        if [[ -f "$(profile_env_path "$candidate")" ]]; then
+            load_profile "$candidate"
+            return
+        fi
+        if [[ "$candidate" != *-* ]]; then
+            break
+        fi
+        candidate="${candidate%-*}"
+    done
+    export_repl_environment
+    render_init_sql
+}
+
+function preflight_ports {
+    local profile_label="${1:-dev}"
+    local port busy
+    for port in "$HTTP_PORT" "$DB_PORT"; do
+        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
+            die "Profile '${profile_label}': port ${port} is already in use"
+        fi
+    done
+    # Swank is only required for repl; check when set
+    if [[ -n "${SWANK_PORT:-}" ]]; then
+        if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${SWANK_PORT}\$"; then
+            die "Profile '${profile_label}': swank port ${SWANK_PORT} is already in use"
+        fi
+    fi
+}
+
+function ensure_storage_dirs {
+    mkdir -p "$DOCUMENT_ROOT" "$FS_TEMP_DIRECTORY"
+}
+
+function compose {
+    docker compose -p "${DB_CONTAINER}" -f "${DB_DOCKER_COMPOSE}" "$@"
 }
 
 function wait_for_postgres {
@@ -81,7 +614,7 @@ function wait_for_postgres {
     SECONDS=0
     if [[ -z "$quiet" ]]; then
         echo "Waiting for postgres..."
-        until docker compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
+        until compose exec -it "$DB_SERVICE" \
                      pg_isready -U postgres; do
             if (( SECONDS >= TIMEOUT )); then
                 echo "ERROR: Timed out waiting for PostgreSQL. Waited $SECONDS seconds." >&2
@@ -93,7 +626,7 @@ function wait_for_postgres {
             fi
         done
     else
-        until docker compose -f "$DB_DOCKER_COMPOSE" exec -it "$DB_CONTAINER" \
+        until compose exec -it "$DB_SERVICE" \
                      pg_isready -U postgres &>/dev/null; do
             if (( SECONDS >= TIMEOUT )); then
                 echo "ERROR: Timed out waiting for PostgreSQL. Waited $SECONDS seconds." >&2
@@ -110,7 +643,7 @@ function wait_for_postgres {
 function start_postgres_quietly {
     echo
     echo "Starting PostgreSQL"
-    if ! docker compose -f "$DB_DOCKER_COMPOSE" up -d &>/dev/null; then
+    if ! compose up -d &>/dev/null; then
         echo "ERROR: Failed to start PostgreSQL with docker compose" >&2
         return 1
     fi
@@ -122,8 +655,8 @@ function start_postgres_quietly {
 function start_postgres {
     echo
     echo "Starting PostgreSQL"
-    echo "docker compose -f \"${DB_DOCKER_COMPOSE}\" up -d"
-    if ! docker compose -f "$DB_DOCKER_COMPOSE" up -d; then
+    echo "docker compose -p \"${DB_CONTAINER}\" -f \"${DB_DOCKER_COMPOSE}\" up -d"
+    if ! compose up -d; then
         echo "ERROR: Failed to start PostgreSQL with docker compose" >&2
         return 1
     fi
@@ -149,7 +682,11 @@ function initialize_database {
 
 function start_psql {
     echo
-    echo "Connecting to database $DB_NAME at $BD_PORT"
+    echo "Connecting to database $DB_NAME at $DB_PORT"
+    # Fail fast if nothing is listening (psql alone can hang on connect).
+    if ! ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${DB_PORT}\$"; then
+        die "Nothing listening on port ${DB_PORT} for DB ${DB_NAME}. Is the instance up?"
+    fi
     psql -P pager=off -h $DB_HOST -p $DB_PORT -d $DB_NAME -U $DB_USER
 }
 
@@ -161,17 +698,40 @@ function start_repl {
     cd $CURRENT
     echo
     echo "Loading data-ui and starting Swank server on port $SWANK_PORT."
-    ros run -- \
-        --eval "(require :data-ui)" \
-        --eval "(in-package :data-ui)" \
+    local -a evals
+    evals=(
+        --eval "(require :data-ui)"
+        --eval "(in-package :data-ui)"
         --eval "(init)"
+    )
+    if [[ -n "${MODEL_NAME:-}" ]]; then
+        evals+=(--eval "(set-model \"${MODEL_NAME}\")")
+    fi
+    ros run -- "${evals[@]}"
 }
 
 function run_tests {
     echo
     echo "Running tests"
-    ros run -- --disable-debugger --load "$TEST_FILE" --quit
-    export REPORT=$( [[ $? -eq 0 ]] && echo "PASS" || echo "FAIL" )
+    # Tests ship inside the :data-ui system (tests/helpers.lisp → run-tests).
+    # TEST_FILE was never assigned in this script; invoke the helper directly.
+    local out status
+    out=$(mktemp)
+    ros run -- --disable-debugger \
+        --eval "(require :data-ui)" \
+        --eval "(in-package :data-ui)" \
+        --eval "(init)" \
+        --eval "(run-tests)" \
+        --eval "(uiop:quit 0)" 2>&1 | tee "$out"
+    status=${PIPESTATUS[0]}
+    if grep -qE '^[0-9]+/[0-9]+ checks FAILED' "$out"; then
+        export REPORT="FAIL"
+    elif grep -q 'All .* checks passed' "$out" && [[ $status -eq 0 ]]; then
+        export REPORT="PASS"
+    else
+        export REPORT="FAIL"
+    fi
+    rm -f "$out"
 }
 
 function generate_readme {
@@ -204,36 +764,48 @@ function compile {
 
 function stop_database {
     echo "Stopping and removing database container"
-    echo "docker compose -f \"${DB_DOCKER_COMPOSE}\" down --remove-orphans --volumes"
-    docker compose -f "$DB_DOCKER_COMPOSE" down --remove-orphans --volumes
+    echo "docker compose -p \"${DB_CONTAINER}\" -f \"${DB_DOCKER_COMPOSE}\" down --remove-orphans --volumes"
+    compose down --remove-orphans --volumes
 }
 
 function stop_database_quietly {
+    # Retain project volumes (primary durability for host instances).
     echo "Stopping and removing database container"
-    docker compose -f "$DB_DOCKER_COMPOSE" down &>/dev/null
+    compose down &>/dev/null
 }
 
 function export_repl_environment {
-    export DB_CONTAINER="pg-data-ui-repl"
-    export DB_DOCKER_COMPOSE="tests/docker-compose-${DB_CONTAINER}.yaml"
-    export DB_PORT="5444"
-    export LOG_FILE="tests/repl.log"
-    export LOG_SEVERITY="DEBUG"
-    export SWANK_PORT="4010"
-    export HTTP_PORT="8081"
-    export WEB_DIRECTORY="web/dist"
-    export RUN_TESTS="false"
+    : "${DB_CONTAINER:=pg-data-ui-repl}"
+    : "${DB_SERVICE:=pg-data-ui-repl}"
+    : "${DB_DOCKER_COMPOSE:=tests/docker-compose-pg-data-ui-repl.yaml}"
+    : "${DB_PORT:=5444}"
+    : "${LOG_FILE:=tests/repl.log}"
+    : "${LOG_SEVERITY:=DEBUG}"
+    : "${SWANK_PORT:=4010}"
+    : "${SWANK_INTERFACE:=127.0.0.1}"
+    : "${HTTP_PORT:=8081}"
+    : "${WEB_DIRECTORY:=web/dist}"
+    : "${RUN_TESTS:=false}"
+    export DB_CONTAINER DB_SERVICE DB_DOCKER_COMPOSE DB_PORT LOG_FILE \
+           LOG_SEVERITY SWANK_PORT SWANK_INTERFACE HTTP_PORT WEB_DIRECTORY \
+           RUN_TESTS
+    export PGPASSWORD="$DB_PASSWORD"
 }
 
 function export_test_environment {
-    export DB_CONTAINER="pg-data-ui-test"
-    export DB_DOCKER_COMPOSE="tests/docker-compose-${DB_CONTAINER}.yaml"
-    export DB_PORT="5445"
-    export LOG_FILE="tests/test.log"
-    export LOG_SEVERITY="DEBUG"
-    export SWANK_PORT="4011"
-    export HTTP_PORT="8082"
-    export RUN_TESTS="true"
+    : "${DB_CONTAINER:=pg-data-ui-test}"
+    : "${DB_SERVICE:=pg-data-ui-test}"
+    : "${DB_DOCKER_COMPOSE:=tests/docker-compose-pg-data-ui-test.yaml}"
+    : "${DB_PORT:=5445}"
+    : "${LOG_FILE:=tests/test.log}"
+    : "${LOG_SEVERITY:=DEBUG}"
+    : "${SWANK_PORT:=4011}"
+    : "${SWANK_INTERFACE:=127.0.0.1}"
+    : "${HTTP_PORT:=8082}"
+    : "${RUN_TESTS:=true}"
+    export DB_CONTAINER DB_SERVICE DB_DOCKER_COMPOSE DB_PORT LOG_FILE \
+           LOG_SEVERITY SWANK_PORT SWANK_INTERFACE HTTP_PORT RUN_TESTS
+    export PGPASSWORD="$DB_PASSWORD"
 }
 
 function export_docs_environment {
@@ -258,12 +830,22 @@ function get_model_field {
 # Deployment
 #
 
+function haproxy_env {
+    # HAProxy paths plus DEPLOY_HOST, shared by deploy/undeploy and the
+    # profile expose/unexpose verbs (which call it directly). DEPLOY_HOST
+    # is the machine hosting the k3d cluster and HAProxy; it must be
+    # both a valid ssh destination (see ~/.ssh/config) and the machine's
+    # hostname, since the latter decides local vs remote deploy.
+    export DEPLOY_HOST="${DEPLOY_HOST:-evo-x2}"
+    export HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
+    export HAPROXY_CONF_D="/etc/haproxy/conf.d"
+    export HAPROXY_MAP="/etc/haproxy/data-ui.map"
+    export HAPROXY_DEFAULTS="/etc/default/haproxy"
+}
+
 function export_deploy_environment {
     export DEPLOY_ENV="demo"
-    # The machine that hosts the k3d cluster and HAProxy. Must be both a
-    # valid ssh destination (see ~/.ssh/config) and the machine's hostname,
-    # since the latter decides local vs remote deploy.
-    export DEPLOY_HOST="${DEPLOY_HOST:-evo-x2}"
+    haproxy_env
     # Deploy clone on DEPLOY_HOST used by remote deploys; kept separate
     # from any development checkout so a remote deploy never disturbs
     # work in progress. $HOME is escaped so it expands on the remote.
@@ -277,15 +859,6 @@ function export_deploy_environment {
     export TEMPLATES_DIR="deploy/templates"
     export PORTS_LOCK="${DEPLOY_STATE_DIR}/ports.lock"
     export PORT_MIN=30300
-    export HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
-    export HAPROXY_CONF_D="/etc/haproxy/conf.d"
-    export HAPROXY_MAP="/etc/haproxy/data-ui.map"
-    export HAPROXY_DEFAULTS="/etc/default/haproxy"
-}
-
-function die {
-    echo "ERROR: $1" >&2
-    exit 1
 }
 
 function model_field {
@@ -301,11 +874,13 @@ function require_clean_tree {
 function export_deploy_db_environment {
     # Throwaway database for the deploy-time model compile. Uses its own
     # container and port so it never collides with a running repl (5444)
-    # or test (5445) database.
+    # or test (5445) database. Unconditional: hermetic sub-environment.
     export DB_CONTAINER="pg-data-ui-deploy"
-    export DB_DOCKER_COMPOSE="tests/docker-compose-${DB_CONTAINER}.yaml"
+    export DB_SERVICE="pg-data-ui-deploy"
+    export DB_DOCKER_COMPOSE="tests/docker-compose-pg-data-ui-deploy.yaml"
     export DB_PORT="5446"
     export LOG_FILE="tests/deploy-compile.log"
+    export PGPASSWORD="$DB_PASSWORD"
 }
 
 function compile_model {
@@ -317,6 +892,7 @@ function compile_model {
     # COMPILE-MODEL merges in *base-model* itself, but its stage-1 needs
     # *rbac* initialized, hence the database and INIT-DATABASE.
     export_deploy_db_environment
+    render_init_sql
     # Gitignored runtime directories; absent in a fresh deploy clone.
     mkdir -p "$DOCUMENT_ROOT" "$FS_TEMP_DIRECTORY"
     start_postgres_quietly
@@ -528,27 +1104,77 @@ function apply_manifests {
         || die "Data UI rollout failed."
 }
 
-function update_haproxy {
-    echo
-    echo "Updating HAProxy (requires sudo)"
+function haproxy_bootstrap {
+    # One-time host setup: enable conf.d, create the map, add the
+    # routing rule. Echoes "1" on stdout iff EXTRAOPTS was just added
+    # (a full restart is then required: a reload re-execs the master
+    # with its original command line, without -f conf.d). Human-readable
+    # progress goes to stderr so callers can capture stdout for the
+    # restart decision; never return non-zero for that.
     sudo install -d "$HAPROXY_CONF_D"
     [[ -f "$HAPROXY_MAP" ]] || sudo touch "$HAPROXY_MAP"
-    # One-time: load conf.d in addition to the main config. EXTRAOPTS in
-    # /etc/default/haproxy overrides the unit's, so keep the -S option.
-    # A newly added EXTRAOPTS requires a full restart (reload re-execs
-    # the master with its original command line, without -f conf.d).
     local need_restart=""
     if ! grep -q 'conf\.d' "$HAPROXY_DEFAULTS"; then
         echo 'EXTRAOPTS="-S /run/haproxy-master.sock -f /etc/haproxy/conf.d"' \
             | sudo tee -a "$HAPROXY_DEFAULTS" >/dev/null
-        echo "Enabled ${HAPROXY_CONF_D} via EXTRAOPTS in ${HAPROXY_DEFAULTS}."
+        echo "Enabled ${HAPROXY_CONF_D} via EXTRAOPTS in ${HAPROXY_DEFAULTS}." >&2
         need_restart=1
     fi
-    # One-time: map-based routing rule in the https frontend.
     if ! grep -q 'data-ui\.map' "$HAPROXY_CFG"; then
         sudo sed -i '/^ *default_backend guru/i\    use_backend %[req.hdr(host),lower,map(/etc/haproxy/data-ui.map)] if { req.hdr(host),lower,map(/etc/haproxy/data-ui.map) -m found }' \
              "$HAPROXY_CFG"
-        echo "Added data-ui.map routing rule to ${HAPROXY_CFG}."
+        echo "Added data-ui.map routing rule to ${HAPROXY_CFG}." >&2
+    fi
+    if [[ -n "$need_restart" ]]; then echo 1; fi
+}
+
+function haproxy_validate_and_reload {
+    # Validate the whole config, then restart (conf.d just enabled) or
+    # reload. Dies on validation failure unless the second arg is
+    # "tolerant" (delete-profile only: warn and continue).
+    local need_restart="$1"
+    if sudo haproxy -c -f "$HAPROXY_CFG" -f "$HAPROXY_CONF_D" >/dev/null; then
+        if [[ -n "$need_restart" ]]; then
+            sudo systemctl restart haproxy
+            echo "HAProxy restarted (conf.d newly enabled)."
+        else
+            sudo systemctl reload haproxy
+            echo "HAProxy reloaded."
+        fi
+    elif [[ "$2" == "tolerant" ]]; then
+        echo "WARNING: HAProxy configuration validation failed; not reloading." >&2
+    else
+        die "HAProxy configuration validation failed; not reloading."
+    fi
+}
+
+function haproxy_map_delete_backend {
+    # Delete map lines whose second field equals the backend exactly
+    # (never a substring: purging dataui-profile-foo must not touch
+    # dataui-profile-foo-2). A missing map is a no-op, not an error.
+    local backend="$1"
+    [[ -f "$HAPROXY_MAP" ]] || return 0
+    local tmp
+    tmp=$(mktemp)
+    awk -v b="$backend" '$2 != b' "$HAPROXY_MAP" > "$tmp"
+    sudo install -m 644 "$tmp" "$HAPROXY_MAP"
+    rm -f "$tmp"
+}
+
+function update_haproxy {
+    echo
+    echo "Updating HAProxy (requires sudo)"
+    local need_restart
+    need_restart=$(haproxy_bootstrap)
+    # One domain, one owner: refuse to hijack a host-profile exposure
+    # (expose-profile backend). Never rewrite the other side's entry.
+    if [[ -f "$HAPROXY_MAP" ]]; then
+        local owner=""
+        owner=$(awk -v d="$DOMAIN" '$1 == d { print $2; exit }' "$HAPROXY_MAP")
+        if [[ "$owner" == dataui-profile-* ]]; then
+            local claimed_by="${owner#dataui-profile-}"
+            die "Domain ${DOMAIN} is claimed by host profile '${claimed_by}'; run '$SCRIPT_NAME unexpose-profile ${claimed_by}' first."
+        fi
     fi
     # Per-instance backend and map entry.
     sudo install -m 644 "${OUT_DIR}/haproxy-backend.cfg" \
@@ -558,18 +1184,7 @@ function update_haproxy {
     else
         echo "${DOMAIN} dataui-${NAME}" | sudo tee -a "$HAPROXY_MAP" >/dev/null
     fi
-    # Validate, then reload (restart if conf.d was just enabled).
-    if sudo haproxy -c -f "$HAPROXY_CFG" -f "$HAPROXY_CONF_D" >/dev/null; then
-        if [[ -n "$need_restart" ]]; then
-            sudo systemctl restart haproxy
-            echo "HAProxy restarted (conf.d newly enabled)."
-        else
-            sudo systemctl reload haproxy
-            echo "HAProxy reloaded."
-        fi
-    else
-        die "HAProxy configuration validation failed; not reloading."
-    fi
+    haproxy_validate_and_reload "$need_restart"
 }
 
 function remote_deploy {
@@ -711,6 +1326,12 @@ function undeploy {
     DOMAIN=$(model_field domain)
     [[ -n "$NAME" && "$NAME" != "NIL" ]] || die "Model has no :name."
     [[ -n "$DOMAIN" && "$DOMAIN" != "NIL" ]] || die "Model has no :domain."
+    # Same predicate the compiler enforces on :name (model.lisp); undeploy
+    # reads the model file without compiling, so the check lives here too.
+    # Reserved names can only ever be host-profile exposures.
+    if [[ "$NAME" == "profile" || "$NAME" == profile-* ]]; then
+        die "Name '${NAME}' is reserved for host profiles; nothing deployed under it."
+    fi
     NAMESPACE="dataui-${NAME}"
     local node="k3d-${K3D_CLUSTER}-server-0"
     local data_dir="/data/dataui/${NAME}-${DEPLOY_ENV}"
@@ -718,7 +1339,7 @@ function undeploy {
     echo "About to delete instance '${NAME}' (${DEPLOY_ENV}):"
     echo "  - Kubernetes namespace ${NAMESPACE} and its PVs"
     echo "  - Application data in ${node}:${data_dir}"
-    echo "  - HAProxy backend and map entry for ${DOMAIN}"
+    echo "  - HAProxy backend and map entry for ${DOMAIN} (map line only if it points at dataui-${NAME})"
     echo "  - Deploy state in ${state_dir} (including secrets)"
     echo
     echo "This destroys the instance's database and uploaded files."
@@ -744,15 +1365,16 @@ function undeploy {
     fi
     echo "Removing HAProxy backend and map entry (requires sudo)..."
     sudo rm -f "${HAPROXY_CONF_D}/dataui-${NAME}.cfg"
-    if [[ -f "$HAPROXY_MAP" ]] && grep -q "^${DOMAIN} " "$HAPROXY_MAP"; then
+    # Delete the map line only if it points at our deploy backend; a
+    # host-profile exposure (dataui-profile-*) owns the domain now.
+    # Do not call haproxy_bootstrap: delete must not enable conf.d.
+    if [[ -f "$HAPROXY_MAP" ]] \
+       && awk -v d="$DOMAIN" -v b="dataui-${NAME}" \
+              '$1 == d && $2 == b { found = 1 } END { exit !found }' \
+              "$HAPROXY_MAP"; then
         sudo sed -i "\\|^${DOMAIN} |d" "$HAPROXY_MAP"
     fi
-    if sudo haproxy -c -f "$HAPROXY_CFG" -f "$HAPROXY_CONF_D" >/dev/null; then
-        sudo systemctl reload haproxy
-        echo "HAProxy reloaded."
-    else
-        die "HAProxy configuration validation failed; not reloading."
-    fi
+    haproxy_validate_and_reload ""
     echo "Removing deploy state in ${state_dir}..."
     rm -rf "$state_dir"
     if [[ -f "$PORTS_LOCK" ]]; then
@@ -768,8 +1390,6 @@ function undeploy {
 #
 # Database snapshots (for model switching)
 #
-
-SNAPSHOT_DIR="${HOME}/.local/state/data-ui-snapshots"
 
 # Detect the currently-loaded model name by querying the running
 # instance's /api/info endpoint. Falls back to "default" if the
@@ -809,7 +1429,7 @@ function snapshot_save {
     pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
             --format=custom --no-owner --no-privileges \
             --file="$path"
-    echo "Saved snapshot '${name}' → ${path}"
+    echo "Saved snapshot '${name}' → ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
 }
 
 function snapshot_restore {
@@ -824,16 +1444,16 @@ function snapshot_restore {
     # Drop the entire public schema (tables, functions, triggers,
     # sequences) and recreate it so the restore is clean.
     psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-         -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+         -v ON_ERROR_STOP=1 >/dev/null <<SQL
 DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
-GRANT ALL ON SCHEMA public TO dataui;
+GRANT ALL ON SCHEMA public TO ${DB_USER};
 GRANT ALL ON SCHEMA public TO public;
 SQL
     pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
                --no-owner --no-privileges --exit-on-error \
                "$path"
-    echo "Restored snapshot '${name}' ← ${path}"
+    echo "Restored snapshot '${name}' ← ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
 }
 
 function snapshot_list {
@@ -863,27 +1483,62 @@ function snapshot_drop {
     echo "Deleted snapshot '${name}'"
 }
 
+function setup_repl_env {
+    # $1 = optional profile name
+    local profile="$1"
+    if [[ -n "$profile" ]]; then
+        load_profile "$profile"
+        preflight_ports "$profile"
+    else
+        export_repl_environment
+        render_init_sql
+        preflight_ports "dev"
+    fi
+    ensure_storage_dirs
+}
+
 case "$ACTION" in
     repl)
-        export_repl_environment
+        setup_repl_env "$2"
         start_postgres_quietly
         initialize_database_quietly
         start_repl
         stop_database_quietly
         ;;
     db)
-        export_repl_environment
+        setup_repl_env "$2"
         start_postgres
         initialize_database
         start_psql
         stop_database_quietly
         ;;
     psql)
-        export_repl_environment
+        if [[ -n "${2:-}" ]]; then
+            load_profile "$2"
+        else
+            export_repl_environment
+            render_init_sql
+        fi
         start_psql
+        ;;
+    create-profile)
+        create_profile "$2" "$3"
+        ;;
+    delete-profile)
+        delete_profile "$2"
+        ;;
+    list-profiles)
+        show_profiles
+        ;;
+    expose-profile)
+        expose_profile "$2"
+        ;;
+    unexpose-profile)
+        unexpose_profile "$2"
         ;;
     tests)
         export_test_environment
+        render_init_sql
         start_postgres_quietly
         initialize_database_quietly
         run_tests
@@ -892,6 +1547,7 @@ case "$ACTION" in
         ;;
     debug)
         export_test_environment
+        render_init_sql
         start_postgres
         initialize_database
         run_tests
@@ -940,12 +1596,24 @@ case "$ACTION" in
         sub="${2:-}"
         case "$sub" in
             save)
-                export_repl_environment
-                snapshot_save "$3"
+                if [[ -n "${3:-}" ]]; then
+                    resolve_snapshot_profile "$3"
+                    snapshot_save "$3"
+                else
+                    export_repl_environment
+                    render_init_sql
+                    snapshot_save
+                fi
                 ;;
             restore)
-                export_repl_environment
-                snapshot_restore "$3"
+                if [[ -n "${3:-}" ]]; then
+                    resolve_snapshot_profile "$3"
+                    snapshot_restore "$3"
+                else
+                    export_repl_environment
+                    render_init_sql
+                    snapshot_restore
+                fi
                 ;;
             list)
                 snapshot_list
@@ -964,7 +1632,8 @@ case "$ACTION" in
                 echo
                 echo "If [name] is omitted, defaults to the currently-loaded"
                 echo "model name (e.g. 'modelbank'). Use a suffix for multiple"
-                echo "snapshots: modelbank-1, modelbank-dev, etc."
+                echo "snapshots: modelbank-1, modelbank-2, etc. Names resolve"
+                echo "a host profile when present under data-ui-host/."
                 exit 1
                 ;;
         esac

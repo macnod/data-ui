@@ -89,7 +89,7 @@ Data UI is a Common Lisp system that takes a simple nested plist model and **com
 - Complete React frontend
 - Kubernetes manifests for deployment
 
-No manual migrations. No per-type boilerplate. Change the model, call `(set-model "todos")`, and everything updates deterministically. And this is not a half-built promise: write the model, compile it, run `scripts/data-ui deploy`, and minutes later your application is serving real users over TLS at its own domain. We know because that is exactly how the [live demo](#deployment) got there.
+No manual migrations. No per-type boilerplate. Change the model, call `(set-model "todos")`, and everything updates deterministically. And this is not a half-built promise: write the model, compile it, run `scripts/data-ui deploy todos`, and minutes later your application is serving real users over TLS at its own domain. We know because that is exactly how the [live demo](#deployment) got there.
 
 
 ## Core Philosophy
@@ -383,7 +383,7 @@ A **validation** hook conforms to:
 
 A **lifecycle** hook conforms to (for example):
 
-    (lambda (type-key data user &key id roles record) -> ignored)
+    (lambda (type-key data user &key id roles record) -> nil | plist)
 
 An **action** hook conforms to:
 
@@ -391,7 +391,7 @@ An **action** hook conforms to:
              &key roles status-field set-status)
       -> nil | plist)
 
-Validation: return `nil` on success or an error string on failure. Lifecycle: return value is ignored today. Action: return `nil` (or any non-async result) for sync completion, or `(:async t :message "...")` so a worker owns status via `set-status`. Hooks are lists where the slot allows multiple entries; each reduces to its kind's contract.
+Validation: return `nil` on success or an error string on failure. Lifecycle: return `nil` for no change, or a plist whose keys are merged into `data` (overwriting existing keys); non-plist non-nil is an error. This is the **data-effect contract** that powers `:compose-string` and future cross-table hooks. Action: return `nil` (or any non-async result) for sync completion, or `(:async t :message "...")` so a worker owns status via `set-status`. Hooks are lists where the slot allows multiple entries; each reduces to its kind's contract.
 
 Action hooks attach to `:button` fields on the **update form only**. The compiler synthesizes a companion `:<field>-status` column (`idle` → `running` → `complete` | `failed: <reason>`). `POST /api/actions` invokes them via `be-action`. Details: [docs/hook-registry.md](docs/hook-registry.md).
 
@@ -511,7 +511,7 @@ Deployment is part of the compiler's promise, not an afterthought. The model its
 and one command turns that into a running, public application:
 
 ```sh
-scripts/data-ui deploy
+scripts/data-ui deploy todos
 ```
 
 Behind that command: the model is compile-checked against a throwaway database, the release is tagged from the model's version plus the git hash, a Docker image is built (React frontend compiled in one stage, precompiled SBCL runtime in another), Kubernetes manifests are rendered from templates and applied to a k3d cluster (each instance in its own namespace, with its own PostgreSQL and persistent volumes), and HAProxy routing is updated so the model's `:domain` serves the app over TLS, a wildcard Let's Encrypt certificate that renews itself.

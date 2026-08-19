@@ -13,13 +13,13 @@
                :tags (:tables (:tags)))
       :fields
       (:name 
-        (:type :text :identity t
+        (:type :text :identity t :sortable t :searchable t
           :ui (:label "To Do" :widget :textbox)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
-        (:type :integer :default 0
+        (:type :integer :default 0 :sortable t
           :ui (:label "Points" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :points :agg :first)

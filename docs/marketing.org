@@ -91,7 +91,7 @@ validation rules. The compiler takes that model and produces:
 - **Full RBAC**: users, roles, permissions, resources, all enforced
   on every operation, all manageable through the same UI as your data
 - **A generic REST API**: =/api/list=, =/api/insert=,
-  =api/update=, =/api/delete= work for /every/ type, including the
+  =/api/update=, =/api/delete= work for /every/ type, including the
   RBAC types themselves
 - **A schema-driven React frontend**: forms, lists, validation, image
   handling, role management, all rendered from the model
@@ -206,14 +206,23 @@ endpoints are generic and model-driven:
 |----------------------------+--------------------------------------------|
 | =GET /api/list=            | List records + schema + permission flags   |
 | =GET /api/item=            | Single record                              |
+| =GET /api/id=              | Resolve record UUID by identity field      |
+| =GET /api/value=           | Fetch a single column value                |
+| =GET /api/value-id=        | Fetch a column value with UUID lookup      |
+| =GET /api/column=          | Fetch all values for a column              |
 | =POST /api/insert=         | Create (validation runs first)             |
 | =POST /api/update=         | Update (validation runs first)             |
 | =POST /api/delete=         | Delete                                     |
+| =POST /api/actions=        | Execute an action hook on a button field   |
 | =POST /api/upload=         | File upload (returns file-token)           |
+| =GET /api/file=            | Serve an uploaded file                     |
 | =POST /api/validate-field= | Per-field validation                       |
 | =POST /api/validate-form=  | Full-form validation                       |
-| =GET /api/types=           | Available types                            |
+| =GET /api/types=           | Available types (grouped by category)      |
+| =GET /api/info=            | Schema metadata + landing page             |
 | =POST /api/login=          | JWT auth (access + refresh tokens)         |
+| =POST /api/refresh=        | Refresh access token                       |
+| =GET /health=              | Health check                               |
 
 ** A Frontend That Renders From the Schema
 
@@ -231,7 +240,7 @@ a dropdown. The =:ui= plist is the extension point.
 ** One-Command Deployment
 
 #+begin_src sh
-scripts/data-ui deploy
+scripts/data-ui deploy todos
 #+end_src
 
 That command: compile-checks the model, tags the release, builds a
@@ -309,8 +318,8 @@ uniformly.
 
 Data UI serves two audiences through a single compiler:
 
-- *Expert / self-hosting tier* (open source, MIT). Full power. Raw
-  Lisp lambdas as hooks. Override any lifecycle operation. The
+- *Expert / self-hosting tier* (open source, MIT). Full power.
+  Custom registry entries (hook factories in Lisp via =register-hook=). Override any lifecycle operation. The
   guardrail is your own judgment. This is a shotgun; it doesn't stop
   you from doing what you want.
 
@@ -335,7 +344,7 @@ sophisticated users who want the capability without becoming a Lisp
 shop straight to the hosted product. The open engine remains fully
 available for those who want that power unmediated.
 
-* Current Status (June 2026)
+* Current Status (August 2026)
 
 This is not a slide deck. It's a working system:
 
@@ -400,7 +409,7 @@ Open http://localhost:8081. You have a running application.
 When you're ready to deploy:
 
 #+begin_src sh
-scripts/data-ui deploy
+scripts/data-ui deploy todos
 #+end_src
 
 Minutes later, your app is on the internet, behind SSL, with its own domain name.

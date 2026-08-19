@@ -6,6 +6,8 @@
 
 ;; Swank
 (defparameter *swank-port* (u:getenv "SWANK_PORT" :type :integer))
+(defparameter *swank-interface*
+  (u:getenv "SWANK_INTERFACE" :default "0.0.0.0"))
 (defparameter *swank-server* nil)
 
 (defun start-swank-server ()
@@ -13,7 +15,7 @@
     (pl:pinfo :in "run" :status "starting swank")
     (setf *swank-server*
       (swank:create-server
-        :interface "0.0.0.0"
+        :interface *swank-interface*
         :port *swank-port*
         :style :spawn
         :dont-close t))))

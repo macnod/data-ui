@@ -208,6 +208,36 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
     (explain! results)
     (when collect results)))
 
+(defun run-phase-a-tests (&optional collect)
+  "Run Phase A (id-first paging) tests only."
+  (let ((results
+          (with-model "test-model" nil
+            (run 'backend-suite))))
+    ;; Filter to just phase-a tests
+    (let ((phase-a-results
+            (loop for r in results
+              when (re:scan "phase-a"
+                     (princ-to-string (type-of r)))
+              collect r)))
+      (explain! results)
+      (when collect results))))
+
+(defun run-phase-b-tests (&optional collect)
+  "Run Phase B (hydrate/collapse) tests.
+The first three tests run under test-model (simple, has tags M2M).
+The m2m fan-out test runs under m2m-test (two join tables)."
+  (let ((results
+          (append
+            (with-model "test-model" nil
+              (append
+                (fiveam:run 'phase-b-hydrate-exact-id-set)
+                (fiveam:run 'phase-b-no-extra-filters)
+                (fiveam:run 'phase-b-preserves-phase-a-order)))
+            (with-model "m2m-test" #'seed-m2m-fixture
+              (fiveam:run 'phase-b-m2m-fanout-collapse)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-scoping-tests (&optional collect)
   (let ((results
           (with-model "modelbank-test" nil
@@ -364,6 +394,30 @@ compose-sugar-test context."
     (explain! results)
     (when collect results)))
 
+(defun run-sortable-tests (&optional collect)
+  "Sortable field attribute and sort behavior tests."
+  (let ((results
+          (with-model "test-model" nil
+            (run 'sortable-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-searchable-tests (&optional collect)
+  "Searchable field attribute and search behavior tests (test-model)."
+  (let ((results
+          (with-model "test-model" nil
+            (run 'searchable-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-search-or-tests (&optional collect)
+  "OR-across-fields search tests (search-test fixture)."
+  (let ((results
+          (with-model "search-test" nil
+            (run 'search-or-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -388,7 +442,10 @@ groups."
                    ("static-options" . run-static-options-tests)
                    ("form-fields"    . run-form-fields-tests)
                    ("compose"        . run-compose-tests)
-                   ("compose-sugar"  . run-compose-sugar-tests))
+                   ("compose-sugar"  . run-compose-sugar-tests)
+                   ("sortable"       . run-sortable-tests)
+                   ("searchable"     . run-searchable-tests)
+                   ("search-or"      . run-search-or-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

@@ -30,7 +30,7 @@
        :views (:main (:tables (:models :images :ratings)))
        :fields
        (:name
-         (:type :text :identity t
+         (:type :text :identity t :searchable t
            :ui (:label "Model Name" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
@@ -44,7 +44,7 @@
          (:type :text
            :ui (:label "Model Code" :widget :code)
            :source (:view :main :column :model :agg :first)
-           :column t :not-null t :unique nil)
+           :column t :not-null nil :unique nil)
          :images
          (:type :list
            :ui (:label "Images" :widget :image-list)
@@ -63,7 +63,16 @@
          (:type :real
            :ui (:label "Rating" :widget :stars :read-only t :precision 1)
            :source (:view :main :table :ratings :column :rating
-                    :agg :avg)))
+                    :agg :avg))
+         :deploy
+         (:type :button
+           :ui (:label "Deploy Model" :widget :button)
+           :action (:deploy-model :field :model))
+         :generate
+         (:type :button
+           :ui (:label "Generate Model" :widget :button)
+           :action (:generate-model :description-field :description
+                                    :model-field :model)))
        :list-form (:fields (:name :description :model :images :average-rating))
        :update-form (:fields t)
        :add-form (:fields (:name :description :model :images :rating)))

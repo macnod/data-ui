@@ -1,0 +1,2024 @@
+#+title: Data UI — MVP TODO
+#+startup: overview
+#+TODO: TODO IN-PROGRESS | DONE
+#+TAGS: frontend(f) backend(b) compiler(c) testing(t) docs(d) maintenance(a) polish(p) valdn(v) mvp(x) bug(g) model(m) utility(u) ai(i) scripts(s)
+
+* Done
+** DONE Users search 400 + JSON boolean hole              :bug:frontend:backend:
+:PROPERTIES:
+:CREATED: [2026-08-14 Fri]
+:COMPLETED: [2026-08-14 Fri]
+:END:
+Searching the users list for =user-1= returned HTTP 400. Two bugs:
+
+1. =:users :name= and =:email= were not =:searchable t=, so any
+   non-blank =:search= hit =phase-a-search-clause= and 400'd.
+2. Lisp =nil= for =:searchable= / =:sortable= serialized as JSON
+   =[]=, which is truthy in JS, so the Search box appeared on types
+   with zero searchable fields.
+
+Fix: register =:searchable= and =:sortable= as JSON boolean keys;
+mark users name/email searchable; frontend checks ==== true=.
+
+** DONE Hook registry (parameterized, data-only)          :compiler:backend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Implement the curated hook registry so models can attach behavior as
+pure data: =(:keyword args...)=. Generalizes the current
+=*validation-map*= (keyword → function only).
+
+Entry shape: name + parameter schema + factory. Factory closes over
+parameters and returns a contract-conforming closure.
+
+Two contracts, one registry concept:
+- Validation: =(lambda (type-key field-key value user) -> nil | error-string)=
+- Lifecycle:  =(lambda (type-key data user &key roles) -> effect)=
+  (e.g. =:post-create=, =:pre-delete=, =:create= overrides)
+
+Surface forms at every hook site (same as README):
+- =(:keyword args...)= — registry entry (AI / no-code / hosted)
+- =(:shell "script" args...)= — compiler-generated adapter
+- =(lambda ...)= — raw Lisp (expert / self-host only)
+
+MVP first slice: validation path (=compile-validations= accepts
+parameterized forms). Seed entries needed soon: =:max-length=,
+=:in-range= (ratings 1–5), and keep existing keyword entries
+(=:required=, =:email=, …) as zero-arg registry entries.
+
+Do not name this "validation registry" or "function registry" —
+lifecycle hooks use the same mechanism. Name: *hook registry*.
+
+** DONE Number formatting UI hint                       :model:frontend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Add a =:ui= hint (e.g. =:precision 1=) so the frontend can render
+numbers like average ratings with a controlled number of decimal
+places. Backend passes the hint through; frontend applies it.
+
+** DONE Star rating rendering and input                 :model:frontend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Aggregate average as a read-only star display. Consider a =:render-as= value of =:rating= or =:stars=. For the MVP, we can simply assume that ratings will always be 1 to 5.
+** DONE Star rating input                        :model:frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+UI hint for star-based rating input. User's own rating should appear as an input widget. Probably an =:input-type= =:ui= hint. So, =:input-type :rating=. For the MVP, I think we can simply assume 1 through 5.
+** DONE Collapse Add/Edit forms on tab switch              :frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+When navigating away from a type tab and returning, any expanded Add or Edit
+forms should be collapsed. Also, when one of those forms is submitted, the form
+should collapse. Pure frontend state.
+
+** DONE Landing page / default type on login            :model:frontend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+When a user logs in, they should land in a consistent place.
+Consider a front page listing user-defined types, or a
+=:default-type= / =:home-type= model-level key.
+** DONE Change modelbank to not display own rating in list :model:testing:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Hide Add and Delete buttons When in a form :model:frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Also, put the Submit/Update and Cancel buttons at the top and bottom of the form.
+** DONE Failed token refresh returns to login form                :frontend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+When token refresh fails, the app currently renders as logged-in
+instead of returning to the login screen.
+
+** DONE "No records" vs request failure distinction               :frontend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The frontend shows "No records" for both empty result sets and
+failed requests. These should be visually distinct.
+
+** DONE Scope the =:settings= type
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+See the plan at ~/workbench/data-ui-scope-settings-plan.org.
+** DONE Type categorization (system vs user types)      :model:frontend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Reason about how to separate admin/system types (users, roles,
+permissions, resources) from user-defined types in the UI. Decide
+whether categories are model-author-declared or compiler-derived.
+Affects type selector layout and navigation.
+
+See the plan at ~/workbench/data-ui-categorization-plan-rose.org
+
+** DONE User settings row
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+For types that have =:user-setting t=, create a new row for a user when a user is added and delete the row when the associated user is deleted. See ~/workbench/resolved/user-setting-row-plan.org.
+
+** DONE Fix password issues
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+*Bug 1 (validation fails):* When updating a user without providing a password, =full-data= merges the existing password hash from the record into the data, then =v-password= tries to validate the hash as if it were a plaintext password. It fails.
+
+*Bug 2 (password doesn't take):* =db-value= hashes with =(a:password-hash user value)= where =user= is the /acting/ user (e.g. "admin"), not the user being updated. But =a:login= salts with the user's own name. So the hash stored on update uses the wrong salt and login fails.
+
+** DONE Settings page should be an Edit form, not a list
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Fix Login (:user) rendering in Settings form :model:frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Fix header buttons and inter-page navigation :model:frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Implement form roles plan :compiler:backend:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Highest priority. Covers: user-specific allowed-values for roles,
+exclusive-role sharing, user search endpoint, =:hide-roles= type key,
+frontend roles UI with user search/picker. Plan supersedes the
+previous "default roles for new rows" and "exclusive role checked by
+default" items. See ~/workbench/data-ui-form-roles.org.
+** DONE Parameterize style settings                           :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+See ~/workbench/data-ui-style-params-plan.org.
+** DONE Remove debug parameter =*be-update-call*=              :maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+=lisp/backend.lisp= — =*be-update-call*= is debug-only and should
+be removed before MVP.
+** DONE Update AGENT.md write-through status                   :maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The "Known gaps" section says write-through is in progress, but it
+is complete and working (search-sql, identity indexes, backend
+execute path all done). Model Bank ratings are operational.
+
+** DONE Update AGENT.md =:repl= status                         :maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The =:repl= key has a TODO saying it's "not taking effect yet."
+Verify current status and update.
+
+** DONE Drop lambdas as hooks                    :backend:compiler:docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Drop references to =:shell= in the docs                       :docs:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Action-button field        :model:frontend:backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Implemented across chunks 1–6 of the action-hook plan
+(see ~/workbench/data-ui-action-hook-plan-0.md).
+
+Adds =:button= field type with =:action= attribute (singular).
+Compiler synthesizes a companion =:<field>-status= column
+(default "idle"). New =:action= registry kind alongside
+:validation and :lifecycle. Backend =be-action= runs the hook
+with status protocol (idle → running → complete | failed).
+REST endpoint =POST /api/actions=. Buttons appear on update
+form only. =:deploy-model= hook registered for Model Bank.
+
+The expert gate is building your own registry entry; =:shell=
+and raw lambdas are no longer surface forms.
+** DONE Wire :deploy-model hook to real deploy pipeline        :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The =:deploy-model= action hook (chunk 5) validates model text
+in-process and spawns an async worker, but the worker currently
+falls through to a stub. The real deploy path needs:
+
+1. =scripts/data-ui deploy= gains a =MODEL_FILE= env var (default
+   =models/default-model.lisp=), threaded through
+   =compile_default_model= and =model_field=.
+2. Hook writes validated model text to
+   =models/<name>-<timestamp>.lisp= (unique per deploy to avoid
+   concurrent-deploy collisions).
+3. =git add= + =git commit= the new file (keeps the tree clean for
+   =require_clean_tree= and rides the existing remote-deploy push
+   path — no out-of-band file transfer needed).
+4. Invoke =MODEL_FILE=models/<name>-<timestamp>.lisp scripts/data-ui
+   deploy=.
+
+See ~/workbench/data-ui-action-hook-plan-0.md (chunk 5, updated)
+for the full design.
+
+** DONE Deploy Model Status has em-dash where the status should be
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+After clicking the Deploy Model button, the Deploy Model Status value does not update and remains an em-dash.
+** DONE My Rating does not show current rating in Edit Form
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The My Rating input allows you to provide a rating (change it), but it doesn't start out with the existing value, but instead it appears empty, as if the user hadn't yet rated the model.
+** DONE Deploy Model action hangs: child processes grab TTY on stdin
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Fixed across two sessions. Three distinct bugs were found and fixed:
+
+*** Bug 1: TTY grab (fixed in prior session)
+=:input nil= added to all three =uiop:run-program= calls in
+=lisp/model.lisp= so child processes get EOF instead of blocking
+on =/dev/tty=.
+
+*** Bug 2: Model file written without quote prefix
+=deploy-model-write-file= in =lisp/model.lisp= wrote the model
+plist via =(prin1 model-plist s)= — producing =(:title ...)=
+without the leading ='=. But every consumer in the deploy pipeline
+(=top-level-model-field=, =set-model=, =compile_default_model=)
+expects a quoted plist ='(:title ...)= and uses =(cadr (read in))=
+to strip the quote. Without the quote, =(cadr (read in))= returns
+the first value in the plist (e.g. ="To Do List"=) instead of the
+plist itself, causing =get_model_field= to fail silently.
+
+Fix: =deploy-model-write-file= now writes ='= before =prin1=.
+
+*** Bug 3: Missing =--disable-debugger= and silent stderr in deploy script
+=get_model_field= in =scripts/data-ui= did not pass
+=--disable-debugger= to =ros run= (unlike =compile_default_model=).
+=model_field= suppressed stderr with =2>/dev/null=, hiding errors.
+
+Fix: Added =--disable-debugger= to =get_model_field=; removed
+=2>/dev/null= from =model_field=.
+
+Also fixed =compile_default_model= which used =(read in)= without
+=cadr= — a pre-existing bug that meant the validation step was
+silently compiling only the base model (nil types) instead of the
+user's model.
+
+*** Bug 4: sudo password prompt hangs background thread
+The deploy script needs =sudo= for HAProxy configuration. When
+running from a background thread inside SBCL, =sudo= opens
+=/dev/tty= directly for password prompts, gets stopped by the
+kernel (SIGTTIN or similar), and hangs forever.
+
+Fix: Configured NOPASSWD sudoers rule
+(=/etc/sudoers.d/data-ui-deploy=) for the HAProxy-related
+commands. Note: the initial rule used =/bin/systemctl= but the
+actual path on this system is =/usr/bin/systemctl= — =sudo=
+matches on literal path strings, so this must be correct.
+
+*** Result
+Deploy from Model Bank button now works end-to-end: model
+validation → file write → git commit → compile → k3d deploy →
+HAProxy routing → live application. Confirmed working with
+=modelbank.demo.data-ui.com=.
+** DONE Debug Port 443 Connectivity to Data UI Deployments
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+See [[/home/macnod/Insync/macnod@gmail.com/Google Drive/dc/cloud-local/Notes/20260722002420-debugging_443_connectivity_data_ui.org][Debugging Port 443 Connectivity to Data UI Deployments]].
+** DONE Deployment of default-model.lisp :model:backend:compiler:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Compile-time =:category= computation          :compiler:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Move =:category= computation from runtime (=type-category= in
+=backend.lisp=) into the compiler (=compile-type-def= in
+=model.lisp=). Allow model authors to declare =:category= as a
+type-level key, validated against =:settings=, =:system=, =:user=.
+Unblocks the =:secrets= type (deploy-squared), which needs
+=:category :settings= without =:user-setting t=.
+
+See ~/workbench/category-plan.org.
+
+** DONE Add new built-in :secrets type              :model:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+See [[/home/macnod/Insync/macnod@gmail.com/Google Drive/dc/cloud-local/workbench/resolved-data-ui/secrets-plan.org][secrets-plan.org]].
+** DONE Admin password                  :model:frontend:backend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Deployed app admin password is invisible when deploying from Model Bank
+When deploying via the Deploy Model button in Model Bank, the
+generated admin password is not surfaced to the user. The deploy
+succeeds and the app goes live, but the user has no way to log in
+as admin.
+
+The password is generated by =ensure_instance_secrets= in
+=scripts/data-ui= and stored in
+=~/.local/state/data-ui-deploy/<name>/secrets.env= as
+=ADMIN_PASSWORD=<value>=. When deploying manually from the
+shell, the script prints it to stdout. But when deploying via the
+button, stdout is captured by =deploy-model-run-script= (in
+=lisp/model.lisp=) and discarded on success — only used for
+error messages on failure.
+
+*** Possible approaches
+
+1. *Embed in completion status* — =deploy-model-async= could parse
+   the password from stdout (or read =secrets.env= directly) and
+   pass it to =set-status= as something like
+   ="complete: admin password is <pwd>"=. Simple but puts a
+   password in a UI-visible status field.
+
+2. *Dedicated "show credentials" button* — a second =:button=
+   field on the model record that reads the password from the
+   deploy state directory on demand. Cleaner UX, more work.
+
+3. *Return in async result plist* — not feasible; the password
+   isn't known when the hook returns =(:async t)=.
+
+*** Relevant files
+
+- =lisp/model.lisp= lines ~459-503 (=deploy-model-run-script=,
+  =deploy-model-async=)
+- =scripts/data-ui= (=ensure_instance_secrets=, =deploy= function)
+- Deploy state: =~/.local/state/data-ui-deploy/<name>/secrets.env=
+
+** DONE Model just like Model Bank, with no deploy button    :model:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Remove Deploy Model Status from Add form         :model:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Disable the Deploy Model Button when deploying        :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE The Home button fails to navigate to landing page :frontend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Intermittent. Experienced in Model Bank deployment.
+** DONE The =:landing-page= attribute is no longer working :frontend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+
+** DONE Selected roles in Edit form                       :frontend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+In list view, the Model Bank model shows the models-user role, but not in the Edit form
+** DONE Model syntax reference                                    :docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Comprehensive documentation of the model format: all keys, their
+types, valid values, and interactions. Critical for the AI/no-code
+tier and for self-hosting users.
+
+** DONE Have Grok create a model.                              :testing:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Grok created the books model.
+** DONE Have rose create a model.                              :testing:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Rose created the chores model.
+** DONE Remove Font Size field from built-in =:settings= type    :model:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The =:settings= type currently includes a font-size field that is
+no longer needed (or has been superseded by the style settings
+work). Remove it from the base model.
+
+** DONE User password issues                              :frontend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+- Password not masked in Add or Edit forms
+- Password filled from database (hash) in Edit form
+** DONE Add hard-reset function                                    :utility:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Login button blues                                :frontend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+My browser makes it difficult to click the Login button sometimes
+Because it's trying to help the user fill in the username and password.
+** DONE blank email should default to "no-email"         :model:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE logged-in role should be not be shown in Add form :frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Settings screen failing                            :backend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+=(be-list :settings "admin")= produces
+#+begin_src text
+  Invalid aggregation NIL.
+     [Condition of type SIMPLE-ERROR]
+
+  Restarts:
+   0: [RETRY] Retry SLIME REPL evaluation request.
+   1: [*ABORT] Return to SLIME's top level.
+   2: [ABORT] abort thread (#<THREAD tid=498164 "repl-thread" RUNNING {1206F085A3}>)
+
+  Backtrace:
+    0: (AGGREGATE-VALUES NIL ("admin"))
+    1: (FIELD-VALUES-FOR-ID ((:SETTINGS-ID "0f0e24c6-729c-4be0-ad3c-8c0d63f2a8f9" :SETTINGS-CREATED-AT "2026-07-25T00:44:11" :SETTINGS-UPDATED-AT "2026-07-25T00:44:11" ...)) :SETTINGS-ID "0f0e24c6-729c-4be0-..
+    2: (VIEW-RESULT-VALUES :SETTINGS (:ID :USER :DARK-MODE :FONT-SIZE :DISPLAY-NAME :BIO) ((:SETTINGS-ID "0f0e24c6-729c-4be0-ad3c-8c0d63f2a8f9" :SETTINGS-CREATED-AT "2026-07-25T00:44:11" :SETTINGS-UPDATED-AT..
+    3: (LIST-RESULT :SETTINGS "admin" :LIST-FORM (:ID :USER :DARK-MODE :FONT-SIZE :DISPLAY-NAME :BIO) ((:SETTINGS-ID "0f0e24c6-729c-4be0-ad3c-8c0d63f2a8f9" :SETTINGS-CREATED-AT "2026-07-25T00:44:11" :SETTING..
+#+end_src
+** DONE Make Bio field in =:settings= render as a textbox :model:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The Bio field in the built-in =:settings= type currently renders
+as a single-line input (=:input-type :line=). It should render as
+a multi-line textbox (=:input-type :textbox=) since bios are
+typically longer text.
+
+And, decide on what keys show what:
+- =:line= regular text box
+- =:textbox= multi-line text box
+- etc
+
+** DONE Fix UI vocabulary
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+See ~/workbench/resolved-data-ui/widget
+** DONE =:widget= value validation at compile time          :compiler:valdn:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Validate that =:input-type= values are from the known set
+(=:line=, =:textbox=, =:select=, =:check-box=, =:checkbox-list=,
+=:read-only=, =:file=, =:hidden=).
+** DONE Multiple M2M per type                     :compiler:backend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+When a type has more than one M2M joiner (e.g. =:chores= has both
+=:chore-tags= and =:chore-users=), the compiler generates incorrect
+insert SQL for each joiner. Each joiner's INSERT statement includes
+columns from *all* joiners on the type, not just its own two FK
+columns.
+
+Example from the chores model (two joiners: =chore-tags= and
+=:chore-users=):
+
+#+begin_src
+COMPLETED-BY → insert into rt_chore_users
+  (chore_id, user_id, chore_id, tag_id) values ($1, $2, $3, $4)
+TAGS         → insert into rt_chore_tags
+  (chore_id, user_id, chore_id, tag_id) values ($1, $2, $3, $4)
+#+end_src
+
+Both statements have 4 columns — a union of all joiner FK columns.
+Each should have only its own two (=chore_id, tag_id= for one;
+=:chore_id, user_id= for the other). The param-key lists are also
+merged (=CHORE-ID USER-ID CHORE-ID TAG-ID= for both).
+
+This causes =be-insert= to fail with =NO-APPLICABLE-METHOD-ERROR=
+on =rbac:get-id= because the backend tries to resolve values against
+the wrong columns.
+
+The existing =todos= model only has one joiner (=todo-tags=), so
+this has never been exercised. The compiler bug is in the join-table
+insert SQL generation in =lisp/model.lisp= — it does not isolate
+joiners from each other when building per-joiner INSERT statements.
+
+Until fixed, models are limited to one M2M joiner per type (see
+=docs/model-reference.md= → Join tables).
+
+;; Ordered for impress-MVP (Dec 2026 video / new-user wow). Priority
+;; bands: demo wow → product feel → real-app capability → author
+;; friction → correctness footguns → scale/polish.
+** DONE Model generator button                  :model:frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Add a =:generate= field to the Model Bank =:models= type — a
+button with an =:action= hook that reads the existing
+=:description= field, sends it to an LLM, and inserts the response
+into the =:model= field.
+
+This is the "describe your app, get a model" demo. Depends on the
+action-button field and on the model syntax reference (the docs
+become the LLM's system prompt). Could be the 30-second video.
+** DONE scrips/data-ui snapshot                                :mvp:utility:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Add a =snapshot= command to scripts/data-ui, with 4 subcommands:
+
+| Command                                   | Description       |
+|-------------------------------------------+-------------------|
+| =scripts/data-ui snapshot save [name]=    | create a snapshot |
+| =scripts/data-ui snapshot restore [name]= | restore snashot   |
+| =scripts/data-ui snapshot list=           | list a snapshot   |
+| =scripts/data-ui snapshot drop [name]=    | delete a snapshot |
+
+Thus, for example, if you're running model-1, and you want to work on something else without losing the model-1 data, you could:
+  - Create a snapshot: =scripts/data-ui snapshot save=
+  - Switch to another model in Lisp: =(set-model "model-2")=
+  - Work with the other model for a while
+  - Switch back to the original model: =(set-model "model-1")=
+  - Restore the original model's data: =scripts/data-ui snapshot restore=
+
+If you need multiple snapshots of the same model, just pass the snapshot name you want to use:
+  - =scripts/data-ui snapshot save modelbank-1=
+  - =scripts/data-ui snapshot save todos-2=
+
+See scripts/README.md.
+
+Branch: snapshots-named-deploys
+** DONE Require model name in scripts/data-ui                  :mvp:utility:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+*Deploy script* (=scripts/data-ui=):
+- =deploy= and =delete= now require a model name argument (=scripts/data-ui deploy todos=)
+- =field= command takes =<model-name> <field-name>=
+- =get_model_field= and =compile_model= read from =$MODEL_NAME=
+- =render_template= substitutes ={{MODEL_NAME}}=
+- Remote deploy/delete forwards the model name through ssh
+- Usage text updated
+
+*Dockerfile*: entrypoint calls =(data-ui::main)= with no hardcoded model — reads =MODEL_NAME= env var
+
+*K8s manifest* (=40-data-ui.yaml.tpl=): injects =MODEL_NAME= env var into the container
+
+*Lisp changes*:
+- =startup.lisp=: =main= defaults to =(u:getenv "MODEL_NAME")= instead of ="default-model"=
+- =model.lisp=: =deploy-model-run-script= takes and passes =model-name=; =deploy-model-git-commit= drops the =default-model-path= parameter; =deploy-model-async= no longer copies to =default-model.lisp=; =set-model= =null= method removed
+- =deployment.lisp=: =top-level-model-field= =model-file= is now required
+
+*Deleted*: =models/default-model.lisp=
+
+*Docs updated*: AGENT.md, README.md, docs/deployment.md, docs/model-reference.md, models/README.md, scripts/README.md
+
+Branch: snapshots-named-deploys
+** DONE Test and merge snapshots-name-deploys
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+** DONE Defautl type roles for new users              :frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+When adding a new user, we want all the type roles for all the user-defined types to be selected by default.
+*Changes* (both in =lisp/backend.lisp=):
+- *New function* =user-defined-type-roles= — iterates all types in the compiled model, skips =:built-in= types, collects roles via =get-type-roles=, deduplicates, removes ="admin"=.
+- *=list-result=* — for =:users= only, appends =user-defined-type-roles= to the existing =:type-roles= before returning. All other types are unchanged.
+- *commit* 
+** DONE Blank password being sent on user update  :frontend:backend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Whenever I go edit a user (for example, to remove a role), I get an error on Submit: "Invalid value type for field :USERS :PASSWORD. Expected type :PASSWORD, but got value NIL. [Guru Meditation Number 29a979-83c]"
+
+Fixes:
+
+*1. =valid-data= (~line 1472)* — Added a guard so =valid-value-type= is skipped
+when the value is NIL and the field is either nullable (no =:not-null t=) or a
+password field. Previously, NIL passwords were rejected here before reaching
+downstream code that handles them correctly. This also fixes the general case of
+any optional field receiving NIL.
+
+*2. =rec= (~line 1061)* — Added a =:blank-passwords= keyword parameter (default
+=t=). =rec= was blanking password hashes to NIL for /all/ callers, including
+=be-update=. When =be-update= fetched the existing record to preserve the
+hash (on "no new password provided"), it got NIL instead, destroying the hash on
+write. Now =be-update= passes =:blank-passwords nil= to get the real record; all
+other callers (frontend-facing) keep the safe default.
+
+Fixed in commit 9579111 Fix blank-passwords issue
+** DONE Nullable =:target= (optional FK) fields               :compiler:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+The compiler forces =:not-null t= on any field with =:target=,
+making it impossible to express an optional foreign-key reference
+(e.g. "completed by" that starts empty). The generated DDL always
+emits =not null=, and the validation layer (=value-type-p=) rejects
+=:NULL= because the field's type test (e.g. =#'stringp= for =:text=)
+doesn't accept it.
+
+This surfaced in the chores model (Rose's model test): a =:user=
+field with =:target :users= but no =:not-null= was compiled as
+=NOT NULL=, causing insert to fail with "Invalid value type for
+field :CHORES :USER. Expected type :TEXT, but got value :NULL"
+when no user was selected.
+
+Workaround today: use an M2M list field (= :type :list= +
+=:join-table=) instead — the join table can be empty, so the
+relationship is naturally optional.
+
+See =docs/model-reference.md= → "Foreign keys (=:target=)" for the
+new documentation of this behavior.
+
+Decision needed: should the compiler respect an explicit
+=:not-null nil= on =:target= fields (allowing nullable FKs), or
+should this remain a constraint with M2M as the only option for
+optional references?
+
+*yes, it should respect =:not-null nil=* (or more precisely, the /absence/ of =:not-null t=). The compiler shouldn't override an author's intent. If someone explicitly omits =:not-null=, the field should be nullable — that's how every other field type works. Forcing =NOT NULL= on FKs silently is a footgun, especially for AI-authored models.
+
+This touches two layers:
+- *Compiler* (=lisp/model.lisp=) — stop forcing =:not-null t= on =:target= fields; let the explicit value (or lack thereof) pass through to DDL generation
+- *Validation* (=lisp/predicates.lisp= or wherever =value-type-p= lives) — accept =NULL= for nullable target fields
+
+Want me to dig into the relevant source to map out the exact changes needed? And do you agree with the approach — respect the author's =:not-null= setting rather than forcing it?
+
+Commit: 6f3f236 Nullable target
+
+** DONE Static drop-down list :ui hint                  :model:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Add a =:ui= hint (e.g. =:widget :select= with a static
+=:options= list) that lets model authors define a fixed set of
+dropdown values without needing a separate type or database table.
+Useful for fields like status, priority, category, etc.
+
+Commit: 2eea9a1 Static dropdown.
+
+*Files changed:*
+
+- *=lisp/model.lisp=* — 4 additions:
+  - =valid-options-value= — validates =:options= shape (non-empty list of non-empty strings) and widget compatibility (=:select= only)
+  - =v-options= — runtime validation function; rejects values not in the options list (skips nil/=:null=)
+  - =compile-validations= — pushes =#'v-options= when =:ui :options= is present
+  - =compile-field= finally block — exclusivity check (=:options= + =:target=/=:join-table= → error) and bare-select check (=:select= without =:options= or =:target= → error)
+  - =preliminary-model-check= — allows =:options= (a list value) under =:ui=
+
+- *=lisp/backend.lisp=* — 2 changes:
+  - =allowed-values-for-field= — short-circuits with static options when present (no DB lookup)
+  - =allowed-values= gate — includes fields with =:ui :options= alongside =:target=/=:join-table=
+
+- *=tests/static-options-tests.lisp=* — new suite, 17 tests covering compile (happy + 7 reject cases), read path (3), and write path (6)
+
+- *=tests/helpers.lisp=* — =run-static-options-tests= + added to =run-tests=
+
+- *=data-ui.asd=* — registered =static-options-tests=
+
+- *=docs/model-reference.md=* + *=AGENT.md=* — documented =:options=, both =:select= modes, exclusivity rules
+
+*Test results:* 20/20 static-options checks pass. Backend (346), predicates (77), widget (31), and action (20) suites all green — no regressions.
+
+*Zero frontend changes needed* — the existing =allowed-values[fieldKey]= → =<option>= mapping in App.tsx handles static options out of the box, exactly as the plan predicted.
+
+** DONE Boolean fields show checkmark/blank in lists   :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+List cells for =:type :boolean= currently show true/false (or similar
+raw text). Render a checkmark when true and blank (or an empty box)
+when false. Small polish item that will be visible in the demo video.
+
+Commit: ce3a1a1 private/master Checkmark rendering
+
+** DONE Hide :settings role from forms                     :backend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Visible demo noise: settings role should not appear as an assignable
+role in forms.
+
+Four changes across two files:
+
+/=lisp/backend.lisp=/ — 3 functions modified to exclude ="settings"= and align system exclusives:
+
+- /=selectable-roles=/ — added ="settings"= to =system-exclusives=. Controls the checkbox-list for non-base types.
+- /=allowed-values-for-field=/ — rewrote the =:users =:roles= filter. Previously only stripped ="logged-in"=; now strips the full set (="admin"=, ="admin:exclusive"=, ="guest:exclusive"=, ="settings"=, ="logged-in"=, current user's exclusive). This was the path the =:users= Add form actually hit — the bug you found.
+- /=add-roles-to-view=/ — you refactored both branches to use =u:has= against a list instead of chained =or= /=equal= calls. Added ="settings"= to both the non-base and =:users= branches. Controls role display in list/detail views.
+
+/=tests/backend-tests.lisp=/ — 2 tests touched:
+
+- /=selectable-roles-admin=/ — added ="settings"= to the expected exclusion list and added an =is-false= assertion for it.
+- /=allowed-values-for-field-excludes-settings-from-users-roles=/ — new test covering the =:users= Add form path. Asserts ="settings"=, ="admin"=, ="admin:exclusive"=, ="guest:exclusive"=, ="logged-in"=, and the admin's exclusive role are all absent, while ="public"= and ="user-creator"= are present.
+
+Commits:
+- 740b9aa private/master Add a test for users add form no settings role
+- c698bfb More exclude settings from Add form.
+- 031e4dc Exclude settings from roles in UI
+
+** DONE Compiler check form fields                  :compiler:valdn:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Any fields listed in =:list-form=, =:update-form=, or =:add-form=
+should be checked for existence during compilation. Supports the
+"compiler guarantees consistency" thesis — cheap, high leverage.
+- **=lisp/model.lisp=** - Add =valid-form-fields= and call it from =compile-type-def=.
+- **=tests/form-fields-tests.lisp=** — 13 tests in 3 groups:
+  - *Happy path* (4): =:fields t=, explicit valid fields, default fields =(:id=, =:created-at=, =:updated-at=), absent forms
+  - *Rejection* (6): bad key in each form type, typo, multiple bad keys, bad key in one form while others are clean
+  - *Edge cases* (3): empty field list, single-element list, all existing models compile
+- **=data-ui.asd=** — registered =form-fields-tests=
+- **=tests/helpers.lisp=** — added =run-form-fields-tests= and appended it to =run-tests=
+
+** DONE Fix test groups                                        :testing:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Currently, we have =run-tests= which calls a bunch of helper functions, which in turn call some suite of fiveam tests. We need to rearrange tests so that fiveam is able to run all the tests and produce a single report, while retaining the ability to run individual suites as necessary.
+- Every =run-*= helper switched from =run!= (prints report, returns boolean) to =run= (returns result objects) + =explain!= (prints report from those objects)
+- Every =run-*= helper now takes =(&optional collect)= — when =collect= is true, returns the result objects; otherwise returns =nil= (clean REPL output for interactive use)
+- =run-tests= rewritten to:
+  - Call each helper with =collect t= via a =loop= over a =(name . function)= alist
+  - Time each helper individually using =get-internal-real-time=
+  - Collect all result objects across all groups
+  - Print a consolidated summary with:
+    - Pass/fail count across all groups
+    - Which groups had failures (if any)
+    - Total wall-clock time
+    - Top 5 slowest groups with per-group timings
+
+** DONE Speed up generator tests                   :testing:maintenance:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+*=generator-tests.lisp=*:
+- Split =generator-suite= into =generator-pure-suite= (7 tests, no DB) and =generator-integration-suite= (9 tests)
+- Removed =with-model= wrappers from all integration test bodies
+- Made =th-gen-make-user= idempotent (checks if user exists before creating)
+- Made =th-gen-seed-llm-config= idempotent (deletes existing rows first)
+- Added =th-gen-delete-llm-config= (used by =read-llm-config-missing= and =be-action-passes-roles= to ensure the secret is absent when needed)
+- Made =th-gen-make-model-row= generate unique names via a counter (avoids unique-constraint collisions when rows aren't deleted)
+- Async tests (=generate-hook-async-with-stub=, =generate-hook-async-fails-on-invalid-llm-output=) no longer delete their model rows — this was the root cause of the Swank condition (worker thread calling =set-status= on a deleted UUID)
+- =be-action-passes-roles= now calls =th-gen-delete-llm-config= before running, so the hook returns synchronously instead of spawning a worker that outlives the test
+
+*=helpers.lisp=*:
+- =run-generator-tests= runs the pure suite with no model, then wraps the integration suite in a single =with-model "modelbank-test"=
+** DONE Clean up models directory                          :maintenance:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Move test-only models that are not straight-up examples out of
+=models/= and into =models/test/=. Update =set-model= (and any path
+helpers / =with-model=) so it also checks =models/test/= when
+resolving a model name. Keep real examples
+(=todos=, =modelbank=, =chores=, =books=, etc.) at the top level.
+Document the split in =models/README.md= if present.
+
+The dc-eclectic package contains a directory-listing function that might come in handy for this.
+
+Resolved via models-dir-plan-grok.org
+
+Commit: 253e046 Clean up models directory
+
+*Files moved* (via =git mv=):
+- =models/test-model.lisp= → =models/test/test-model.lisp=
+- =models/m2m-test.lisp= → =models/test/m2m-test.lisp=
+- =models/nullable-fk-test.lisp= → =models/test/nullable-fk-test.lisp=
+- =models/static-select-test.lisp= → =models/test/static-select-test.lisp=
+
+*New file:*
+- =models/test/modelbank-test.lisp= — copy of =modelbank-dev.lisp= (since merged into =modelbank.lisp=) with =:name "modelbank-test"=
+
+*Lisp changes* (=lisp/model.lisp=):
+- Added =resolve-model-path= — two-path probe (top-level then =test/=), =report-e= on miss
+- Updated =set-model= string method to use =resolve-model-path=
+- Filtered =list-models= to exclude =models/test/= paths
+
+*Test changes:*
+- =tests/helpers.lisp= — =run-generator-tests= uses ="modelbank-test"=
+- =tests/generator-tests.lisp= — suite description and section comments updated
+- =tests/form-fields-tests.lisp= — switched to recursive =u:directory-listing=, skip only =widgets=
+- =tests/widget-tests.lisp= — same treatment
+
+*Docs updated:* =models/README.md=, =docs/model-reference.md=, =AGENT.md=
+
+*Verification:* All 767 checks passed across 12 groups (23.4s). =list-models= returns 9 top-level models only. =resolve-model-path= correctly finds files in both locations. Unknown names produce a clear =report-e= error.
+
+** DONE =allowed-values= should use =:source-all=          :backend:bug:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+=docs/model-reference.md= says =:source-all= feeds allowed-values;
+=allowed-values-for-field= in =lisp/backend.lisp= still reads =:source=.
+Fix runtime to prefer =:source-all= when present, fall back to =:source=.
+Still need the bidirectional M2M fix below even after this change.
+Commit: 01fec77 =allowed-values= should use =:source-all=
+** DONE Fix bidirectional M2M                     :backend:compiler:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+List fields on *both* ends of the same joiner compile but
+stack-overflow at runtime on =/api/list=.
+
+Example: books have =:authors= (M2M) and authors have =:books=
+(M2M) on the same joiner. Then:
+
+#+begin_src text
+be-list(:books)
+  → allowed-values → authors list field
+    → be-list-column(:authors …) → be-list(:authors)
+      → allowed-values → books list field
+        → be-list(:books)   ; infinite mutual recursion
+#+end_src
+
+Empty tables still hit this: =be-list= always builds
+=allowed-values= via =list-result=. The request never completes,
+so the frontend never gets =create: true= and the Add button
+never appears (symptom of the failed list, not a separate
+create-flag bug).
+
+Root cause: =allowed-values-for-field= calls full =be-list= /
+=be-list-column= on the related type. There is no cycle break.
+(Also still uses =:source=, not =:source-all= — see separate
+todo; that alone does not fix the recursion.)
+
+**Goal:** make bidirectional M2M work. Allowed-values for a list
+field must load option rows *without* re-entering the full
+=be-list= → =allowed-values= path on the other type (e.g. a
+narrow options query / =be-list-column= path that skips nested
+allowed-values, or an explicit recursion guard that still returns
+usable options).
+
+**Not the goal:** a compile-time reject of two-sided list fields.
+Docs currently say "one-way M2M only" and known gap 11; those
+should flip to supported once fixed.
+
+**Related**
+- Multiple M2M per type (separate compiler SQL bug; plan
+  =~/workbench/multiple-m2m-plan.org=) — do not fold into this.
+- =allowed-values= should use =:source-all= — complementary;
+  still need this fix after that lands.
+- Docs: =docs/model-reference.md= → Join tables ("One-way M2M
+  only") and known gap 11.
+
+**Workaround today:** one-directional M2M only (owner has the
+list field; other side does not). Base model follows that
+(users→roles, not both ways).
+
+**Impress-MVP note:** not on the demo path (Model Bank / todos /
+books are one-way). Reputation footgun for AI-authored models;
+prefer a cheap guard if generator ships before full fix.
+
+Fix:
+- *=lisp/backend.lisp=* — Added =:skip-allowed-values= keyword to =list-result=, =be-list=, and =be-list-column= (all keyword-only, no explicit nil defaults). =allowed-values-for-field= passes =:skip-allowed-values t= to =be-list-column=, breaking the mutual recursion cycle. Three =list-result= call sites in =be-list= updated to pass keywords.
+- *=models/test/bi-m2m-test.lisp=* — New fixture: books ↔ authors via one shared =:book-authors= joiner, both sides with =:source-all= named views.
+- *=tests/bi-m2m-tests.lisp=* — New suite: 21 bi-m2m tests (compile, no-overflow, allowed-values, CRUD both directions, skip-flag, edge case) + 3 one-way regression tests under =m2m-test=.
+- *=tests/helpers.lisp=* — Added =seed-bi-m2m-fixture=, =run-bi-m2m-tests=, wired into =run-tests= groups.
+- *=data-ui.asd=* — Registered =bi-m2m-tests=.
+- *=docs/model-reference.md=* — Replaced "One-way M2M only" with bidirectional pattern + example; marked gap 11 resolved; updated =:source-all= cross-reference.
+
+Commit: 39e37e6 Fix bidirectional M2M
+
+** DONE Agent Lisp editing via Emacs buffers            :ai:maintenance:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Agents (Rose especially) burn tokens fighting parentheses when
+editing Lisp through generic file tools (Edit/Write/Insert). They
+count parens with Python, unbalance sexps, and treat code as flat
+text.
+
+Emacs already understands sexp structure. Research note:
+~/workbench/agent-editing-lisp.org — survey of existing skills,
+design sketch for a custom skill (Eval + live buffer +
+=check-parens= + indent before save), not scaffolded yet.
+
+High priority: every multi-sexp Lisp edit without structural
+tools is wasted context. Point Rose at the skill first once it
+exists.
+
+Next: draft =SKILL.md= (name TBD, e.g. =emacs-lisp-buffer-edit=);
+decide global vs Rose-only vs project-local. Do not weaken the
+data-ui guardrail (no Lisp edits outside =web/= and
+=tests/helpers.lisp= without permission).
+
+Added functions to dc-ai.el to check parens and to provide deeper descriptions of what's wrong with parens. Added ~/r/elisp/ai/global.md for global information that applies to all projects.
+** DONE Lifecycle data-effect contract + =:compose-string= hook :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+**Compose-String: Server-Side Computed Fields*
+
+Enables types with multi-part natural keys (e.g. author first/middle/last) to expose a single stored identity scalar for FK/M2M lookup and display. Model authors state the composition once; the compiler guarantees it runs before validation and writing on every insert and update.
+
+*Three layers shipped:*
+
+- *Lifecycle data-effect contract* — =run-lifecycle-hooks= now returns the merged data plist. Pre-create/pre-update hooks run /before/ validation in =be-insert=, =be-insert-internal=, and =be-update=, so hooks can fill required fields. Also fixed =full-data= to respect explicit nil values (sentinel pattern).
+
+- *=:compose-string= lifecycle hook* — Registry hook with =:format= (template string with =:field-key= placeholders) and =:into= (destination field). Compile-time validation of placeholders and destination. New =:string= param type.
+
+- *=:compose= field sugar* — Field attribute that expands to =:compose-string= on =:pre-create=/=:pre-update=. Self-reference and duplicate-with-manual-hook are compile errors.
+
+*Files changed:*
+
+- =lisp/model.lisp= — =:string= param type, =:compose-string= registration, helpers (=compose-string-apply=, =compose-string-placeholders=, =valid-compose-placeholders=, =expand-compose-hooks=), placeholder validation in =compile-lifecycle-hooks=, =:compose= in field attr allow-list, lifecycle keys in =preliminary-model-check=
+- =lisp/backend.lisp= — =merge-data-effect=, =run-lifecycle-hooks= return value, =be-insert=/=be-insert-internal=/=be-update= reorder, =full-data= sentinel fix
+- =tests/compose-tests.lisp= — unit suite (bare) + behavioral suite (shared model context)
+- =tests/compose-sugar-tests.lisp= — sugar compile-error suite + behavioral suite
+- =tests/helpers.lisp= — =run-compose-tests=, =run-compose-sugar-tests=
+- =tests/hook-registry-tests.lisp= — two test hooks fixed to return nil
+- =models/test/compose-test.lisp=, =models/test/compose-sugar-test.lisp= — fixtures
+- =data-ui.asd= — registered both test files
+- =docs/hook-registry.md=, =docs/model-reference.md=, =AGENT.md=, =~/workbench/data-ui-todo.org= — documentation
+
+907/907 tests green across 15 groups.
+
+Design: ~/workbench/compose-string-investigation.org
+Docs: =docs/hook-registry.md= (Registered Lifecycle Hooks), =docs/model-reference.md=
+(:compose section, Identity fields guidance), =AGENT.md= (model features, hooks).
+** DONE Reattach tags to the chores model                :model:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Stale: multiple-M2M compiler bug is fixed and =models/chores.lisp=
+already has =:tags=, =:chore-tags=, and the =:tags= view again.
+** DONE Mark =:resources= as internal                          :maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+=lisp/model.lisp= — users should not be able to interact with the
+=:resources= table via UI or backend. May already be done; verify.
+
+** DONE Process =:post-create= key                             :maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+=lisp/model.lisp= — =:post-create= is declared in =*base-model*=
+for =:users= but processing may not be fully implemented.
+
+
+** DONE Field name flexibility (=:source= field naming)           :compiler:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Allow a field to have a display name different from its source
+column name. Surfaced in =models/parts.lisp=.
+
+** DONE Skip =be-update= when there are no changes                 :backend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+=lisp/backend.lisp= — =be-update= currently runs even when nothing
+changed. Should short-circuit.
+
+* MVP Now
+** DONE Move todo list into repo                           :maintenance:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-09 Sun]
+:END:
+Move the project todo list from =~/workbench/data-ui-todo.org= into
+the repo so the project is self-contained and priorities are visible
+to anyone who clones it. Update AGENT.md references to point at the
+new location.
+
+Add =CREATED= and possibly =COMPLETED= org-mode property timestamps to all
+items: 
+1. Stamp all items with today's date as the :created: date.
+2. Stamp all DONE items with today's date as the :done: date.
+leave DONE items undated (or stamp them if convenient), and track
+real dates going forward for new items.
+** DONE Multiple local instances                                   :scripts:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
+:END:
+
+We need to be able to run multiple local instances.
+Host-profile layout has landed: a profile is a directory containing
+=profile.env=, with runtime files and data beside it.
+=create-profile= and =delete-profile= have been added. This item
+stays open until two local instances have actually been run side by
+side.
+
+Also: =expose-profile=, which makes the app publicly accessible.
+
+Branches/commits: multiple-local, profile-restructure, create-profile,
+expose-profile.
+** IN-PROGRESS List Pipeline
+List pipeline restructuring (Aug 2026). The old items — Filtered
+rollups, Search/Filtering, Sort, Pagination — were peers by UI noun.
+They are now restructured by pipeline stage and Phase A shape, because
+sort/page/search/rollup are all consumers of the same list contract.
+Ordering constraint: (1) → (2)+(3) → (4)(5)(6); (7) → (8) → (9)(10)
+→ (11) → (12). Do not gate (2)–(6) on (8).
+
+Plans for each of these subitems can be found at ~/workbench/list-plan/.
+*** DONE 1. List read contract (spec)                         :backend:mvp:
+:PROPERTIES:
+:CREATED:  [2026-08-09 Sun]
+:COMPLETED: [2026-08-10 Mon]
+:END:
+Freeze =be-list= / API params and response: =limit=, =offset=,
+=:sort=, =:filters=, =:total=; RBAC + view interaction; explicit
+non-goals (no measure sort, no == rewrite). Gates items 2–6.
+
+Today =be-list= fetches all rows, joins everything, collapses in
+Lisp, and returns the full set. There is no contract for asking for
+a page, sorting by a column, or filtering results. This item freezes
+the API surface — the parameter names, the response shape, how RBAC
+and views interact with paging — /before/ anyone builds against it.
+It is a spec, not code. Every downstream item (2–6) depends on this
+contract being stable.
+
+*** DONE 2. Id-first Phase A (base grain)            :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-13 Thu]
+:END:
+Select a page of primary ids with SQL =WHERE= / =ORDER BY= base
+columns / =LIMIT=/=OFFSET= + total count. Stop putting limit on
+join fan-out. Depends on (1).
+
+The current pipeline applies =LIMIT= after the joins, which means
+a 10-row page might fetch hundreds of joined rows and collapse them
+down. This item splits the query into two phases: Phase A selects
+just the primary ids for the requested page (fast, indexed, no
+joins), and Phase B (item 3) hydrates only those ids. This is the
+foundation that makes pagination, sort, and search honest — they
+all operate on the id selection, not the collapsed result.
+
+**** Implemented
+*Plan 02 — Id-first Phase A* is complete. All 944 tests pass (38 new Phase A checks added).
+***** Files changed
+- =lisp/model.lisp=: Added =phase-a-join-sql= function; =enrich-views= now generates =:phase-a-base-sql= and =:phase-a-join-sql= at compile time
+- =lisp/backend.lisp=: New functions: =clamp-limit=, =phase-a-select-sql=, =phase-a-order-by-column=, =phase-a-build-order-by=, =phase-a-build-count-sql=, =phase-a-query=, =reorder-to-match=. Rewrote =be-list= to Phase A → Phase B flow. Updated =list-result= with =:total=. Updated =be-list-column= to pass =:limit nil=.
+- =lisp/rest.lisp=: Added =parse-page-param=, =parse-sort-param=. Updated =/api/list= handler with =limit=, =offset=, =sort= params.
+- =tests/backend-tests.lisp=: 14 new Phase A tests covering paging, sorting, count agreement, join-filter pushdown, compile-time SQL generation
+- =tests/helpers.lisp=: Added =run-phase-a-tests= helper
+**** Key design decisions
+1. *Phase A base SQL* (=SELECT id FROM <table>=) and *join SQL* (=SELECT DISTINCT id FROM <table> JOIN ...=) are generated at compile time, selected at runtime based on whether filters reference joined tables.
+
+2. *=limit nil=* means "all rows" (no LIMIT clause). The default is 20. This preserves backward compat for =be-list-column=.
+
+3. *Record reordering*: Phase B (hydration via =WHERE id IN (...)=) doesn't preserve Phase A's ORDER BY. Added =reorder-to-match= to restore the correct order after hydration.
+
+4. *Count query* uses =COUNT(DISTINCT id)= when joins are present, =COUNT(*)= otherwise. Same WHERE predicates as the ID query.
+
+5. *All query values parameterized* — LIMIT, OFFSET, and filter values all use =$N= bind parameters.
+
+*** DONE 3. Phase B hydrate (unchanged collapse)              :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-13 Thu]
+:END:
+Join + Lisp =:first=/== for the id set only. Shared by all
+Phase A shapes. Document "collapse is not paging." Depends on (2).
+
+This is the existing Lisp aggregation code, unchanged — but now it
+runs on /only the ids selected in Phase A/, not the whole table.
+The =:first= and =:list= aggregations (tags, roles, FK lookups)
+stay in Lisp for now. The key documentation point: collapse reduces
+fan-out rows to one plist per id; it is /not/ a paging mechanism.
+It just happens after paging now.
+
+**** Changes
+- =lisp/backend.lisp= -- Extracted =phase-b-hydrate= from inline code in =be-list=. The function takes =type-key=, =ids=, =user=, and keyword args (=form=, =field-keys=, =total=, =skip-allowed-values=). It runs the join query with =WHERE id IN (ids)=, collapses fan-out via =view-result-values= / =list-result=, and restores Phase A ordering via =reorder-to-match=. No filters applied -- all filtering is in Phase A. =be-list= now calls it in one line instead of having 12 lines of inline hydration logic.
+
+- =tests/backend-tests.lisp= -- Four new tests:
+  - =phase-b-hydrate-exact-id-set= -- verifies Phase B returns exactly the records for Phase A's IDs
+  - =phase-b-no-extra-filters= -- verifies Phase B doesn't re-apply filters (10 records exist, page of 3 returned)
+  - =phase-b-preserves-phase-a-order= -- verifies record order matches Phase A's =ORDER BY= (not DB natural order)
+  - =phase-b-m2m-fanout-collapse= -- verifies multi-join-table fan-out collapse under =m2m-test= (item with 3 tags collapses to one record with a 3-element list)
+
+- =tests/helpers.lisp= -- Added =run-phase-b-tests= that runs the first three tests under =test-model= and the m2m test under =m2m-test=.
+*** DONE 4. Base-column sort                         :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-13 Thu]
+:END:
+Model marks sortable grain fields; compiler/API honor sort in base
+Phase A; FE column sort wired to the contract. Depends on (1)+(2).
+
+Users currently cannot click a column header to sort a list. This
+item adds =:sortable t= (or equivalent) to field declarations so
+the compiler knows which base columns are sort-eligible, then wires
+the =:sort= API parameter through to the Phase A SQL =ORDER BY=.
+The frontend renders clickable headers. This is /base-column/ sort
+only — sorting by aggregated measures (average rating, count) is
+item 9.
+**** Changes by file:
+*=lisp/model.lisp=* (3 changes):
+- Added =:sortable= to the =compile-field= =attrs= list so it survives compilation
+- Added compile-time validation: =:sortable t= on a non-=:column t= field signals =report-e=
+- Added =sort-index-ddl= helper + =:sort-index= key in =create-table-sql=; =create-tables= now executes sort index DDL. Skips fields that already have =:unique t= or are the sole =:identity= column
+
+*=lisp/backend.lisp=* (2 changes):
+- =fe-fields= now forwards =:sortable= into the =list-form= field plist
+- =phase-a-order-by-column= validates that the sort field is marked =:sortable= before resolving its column (rejects non-sortable and unknown fields with =report-ve=)
+
+*=lisp/rest.lisp=* (1 change):
+- =parse-sort-param= now checks =:sortable= on the field and returns 400 for non-sortable fields
+
+*=web/src/App.tsx=* (6 changes):
+- =sortable?: boolean= on the =Field= interface
+- Sort state (=sortField=, =sortDir=)
+- =fetchList= sends =&sort=field:dir= when sorting
+- =changeType= clears sort state
+- =useEffect= depends on sort state (re-fetches on sort change)
+- Clickable headers with three-state cycle (unsorted → asc → desc → unsorted) and ▲/▼ indicators
+
+*=docs/model-reference.md=*: Documented =:sortable= in the field key table and vocabulary list
+
+*=models/test/test-model.lisp=*: Added =:sortable t= to =:name= and =:points= on =:todos=
+
+*=tests/sortable-tests.lisp=* (new): 12 tests covering compilation, fe-fields forwarding, index DDL, ORDER BY generation, validation errors, and end-to-end sort behavior
+
+*=tests/backend-tests.lisp=*: Updated 2 pre-existing phase-a sort tests to use sortable fields (=:todos :name=) instead of non-sortable fields (=:roles :name=)
+
+*=tests/helpers.lisp=* + *=data-ui.asd=*: Registered the new test suite
+
+*** TODO 5. Base-column search/filter          :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Minimal filter vocab on grain/base fields (start: name/=identity=
+text search for Model Bank). Evaluated in Phase A, not
+post-collapse. Depends on (1)+(2).
+
+A model catalog without search is just a long list. This item adds
+the simplest useful filtering: text search on name or identity
+fields, evaluated in the Phase A SQL =WHERE= clause (not after
+Lisp collapse). The filter vocabulary starts minimal — enough for
+"find a model by name" — and expands later. The critical design
+constraint is that filters run /before/ paging, on the id-selection
+query, so they actually reduce the result set rather than
+post-filtering a collapsed list.
+
+Implementation summary:
+
+*Backend*
+- =:searchable= top-level field attr + compile checks (=:column t=, =:type :text=, no =:target=)
+- Stage-3 =:searchable-fields= (qualified column names)
+- =escape-ilike-pattern=, =phase-a-search-clause= (OR ILIKE group, one bind, ESCAPE)
+- =phase-a-query= =&key search= splices before ORDER BY / LIMIT / count
+- =be-list= / =be-list-column= / =fe-fields= wired; early search validate so empty-RBAC still 400s
+
+*REST*
+- =parse-search-param= (trim, blank→nil, clamp 200)
+- =/api/list?search==
+
+*Frontend*
+- Debounced search input (300ms), clear ×, reset on type change
+- Hidden when no =list-form= field is searchable
+- Built (=npm run build= OK)
+
+*Fixtures / tests / docs*
+- =test-model= =:name=, =modelbank= =:models :name=, new =search-test=
+- =searchable-suite= 50/50, =search-or-suite= 8/8, =sortable-suite= still green
+- =model-reference.md= + =todo.org= bullet fixed (top-level attr, not =:ui=)
+- Follow-up [2026-08-14]: =:searchable=/=:sortable= registered as JSON
+  boolean keys (nil was serializing as =[]=, so the Search box appeared
+  on types with zero searchable fields). Base =:users :name= and
+  =:email= now =:searchable t=.
+
+
+*** TODO 6. Base list pagination (API + FE)      :frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+End-to-end page controls and =total= on ordinary lists. Depends on
+(1)+(2). No measure requirements.
+
+The frontend currently renders every row the API returns. This
+item adds page controls (next/prev, page count, total rows) to the
+list UI and ensures the API returns a =:total= count so the
+controls know how many pages exist. This is the user-visible payoff
+of items 1–2: lists that load fast and paginate cleanly instead of
+rendering hundreds of rows at once.
+
+*** TODO 7. Analytical authoring surface (spec)  :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Spec-only; no compiler work; gates measure Phase A. Grain +
+measures + filter/time-window vocab + read-only rollup types; no
+Model Bank nouns; two named Phase A shapes (base vs measure). Freeze
++ write-up with one concrete worked example (chores
+completed/points) end-to-end through 7a–7d.
+
+Items 1–6 handle ordinary lists: select rows, sort by base columns,
+search, paginate. Item 7 is the spec for a fundamentally different
+list shape — /analytical read models/ where each row is an
+aggregation over many joined rows (a leaderboard, a summary, a
+rollup). Before writing any compiler code, this item freezes the
+model vocabulary that authors use to declare: what is the grain
+(one row per user? per model?), what are the measures (count, sum,
+average), what filters apply (completed only? last 30 days?), and
+how read-only types work (no create/update/delete). The spec must
+use generic nouns — no Model Bank or chores-specific language — so
+the vocabulary is general. Produces a worked example end-to-end
+through sub-items 7a–7d.
+
+**** TODO 7a: Grain and measure shape                         :compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+How authors declare grain, measures, and join path. One grain + N
+measures vs multi-view field zoo.
+
+The hardest design question in the analytical path. Today a type's
+fields aggregate over joins to /that type/ — Model Bank's
+=:average-rating= is an avg over ratings joined to a model. But a
+leaderboard needs a /different grain/: one row per /user/, with
+measures over their models. This sub-item decides how authors
+express that. The conversation so far favors one grain + N measures
+(e.g., user grain with =model-count=, =avg-rating=, =rating-count=
+as fields) over the multi-view zoo (3 views × 6 fields in the
+original chores sketch).
+
+**** TODO 7b: Read-only / rollup types                        :compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=:table nil= (or equivalent), no create/update/delete, RBAC/display
+rules, vs hanging measures on =:users= / existing types.
+
+A leaderboard is not a table — it is a computed view. This sub-item
+decides how the model declares a type that has no physical table,
+cannot be created/updated/deleted, and exists only for display and
+RBAC-scoped reads. The alternative is hanging measure fields on an
+existing type (e.g., adding =:model-count= to =:users=), but that
+mixes computed data with stored data and complicates RBAC. A
+dedicated read-only type keeps the separation clean.
+
+**** TODO 7c: Filter and time-window vocab (MVP)              :compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Minimal predicate DSL (=:eq=, completed-style flags, one or two date
+windows). Timezone stance: server-local, document as known
+limitation (real timezone handling is post-MVP). Compile-time
+validation. Hard non-goals.
+
+"Hot models" needs "ratings in the last 30 days." "Completed chores"
+needs "where =completed = true=." These are filters on /joined
+rows/, not on the grain — and they do not exist yet. This sub-item
+designs the minimal vocabulary for expressing them in model data:
+boolean flags (=(:completed)=), equality (=(:eq :status "active")=),
+and one or two date-window forms (=(:last-days :count 30 :on
+:created-at)=). The DSL is compile-time validated so typos fail
+early. Timezone handling is explicitly server-local for MVP —
+documented as a known limitation, not silently wrong.
+
+**** TODO 7d: Phase A shape selection rules           :compiler:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+When list uses base Phase A vs measure Phase A (sort/filter/page
+keys). Same =be-list= contract. No second product.
+
+A single =be-list= call must serve both ordinary lists (show me
+models) and analytical lists (show me a leaderboard). This sub-item
+defines how the compiler decides which SQL generator to use — base
+Phase A (select ids, hydrate, collapse) or measure Phase A (GROUP
+BY grain, aggregate, filter). The caller should not know or care
+which path runs; the API contract from item 1 is the same either
+way. The selection is driven by the type's declaration, not by a
+flag on every request.
+
+**** TODO 7e: Freeze + write-up                               :compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Short decision note (authoring examples, non-goals, link to fixture
+plan). Done when (7a–7d) agree and produce a coherent worked example.
+
+The spec is not done until it is written down as a decision note
+with concrete model syntax examples, explicit non-goals, and a link
+to the test fixture plan. The worked example should trace a single
+query (chores completed/points leaderboard) end-to-end through all
+four sub-items: grain declaration, read-only type, filter vocab,
+and shape selection. If any sub-item cannot produce a coherent
+answer for the example, the spec is not frozen.
+
+*** TODO 8. Measure Phase A SQL                :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Second generator shape: =GROUP BY= grain, =:count=/=:sum=/=:avg=,
+optional row predicates/=FILTER=. Id page (or grain rows) for
+leaderboard-style reads. Depends on (7).
+
+This is where the compiler learns to generate analytical SQL instead
+of flat SELECT + LEFT JOIN. When a type uses the measure Phase A
+shape (decided in 7d), the compiler emits =GROUP BY <grain>= with
+aggregate functions (=COUNT=, =SUM=, =AVG=) and =FILTER (WHERE ...)=
+clauses for row predicates. This replaces the current approach of
+fetching all fan-out rows and collapsing them in Lisp. The output is
+a set of grain ids (one per user, one per model) with their
+computed measures — ready for sort, page, and display.
+
+*** TODO 9. Sort and page on measures          :frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=ORDER BY=/=LIMIT= on measure Phase A output. Same list contract as
+base. FE can sort leaderboard columns. Depends on (8).
+
+Without sort on measures, a leaderboard is just an unsorted list
+with numbers next to names. This item extends the sort and
+pagination from items 4 and 6 to work on /aggregated/ columns —
+sort by total points, by rating count, by average rating. The SQL
+is straightforward (=ORDER BY= on aggregate aliases) because item 8
+already produces the measures as named columns. The frontend gets
+clickable headers on leaderboard tables, same UX as base-column
+sort.
+
+*** TODO 10. Filtered-rollup fixture + tests          :testing:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Stable =models/test/= pilot (chores-shaped or thinner). Behavioral
+tests for complete/points/attribution. Generalization gate before
+demos. Depends on (8).
+
+Per Donnie's rule: the analytical path must be proven general on a
+test fixture /before/ it touches any demo model. This item creates
+a minimal, stable fixture under =models/test/= that exercises the
+full measure pipeline — grain, measures, filters, sort — and
+verifies that rollups match hand-computed expected values. The
+fixture is chores-shaped (users, tasks with points, completions)
+but lives under =models/test/= so it does not break when demo
+models change. No demo model (chores, Model Bank) may depend on
+the analytical path until this fixture is green.
+
+*** TODO 11. Chores: derived scores, drop stored counters  :mvp:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+First real consumer of measure path. Demote/remove =:scores=
+maintenance. Depends on (10).
+
+The chores model currently has a stored =:scores= type — denormalized
+counter rows that must be maintained by hand or by lifecycle hooks.
+Once the analytical path works, scores should be /derived at read
+time/ from completed chore instances, not stored. This item replaces
+the stored scores with rollup reads, proving the measure pipeline
+on a real (non-fixture) model. It also removes the maintenance
+burden and the denormalization bugs that stored counters invite.
+
+*** TODO 12. Model Bank gamification (adopter)           :mvp:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Hot/dead, rating-count/avg sort, user leaderboard metrics. Only
+after fixture is green. Depends on (10).
+
+This is what makes Model Bank feel like a product instead of admin
+CRUD. Right now you can see a model's average rating, but you
+cannot answer the questions that make a catalog app feel alive:
+Which models are hot (time-windowed rating activity, not lifetime
+average)? Which are dead (zero recent engagement)? Who are the top
+contributors (user-grain leaderboard with model count and average
+rating)? Can I sort by rating count or average? All of this is
+pure authoring on top of the analytical pipeline — no new compiler
+work, just model declarations using the vocabulary frozen in item 7.
+The constraint is sequencing: the fixture (item 10) must be green
+first, proving the primitive is general before Model Bank consumes
+it.
+
+*** TODO 13. List pipeline documentation                 :docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-11 Tue]
+:END:
+Document all changes introduced by the list pipeline (items 1–12)
+in a single pass after the feature is working. Centralizing
+documentation avoids stale docs from implementation deviations and
+produces more coherent coverage than per-item documentation spread
+across the pipeline.
+
+Consolidated checklist (compiled from items stripped during
+planning):
+
+- =docs/model-reference.md=:
+  - =be-list= new keyword args: =limit= (default 20, max clamp
+    200), =offset=, =sort= (plist =(:field :asc|:desc)=)
+  - =/api/list= new query params: =limit=, =offset=, =sort=
+    (string ="field:asc"=)
+  - Response shape: =:total= (always present, pre-paging count)
+  - =:sortable= field attribute (top-level, not =:ui=)
+  - =:searchable= field attribute (top-level, not =:ui=) and =:search= query param
+  - Collapse vs paging distinction (Phase A selects IDs, Phase B
+    hydrates and collapses — collapse is not paging)
+  - Analytical authoring surface: grain, measure, time-window
+    vocabulary
+  - Read-only rollup types
+  - Filter and time-window vocabulary
+  - Timezone stance (server-local, known limitation)
+- =docs/hook-registry.md=: any new registry hooks introduced by
+  the pipeline (if applicable)
+- =AGENT.md=: update the Feature/Status sections to reflect list
+  pipeline capabilities
+
+** TODO Template-instance spawn pattern               :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-11 Mon]
+:END:
+When a user completes a recurring item (chore, ticket, inspection
+round), the completion should be durable history while a fresh open
+instance takes its place. This is the template→instance pattern:
+template types hold the definition (name, points, tags); instance
+types hold the state (completed, completed-by, completed-at, points
+snapshot). A new registry action hook (=spawn= / =complete-and-spawn=)
+closes the current instance and inserts the next one from the template,
+copying declared fields and clearing state fields.
+
+This is a general structural shape, not a chores special case — it
+covers tickets, inspections, checklists, recurring ops, any "do it
+again" workflow. The chores model is the pilot; Model Bank does not
+need this. Depends on the action hook protocol (done) and filtered
+rollups (item 10) for leaderboard reads over completed instances.
+
+** TODO :new-roles top-level model key                :compiler:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Add a =:new-roles= top-level key that lets model authors declare
+additional roles with permissions directly in the model:
+
+#+begin_src lisp
+  :new-roles (:ai-user (:read)
+              :other-role (:create :read :update :delete))
+#+end_src
+
+The compiler creates these roles during database initialization,
+assigning the specified permissions. This replaces the manual step
+of having the admin create roles after deploy. Needed for the model
+generator button (=ai-user= role).
+
+** TODO Allow =:type-roles= override on base-model types      :compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=lisp/model.lisp= — The base model hardcodes =:type-roles= on system
+types (e.g. =:users= gets =("logged-in" "user-creator")=, meaning
+every authenticated user can see the users tab). Model authors cannot
+change this today.
+
+Approach: when the user model includes a base-model type (e.g.
+=:users=) with a =:type-roles= value, the compiler merge should let
+the user's value override the base model's default. This follows the
+existing merge philosophy. Example: a model that includes
+=:users (:type-roles ("admin"))= would restrict the users type to
+admins only.
+
+This unblocks type categorization (system types hidden from
+non-admin users) and is needed for apps like Model Bank where users
+should not browse other users.
+
+** TODO Restrict user names (lowercase, alphanumeric, dash)  :mvp:bug:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Basic input hygiene that affects every model and the video. Prevent
+ugly or colliding usernames.
+
+** TODO Cryptic no-model-selected error when uploading image :model:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+If no model is selected when uploading an image, the error is cryptic.
+Instead of "Model is required" or something like that, we get:
+"Invalid value type for field :IMAGES :MODEL. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-f02]"
+Model Bank demo polish.
+
+** TODO Type→widget inference                      :compiler:model:mvp:docs:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+After the =:widget= vocabulary lands, infer a default =:widget= from
+field shape when the author omits =:widget= (beyond the blunt
+=:textbox= default). Goal: smaller models and safer AI authoring
+(pairs with model generator).
+
+Intended inferences (explicit =:widget= always wins):
+
+- =:type :boolean= and no widget → =:checkbox=
+- =:type :password= and no widget → =:password=
+- =:type :file= and no widget → =:file=
+- =:type :list= with =:join-table= and/or =:source-all= and no widget
+  → =:checkbox-list= or =:select= (pick one rule and document it)
+- button field with =:action= and no widget → =:button=
+- status companion fields (already synthesized) → =:textbox= +
+  =:read-only t= (should already be true after the widget series)
+
+** TODO AI-only model reference                                :docs:mvp:ai:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Condensed, AI-optimized version of =docs/model-reference.md= (denser, shorter
+examples, vocabulary-focused, no prose) to serve as the LLM system prompt for
+the model generator button.
+
+Create a condensed version of =docs/model-reference.md= optimized for LLM
+consumption. The full reference (1157 lines) consumes significant tokens per
+request. An AI-optimized reference could be denser, use shorter examples, and
+focus on the vocabulary without prose explanations. This will require many tests
+to ensure generated models remain valid. Could even be an AI-only reference that
+is best suited for AIs, even if humans can't make heads or tails of it.
+** TODO More example models                                            :mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Additional clean, small models (beyond todos, modelbank, chores, books)
+to prove generality. All models are now fitness functions; Model Bank
+remains primary.
+
+** TODO Checkbox list with search      :model:frontend:backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Data UI provides a checkbox list with search for roles. We need to make all checkbox lists support search.
+** TODO Text-field width default and hint            :frontend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+
+** TODO Password field should include confirmation field      :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO Remove =:private:= from all doc strings                :maintenance:
+Public, exported function will carry the =:public:= label. We'll assume all the rest are private.
+** TODO 30-second demo video                                      :docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Nothing → model → deployed app. Deadline: end of December 2026.
+
+**When to shoot:** mid-to-late December — after polish and the features
+that should appear on camera (search/filtering, sort, static drop-downs,
+boolean list checkmarks, UI polish, etc.).
+
+** TODO Expose host profiles via HAProxy                      :scripts:
+:PROPERTIES:
+:CREATED: [2026-08-18 Tue]
+:END:
+=expose-profile <profile>= / =unexpose-profile <profile>= in
+=scripts/data-ui=: route a locally-run host profile's HTTP port
+through the existing HAProxy TLS front door
+(=https://<model :domain>= → =127.0.0.1:<HTTP_PORT>=, backend
+=dataui-profile-<name>=). Primary profiles only; must run on
+=$DEPLOY_HOST=; one domain one owner (symmetric refuse against
+deploys); =delete-profile= cleans up the exposure. Model =:name=
+values =profile= / =profile-*= are reserved by the compiler
+(=lisp/model.lisp=). Implemented per
+=~/workbench/expose-profile-plan.org=; left TODO until smoke-tested
+on evo-x2.
+
+* MVP Backlog
+** TODO Validate =:ui= hints                                  :compiler:valdn:
+** TODO Regular-type computed-field sort             :backend:compiler:list:
+:PROPERTIES:
+:CREATED:  [2026-08-14 Fri]
+:END:
+Sort a Lisp-collapsed join aggregate on an ordinary type list
+(e.g. Model Bank =:models= =:average-rating= with =:agg :avg=)
+honestly with paging and =:total=.
+
+List-plan covers base-column sort (04) and measure/rollup sort
+(09). It deliberately does /not/ make every =:agg= field on a
+regular type sortable: post-collapse sort lies under =LIMIT=, and
+honest sort needs SQL aggregation before paging (measure Phase A
+or a denormalized base column).
+
+Until this lands, ranked-by-aggregate UX uses a rollup type
+(list-plan 07–09 / 12). Options for this item later:
+
+- Promote the list to measure Phase A when sort targets an
+  aggregate field, or
+- Denormalize the measure onto the base row (trigger/maintained
+  column) and mark it =:sortable t= as a real base column.
+
+Do not implement as post-collapse sort on a page of rows.
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO Compile-time validation of =:source= keys             :compiler:valdn:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+A bad =:view=, =:table=, =:column=, or =:agg= in a =:source= plist
+should raise a compile-time error, not fail at runtime.
+
+** TODO Frontend accessibility for text-only LLM browser automation :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+The frontend uses semantic HTML for most controls but has gaps that
+make text-only browser automation (Browser Use no-vision, Playwright
+MCP) difficult: labels aren't associated with inputs (=htmlFor=/=id=),
+StarRating is inaccessible (SVG onClick, no keyboard), several
+div-based interactions, no ARIA markup, forms don't submit on Enter.
+
+See ~/workbench/fe-accessibility-plan.org for the full plan.
+** TODO Landing page role among new user checked roles         :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+If roles are given to the landing page type, then select the one with the least permissions and check it by default when adding a new user.
+** TODO Cursor in first field on Edit forms            :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO Break up App.tsx                          :frontend:maintenance:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO :directory default path                  :compiler:polish:mvp:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO REST API tests                                     :backend:testing:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+There are currently no REST API tests. This is a significant gap.
+** TODO Real-time field validation                    :frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO Tab order attribute                    :backend:compiler:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO File upload size / disk space check                        :backend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=lisp/rest.lisp= — =/api/upload= should validate file size and
+available disk space before accepting uploads.
+** TODO =:tree t= should require =:parent-type=             :compiler:valdn:
+
+** TODO Convert remaining =(error ...)= to =report-e= / =report-ve= :maintenance:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-18 Tue]
+:END:
+AGENT.md forbids raw =(error ...)= for system and validation
+failures. =report-e= / =report-ve= attach a Guru Meditation Number
+and a consistent log shape. Large pockets of legacy =(error ...)=
+remain, especially =valid-top-level-value= / =valid-top-level-field=
+and other compile-time checks in =lisp/model.lisp=, plus scattered
+sites in =backend.lisp=, =predicates.lisp=, =plist-json.lisp=,
+=data-ui.lisp=.
+
+Do not touch:
+- =(error (e) ...)= / =(error () ...)= inside =handler-case= (those
+  are condition bindings, not signaling)
+- =(error 'validation-error ...)= in =lisp/aux.lisp= (the
+  =report-ve= implementation)
+- Re-raises that wrap a caught condition for a caller that already
+  has a GMN
+
+Sweep file by file. Match =report-e= vs =report-ve= to the existing
+rule (structural / model → =report-e=; user input / schema →
+=report-ve=). Out of scope for expose-profile.
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+A type declared with =:tree t= but no =:parent-type= should be a
+compile-time error.
+
+** TODO Default permission list bug                           :compiler:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=lisp/model.lisp= — a default list like =("create" "read" ...)=
+doesn't work due to a validation issue.
+
+** TODO =:force-sql-name= workaround for settings             :compiler:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=lisp/model.lisp= — settings type shouldn't need
+=:force-sql-name "setting_user"=. Low priority compiler bug.
+
+** TODO =:ui= hints required on =:tokens=                     :compiler:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=lisp/model.lisp= — =:tokens= type fails if =:ui= is not present
+on fields. Should not be required. Low priority.
+
+** TODO =:valid-file= validation                            :compiler:valdn:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Implement a =:valid-file= validator for =:type :file= fields.
+Should allow NIL but otherwise check that the file path is correct,
+the directory exists, and the file does not already exist.
+
+** TODO Tests for =lisp/aux.lisp= functions                        :testing:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=add-to-list= and other aux functions need test coverage.
+
+** TODO Investigate dead code: =set-type-roles=                :maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=lisp/backend.lisp= — marked "Is this dead?" Verify and remove if
+unused.
+
+** TODO Investigate dead code: =immutable-user-roles=          :maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+=lisp/database.lisp= — marked "Dead?" Verify and remove if unused.
+
+** TODO Document store                             :frontend:backend:polish:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Create an app that allows you to upload Markdown and Org-Mode files, and that allows you to search, browse, render them as HTML, and download them.
+
+* Post MVP
+** TODO Lifecycle side effects                            :backend:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Parent for lifecycle-triggered side effects that are not same-row
+data effects (=:compose-string=) and not field-level write-through.
+
+Two children today:
+- Cross-table upsert/increment (related row in this DB)
+- Fetch/post to external API (HTTP egress)
+
+Common traits: post-* attachment, non-atomic with primary write,
+parameterized registry hook (not raw lambda), best-effort until
+transactions exist. Non-derivable workflows only (append-only
+history, approvals that create rows, audit, quotas, notifications).
+
+*** TODO Lifecycle hook: insert/update record in another table :backend:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Cross-table data effects from lifecycle hooks (upsert / increment a
+related row as a side effect of create/update/delete).
+
+Originally scoped for chores =:scores= counters. That fitness case is
+better served by filtered rollups (see MVP Now). Keep this item for
+*non-derivable* workflows: append-only history, create-invoice-on-
+approve, quotas with external inputs, audit lines, etc.
+
+Depends on the lifecycle data-effect contract (done: same-type plist
+merge on pre-create/pre-update). Cross-table writes still need:
+- backend identity-keyed find + insert-or-update primitive (factor
+  from =execute-write-to= where useful)
+- curated registry lifecycle hook(s), not raw SQL
+- post-* attachment; pass =:record= on post-update for transitions
+- compile-time validation of target type / keys
+- best-effort failure policy until transactions land
+
+Write-through remains the field-level "set this related value" tool;
+do not overload =:write-to= for increments or multi-column events.
+
+*** TODO Lifecycle hook: fetch or post data to API       :backend:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Lifecycle-triggered outbound HTTP (fetch to enrich or post to notify).
+Shares the side-effect contract with cross-table writes but adds
+secrets, timeouts, auth, SSRF, and often =:async=.
+
+** TODO Undeploy button                                     :model:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO Deploy from deployed app                             :model:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Allow application deployment from a deployed application. See [[/home/macnod/Insync/macnod@gmail.com/Google Drive/dc/cloud-local/workbench/deploy-squared-plan.org][deploy-squared-plan.org]]. But plan is no good. Missing a lot.
+** TODO Transactions                                      :backend:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+*** TODO Single-statement =ON CONFLICT= upserts
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO YAML/JSON model input                                :backend:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO File update                                                :backend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Allow an existing file to be replaced by an uploaded file.
+** TODO File / image update on display forms        :model:frontend:backend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Today: file *add* (two-phase upload), *delete*, and selecting a
+parent work. Display of images on parent types uses =:image= /
+=:image-list= (read-only thumbnails). Upload/replace lives only on
+the images (file) type via =:file=.
+
+Post-MVP: allow users to *update* (replace) images or files from
+the forms that *display* them — e.g. replace a model’s image from
+the model form, not only by navigating to the images type. Also
+cover non-image file replace on fs-backed types. Keep add/delete
+and parent select as they already work; this is the missing
+update/replace path on display surfaces.
+** TODO Hosted service
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO Document management                  :frontend:backend:polish:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Data UI already supports file uploads, downloads, and some kinds of previews. It also supports a filesystem hierarchy of directories and files, all already under RBAC. It would be nice to build an application intended solely for keeping files and sharing them with adhoc roles.
+
+Also, preview would have to include the ability to render Org-Mode and Markdown files as HTML. We can rely on browsers for PDF. We should have something that can render plain text, an maybe different programming languages (colorized).
+** TODO Parameterize token timeouts in the model          :backend:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Add model-level keys to control JWT access and refresh token
+lifetimes. Currently hardcoded in the backend (rbac library).
+Proposed keys:
+
+:access-token-ttl  — lifetime of the access token (default: 15m)
+:refresh-token-ttl — lifetime of the refresh token (default: 7d)
+
+Both optional; omitting them uses the current defaults. The
+compiler validates that values are positive integers (seconds) and
+that refresh TTL > access TTL.
+
+Use cases: high-security apps want short access TTLs; convenience
+apps (internal tools) want long refresh TTLs so users aren't
+re-prompted frequently. The hosted tier can offer presets
+("strict", "balanced", "convenient") that map to these values.
+** TODO Settings Edit form edit user name (Login)                :mvp:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Allow user name to be edited.
+** TODO Column filters for list tables     :frontend:backend:compiler:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+The user should be able to select which columns the list shows. That's the only way to accommodate listings for types that have many columns. The model should allow specification of viewable columns to toggle on, or use a default of "all".
+** TODO Cascade-delete =:secrets= rows on user deletion            :backend:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+When a user is deleted, their =:secrets= rows should also be
+deleted. Requires a =be-value-ids= (plural) helper to find all
+matching rows for a user, and a =:pre-delete= hook on =:users=
+(=remove-user-secrets-rows=). See the =:secrets= plan at
+~/workbench/secrets-plan.org.
+** TODO Display time after success in Deploy Model Status :model:frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+** TODO Migrations when the model changes
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+We need to be able to add a field and have the underlying table be updated.
+** TODO Configurable default page size                     :backend:compiler:
+:PROPERTIES:
+:CREATED: [2026-08-11 Tue]
+:END:
+The MVP hardcodes the default =limit= at 20 and the server-side
+maximum clamp at 200. Post-MVP, these should be configurable.
+
+The exact shape is not yet decided. Possibilities discussed:
+- A top-level model key (e.g. =:default-page-size=) that sets the
+  default for all types
+- The same key on individual type plists to override the model-level
+  default (cascading defaults)
+- Per-view overrides
+
+The need hasn't been validated by a real use case yet, so the final
+design should be driven by actual requirements when they arise.
+** TODO Export views to CSV and other formats      :frontend:backend:polish:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Other formats should include:
+- Org Mode
+- Markdown
+- TSV
+- Plain text
+- PDF
+* Scratch
+* Conf
+#+begin_src org
+# Local Variables:
+# eval: (auto-save-visited-mode 1)
+# eval: (numbered-backup-mode 1)
+# End:
+#+end_src

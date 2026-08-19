@@ -58,12 +58,12 @@ The model declares its own domain:
 (:domain "todo.demo.data-ui.com")
 ```
 
-One command, `scripts/data-ui deploy`, compiles the model, builds a
+One command, `scripts/data-ui deploy todos`, compiles the model, builds a
 Docker image, renders Kubernetes manifests, provisions PostgreSQL with
-persistent volumes, obtains and renews a Let's Encrypt TLS certificate
-via DNS-01, configures HAProxy routing, and brings the application live
-at the specified domain. All derived from the model. All deterministic
-and repeatable.
+persistent volumes, configures HAProxy routing (backed by a one-time
+wildcard Let's Encrypt certificate that auto-renews via DNS-01), and
+brings the application live at the specified domain. All derived from
+the model. All deterministic and repeatable.
 
 **Nobody else does this.** The entire industry treats "build the app"
 and "deploy the app with TLS to your domain" as separate problems solved

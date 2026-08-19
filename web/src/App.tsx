@@ -49,6 +49,8 @@ interface Field {
   table?: string
   precision?: number
   'read-only'?: boolean
+  sortable?: boolean
+  searchable?: boolean
 }
 
 interface ListResponse {
@@ -492,6 +494,11 @@ function App() {
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
   const [elapsed, setElapsed] = useState<number | null>(null)
   const runningStartRef = useRef<number | null>(null)
+  const [sortField, setSortField] = useState<string | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -533,7 +540,14 @@ function App() {
 
   const fetchList = () => {
     setListError(null)
-    apiFetch(`/api/list?type=${type}`)
+    let url = `/api/list?type=${type}`
+    if (sortField) {
+      url += `&sort=${sortField}:${sortDir}`
+    }
+    if (debouncedSearch) {
+      url += `&search=${encodeURIComponent(debouncedSearch)}`
+    }
+    apiFetch(url)
       .then(res => {
         if (!res.ok) {
           throw new Error(`Request failed (${res.status})`)
@@ -547,6 +561,8 @@ function App() {
       })
   }
 
+  // fetchList closes over searchTerm/sort; keep stable for debounce via ref pattern below
+
   const changeType = (newType: string) => {
     setType(newType)
     setShowAddForm(false)
@@ -555,6 +571,19 @@ function App() {
     setExtraRoles([])
     setUserSearch('')
     setUserSearchResults([])
+    setSortField(null)
+    setSortDir('asc')
+    setSearchTerm('')
+    setDebouncedSearch('')
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+  }
+
+  const handleListSearch = (query: string) => {
+    setSearchTerm(query)
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    searchTimer.current = setTimeout(() => {
+      setDebouncedSearch(query.trim())
+    }, 300)
   }
 
   const switchViewMode = (mode: ViewMode) => {
@@ -953,7 +982,7 @@ function App() {
   useEffect(() => {
     if (!loggedIn || type === '__init__') return
     fetchList()
-  }, [loggedIn, type])
+  }, [loggedIn, type, sortField, sortDir, debouncedSearch])
 
   // Poll for status updates when a button field's status starts
   // with "running". Re-fetches the record via /api/item and
@@ -1293,6 +1322,29 @@ function App() {
         </div>
       )}
 
+      {!(showAddForm || isEditMode) &&
+        Object.values(data.result['list-form']).some(f => f.searchable === true) && (
+        <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <input
+            type="text"
+            placeholder="Search…"
+            value={searchTerm}
+            onChange={e => handleListSearch(e.target.value)}
+            style={{ flex: '0 1 20rem', padding: '0.35rem 0.5rem' }}
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => handleListSearch('')}
+              title="Clear search"
+              style={{ padding: '0.25rem 0.5rem' }}
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
+
       {(showAddForm || isEditMode) && (
         <form style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
           <h3>{isEditMode ? 'Edit' : 'Add'} {data.result['type-key']}</h3>
@@ -1599,9 +1651,40 @@ function App() {
             {data.result.update && (
               <th style={{ width: '60px' }}></th>
             )}
-            {listFields.map(f => (
-              <th key={f}>{data.result['list-form'][f].label}</th>
-            ))}
+            {listFields.map(f => {
+              const field = data.result['list-form'][f]
+              if (field.sortable === true) {
+                const isActive = sortField === f
+                const indicator = isActive
+                  ? (sortDir === 'asc' ? ' ▲' : ' ▼')
+                  : ''
+                return (
+                  <th
+                    key={f}
+                    onClick={() => {
+                      if (isActive) {
+                        if (sortDir === 'asc') {
+                          setSortDir('desc')
+                        } else {
+                          setSortField(null)
+                          setSortDir('asc')
+                        }
+                      } else {
+                        setSortField(f)
+                        setSortDir('asc')
+                      }
+                    }}
+                    style={{
+                      cursor: 'pointer',
+                      userSelect: 'none',
+                    }}
+                  >
+                    {field.label}{indicator}
+                  </th>
+                )
+              }
+              return <th key={f}>{field.label}</th>
+            })}
           </tr>
         </thead>
         <tbody>

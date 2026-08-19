@@ -37,7 +37,7 @@ configuration.**
 Your model already declares the application's identity:
 
     (:title "To Do List"
-      :name "todo"
+      :name "todos"
       :version "0.1"
       :domain "todo.demo.data-ui.com"
       :repl t
@@ -60,14 +60,14 @@ On the deploy host (or any machine with ssh access to it; see
 [Deploying From Another Machine](#deploying-from-another-machine)):
 
     cd data-ui
-    scripts/data-ui deploy
+    scripts/data-ui deploy todos
 
 That's it. The output ends with:
 
     Deployed To Do List todo-0.1-6d8f586.
       Domain:   https://todo.demo.data-ui.com
       NodePort: http://172.18.0.2:30300
-      Swank:    kubectl -n dataui-todo port-forward deploy/dataui-todo 4005:4005
+      Swank:    kubectl -n dataui-todos port-forward deploy/dataui-todos 4005:4005
 
 Open the domain, log in as `admin` with the password from
 [Secrets](#secrets-and-how-to-get-the-admin-password), and you are
@@ -115,7 +115,7 @@ The script asks the model for its `:name`, `:title`, `:version`,
 |--------------|------------------------------------------------------|
 | TAG          | `todo-0.1-6d8f586`                                   |
 | IMAGE        | `macnod/data-ui:todo-0.1-6d8f586`                    |
-| NAMESPACE    | `dataui-todo`                                        |
+| NAMESPACE    | `dataui-todos`                                        |
 | RELEASE_NAME | `To Do List todo-0.1-6d8f586`                        |
 | OUT_DIR      | `~/.local/state/data-ui-deploy/todo/releases/0.1-6d8f586` |
 
@@ -209,7 +209,7 @@ The only step that needs sudo. Details in
 Worth repeating with the actual flow drawn out:
 
     models/<model-name>.lisp
-        :name "todo" ──────────┬─→ namespace  dataui-todo
+        :name "todos" ──────────┬─→ namespace  dataui-todos
         :version "0.1" ────────┼─→ tag        todo-0.1-<git-hash>
         :domain "todo.demo..." ┼─→ HAProxy map entry + backend
         :repl t ───────────────┴─→ Swank port in the manifest (or not)
@@ -284,7 +284,7 @@ The easy way (on the deploy host):
 The canonical way (works even if the secrets file is gone, from any
 machine with cluster access):
 
-    kubectl get secret -n dataui-todo dataui-todo-secrets \
+    kubectl get secret -n dataui-todos dataui-todos-secrets \
         -o jsonpath='{.data.admin-password}' | base64 -d; echo
 
 Both should agree. If they don't, trust the cluster: the file is a
@@ -361,7 +361,7 @@ Three pieces:
 
 A plain text file mapping hostnames to backend names:
 
-    todo.demo.data-ui.com dataui-todo
+    todo.demo.data-ui.com dataui-todos
     parts.demo.data-ui.com dataui-parts     # (a future instance)
 
 ### 2. One routing rule in the https frontend (added once)
@@ -376,11 +376,11 @@ existing `default_backend` line.
 
 ### 3. Per-instance backend drop-ins: `/etc/haproxy/conf.d/dataui-<name>.cfg`
 
-    backend dataui-todo
+    backend dataui-todos
         mode http
         option forwardfor
         option httpchk GET /health
-        server dataui-todo 172.18.0.2:30300 check inter 2000 rise 2 fall 3
+        server dataui-todos 172.18.0.2:30300 check inter 2000 rise 2 fall 3
 
 That points at the k3d node's IP and the instance's NodePort, with an
 active health check against the same `/health` endpoint the Kubernetes
@@ -391,6 +391,17 @@ On every deploy, the script: installs/updates the backend file, upserts
 the map entry, **validates the whole config** (`haproxy -c` across the
 main file and conf.d), and only then reloads. If validation fails,
 nothing is reloaded and the old routing keeps working.
+
+Locally-run host profiles (`scripts/data-ui expose-profile`) use the
+same machinery with a different backend name:
+`dataui-profile-<name>` points at `127.0.0.1:<HTTP_PORT>` on the host
+instead of a k3d NodePort (the model `:name` values `profile` and
+`profile-*` are reserved so the two can never collide). One domain,
+one backend: `expose-profile` refuses a map line owned by a deployed
+instance, and a deploy refuses a map line owned by a profile
+exposure — neither stops the other side's pods; `delete` (undeploy)
+first, then `expose-profile`. `unexpose-profile` (and
+`delete-profile`) remove the exposure.
 
 One subtlety, learned in production (where else): `systemctl reload
 haproxy` re-execs the master process *with its original command line*.
@@ -484,7 +495,7 @@ Configuration knobs (environment variables, all with defaults):
 
 ## Dry Runs
 
-    DRY_RUN=1 scripts/data-ui deploy
+    DRY_RUN=1 scripts/data-ui deploy todos
 
 Runs the model compile, fact gathering, port assignment, secrets
 handling, and manifest rendering, then stops. No tag, no image, no
@@ -498,7 +509,7 @@ If the model was deployed with `:repl t`, the container runs a Swank
 server on port 4005, reachable *only* through Kubernetes port
 forwarding (it is never exposed via Service, NodePort, or HAProxy):
 
-    kubectl -n dataui-todo port-forward deploy/dataui-todo 4005:4005
+    kubectl -n dataui-todos port-forward deploy/dataui-todos 4005:4005
 
 Then in Emacs: `M-x slime-connect RET localhost RET 4005`, and you have
 a live REPL inside the running production container. Inspect the
@@ -513,7 +524,7 @@ expert-tier escape hatch, and production models should ship `:repl nil`.
 Work from the inside out; each rung isolates one layer:
 
     # 1. Are the pods up?
-    kubectl -n dataui-todo get pods
+    kubectl -n dataui-todos get pods
 
     # 2. Does the app answer inside the cluster? (NodePort, bypasses HAProxy)
     curl http://<node-ip>:30300/health        # expect: OK
@@ -532,8 +543,8 @@ the backend file, and remember the reload-vs-restart subtlety above.
 
 ### Reading the app logs
 
-    kubectl -n dataui-todo logs deploy/dataui-todo            # current
-    kubectl -n dataui-todo logs deploy/dataui-todo --previous # last crash
+    kubectl -n dataui-todos logs deploy/dataui-todos            # current
+    kubectl -n dataui-todos logs deploy/dataui-todos --previous # last crash
 
 The app logs structured JSON lines. A crash prints a full backtrace and
 exits (`--disable-debugger`), so the evidence is always in `--previous`.
@@ -562,7 +573,7 @@ exits (`--disable-debugger`), so the evidence is always in `--previous`.
 
 The fast path: delete the whole instance with one command:
 
-    scripts/data-ui delete
+    scripts/data-ui delete todos
 
 It deletes the namespace and PVs, wipes the instance's data on the host,
 removes the HAProxy backend and map entry, and removes the deploy state
@@ -576,10 +587,10 @@ The manual equivalent, if you want to do it piecewise (or only partway;
 steps 1–3 are enough for a clean redeploy of the same instance):
 
     # 1. Remove the app and its namespace
-    kubectl delete namespace dataui-todo
+    kubectl delete namespace dataui-todos
 
     # 2. PVs are cluster-scoped with Retain policy; delete them explicitly
-    kubectl delete pv dataui-todo-demo-db-pv dataui-todo-demo-files-pv
+    kubectl delete pv dataui-todos-demo-db-pv dataui-todos-demo-files-pv
 
     # 3. Wipe the instance's data on the host (root-owned; via the node)
     docker exec k3d-evo-x2-server-0 rm -rf /data/dataui/todo-demo
@@ -588,7 +599,7 @@ steps 1–3 are enough for a clean redeploy of the same instance):
     rm ~/.local/state/data-ui-deploy/todo/secrets.env
 
     # 5. Deploy
-    scripts/data-ui deploy
+    scripts/data-ui deploy todos
 
 Steps 2 and 3 are the ones people forget. A Released PV refuses to bind
 to a new claim, and stale postgres data under `/data/dataui` will be

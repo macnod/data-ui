@@ -1509,3 +1509,417 @@ selectable-roles. This is the path the Add form hits for :users."
 ;;
 ;; END Form Roles tests
 ;;
+
+;;
+;; BEGIN Phase A (id-first paging) tests
+;;
+
+(test phase-a-total-count-present
+  "be-list response always includes :total."
+  (let ((result (be-list :roles "admin")))
+    (is-true (getf result :total))
+    (is (integerp (getf result :total)))))
+
+(test phase-a-limit-returns-correct-page-size
+  "LIMIT returns exactly the requested number of records (when enough exist)."
+  (let ((result (be-list :roles "admin" :limit 3)))
+    (is (= 3 (length (getf result :records))))
+    (is (>= (getf result :total) 3))))
+
+(test phase-a-limit-nil-returns-all
+  "LIMIT nil returns all matching rows (backward compat)."
+  (let* ((total (getf (be-list :roles "admin" :limit nil) :total))
+         (records (getf (be-list :roles "admin" :limit nil) :records)))
+    (is (= total (length records)))))
+
+(test phase-a-offset-skips-records
+  "OFFSET skips the first N records."
+  (let* ((page0 (getf (be-list :roles "admin" :limit 5 :offset 0) :records))
+         (page1 (getf (be-list :roles "admin" :limit 5 :offset 5) :records))
+         (ids0 (mapcar (lambda (r) (getf r :id)) page0))
+         (ids1 (mapcar (lambda (r) (getf r :id)) page1)))
+    ;; No overlap between page 0 and page 1
+    (is (= 5 (length ids0)))
+    (is (= 5 (length ids1)))
+    (is-false (intersection ids0 ids1 :test #'equal))))
+
+(test phase-a-total-matches-unfiltered
+  ":total equals the count of all rows the user can see (no user filters)."
+  (let* ((result (be-list :roles "admin" :limit 1))
+         (total (getf result :total))
+         (all-records (getf (be-list :roles "admin" :limit nil) :records)))
+    (is (= total (length all-records)))))
+
+(test phase-a-total-matches-filtered
+  ":total equals the count of rows matching the filter (before paging)."
+  (let* ((admin-role-id (a:get-id *rbac* "roles" "admin"))
+         (result (be-list :roles "admin"
+                   :limit 1
+                   :filters `((:roles :id :eq ,admin-role-id))))
+         (total (getf result :total))
+         (all-matching (getf (be-list :roles "admin"
+                               :limit nil
+                               :filters `((:roles :id :eq ,admin-role-id)))
+                             :records)))
+    (is (= total (length all-matching)))
+    (is (= 1 total))))
+
+(test phase-a-empty-page-when-offset-too-high
+  "OFFSET beyond total returns empty records with correct :total."
+  (let* ((total (getf (be-list :roles "admin" :limit nil) :total))
+         (result (be-list :roles "admin" :limit 5 :offset (* 10 total))))
+    (is (null (getf result :records)))
+    (is (= total (getf result :total)))))
+
+(test phase-a-sort-ascending
+  "ORDER BY :asc produces ascending order on a sortable column."
+  (be-insert :todos '(:name "Charlie" :points 30) "admin")
+  (be-insert :todos '(:name "Alice" :points 10) "admin")
+  (be-insert :todos '(:name "Bob" :points 20) "admin")
+  (unwind-protect
+    (let ((names (mapcar
+                   (lambda (r) (getf r :name))
+                   (getf (be-list :todos "admin"
+                           :limit 100
+                           :sort (list :name :asc))
+                     :records))))
+      (is (equal names (sort (copy-seq names) #'string<))))
+    ;; Cleanup
+    (loop for r in (getf (be-list :todos "admin") :records)
+          do (be-delete :todos (getf r :id) "admin"))))
+
+(test phase-a-sort-descending
+  "ORDER BY :desc produces descending order on a sortable column."
+  (be-insert :todos '(:name "Charlie" :points 30) "admin")
+  (be-insert :todos '(:name "Alice" :points 10) "admin")
+  (be-insert :todos '(:name "Bob" :points 20) "admin")
+  (unwind-protect
+    (let ((names (mapcar
+                   (lambda (r) (getf r :name))
+                   (getf (be-list :todos "admin"
+                           :limit 100
+                           :sort (list :name :desc))
+                     :records))))
+      (is (equal names (sort (copy-seq names) #'string>))))
+    ;; Cleanup
+    (loop for r in (getf (be-list :todos "admin") :records)
+          do (be-delete :todos (getf r :id) "admin"))))
+
+(test phase-a-default-sort-by-id
+  "Without explicit sort, results are ordered by id (stable default)."
+  (let ((ids (mapcar
+               (lambda (r) (getf r :id))
+               (getf (be-list :roles "admin" :limit 100) :records))))
+    ;; IDs should be in ascending order (the default ORDER BY id).
+    (is (equal ids (sort (copy-seq ids) #'string<)))))
+
+(test phase-a-clamp-limit
+  "LIMIT is clamped to +max-limit+ (200)."
+  ;; Requesting a huge limit should not error and should return at most
+  ;; +max-limit+ records.
+  (let ((result (be-list :roles "admin" :limit 1000000)))
+    (is (<= (length (getf result :records)) +max-limit+))))
+
+(test phase-a-limit-default-is-20
+  "Default LIMIT (omitting the keyword) is 20."
+  (let ((result (be-list :roles "admin")))
+    (is (<= (length (getf result :records)) 20))))
+
+(test phase-a-todos-paging-with-data
+  "Paging works on user-defined types with actual data."
+  (let ((prefix "phase-a-paging-")
+        (count 8))
+    ;; Clean up any stale data
+    (loop with old = (getf
+                       (be-list-column :todos :name "admin"
+                         :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                       :records)
+      for id in old do (be-delete :todos id "admin"))
+    ;; Insert test data
+    (loop for i from 1 to count
+      do (be-insert :todos
+           `(:name ,(format nil "~a~2,'0d" prefix i))
+           "admin" :roles '("admin")))
+    ;; Page through all records
+    (unwind-protect
+      (let* ((page1 (be-list :todos "admin"
+                     :limit 3 :offset 0
+                     :filters `((:todos :name :like ,(format nil "~a%" prefix)))))
+             (page2 (be-list :todos "admin"
+                     :limit 3 :offset 3
+                     :filters `((:todos :name :like ,(format nil "~a%" prefix)))))
+             (page3 (be-list :todos "admin"
+                     :limit 3 :offset 6
+                     :filters `((:todos :name :like ,(format nil "~a%" prefix))))))
+        (is (= 3 (length (getf page1 :records))))
+        (is (= 3 (length (getf page2 :records))))
+        (is (= 2 (length (getf page3 :records))))
+        (is (= count (getf page1 :total)))
+        (is (= count (getf page2 :total)))
+        (is (= count (getf page3 :total)))
+        ;; Pages don't overlap
+        (let ((ids1 (mapcar (lambda (r) (getf r :id)) (getf page1 :records)))
+              (ids2 (mapcar (lambda (r) (getf r :id)) (getf page2 :records)))
+              (ids3 (mapcar (lambda (r) (getf r :id)) (getf page3 :records))))
+          (is-false (intersection ids1 ids2 :test #'equal))
+          (is-false (intersection ids1 ids3 :test #'equal))
+          (is-false (intersection ids2 ids3 :test #'equal))))
+      ;; Cleanup
+      (loop with old = (getf
+                         (be-list-column :todos :name "admin"
+                           :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                         :records)
+        for id in old do (be-delete :todos id "admin")))))
+
+(test phase-a-join-filter-pushdown
+  "Join-table filters are pushed into Phase A (correct page size + total)."
+  ;; This test uses the test-model fixture which has :todos with tags (M2M).
+  ;; We filter on :tags (a joined table) and verify that the page contains
+  ;; the correct number of records and the total matches.
+  (let ((todo-prefix "phase-a-join-")
+        (tag-name "phase-a-join-tag"))
+    ;; Clean up
+    (loop with old = (getf
+                       (be-list-column :todos :name "admin"
+                         :filters `((:todos :name :like ,(format nil "~a%" todo-prefix))))
+                       :records)
+      for id in old do (be-delete :todos id "admin"))
+    (be-delete :tags `((:tags :name :eq ,tag-name)) "admin")
+    (unwind-protect
+      (let ((tag-id (be-insert :tags `(:name ,tag-name) "admin"
+                      :roles '("admin"))))
+        ;; Insert 5 todos with the tag, 3 without
+        (loop for i from 1 to 5
+          do (be-insert :todos
+               `(:name ,(format nil "~a~2,'0d" todo-prefix i)
+                  :tags (,tag-name))
+               "admin" :roles '("admin")))
+        (loop for i from 6 to 8
+          do (be-insert :todos
+               `(:name ,(format nil "~a~2,'0d" todo-prefix i))
+               "admin" :roles '("admin")))
+        ;; Filter on tag name — should find exactly 5
+        (let ((result (be-list :todos "admin"
+                        :limit 3
+                        :filters `((:todos :name :like ,(format nil "~a%" todo-prefix))
+                                   (:tags :name :eq ,tag-name)))))
+          (is (= 3 (length (getf result :records))))
+          (is (= 5 (getf result :total))))
+        ;; Page 2 of the filtered set
+        (let ((result (be-list :todos "admin"
+                        :limit 3 :offset 3
+                        :filters `((:todos :name :like ,(format nil "~a%" todo-prefix))
+                                   (:tags :name :eq ,tag-name)))))
+          (is (= 2 (length (getf result :records))))
+          (is (= 5 (getf result :total)))))
+      ;; Cleanup
+      (loop with old = (getf
+                         (be-list-column :todos :name "admin"
+                           :filters `((:todos :name :like ,(format nil "~a%" todo-prefix))))
+                         :records)
+        for id in old do (be-delete :todos id "admin"))
+      (be-delete :tags `((:tags :name :eq ,tag-name)) "admin"))))
+
+(test phase-a-count-query-agreement
+  "The :total count always matches the ID count from the same predicates
+without LIMIT/OFFSET."
+  ;; Insert some data, then verify that total == full count for various
+  ;; filter combinations.
+  (let ((prefix "phase-a-agree-"))
+    (loop with old = (getf
+                       (be-list-column :todos :name "admin"
+                         :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                       :records)
+      for id in old do (be-delete :todos id "admin"))
+    (unwind-protect
+      (progn
+        (loop for i from 1 to 6
+          do (be-insert :todos
+               `(:name ,(format nil "~a~2,'0d" prefix i))
+               "admin" :roles '("admin")))
+        ;; No filter, paged
+        (let* ((paged (be-list :todos "admin"
+                        :limit 2
+                        :filters `((:todos :name :like ,(format nil "~a%" prefix)))))
+               (full (be-list :todos "admin"
+                       :limit nil
+                       :filters `((:todos :name :like ,(format nil "~a%" prefix))))))
+          (is (= (getf paged :total) (length (getf full :records)))))
+        ;; With name filter
+        (let* ((paged (be-list :todos "admin"
+                        :limit 1
+                        :filters `((:todos :name :eq ,(format nil "~a~2,'0d" prefix 1)))))
+               (full (be-list :todos "admin"
+                       :limit nil
+                       :filters `((:todos :name :eq ,(format nil "~a~2,'0d" prefix 1))))))
+          (is (= (getf paged :total) (length (getf full :records)))))
+        ;; With LIKE filter
+        (let* ((paged (be-list :todos "admin"
+                        :limit 2 :offset 2
+                        :filters `((:todos :name :like ,(format nil "~a0%" prefix)))))
+               (full (be-list :todos "admin"
+                       :limit nil
+                       :filters `((:todos :name :like ,(format nil "~a0%" prefix))))))
+          (is (= (getf paged :total) (length (getf full :records))))))
+      ;; Cleanup
+      (loop with old = (getf
+                         (be-list-column :todos :name "admin"
+                           :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                         :records)
+        for id in old do (be-delete :todos id "admin")))))
+
+(test phase-a-compile-time-sql-generated
+  "enrich-views generates :phase-a-base-sql and :phase-a-join-sql."
+  (let ((base (u:tree-get *compiled-model* :todos :views :main :phase-a-base-sql))
+         (join (u:tree-get *compiled-model* :todos :views :main :phase-a-join-sql)))
+    (is-true base)
+    (is-true join)
+    (is (search "select rt_todos.id from rt_todos" base :test #'char-equal))
+    (is (search "select distinct rt_todos.id from rt_todos" join :test #'char-equal))
+    (is (search " join " join :test #'char-equal))))
+
+;;
+;; END Phase A tests
+;;
+
+;;
+;; BEGIN Phase B tests
+;;
+;; Phase B hydrates only the IDs selected by Phase A. It applies no
+;; filters beyond WHERE id IN (...). Record order matches the Phase A
+;; ID order. See workbench/list-plan/03-phase-b-hydrate.org.
+;;
+
+(test phase-b-hydrate-exact-id-set
+  "Phase B returns exactly the records for the IDs from Phase A, no more, no
+fewer."
+  (let ((prefix "pb-ex-"))
+    (loop with old = (getf
+                       (be-list-column :todos :name "admin"
+                         :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                       :records)
+      for id in old do (be-delete :todos id "admin"))
+    (unwind-protect
+      (progn
+        (loop for i from 1 to 5
+          do (be-insert :todos
+               `(:name ,(format nil "~a~2,'0d" prefix i))
+               "admin" :roles '("admin")))
+        (let* ((filter `((:todos :name :like ,(format nil "~a%" prefix))))
+               (result (be-list :todos "admin"
+                         :limit 3 :filters filter))
+               (records (getf result :records)))
+          (is (= 3 (length records)))
+          (is (= 5 (getf result :total)))
+          (loop for r in records
+            do (is (u:starts-with (getf r :name) prefix)))))
+      (loop with old = (getf
+                         (be-list-column :todos :name "admin"
+                           :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                         :records)
+        for id in old do (be-delete :todos id "admin")))))
+
+(test phase-b-no-extra-filters
+  "Phase B does not re-apply filters. When Phase A selects 3 IDs, Phase B
+hydrates exactly those 3, even if other records exist."
+  (let ((prefix "pb-nf-"))
+    (loop with old = (getf
+                       (be-list-column :todos :name "admin"
+                         :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                       :records)
+      for id in old do (be-delete :todos id "admin"))
+    (unwind-protect
+      (progn
+        (loop for i from 1 to 10
+          do (be-insert :todos
+               `(:name ,(format nil "~a~2,'0d" prefix i))
+               "admin" :roles '("admin")))
+        (let* ((filter `((:todos :name :like ,(format nil "~a%" prefix))))
+               (result (be-list :todos "admin"
+                         :limit 3 :filters filter)))
+          (is (= 3 (length (getf result :records))))
+          (is (= 10 (getf result :total)))))
+      (loop with old = (getf
+                         (be-list-column :todos :name "admin"
+                           :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                         :records)
+        for id in old do (be-delete :todos id "admin")))))
+
+(test phase-b-preserves-phase-a-order
+  "Phase B output order matches the Phase A ID order, not the
+database's natural row order."
+  (let ((prefix "pb-or-"))
+    (loop with old = (getf
+                       (be-list-column :todos :name "admin"
+                         :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                       :records)
+      for id in old do (be-delete :todos id "admin"))
+    (unwind-protect
+      (progn
+        (loop for i from 5 downto 1
+          do (be-insert :todos
+               `(:name ,(format nil "~a~2,'0d" prefix i))
+               "admin" :roles '("admin")))
+        (let* ((filter `((:todos :name :like ,(format nil "~a%" prefix))))
+               (result (be-list :todos "admin"
+                         :limit 5
+                         :sort '(:name :asc)
+                         :filters filter))
+               (names (mapcar (lambda (r) (getf r :name))
+                       (getf result :records))))
+          (is (= 5 (length names)))
+          (is (equal (format nil "~a01" prefix) (first names)))
+          (is (equal (format nil "~a05" prefix) (fifth names)))))
+      (loop with old = (getf
+                         (be-list-column :todos :name "admin"
+                           :filters `((:todos :name :like ,(format nil "~a%" prefix))))
+                         :records)
+        for id in old do (be-delete :todos id "admin")))))
+
+(test phase-b-m2m-fanout-collapse
+  "Phase B collapses fan-out from multiple M2M joiners into one record per ID.
+Uses m2m-test fixture with two join tables.  No-ops when :items is not in the
+compiled model (e.g. test-model)."
+  (if (u:tree-get *compiled-model* :items)
+    (let ((prefix "pb-m2m-"))
+    (loop with old = (getf
+                       (be-list-column :items :name "admin"
+                         :filters `((:items :name :like ,(format nil "~a%" prefix))))
+                       :records)
+      for id in old do (be-delete :items id "admin"))
+    (unwind-protect
+      (progn
+        (be-insert :items
+          `(:name ,(format nil "~a01" prefix) :tags ("red" "blue"))
+          "admin" :roles '("m2m-users"))
+        (be-insert :items
+          `(:name ,(format nil "~a02" prefix) :tags ("green"))
+          "admin" :roles '("m2m-users"))
+        (be-insert :items
+          `(:name ,(format nil "~a03" prefix)
+             :tags ("red" "blue" "green"))
+          "admin" :roles '("m2m-users"))
+        (let* ((filter `((:items :name :like ,(format nil "~a%" prefix))))
+               (result (be-list :items "admin"
+                         :limit 10 :filters filter))
+               (records (getf result :records)))
+          (is (= 3 (length records)))
+          (is (= 3 (getf result :total)))
+          (loop for r in records
+            do (is (stringp (getf r :name))))
+          (let ((item3 (find (format nil "~a03" prefix)
+                        records
+                        :key (lambda (r) (getf r :name))
+                        :test #'equal)))
+            (is-true item3)
+            (is (= 3 (length (getf item3 :tags)))))))
+      (loop with old = (getf
+                         (be-list-column :items :name "admin"
+                           :filters `((:items :name :like ,(format nil "~a%" prefix))))
+                         :records)
+        for id in old do (be-delete :items id "admin"))))
+    (pass "No :items type in this model")))
+
+;;
+;; END Phase B tests
+;;

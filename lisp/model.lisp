@@ -944,7 +944,7 @@ updates status.  Wraps everything in a handler-case so errors become
                         :source (:view :main :column :name :agg :first)
                         :ui (:label "Username" :widget :textbox)
                         :validations (:required :user-name)
-                        :column t :not-null t :unique t)
+                        :column t :searchable t :not-null t :unique t)
                  :password (:type :password
                              :source (:view :main :column :password :agg :first)
                              :force-sql-name "password_hash"
@@ -957,7 +957,7 @@ updates status.  Wraps everything in a handler-case so errors become
                           :source (:view :main :column :email :agg :first)
                           :ui (:label "Email" :widget :textbox)
                           :validations (:email)
-                          :column t :not-null t)
+                          :column t :searchable t :not-null t)
                  :roles (:type :list
                           :ui (:label "Roles" :widget :checkbox-list)
                           :validations (:join-items-exist)
@@ -1192,6 +1192,29 @@ end $$;
 "
     table table table table))
 
+(defun sort-index-ddl (table fields)
+  ":private: Returns a list of CREATE INDEX DDL strings for sortable fields that
+lack an existing single-column index. Skips fields that already have :unique t
+or are the sole :identity field (those already have a covering index). Returns
+nil when no new indexes are needed."
+  (loop 
+    with id-fields = (remove-if-not
+                       (lambda (f) (getf f :identity))
+                       (u:plist-values fields))
+    with sole-identity-col = (when (= (length id-fields) 1)
+                               (getf (car id-fields) :name-sql))
+    for field in (u:plist-values fields)
+    for sortable = (getf field :sortable)
+    for col = (getf field :name-sql)
+    for unique-p = (getf field :unique)
+    when (and sortable col
+           (not unique-p)
+           (not (equal col sole-identity-col)))
+    collect (format nil
+              "create index if not exists ix_~a_~a ~
+                           on ~a (~a)"
+              table col table col)))
+
 (defun create-table-sql (table fields)
   (let ((identity-fields (remove-if-not
                            (lambda (f) (getf f :identity))
@@ -1212,7 +1235,8 @@ end $$;
                  "create unique index if not exists ix_~a_identity ~
                 on ~a (~{~a~^, ~})"
                  table table
-                 (mapcar (lambda (f) (getf f :name-sql)) identity-fields))))))
+                 (mapcar (lambda (f) (getf f :name-sql)) identity-fields)))
+      :sort-index (sort-index-ddl table fields))))
 
 (defun filtered-fields (fields keys)
   "Returns field key and definition for fields that have non-NIL values for all
@@ -1499,6 +1523,41 @@ necessary."
            (columns (formatted-table-columns model (getf view-def :tables))))
       (return
         (format nil format-string columns (cons first-table joins))))))
+
+(defun phase-a-join-sql (model view-def)
+  ":private: Returns Phase A SQL for join-filter pushdown: SELECT DISTINCT
+<base-table>.id with the same FROM/JOIN structure as VIEW-SQL but selecting
+only the base table's id column. Used when request-time filters reference
+joined tables."
+  (loop
+    with view-tables = (u:deep-copy (getf view-def :tables))
+    with joined-tables = (list (car view-tables))
+    for xref in (ordered-xrefs model view-tables)
+    for source = (getf xref :source)
+    for target = (getf xref :target)
+    for source-field = (getf xref :source-field)
+    for reversed = (xref-reversed source target joined-tables)
+    for join-table = (if reversed
+                       (u:tree-get model target :table-name)
+                       (u:tree-get model source :table-name))
+    for join-field = (if reversed
+                       "id"
+                       (u:tree-get model source :fields source-field :name-sql))
+    for target-table = (if reversed
+                         (u:tree-get model source :table-name)
+                         (u:tree-get model target :table-name))
+    for target-field = (if reversed
+                         (u:tree-get model source :fields source-field :name-sql)
+                         "id")
+    for join = (format nil "left join ~a on ~a.~a = ~a.~a"
+                 join-table join-table join-field target-table target-field)
+    collect join into joins
+    do (push (if reversed target source) joined-tables)
+    finally
+    (let ((first-table (u:tree-get model (car view-tables) :table-name)))
+      (return
+        (format nil "select distinct ~a.id from ~{~a~^~%  ~}"
+          first-table (cons first-table joins))))))
 
 (defun delete-sql (model type-key)
   (let* ((base (u:tree-get model type-key :base))
@@ -1866,7 +1925,7 @@ Rejects:
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
                     :autofill :identity :default-from :css-value :action
-                    :compose)
+                    :compose :sortable :searchable)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally
@@ -1891,6 +1950,29 @@ Rejects:
             ":widget :select requires either :options or :target ~
              on field ~s of type ~s."
             ~new-field-key ~type-key))
+        ;; :sortable requires a base column
+        (when (and (getf def :sortable) (not column))
+          (report-e "compile-field"
+            ":sortable t is only valid on base-column fields; ~
+             field ~s of type ~s has no :column t."
+            ~new-field-key ~type-key))
+        ;; :searchable requires a base text column that is not an FK
+        (when (getf def :searchable)
+          (unless column
+            (report-e "compile-field"
+              ":searchable t is only valid on base-column fields; ~
+               field ~s of type ~s has no :column t."
+              ~new-field-key ~type-key))
+          (unless (eq (or field-type :text) :text)
+            (report-e "compile-field"
+              ":searchable t is only valid on :type :text fields; ~
+               field ~s of type ~s has :type ~s."
+              ~new-field-key ~type-key ~field-type))
+          (when has-target
+            (report-e "compile-field"
+              ":searchable t is not valid on :target (FK) fields; ~
+               field ~s of type ~s."
+              ~new-field-key ~type-key)))
         (let* ((final-ui (when ui-val
                            (finalize-ui new-field-key ui-val)))
                (final-def (if final-ui
@@ -1973,6 +2055,19 @@ aliases and returns its alias-key. Returns NIL when SCOPE is NIL."
     (list
       field-key
       (compile-field-stage-2 model type-key field-def))))
+
+(defun collect-searchable-fields (fields)
+  ":private: Returns the list of table-qualified column names for fields marked
+:searchable t. FIELDS is the post-stage-2 field plist
+
+  (where :source :column-name is present)
+
+Returns nil when the type has no searchable fields."
+  (loop
+    for field-def in (cdr fields) by #'cddr
+    for column-name = (u:tree-get field-def :source :column-name)
+    when (and (getf field-def :searchable) column-name)
+    collect column-name))
 
 (defun default-fields (&key model type-key keys-only)
   (let* ((internal (or (u:tree-get model type-key :internal)
@@ -2117,7 +2212,6 @@ is present on a non-button field."
                type-key scope-type (u:plist-keys scope-def))))
       view-scope)))
 
-
 (defun enrich-views (model type-key)
   (loop
     with type-def = (getf model type-key)
@@ -2129,10 +2223,16 @@ is present on a non-button field."
     for view-key in views by #'cddr
     for view-def in (cdr views) by #'cddr
     for scope-def = (getf view-def :scope)
+    for table-name = (u:tree-get model type-key :table-name)
     for view-def-new = (list
                          :tables (getf view-def :tables)
                          :scope (valid-view-scope type-key scope-def)
                          :sql (view-sql model view-def)
+                         :phase-a-base-sql
+                         (format nil "select ~a.id from ~a"
+                           table-name table-name)
+                         :phase-a-join-sql
+                         (phase-a-join-sql model view-def)
                          :aliases (view-aliases model view-def)
                          :columns (view-columns model view-def))
     appending (list view-key view-def-new)))
@@ -2504,7 +2604,10 @@ Validates:
     for type-key in model by #'cddr
     for type-def in (cdr model) by #'cddr
     for fields = (compile-fields-stage-2 model type-key)
-    for new-def = (add-to-plist type-def (list :fields fields))
+    for new-def = (add-to-plist type-def
+                    (list
+                      :fields fields
+                      :searchable-fields (collect-searchable-fields fields)))
     appending (list type-key new-def)))
 
 (defun validate-model (model)
@@ -2630,6 +2733,7 @@ efficiently instantiate and support the application described by MODEL."))
     for table = (u:tree-get m type-key :create-table-sql :table)
     for trigger = (u:tree-get m type-key :create-table-sql :trigger)
     for index = (u:tree-get m type-key :create-table-sql :index)
+    for sort-indexes = (u:tree-get m type-key :create-table-sql :sort-index)
     unless (a:with-rbac (*rbac*)
              (a:rbac-query
                (list
@@ -2640,8 +2744,10 @@ efficiently instantiate and support the application described by MODEL."))
     (a:with-rbac (*rbac*)
       (db:query table)
       (db:query trigger)
-      (when index (db:query index)))
-    (pl:pdebug :in "create-tables" :state "added table and triggers"
+      (when index (db:query index))
+      (when sort-indexes
+        (loop for ddl in sort-indexes do (db:query ddl))))
+    (pl:pdebug :in "create-tables" :state "added tables, indexes, and triggers"
       :table table-name :type-key type-key)))
 
 (defun type-resource-name (type-key)
@@ -2755,7 +2861,14 @@ add-type-roles (which needs roles to exist)."
           key value
           "^[a-zA-Z0-9][-a-zA-Z0-9+_',.?/`~!@#$%^&*()+=\\[\\]\\{\\}]*"))
       (:name
-        (valid-top-level-value key value "^[a-z][-a-z0-9]*"))
+        (valid-top-level-value key value "^[a-z][-a-z0-9]*")
+        ;; "profile" and "profile-*" deploy as dataui-profile[-*],
+        ;; colliding with exposed host-profile HAProxy backends
+        ;; (scripts/data-ui expose-profile).
+        (when (or (string= value "profile")
+                (u:starts-with value "profile-"))
+          (error "~(~s~) value ~s is reserved for host-profile HAProxy backends."
+            key value)))
       (:version
         (valid-top-level-value key value
           "^[a-z0-9.](?:[a-z0-9]|[._+-][a-z0-9])*$"))
