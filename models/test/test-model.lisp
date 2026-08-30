@@ -33,7 +33,7 @@
         (:type :list
           :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
-          :source (:view :main :table :tags :column :name :agg :list)
+          :source (:view :main :table :tags :column :name :agg :distinct)
           :source-all (:view :tags :table :tags :column :name :agg :list)
           :join-table :todo-tags)
         :test-action

@@ -1,6 +1,6 @@
 '(:title "Model Bank"
    :name "modelbank"
-   :version "0.1"
+   :version "0.2"
    :domain "modelbank.demo.data-ui.com"
    ;; WARNING: :repl must be nil in production
    :repl t
@@ -27,14 +27,23 @@
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("models-user")
-       :views (:main (:tables (:models :images :ratings)))
+       :default-sort (:name :asc)
+       :views (:main (:tables (:models :images :ratings :users)))
        :fields
        (:name
-         (:type :text :identity t :searchable t
+         (:type :text :identity t :searchable t :sortable t
            :ui (:label "Model Name" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
+         :user
+         (:type :text
+           :autofill :user
+           :force-sql-name "model_user"
+           :ui (:label "Owner" :widget :textbox :read-only t)
+           :target :users
+           :source (:view :main :table :users :column :name :agg :first)
+           :column t :not-null t)
          :description
          (:type :text
            :ui (:label "Model Description" :widget :textarea)
@@ -73,7 +82,7 @@
            :ui (:label "Generate Model" :widget :button)
            :action (:generate-model :description-field :description
                                     :model-field :model)))
-       :list-form (:fields (:name :description :model :images :average-rating))
+       :list-form (:fields (:name :user :description :model :images :average-rating))
        :update-form (:fields t)
        :add-form (:fields (:name :description :model :images :rating)))
 
@@ -125,7 +134,7 @@
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("ratings-user")
-       :views (:main (:tables (:ratings :models :users) :scope :user)
+       :views (:main (:tables (:ratings :models :users))
                 :models (:tables (:models))
                 :users (:tables (:users) :scope :user))
        :fields
@@ -154,4 +163,45 @@
            :column t))
        :list-form (:fields t)
        :update-form (:fields t)
-       :add-form (:fields t))))
+       :add-form (:fields t))
+
+     :hot-models
+     (:rollup t
+       :grain :models
+       :type-roles ("models-user")
+       :filter ((:ratings :created-at :last-days 30))
+       :views (:main (:tables (:models :ratings)))
+       :list-form (:fields t)
+       :fields
+       (:name
+         (:source (:view :main :table :models :column :name :agg :first)
+           :sortable t
+           :ui (:label "Model"))
+         :recent-ratings
+         (:type :integer
+           :source (:view :main :table :ratings :column :id :agg :count)
+           :sortable t
+           :ui (:label "Recent Ratings" :widget :stars))
+         :recent-avg
+         (:type :real
+           :source (:view :main :table :ratings :column :rating :agg :avg)
+           :sortable t
+           :ui (:label "Recent Average" :widget :stars))))
+
+     :top-contributors
+     (:rollup t
+       :grain :users
+       :type-roles ("models-user")
+       :views (:main (:tables (:users :models)))
+       :list-form (:fields t)
+       :fields
+       (:name
+         (:source (:view :main :table :users :column :name :agg :first)
+           :sortable t
+           :ui (:label "User"))
+         :model-count
+         (:type :integer
+           :source (:view :main :table :models :column :id :agg :count)
+           :sortable t
+           :ui (:label "Models"))))))
+

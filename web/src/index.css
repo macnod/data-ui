@@ -84,3 +84,35 @@ th {
   animation: du-spin 0.8s linear infinite;
   vertical-align: middle;
 }
+
+/* --- List pagination footer --- */
+
+.list-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pagination span {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.pagination button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.record-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.9em;
+}

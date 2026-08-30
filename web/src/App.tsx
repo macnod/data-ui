@@ -58,9 +58,16 @@ interface ListResponse {
   result: {
     'type-key': string
     'list-form': Record<string, Field>
-    'add-form': Record<string, Field>
-    'update-form': Record<string, Field>
+    // Rollups emit only list-form (the compiler forbids add/update
+    // forms on :rollup types), so both are optional on the wire.
+    'add-form'?: Record<string, Field>
+    'update-form'?: Record<string, Field>
     records: any[]
+    total?: number
+    // Plan 09: echoed user-facing effective sort. Null when the
+    // request sent none and the type has no ranking default (base
+    // types). Never the id tiebreaker.
+    sort?: { field: string, dir: 'asc' | 'desc' } | null
     'allowed-values'?: Record<string, string[]>
     'type-roles'?: string[]
     create?: boolean
@@ -75,6 +82,12 @@ interface TypeInfo {
 }
 
 type ViewMode = 'app' | 'admin' | 'settings'
+
+// Page size for list pagination. Matches the frozen list contract:
+// be-list and /api/list both default limit to 20. The FE always
+// sends limit=, so the server default is unused, but the numbers
+// stay aligned.
+const PAGE_SIZE = 20
 
 // Format a number according to the field's :precision UI hint.
 // Returns the original value untouched if it's not a number or
@@ -496,8 +509,13 @@ function App() {
   const runningStartRef = useRef<number | null>(null)
   const [sortField, setSortField] = useState<string | null>(null)
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  // Plan 09: the type's default ranking column (backend-echoed), or
+  // null. Set only from responses to requests that sent no sort;
+  // cleared on type change alongside the sort state.
+  const defaultSortRef = useRef<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auth state
@@ -512,7 +530,8 @@ function App() {
     onAuthFailure(() => {
       setLoggedIn(false)
       setLoggedInUser('')
-      setData(null)
+      resetSessionState()
+      document.body.classList.remove('dark')
     })
   }, [])
 
@@ -530,6 +549,11 @@ function App() {
 
   const isEditMode = !!editRecord
 
+  // Total comes from the last successful fetch envelope; do not
+  // derive it from records.length (wrong on any page past 1).
+  const totalRecords = data?.result?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalRecords / PAGE_SIZE))
+
   const userTypes = types.filter(t => t.category === 'user')
   const systemTypes = types.filter(t => t.category === 'system')
   const settingsTypes = types.filter(t => t.category === 'settings')
@@ -538,30 +562,98 @@ function App() {
     : viewMode === 'settings' ? settingsTypes
     : userTypes
 
-  const fetchList = () => {
+  const fetchList = async (): Promise<ListResponse | null> => {
     setListError(null)
-    let url = `/api/list?type=${type}`
+    const offset = (currentPage - 1) * PAGE_SIZE
+    let url = `/api/list?type=${type}&limit=${PAGE_SIZE}&offset=${offset}`
     if (sortField) {
       url += `&sort=${sortField}:${sortDir}`
     }
     if (debouncedSearch) {
       url += `&search=${encodeURIComponent(debouncedSearch)}`
     }
-    apiFetch(url)
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`Request failed (${res.status})`)
-        }
-        return res.json()
-      })
-      .then(setData)
-      .catch(err => {
-        setData(null)
-        setListError(err.message || 'Failed to load data')
-      })
+    try {
+      const res = await apiFetch(url)
+      if (!res.ok) {
+        throw new Error(`Request failed (${res.status})`)
+      }
+      const json: ListResponse = await res.json()
+      setData(json)
+      // Plan 09: paint sortField/sortDir from the echoed effective
+      // sort on every successful fetch (including null — base types
+      // with no sort echo unsorted). The backend owns the ranking
+      // default (first sortable measure DESC on rollups), so the
+      // header indicator always matches the actual order.
+      const echoed = json?.result?.sort ?? null
+      if (echoed && typeof echoed.field === 'string') {
+        setSortField(echoed.field)
+        setSortDir(echoed.dir === 'desc' ? 'desc' : 'asc')
+      } else {
+        setSortField(null)
+        setSortDir('asc')
+      }
+      // Cache the type's default ranking column, but only when this
+      // request sent no sort: an echo from a sorted request is the
+      // echoed request, not the default, and caching it would attach
+      // the toggle-only exception to the wrong column.
+      if (!sortField) {
+        defaultSortRef.current = echoed && typeof echoed.field === 'string'
+          ? echoed.field : null
+      }
+      // Clamp the page if the result set shrank under us (e.g.
+      // deletions). total lives at json.result.total (the REST
+      // layer wraps every payload in a result envelope); using
+      // records.length would report the page size as the total.
+      const total = json?.result?.total ?? 0
+      const maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE))
+      if (currentPage > maxPage) setCurrentPage(maxPage)
+      return json
+    } catch (err: any) {
+      setData(null)
+      setListError(err.message || 'Failed to load data')
+      return null
+    }
   }
 
-  // fetchList closes over searchTerm/sort; keep stable for debounce via ref pattern below
+  // fetchList closes over page/sort/search; keep a stable reference
+  // for the running-status poll interval so it always calls the
+  // current fetchList without restarting the timer.
+  const fetchListRef = useRef(fetchList)
+  fetchListRef.current = fetchList
+
+  // Reset all list-query state (sort, search, page, selection) when
+  // the list identity changes. Reused by changeType, switchViewMode,
+  // and returnToLanding so the new type's first fetch lands on page 1
+  // with clean params (no stale sort/search carried over).
+  const resetListQuery = () => {
+    setSortField(null)
+    setSortDir('asc')
+    defaultSortRef.current = null
+    setSearchTerm('')
+    setDebouncedSearch('')
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    setCurrentPage(1)
+    setSelectedIds([])
+  }
+
+  // Reset all session-scoped UI state so the next login starts
+  // clean. Without this, the next session inherits the previous
+  // one's view mode (admin tabs under a regular user), type,
+  // page, and half-open forms.
+  const resetSessionState = () => {
+    setViewMode('app')
+    setType('__init__')
+    setTypes([])
+    setData(null)
+    setShowAddForm(false)
+    setEditRecord(null)
+    setFormValues({})
+    setExtraRoles([])
+    setUserSearch('')
+    setUserSearchResults([])
+    setListError(null)
+    resetListQuery()
+  }
 
   const changeType = (newType: string) => {
     setType(newType)
@@ -571,11 +663,7 @@ function App() {
     setExtraRoles([])
     setUserSearch('')
     setUserSearchResults([])
-    setSortField(null)
-    setSortDir('asc')
-    setSearchTerm('')
-    setDebouncedSearch('')
-    if (searchTimer.current) clearTimeout(searchTimer.current)
+    resetListQuery()
   }
 
   const handleListSearch = (query: string) => {
@@ -583,6 +671,8 @@ function App() {
     if (searchTimer.current) clearTimeout(searchTimer.current)
     searchTimer.current = setTimeout(() => {
       setDebouncedSearch(query.trim())
+      setCurrentPage(1)
+      setSelectedIds([])
     }, 300)
   }
 
@@ -591,6 +681,7 @@ function App() {
     setShowAddForm(false)
     setEditRecord(null)
     setFormValues({})
+    resetListQuery()
     // Select first type in the new mode
     if (mode === 'app') {
       const first = userTypes[0]
@@ -663,12 +754,16 @@ function App() {
         const lp = info.result?.['landing-page']
         if (lp) {
           setViewMode('app')
+          // Reset query state in the same batch as the type change
+          // so one fetch lands on page 1 of the landing type.
+          resetListQuery()
           setType(String(lp))
         }
       })
       .catch(() => {
         // Fallback: first user type
         setViewMode('app')
+        resetListQuery()
         const first = userTypes[0]
         if (first) setType(first.name)
       })
@@ -712,6 +807,14 @@ function App() {
     } catch (e) {
       setLoginError('Network error')
     }
+  }
+
+  const handleLogout = () => {
+    clearTokens()
+    setLoggedIn(false)
+    setLoggedInUser('')
+    resetSessionState()
+    document.body.classList.remove('dark')
   }
 
   // Debounced user search for role sharing
@@ -768,17 +871,12 @@ function App() {
       if (!res.ok) {
         alert(await errorMessage(res, 'Action failed'))
       }
-      // Reload list, then re-open edit form with updated record
-      // so the status field refreshes.
-      const listRes = await apiFetch(`/api/list?type=${type}`)
-      if (listRes.ok) {
-        const json = await listRes.json()
-        setData(json)
-        const updated = json?.result?.records?.find(
-          (r: any) => r.id === id
-        )
-        if (updated) openEditForm(updated)
-      }
+      // Reload the list with the current page/sort/search, then
+      // re-open the edit form by id: an action that changes a sort
+      // key can move the row off the current page, so the row must
+      // not be looked up in the current page's records.
+      await fetchList()
+      openEditForm({ id })
     } catch {
       alert('Network error during action')
     } finally {
@@ -791,8 +889,11 @@ function App() {
   }
 
   const submitForm = async () => {
-    // Find file field if present
-    const formDef = isEditMode ? data!.result['update-form'] : data!.result['add-form']
+    // Find file field if present. Rollup types emit no add/update
+    // forms (read-only), so the form lookup is guarded.
+    const formDef = isEditMode
+      ? data!.result['update-form'] || {}
+      : data!.result['add-form'] || {}
     const fileField = Object.keys(formDef).find(f => formDef[f]['widget'] === 'file')
     const fileValue = fileField ? formValues[fileField] : null
 
@@ -963,15 +1064,32 @@ function App() {
       const t = info.result?.['title']
       if (t) setTitle(String(t))
       const lp = info.result?.['landing-page']
+      let resolved: string | null = null
       if (lp) {
-        setType(String(lp))
+        resolved = String(lp)
       } else {
         const firstUser = typeInfos.find(
           t => t.category === 'user'
         )
-        if (firstUser) setType(firstUser.name)
+        if (firstUser) resolved = firstUser.name
         else if (typeInfos.length > 0)
-          setType(typeInfos[0].name)
+          resolved = typeInfos[0].name
+      }
+      if (resolved) {
+        const target = resolved
+        setType(target)
+        // Align viewMode with the resolved type's category so a
+        // fresh login never inherits the previous session's mode
+        // (e.g. logging out of Admin used to leave the next user
+        // on the admin tab strip).
+        const cat = typeInfos.find(
+          t => t.name.toLowerCase() === target.toLowerCase()
+        )?.category
+        setViewMode(
+          cat === 'system' ? 'admin'
+          : cat === 'settings' ? 'settings'
+          : 'app'
+        )
       }
       // else: no types at all; leave __init__ (empty app)
     }).catch(() => {
@@ -982,7 +1100,13 @@ function App() {
   useEffect(() => {
     if (!loggedIn || type === '__init__') return
     fetchList()
-  }, [loggedIn, type, sortField, sortDir, debouncedSearch])
+  }, [loggedIn, type, sortField, sortDir, debouncedSearch, currentPage])
+
+  // Clear the row selection whenever the page changes (button
+  // navigation or the post-delete clamp inside fetchList), so
+  // Delete Selected never targets off-page rows. Same-page filter
+  // changes are cleared explicitly in their handlers.
+  useEffect(() => { setSelectedIds([]) }, [currentPage])
 
   // Poll for status updates when a button field's status starts
   // with "running". Re-fetches the record via /api/item and
@@ -1050,8 +1174,10 @@ function App() {
           }
           return next
         })
-        // Also refresh the list so list-view statuses stay fresh
-        fetchList()
+        // Also refresh the list so list-view statuses stay fresh.
+        // Call through the ref so the poll always uses the current
+        // page/sort/search (not a stale closure from this render).
+        fetchListRef.current()
       } catch {
         // Network errors during polling are non-fatal
       }
@@ -1165,13 +1291,7 @@ function App() {
             )}
             <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
             <button
-              onClick={() => {
-                clearTokens()
-                setLoggedIn(false)
-                setLoggedInUser('')
-                setData(null)
-                document.body.classList.remove('dark')
-              }}
+              onClick={handleLogout}
               style={{}}
             >
               Logout
@@ -1204,7 +1324,8 @@ function App() {
   }
 
   const listFields = Object.keys(data.result['list-form'])
-  const addFields = Object.keys(data.result['add-form'])
+  const addFields: string[] =
+    data.result['add-form'] ? Object.keys(data.result['add-form']) : []
   const records = data.result.records
 
   return (
@@ -1262,13 +1383,7 @@ function App() {
           )}
           <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
           <button
-            onClick={() => {
-              clearTokens()
-              setLoggedIn(false)
-              setLoggedInUser('')
-              setData(null)
-              document.body.classList.remove('dark')
-            }}
+            onClick={handleLogout}
             style={{}}
           >
             Logout
@@ -1358,10 +1473,12 @@ function App() {
             </button>
           </div>
 
-          {(isEditMode ? Object.keys(data.result['update-form']) : addFields).map(f => {
+          {(isEditMode
+            ? Object.keys(data.result['update-form'] || {})
+            : addFields).map(f => {
             const fieldMeta = isEditMode
-              ? data.result['update-form'][f]
-              : data.result['add-form'][f]
+              ? (data.result['update-form'] || {})[f]
+              : (data.result['add-form'] || {})[f]
             const allowed = data.result['allowed-values']?.[f] || []
             const isCheckboxList = fieldMeta['widget'] === 'checkbox-list'
             const isCheckbox = fieldMeta['widget'] === 'checkbox'
@@ -1662,8 +1779,20 @@ function App() {
                   <th
                     key={f}
                     onClick={() => {
+                      // Any sort change (field or direction) restarts
+                      // the result set, so drop back to page 1 and
+                      // clear the row selection.
+                      setCurrentPage(1)
+                      setSelectedIds([])
                       if (isActive) {
-                        if (sortDir === 'asc') {
+                        if (defaultSortRef.current === f) {
+                          // The ranking default column only toggles
+                          // desc <-> asc; clearing would re-echo the
+                          // same default, so the third (unsorted)
+                          // state is a no-op that would stick the
+                          // board on desc.
+                          setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+                        } else if (sortDir === 'asc') {
                           setSortDir('desc')
                         } else {
                           setSortField(null)
@@ -1716,6 +1845,39 @@ function App() {
           ))}
         </tbody>
       </table>
+
+      <div className="list-footer">
+        {totalPages > 1 && (
+          <div className="pagination">
+            <button
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+            >
+              « First
+            </button>
+            <button
+              onClick={() => setCurrentPage(p => p - 1)}
+              disabled={currentPage === 1}
+            >
+              ‹ Prev
+            </button>
+            <span>Page {currentPage} of {totalPages}</span>
+            <button
+              onClick={() => setCurrentPage(p => p + 1)}
+              disabled={currentPage === totalPages}
+            >
+              Next ›
+            </button>
+            <button
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage === totalPages}
+            >
+              Last »
+            </button>
+          </div>
+        )}
+        <span className="record-count">{totalRecords} records</span>
+      </div>
     </div>
   )
 }

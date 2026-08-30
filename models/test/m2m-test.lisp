@@ -24,14 +24,14 @@
         (:type :list
           :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
-          :source (:view :main :table :tags :column :name :agg :list)
+          :source (:view :main :table :tags :column :name :agg :distinct)
           :source-all (:view :tags :table :tags :column :name :agg :list)
           :join-table :item-tags)
         :assignees
         (:type :list
           :ui (:label "Assignees" :widget :checkbox-list)
           :validations (:join-items-exist)
-          :source (:view :main :table :users :column :name :agg :list)
+          :source (:view :main :table :users :column :name :agg :distinct)
           :source-all (:view :users :table :users :column :name :agg :list)
           :join-table :item-users))
       :list-form (:fields t)

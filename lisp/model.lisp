@@ -76,8 +76,18 @@ returns S. If S is not a string or a number, this function returns NIL."
   (declare (ignore user))
   (let* ((field-def (u:tree-get *compiled-model* type-key :fields field-key))
          (not-null (getf field-def :not-null)))
-    (if (and (or (null value) (equal value :null)) (not not-null))
-      nil
+    (cond
+      ((and (or (null value) (equal value :null)) (not not-null))
+        nil)
+      ;; :generate-uuid is a reserved default on :uuid fields (same
+        ;; shape as the base-model :id default); runtime values are
+        ;; always real UUID strings, but full-data fills the reserved
+        ;; keyword before validation runs, so exempt it here.
+      ((and (equal value :generate-uuid)
+         (equal (u:tree-get *compiled-model* type-key :fields
+                  field-key :type) :uuid))
+        nil)
+      (t
       (let* ((field-type-key (u:tree-get *compiled-model*
                                type-key :fields field-key :type))
               (valid (case field-type-key
@@ -94,8 +104,7 @@ returns S. If S is not a string or a number, this function returns NIL."
         (unless valid
           (validation-error-string
             type-key field-key value
-            (format nil "must be a valid ~s." field-type-key)))))))
-
+            (format nil "must be a valid ~s." field-type-key))))))))
 (defun v-user-name (type-key field-key value user)
   (declare (ignore user))
   (unless (a:valid-user-name-p *rbac* value)
@@ -913,6 +922,219 @@ updates status.  Wraps everything in a handler-case so errors become
 ;;; END Register hook :generate-model
 ;;;
 
+;;;
+;;; BEGIN Register hook :spawn (template→instance completion)
+;;;
+;;; :spawn closes the record the button sits on and inserts a fresh
+;;; successor: the recurring-instance pattern (chores, tickets,
+;;; inspection rounds).  The instance is its own template — the hook
+;;; copies the record it sits on.  Close fields are written to the old
+;;; row (durable history); clear fields reset to their declared
+;;; defaults on the new row; everything else (column and M2M fields)
+;;; is copied.  Sync by design: one be-update, one be-insert, no
+;;; worker thread.  Not transactional (standing MVP caveat): if the
+;;; insert fails, the old row stays closed with no successor and the
+;;; button is re-runnable.
+
+(defun spawn-close-value (type-key field-key value user)
+  ":private: Resolve one :spawn :close VALUE for FIELD-KEY of TYPE-KEY.
+Reserved values: :now (hook-run timestamp string, :timestamp fields
+only — enforced at compile time) and :user (the acting user's name;
+wrapped in a one-element list when the field is a :list join field,
+because the write replaces the join list, it does not append).  Any
+other value passes through as a literal."
+  (let ((field-type (u:tree-get *compiled-model* type-key :fields
+                       field-key :type)))
+    (case value
+      (:now (dt:timestamp-string))
+      (:user (if (equal field-type :list)
+               (list user)
+               user))
+      (otherwise value))))
+
+(defun spawn-close-data (type-key close user)
+  ":private: Build the be-update data plist for :spawn's :close param,
+resolving reserved values against USER.  Walks the raw plist with
+GETF rather than u:plist-keys (which errors when CLOSE is not a
+plist; valid-spawn-params and the factory guards already cover
+that)."
+  (loop for (field-key value) on close by #'cddr
+    appending (list field-key
+                (spawn-close-value type-key field-key value user))))
+
+(defun spawn-status-keys (type-key)
+  ":private: Field keys of the companion status columns for every
+:button field on TYPE-KEY (compiled model)."
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-def in (cdr fields) by #'cddr
+    for status-key = (getf field-def :status-field)
+    when status-key collect status-key))
+
+(defun spawn-data (type-key record close-keys clear-keys)
+  ":private: Build the be-insert data plist for :spawn: copy the
+record's column and M2M field values, minus base fields, buttons,
+status companions, passwords, close fields, and clear fields.  Fields
+left out fall back to their declared defaults via full-data inside
+be-insert.  The walk is over the compiled field list, never the raw
+record plist — :id, :roles, and timestamps cannot leak in."
+  (let ((status-keys (spawn-status-keys type-key)))
+    (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+      for field-key in fields by #'cddr
+      for field-def in (cdr fields) by #'cddr
+      for field-type = (getf field-def :type)
+      for copyable = (or (getf field-def :column)
+                       (getf field-def :join-table))
+      unless (or (getf field-def :base-field)
+              (equal field-type :button)
+              (equal field-type :password)
+              (member field-key status-keys)
+              (member field-key close-keys)
+              (member field-key clear-keys)
+              (not copyable))
+      append (list field-key (getf record field-key)))))
+
+(defun spawn-inherit-roles (old-id new-id)
+  ":private: Copy the old row's resource roles onto the spawned row so
+the successor is exactly as visible as the record it replaces (same
+move as write-through's execute-write-to).  No-op when either row has
+no resource name."
+  (let* ((old-resource (id-to-resource-name old-id))
+         (new-resource (id-to-resource-name new-id)))
+    (when (and old-resource new-resource)
+      (let ((existing (a:list-resource-role-names *rbac* new-resource)))
+        (loop for role in (a:list-resource-role-names *rbac* old-resource)
+          unless (member role existing :test 'equal)
+          do (a:add-resource-role *rbac* new-resource role))))))
+
+(defun spawn-button-status-keys (model type-key)
+  ":private: Field keys of the status companions for every :button
+field on TYPE-KEY in the raw (pre-compile) model."
+  (loop with fields = (u:tree-get model type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (equal (getf field-def :type) :button)
+    collect (u:make-keyword (format nil "~a-status" field-key))))
+
+(defun valid-spawn-params (model type-key field-key action-form)
+  ":private: Compile-time validation for :spawn :action forms, called
+from compile-field's button branch, where TYPE-KEY and the raw form
+are in hand (the registry factory never receives the type).  Checks
+that :close / :clear name real column or M2M fields (not buttons,
+status companions, or base fields), that literal close values pass
+their field's type predicate, that :now is only used on :timestamp
+fields and :user on :text or M2M list fields, that no field appears
+in both lists, and that every :unique t / :identity t field on the
+type is in :clear (a copied unique value can only collide; :identity
+t emits a unique index even without :unique t).  Returns ACTION-FORM."
+  (let* ((params (cdr action-form))
+         (close (getf params :close))
+         (clear (getf params :clear))
+         (close-keys (u:plist-keys close))
+         (clear-keys clear)
+         (fields (u:tree-get model type-key :fields))
+         (status-keys (spawn-button-status-keys model type-key)))
+    ;; Field membership: exists, not base/button/status, column or M2M
+    (dolist (field-key (append close-keys clear-keys))
+      (let ((field-def (getf fields field-key)))
+        (cond
+          ((null field-def)
+            (report-ve "valid-spawn-params"
+              ":spawn field ~s does not exist on type ~s."
+              ~field-key ~type-key))
+          ((or (getf field-def :base-field)
+             (equal (getf field-def :type) :button)
+             (member field-key status-keys))
+            (report-ve "valid-spawn-params"
+              ":spawn field ~s on type ~s is not a close/clear target ~
+               (base, button, or status field)."
+              ~field-key ~type-key))
+          ((not (or (getf field-def :column)
+                 (getf field-def :join-table)))
+            (report-ve "valid-spawn-params"
+              ":spawn field ~s on type ~s is not a column or M2M field."
+              ~field-key ~type-key)))))
+    ;; Close values: reserved or literal passing the field predicate
+    (loop for field-key in close-keys
+      for value = (getf close field-key)
+      for field-def = (getf fields field-key)
+      for field-type = (or (getf field-def :type) :text)
+      do
+      (case value
+        (:now
+          (unless (equal field-type :timestamp)
+            (report-ve "valid-spawn-params"
+              ":spawn :now is only valid on :timestamp fields; field ~s ~
+               on type ~s is ~s."
+              ~field-key ~type-key ~field-type)))
+        (:user
+          (unless (or (equal field-type :text)
+                   (and (equal field-type :list)
+                     (getf field-def :join-table)))
+            (report-ve "valid-spawn-params"
+              ":spawn :user is only valid on :text or M2M list fields; ~
+               field ~s on type ~s is ~s."
+              ~field-key ~type-key ~field-type)))
+        (otherwise
+          (let ((test (u:tree-get *field-types* field-type :test)))
+            (unless (and test (funcall test value))
+              (report-ve "valid-spawn-params"
+                ":spawn close value ~s does not match type ~s of field ~
+                 ~s on type ~s."
+                ~value ~field-type ~field-key ~type-key))))))
+    ;; No field in both :close and :clear
+    (dolist (field-key close-keys)
+      (when (member field-key clear-keys)
+        (report-ve "valid-spawn-params"
+          ":spawn field ~s on type ~s appears in both :close and :clear."
+          ~field-key ~type-key)))
+    ;; Unique / identity fields must reset to defaults, never copy
+    (loop for field-key in fields by #'cddr
+      for field-def in (cdr fields) by #'cddr
+      when (or (getf field-def :unique) (getf field-def :identity))
+      unless (member field-key clear-keys)
+      do (report-ve "valid-spawn-params"
+        ":spawn field ~s on type ~s is :unique t / :identity t (a copied ~
+         value can only collide); add it to :clear."
+        ~field-key ~type-key))
+    action-form))
+
+(register-hook :spawn :action
+  '(:close :list :clear :list)
+  (lambda (&key close clear)
+    ;; Param-shape guards: a bare-keyword action form skips
+    ;; valid-hook-params, so the factory re-checks presence and shape
+    ;; here (it cannot check fields — no type-key reaches the factory).
+    (unless (and (u:plistp close) close)
+      (report-ve "spawn-hook-factory"
+        ":spawn requires a non-empty :close plist (field → value)."))
+    (unless (and (listp clear) clear (every #'keywordp clear))
+      (report-ve "spawn-hook-factory"
+        ":spawn requires :clear as a non-empty list of field keys."))
+    (lambda (type-key field-key record user
+             &key roles status-field set-status)
+      (declare (ignore field-key roles status-field set-status))
+      ;; Close first: the old row becomes history.  A later insert
+      ;; failure leaves it closed with no successor; the button is
+      ;; re-runnable (no transactions — standing MVP caveat).
+      (be-update type-key (getf record :id)
+        (spawn-close-data type-key close user) user)
+      ;; Then spawn: copy + defaults through the ordinary insert path,
+      ;; as the acting user (create permission required).
+      (multiple-value-bind (new-id inserted)
+        (be-insert type-key
+          (spawn-data type-key record
+            (loop for k in close by #'cddr collect k)
+            clear)
+          user)
+        (declare (ignore inserted))
+        (spawn-inherit-roles (getf record :id) new-id))
+      ;; Sync success: be-action sets the status column to "complete".
+      nil)))
+
+;;;
+;;; END Register hook :spawn
+;;;
+
 (defparameter *forms* '(:list-form :add-form :update-form))
 
 (defparameter *widgets*
@@ -961,7 +1183,7 @@ updates status.  Wraps everything in a handler-case so errors become
                  :roles (:type :list
                           :ui (:label "Roles" :widget :checkbox-list)
                           :validations (:join-items-exist)
-                          :source (:view :main :table :roles :column :name :agg :list)
+                          :source (:view :main :table :roles :column :name :agg :distinct)
                           :source-all (:view :roles :table :roles :column :name :agg :list)
                           :join-table :role-users))
        :list-form (:fields (:name :created-at :updated-at :email :roles))
@@ -982,7 +1204,7 @@ updates status.  Wraps everything in a handler-case so errors become
                         :column t :not-null t :unique t)
                  :roles (:type :list
                           :ui (:label "Roles" :widget :checkbox-list)
-                          :source (:view :main :table :roles :column :name :agg :list)
+                          :source (:view :main :table :roles :column :name :agg :distinct)
                           :source-all (:view :roles :table :roles :column :name :agg :list)
                           :validations (:required)
                           :ids-table :roles
@@ -1026,7 +1248,7 @@ updates status.  Wraps everything in a handler-case so errors become
                                 :source (:view :main
                                           :table :permissions
                                           :column :name
-                                          :agg :list)
+                                          :agg :distinct)
                                 :source-all (:view :permissions
                                               :table :permissions
                                               :column :name
@@ -1438,13 +1660,40 @@ this:
               :source-field field-key
               :target target)))
 
-(defun find-xref-connecting (table xrefs)
-  "Returns the first xref where TABLE is either :source or :target."
-  (loop for xref in xrefs
-        for source = (getf xref :source)
-        for target = (getf xref :target)
-        when (or (equal source table) (equal target table))
-        do (return (u:deep-copy xref))))
+(defun xref-joinable-p (source target joined-tables)
+  ":private: T when exactly one of SOURCE / TARGET is in JOINED-TABLES.
+An edge with both endpoints joined is a redundant second path to a table
+that is already reachable; an edge with neither endpoint joined cannot
+become a join clause yet."
+  (and (or (member source joined-tables)
+           (member target joined-tables))
+       (not (and (member source joined-tables)
+                 (member target joined-tables)))))
+
+(defun find-joinable-xref-connecting (table xrefs joined-tables base-table)
+  ":private: Returns the first xref where TABLE is either :source or
+:target and exactly one of the xref's endpoints is already joined. When
+several edges qualify, an edge whose already-joined endpoint is
+BASE-TABLE (the view's first table) wins, so a satellite with FKs into
+several joined tables joins through the view subject rather than a
+sibling satellite. Edges whose endpoints are both joined (a redundant
+second path to an already-reachable table) are skipped, not consumed."
+  (labels ((touching-p (xref)
+           (or (equal (getf xref :source) table)
+               (equal (getf xref :target) table)))
+         (joinable-p (xref)
+           (xref-joinable-p (getf xref :source)
+             (getf xref :target) joined-tables))
+         (base-anchor-p (xref)
+           (and (or (equal (getf xref :source) base-table)
+                    (equal (getf xref :target) base-table))
+                (joinable-p xref))))
+    (or (find-if
+          (lambda (x) (and (touching-p x) (base-anchor-p x)))
+          xrefs)
+        (find-if
+          (lambda (x) (and (touching-p x) (joinable-p x)))
+          xrefs))))
 
 (defun ordered-xrefs (model view-tables)
   ":private: Returns a list of xrefs in the context of VIEW-TABLES. The xrefs
@@ -1452,19 +1701,44 @@ are returned in the proper order, such that when they're used serially to create
 join clauses, any external references point to tables that have already been
 joined.
 
-MVP limitation: this ordering works for linear chains (A->B->C) and star
-patterns (A<-B, A<-C). It will break on diamond patterns (A->B, A->C, B->D,
-C->D) where a table is reachable via two paths. This is acceptable for the MVP."
+The walk processes VIEW-TABLES in order and, for each table NOT yet joined,
+consumes the first remaining edge that touches it and has exactly one endpoint
+already joined, preferring an edge anchored at the view's first table. A table
+that an earlier turn already joined (as an edge's far endpoint) gets no turn:
+consuming another edge for it would re-join it through a second path and steal
+the edge a later table needs (the modelbank :ratings shape: :models joined via
+ratings.rating_model, then :models' own model_user edge would wrongly claim
+:users). Redundant edges (both endpoints joined, a second path to an
+already-reachable table) are skipped naturally: no unjoined table claims them.
+
+Because a table's turn only sees edges with exactly one endpoint joined, the
+join column chosen for a satellite depends on which edges remain, not on field
+declaration order within a type: :ratings (:model ... :user ...) and
+:ratings (:user ... :model ...) compile to the same view SQL.
+
+MVP limitation: this ordering works for linear chains (A->B->C), star
+patterns (A<-B, A<-C), and fan-in shapes with redundant edges. It can
+still starve a table in diamond patterns (A->B, A->C, B->D, C->D) where a
+table is reachable only via two paths and the :tables order never yields
+a joinable edge for it. This is acceptable for the MVP."
   (loop for table in view-tables
     append (find-table-xrefs model view-tables table) into xrefs
     finally
     (return
       (loop
         with remaining-xrefs = (u:deep-copy xrefs)
+        with joined-tables = (list (car view-tables))
+        with base-table = (car view-tables)
         for j-table in view-tables
-        for j-xref = (find-xref-connecting j-table remaining-xrefs)
+        for j-xref = (unless (member j-table joined-tables)
+                       (find-joinable-xref-connecting j-table
+                         remaining-xrefs joined-tables base-table))
         when j-xref
         do (setf remaining-xrefs (remove j-xref remaining-xrefs :test #'equal))
+        and do (pushnew (if (member (getf j-xref :source) joined-tables)
+                          (getf j-xref :target)
+                          (getf j-xref :source))
+                  joined-tables)
         and collect j-xref))))
 
 (defun xref-reversed (source target joined-tables)
@@ -1862,6 +2136,24 @@ Rejects:
           (t with-label)))
       with-label)))
 
+(defun valid-join-table-agg (type-key field-key join-table source)
+  ":private: M2M row-display :agg contract. On a field with
+:join-table set, the row-display :source :agg must be :distinct:
+an omitted :agg is injected, any other declared value signals
+report-e (set semantics; a flat-join view with sibling chains
+duplicates :list values). :source-all is untouched (:list is
+correct there). Returns the effective :source plist."
+  (let ((agg (getf source :agg)))
+    (cond
+      ((and join-table source (null agg))
+        (add-to-plist source (list :agg :distinct)))
+      ((and join-table source (not (eq agg :distinct)))
+        (report-e "valid-join-table-agg"
+          "Join-table row-display :source :agg must be :distinct ~
+           (or omitted); field ~s of type ~s has :agg ~s."
+          ~field-key ~type-key ~agg))
+      (t source))))
+
 (defun compile-field (model type-key old-field-key new-field-key field-def)
   (loop
     with force-sql-name = (getf field-def :force-sql-name)
@@ -1899,10 +2191,14 @@ Rejects:
                         (u:make-keyword
                           (format nil "~a-status" new-field-key)))
     and compiled-hook = (when is-button
-                          (resolve-hook-form action
-                            :kind :action
-                            :type-key type-key
-                            :field-key new-field-key))
+                          (progn
+                            (when (eq (car action) :spawn)
+                              (valid-spawn-params model type-key
+                                new-field-key action))
+                            (resolve-hook-form action
+                              :kind :action
+                              :type-key type-key
+                              :field-key new-field-key)))
     with sql-parts = (remove-if-not #'identity
                        (list name-sql type-sql primary-key not-null
                          references unique default))
@@ -1934,7 +2230,9 @@ Rejects:
              (ui-options (getf ui-val :options :missing))
              (has-target (getf def :target))
              (has-join-table (getf def :join-table))
-             (widget (getf ui-val :widget)))
+             (widget (getf ui-val :widget))
+             (source (valid-join-table-agg type-key new-field-key
+                        has-join-table (getf new-def :source))))
         ;; :options exclusive with relation sources
         (when (and (not (eq ui-options :missing))
                    (or has-target has-join-table))
@@ -1950,12 +2248,25 @@ Rejects:
             ":widget :select requires either :options or :target ~
              on field ~s of type ~s."
             ~new-field-key ~type-key))
-        ;; :sortable requires a base column
-        (when (and (getf def :sortable) (not column))
-          (report-e "compile-field"
-            ":sortable t is only valid on base-column fields; ~
-             field ~s of type ~s has no :column t."
-            ~new-field-key ~type-key))
+        ;; :sortable requires a base column, except on a rollup (plan
+        ;; 09): there the ORDER BY targets the SELECT alias, so grain
+        ;; pass-throughs and :sum / :count / :avg measures may sort.
+        ;; :list / :distinct stay unsortable (array compare is not a
+        ;; leaderboard). Hybrids (base types with Phase B measures)
+        ;; keep the strict rule: no aggregate alias in base Phase A.
+        (when (getf def :sortable)
+          (if (getf model type-key :rollup)
+            (when (member (u:tree-get field-def :source :agg)
+                    '(:list :distinct))
+              (report-e "compile-field"
+                ":sortable t is not valid on :list / :distinct ~
+                 measures; field ~s of rollup ~s."
+                ~new-field-key ~type-key))
+            (unless column
+              (report-e "compile-field"
+                ":sortable t is only valid on base-column fields; ~
+                 field ~s of type ~s has no :column t."
+                ~new-field-key ~type-key))))
         ;; :searchable requires a base text column that is not an FK
         (when (getf def :searchable)
           (unless column
@@ -1978,7 +2289,8 @@ Rejects:
                (final-def (if final-ui
                             (add-to-plist def (list :ui final-ui))
                             def)))
-          (append final-def new-def
+          (append final-def
+            (add-to-plist new-def (list :source source))
             (when is-button
               (list
                 :compiled-hook compiled-hook
@@ -2223,19 +2535,268 @@ is present on a non-button field."
     for view-key in views by #'cddr
     for view-def in (cdr views) by #'cddr
     for scope-def = (getf view-def :scope)
+    ;; Rollup (measure shape): keep tables / scope / aliases / columns, but no
+    ;; flat-generator SQL (the strings would name a table that does not exist).
+    ;; Measure SQL parts are 08b.
+    for measure = (eq (getf type-def :phase-a-shape) :measure)
     for table-name = (u:tree-get model type-key :table-name)
-    for view-def-new = (list
-                         :tables (getf view-def :tables)
-                         :scope (valid-view-scope type-key scope-def)
-                         :sql (view-sql model view-def)
-                         :phase-a-base-sql
-                         (format nil "select ~a.id from ~a"
-                           table-name table-name)
-                         :phase-a-join-sql
-                         (phase-a-join-sql model view-def)
-                         :aliases (view-aliases model view-def)
-                         :columns (view-columns model view-def))
+    for view-def-new = (append
+                         (list
+                           :tables (getf view-def :tables)
+                           :scope (valid-view-scope type-key scope-def)
+                           :sql (unless measure
+                                  (view-sql model view-def))
+                           :phase-a-base-sql
+                           (unless measure
+                             (format nil "select ~a.id from ~a"
+                               table-name table-name))
+                           :phase-a-join-sql
+                           (unless measure
+                             (phase-a-join-sql model view-def))
+                           :aliases (view-aliases model view-def)
+                           :columns (view-columns model view-def))
+                         ;; 08b: measure Phase A SQL parts, spliced flat
+                         ;; onto the view (empty on non-measure shapes).
+                         (when measure
+                           (measure-phase-a-parts model type-key)))
     appending (list view-key view-def-new)))
+
+;;
+;; BEGIN Measure Phase A SQL (08b)
+;;
+;; The second Phase A shape: GROUP BY grain with SQL aggregates and FILTER
+;; clauses, replacing flat SELECT + LEFT JOIN + Lisp collapse.  The compiler
+;; emits parts, not one sealed string: a query that already ends in GROUP BY
+;; cannot take a runtime WHERE. be-list splices runtime predicates (scope,
+;; request-time grain filters, compiled grain WHERE) between the SELECT part and
+;; the GROUP BY part.
+;;
+
+(defun measure-qualified-column (model type-key field-key)
+  "Fully qualified <table>.<column> for FIELD-KEY on TYPE-KEY, using the
+type's compiled :table-name and the field's :name-sql. ID on the grain is
+<grain>.id."
+  (format nil "~a.~a"
+    (u:tree-get model type-key :table-name)
+    (u:tree-get model type-key :fields field-key :name-sql)))
+
+(defun aggregate-sql-expression (agg qualified-column filter-sql)
+  "Raw SQL aggregate expression for AGG over QUALIFIED-COLUMN, wrapped
+with FILTER (WHERE ...) when FILTER-SQL is non-empty. No COALESCE, no
+GROUP BY assumption — the rollup SELECT wraps display coalescing and the
+future hybrid ORDER BY (Post MVP) uses the raw form. Never emits
+COUNT(DISTINCT ...)."
+  (let ((expr (case agg
+                (:sum (format nil "sum(~a)" qualified-column))
+                (:count (format nil "count(~a)" qualified-column))
+                (:avg (format nil "avg(~a)" qualified-column))
+                (:list (format nil "array_agg(~a)" qualified-column))
+                (:distinct (format nil "array_agg(distinct ~a)"
+                             qualified-column))
+                (t (report-e "aggregate-sql-expression"
+                     "Unknown :agg ~s." ~agg)))))
+    (if filter-sql
+      (format nil "~a filter (where ~a)" expr filter-sql)
+      expr)))
+
+(defun measure-field-sql (model field-key field-def fact-filter-sql)
+  "SELECT expression for one rollup field. Pass-throughs (:agg :first,
+including the injected :id) select the grain column and alias it as the
+field key (SQL identifiers are the field keys, so the row comes back as
+(:id ...) (:name ...), never :grain-id). Real measures wrap the mapper
+expression in COALESCE for :sum / :list / :distinct; :count is naturally
+0 and :avg stays NULL (Issue 13)."
+  (let* ((source (getf field-def :source))
+         (table (getf source :table))
+         (column (getf source :column))
+         (agg (getf source :agg))
+         (alias (to-sql-identifier field-key)))
+    (if (eq agg :first)
+      (format nil "~a as ~a"
+        (measure-qualified-column model table column)
+        alias)
+      (let ((qualified (measure-qualified-column model table column)))
+        (case agg
+          (:count
+            (format nil "~a as ~a"
+              (aggregate-sql-expression agg qualified fact-filter-sql)
+              alias))
+          (:avg
+            (format nil "~a as ~a"
+              (aggregate-sql-expression agg qualified fact-filter-sql)
+              alias))
+          (:sum
+            (format nil "coalesce(~a, 0) as ~a"
+              (aggregate-sql-expression agg qualified fact-filter-sql)
+              alias))
+          ((:list :distinct)
+            (let* ((field-type (getf field-def :type))
+                    (pg-type (u:tree-get *field-types* field-type :sql))
+                    (empty (format nil "array[]::~a[]" pg-type)))
+              (format nil "coalesce(~a, ~a) as ~a"
+                (aggregate-sql-expression agg qualified fact-filter-sql)
+                empty
+                alias)))
+          (t (report-e "measure-field-sql"
+               "Unknown :agg ~s on rollup field ~s." ~agg ~field-key)))))))
+
+(defun measure-model-filter-sql (model type-key clause)
+  "One compile-time-closed SQL predicate for a model-declared :filter
+clause (07c). Discrete :eq / :ne embed the validated literal (booleans as
+bare column / NOT for :eq t / :eq nil); :last-days and :calendar embed
+PostgreSQL clock functions so a model compiled Monday still filters
+against 'now' on Friday. Value is never user input, so embedding is safe."
+  (destructuring-bind (table column op value) clause
+    (declare (ignore type-key))
+    (let ((qualified (measure-qualified-column model table column))
+          (col-type (rollup-column-type model table column)))
+      (case op
+        (:eq
+          (cond
+            ((eq col-type :boolean)
+              (if value
+                (format nil "~a" qualified)
+                (format nil "not ~a" qualified)))
+            ((member col-type '(:text :password :uuid))
+              (format nil "~a = '~a'" qualified value))
+            (t (format nil "~a = ~a" qualified value))))
+        (:ne
+          (cond
+            ((eq col-type :boolean)
+              (if value
+                (format nil "not ~a" qualified)
+                (format nil "~a" qualified)))
+            ((member col-type '(:text :password :uuid))
+              (format nil "~a != '~a'" qualified value))
+            (t (format nil "~a != ~a" qualified value))))
+        (:last-days
+          (format nil "~a >= now() - interval '~a days'"
+            qualified value))
+        (:calendar
+          ;; :month is the sole MVP unit (07c).
+          (format nil
+            "~a >= date_trunc('month', now()) and ~a < date_trunc('month', now()) + interval '1 month'"
+            qualified qualified))))))
+
+(defun measure-filters-sql (model type-key filter)
+  "SQL predicates for every model-declared :filter clause on TYPE-KEY.
+Returns two values: grain-table fragments (runtime WHERE) and
+joined-table fragments (FILTER conditions ANDed into every real
+measure)."
+  (loop with grain = (u:tree-get model type-key :grain)
+    for clause in filter
+    for table = (first clause)
+    if (eq table grain)
+      collect (measure-model-filter-sql model type-key clause)
+      into grain-frags
+    else
+      collect (measure-model-filter-sql model type-key clause)
+      into joined-frags
+    finally (return (values grain-frags joined-frags))))
+
+(defun measure-pk-guard-sql (model fact-table)
+  "The shared per-table predicate attached to every real measure from
+the fact table F: <F>.id IS NOT NULL. This is what makes unfiltered
+array_agg empty (not {NULL}) on a LEFT JOIN miss and keeps SUM / COUNT /
+AVG honest. Not per-measure: all measures from F share one FILTER base."
+  (format nil "~a.id is not null"
+    (u:tree-get model fact-table :table-name)))
+
+(defun measure-fact-filter-sql (model fact-table joined-frags)
+  "The FILTER condition for every real measure: the PK guard ANDed with
+every model-declared joined-table (path) clause — downstream binding
+(Issue 17). The guard is always present; clauses AND onto it."
+  (let ((base (measure-pk-guard-sql model fact-table)))
+    (if joined-frags
+      (format nil "~a~{ and ~a~}" base joined-frags)
+      base)))
+
+(defun measure-join-sql (model view-tables)
+  "LEFT JOIN clauses for the rollup view, same walk as VIEW-SQL /
+ordered-xrefs. The grain is first (validated in 08a) and is never
+re-joined."
+  (loop
+    with joined-tables = (list (car view-tables))
+    for xref in (ordered-xrefs model view-tables)
+    for source = (getf xref :source)
+    for target = (getf xref :target)
+    for source-field = (getf xref :source-field)
+    for reversed = (xref-reversed source target joined-tables)
+    for join-table = (if reversed
+                       (u:tree-get model target :table-name)
+                       (u:tree-get model source :table-name))
+    for join-field = (if reversed
+                       "id"
+                       (u:tree-get model source :fields source-field
+                         :name-sql))
+    for target-table = (if reversed
+                         (u:tree-get model source :table-name)
+                         (u:tree-get model target :table-name))
+    for target-field = (if reversed
+                         (u:tree-get model source :fields source-field
+                           :name-sql)
+                         "id")
+    collect (format nil "left join ~a on ~a.~a = ~a.~a"
+              join-table join-table join-field target-table target-field)
+    into joins
+    do (push (if reversed target source) joined-tables)
+    finally (return joins)))
+
+(defun measure-phase-a-parts (model type-key)
+  "Measure Phase A SQL parts for a rollup TYPE-KEY (08b Step 2).
+Returns a plist of compile-time-closed fragments stored on
+:VIEWS :MAIN by ENRICH-VIEWS:
+
+  :MEASURE-PHASE-A-SELECT   SELECT ... FROM <grain> LEFT JOIN ...
+                            (no WHERE, no GROUP BY)
+  :MEASURE-PHASE-A-GROUP-BY GROUP BY <grain>.id, <pass-through cols>
+  :MEASURE-PHASE-A-COUNT-SELECT  SELECT COUNT(*) FROM <grain_table>
+                            (no WHERE, no join)
+  :MEASURE-PHASE-A-GRAIN-WHERE   list of SQL fragments for
+                            model-declared grain filters
+
+The generator assumes 08a guarantees: grain first in :tables with a real
+table, single fact table F last, every real measure reads from F."
+  (let* ((type-def (getf model type-key))
+         (grain (getf type-def :grain))
+         (view-tables (u:tree-get type-def :views :main :tables))
+         (filter (getf type-def :filter))
+         (fields (getf type-def :fields))
+         (grain-table (u:tree-get model grain :table-name))
+         (fact-table (car (last view-tables))))
+    (multiple-value-bind (grain-frags joined-frags)
+      (measure-filters-sql model type-key filter)
+      (let* ((fact-filter (measure-fact-filter-sql model fact-table
+                         joined-frags))
+             (select-exprs
+               (loop for field-key in fields by #'cddr
+                 for field-def in (cdr fields) by #'cddr
+                 collect (measure-field-sql model field-key field-def
+                           fact-filter)))
+             (group-cols
+               (cons (format nil "~a.id" grain-table)
+                 (loop for field-key in fields by #'cddr
+                   for field-def in (cdr fields) by #'cddr
+                   for table = (u:tree-get field-def :source :table)
+                   for column = (u:tree-get field-def :source :column)
+                   when (and (eq (u:tree-get field-def :source :agg) :first)
+                          (not (eq column :id)))
+                   collect (measure-qualified-column model table column))))
+             (joins (measure-join-sql model view-tables))
+             (select-sql
+               (format nil "select~%  ~{~a~^,~%  ~}~%from ~{~a~^~%  ~}"
+                 select-exprs (cons grain-table joins))))
+        (list
+          :measure-phase-a-select select-sql
+          :measure-phase-a-group-by
+          (format nil "group by ~{~a~^, ~}" group-cols)
+          :measure-phase-a-count-select
+          (format nil "select count(*) from ~a" grain-table)
+          :measure-phase-a-grain-where grain-frags)))))
+
+;;
+;; END Measure Phase A SQL (08b)
+;;
 
 (defun type-has-roles (type-def)
   (unless (getf type-def :internal) t))
@@ -2378,6 +2939,47 @@ declared. Mirrors the previous runtime type-category logic."
               "In type ~s, ~s contains an unknown field ~s"
               ~type-key ~form-field ~field-key))))
 
+(defun valid-default-sort (type-key type-def)
+  "Validate a type-level :default-sort declaration against the
+compiled TYPE-DEF (fields are compiled by this point). Skips when
+no declaration is present. Shape is (:field-key) or
+(:field-key :asc|:desc), the request-sort convention: the direction
+is optional (defaults :asc at SQL-build time), so a direction-less
+declaration is stored verbatim, never normalized. The field must
+exist and carry :sortable t, the same rule the request path
+enforces (phase-a-order-by-column / valid-measure-sort)."
+  (let ((sort (getf type-def :default-sort)))
+    (when sort
+      (let ((field-key (first sort))
+             (direction (second sort)))
+        ;; Shape: a proper list of one or two elements, first a
+        ;; keyword. The consp walk also rejects dotted tails
+        ;; ((cdr sort) is a non-nil atom there) and non-lists.
+        (unless (and (consp sort)
+                 (keywordp field-key)
+                 (or (null (cdr sort))
+                   (and (consp (cdr sort))
+                     (null (cddr sort)))))
+          (report-e "valid-default-sort"
+            ":default-sort on type ~s must be (:field :asc|:desc), ~
+             got ~s."
+            ~type-key ~sort))
+        (when (and direction (not (member direction '(:asc :desc))))
+          (report-e "valid-default-sort"
+            ":default-sort direction on type ~s must be :asc or ~
+             :desc, got ~s."
+            ~type-key ~sort))
+        (let ((field-def (u:tree-get type-def :fields field-key)))
+          (cond
+            ((null field-def)
+              (report-e "valid-default-sort"
+                "In type ~s, :default-sort names an unknown field ~s."
+                ~type-key ~field-key))
+            ((not (getf field-def :sortable))
+              (report-e "valid-default-sort"
+                "In type ~s, :default-sort field ~s is not :sortable t."
+                ~type-key ~field-key))))))))
+
 (defun expand-compose-hooks (type-key type-def)
   "Scan TYPE-DEF's fields for :compose and synthesize :compose-string
 lifecycle hook forms. Returns a plist of :pre-create / :pre-update
@@ -2435,7 +3037,553 @@ Validates:
       (let ((forms (nreverse compose-forms)))
         (list :pre-create forms :pre-update forms)))))
 
+;;
+;; BEGIN Rollup types (08a compile surface)
+;;
+;; A :rollup t type is a read-only analytical type: no physical table, no
+;; DDL/DML, one grain, one fact table. The compiler stores :phase-a-shape
+;; :measure here. The measure SQL generator and the be-list measure branch are
+;; 08b; until 08b lands a compiled rollup is fatal if anyone calls be-list. All
+;; contract violations below signal report-e at compile time.
+;;
+
+(defparameter *model-filter-operators* '(:eq :ne :last-days :calendar)
+  "Closed operator set for model-declared :filter clauses (07c). Separate from
+the request-time operator table; :like / :in never enter this path.")
+
+(defparameter *rollup-forbidden-field-keys*
+  '(:action :validation :validations :compose :compose-string
+     :autofill :source-all :write-to :join-table :target)
+  "Field attributes that never appear on a rollup field (07b matrix). :button
+arrives as a :type value and is checked separately, as are :identity t and
+:column t.")
+
+(defun rollup-column-type (model table-key column-key)
+  "Effective :type of COLUMN-KEY on TABLE-KEY in the raw model, covering
+injected default fields (:id :uuid, timestamps) and the omitted-:type default of
+:text."
+  (or
+    (u:tree-get model table-key :fields column-key :type)
+    (u:tree-get (default-fields) column-key :type)
+    :text))
+
+(defun valid-non-rollup-keys (model type-key)
+  "Reject rollup-only keys on a non-rollup type (07b matrix)."
+  (let ((type-def (getf model type-key)))
+    (when (u:has (u:plist-keys type-def) :grain)
+      (report-e "valid-non-rollup-keys"
+        ":grain is rollup-only; type ~s is not a rollup."
+        ~type-key))
+    (when (u:has (u:plist-keys type-def) :filter)
+      (report-e "valid-non-rollup-keys"
+        "Model-declared :filter is rollup-only; type ~s is not a ~
+         rollup."
+        ~type-key))
+    ;; :table nil is a rejected :rollup synonym, not an alias
+    ;; (07e freeze checklist).
+    (when (and (u:has (u:plist-keys type-def) :table)
+            (null (getf type-def :table)))
+      (report-e "valid-non-rollup-keys"
+        ":table nil on type ~s is a compile error, not a rollup ~
+         alias; :rollup t is the sole declaration."
+        ~type-key))))
+
+(defun valid-rollup-matrix (model type-key type-def grain views)
+  "Type-level incompatible-key matrix for :rollup t (07b), including the
+grain / :tables contract and the :scope :user compile check. Signals report-e on
+the first violation."
+  (when (u:has (u:plist-keys type-def) :table)
+    (report-e "valid-rollup-matrix"
+      "Rollup type ~s must not declare :table; a rollup has no ~
+       physical table."
+      ~type-key))
+  (when (u:has (u:plist-keys type-def) :type)
+    (report-e "valid-rollup-matrix"
+      "Type ~s has a type-level :type key. Types have no :type; ~
+       :rollup t is the sole rollup declaration."
+      ~type-key))
+  (dolist (key '(:tree :fs-backed :is-leaf :parent-type
+                  :user-setting :is-joiner :built-in))
+    (when (getf type-def key)
+      (report-e "valid-rollup-matrix"
+        "Key ~s is not compatible with :rollup t on type ~s."
+        ~key ~type-key)))
+  (dolist (key '(:create :update :delete))
+    (when (getf type-def key)
+      (report-e "valid-rollup-matrix"
+        "Rollup type ~s is read-only; ~s must be absent or nil."
+        ~type-key ~key)))
+  (dolist (key *lifecycle-keys*)
+    (when (getf type-def key)
+      (report-e "valid-rollup-matrix"
+        "Lifecycle slot ~s is not allowed on rollup type ~s."
+        ~key ~type-key)))
+  (when (getf type-def :write-to)
+    (report-e "valid-rollup-matrix"
+      ":write-to is not allowed on rollup type ~s."
+      ~type-key))
+  (when (and (u:has (u:plist-keys type-def) :suppress-roles)
+          (null (getf type-def :suppress-roles)))
+    (report-e "valid-rollup-matrix"
+      "Author :suppress-roles nil on rollup ~s; the compiler ~
+       auto-sets :suppress-roles t."
+      ~type-key))
+  (dolist (key '(:add-form :update-form))
+    (when (u:has (u:plist-keys type-def) key)
+      (report-e "valid-rollup-matrix"
+        "~s is not allowed on rollup type ~s (even nil); only ~
+         :list-form is legal."
+        ~key ~type-key)))
+  (let ((list-form (getf type-def :list-form :missing)))
+    (when (or (eq list-form :missing) (null list-form))
+      (report-e "valid-rollup-matrix"
+        "Rollup type ~s requires :list-form; missing or nil is a ~
+         compile error."
+        ~type-key))
+    (when (equal (getf list-form :fields) nil)
+      (report-e "valid-rollup-matrix"
+        "Rollup type ~s :list-form (:fields nil) is a compile ~
+         error; use (:fields t) or a non-empty field list."
+        ~type-key)))
+  (let ((view-keys (u:plist-keys views)))
+    (unless (and (= (length view-keys) 1) (eq (first view-keys) :main))
+      (report-e "valid-rollup-matrix"
+        "Rollup type ~s must declare exactly one view (:main); ~
+         extra views are not allowed."
+        ~type-key)))
+  (unless grain
+    (report-e "valid-rollup-matrix"
+      "Rollup type ~s is missing :grain."
+      ~type-key))
+  (let ((grain-def (getf model grain)))
+    (unless grain-def
+      (report-e "valid-rollup-matrix"
+        "Rollup type ~s has unknown :grain ~s."
+        ~type-key ~grain))
+    (unless (getf grain-def :table)
+      (report-e "valid-rollup-matrix"
+        "Rollup grain ~s of ~s must be a type with a physical ~
+         table; a rollup cannot be another rollup's grain."
+        ~grain ~type-key)))
+  (let ((view-tables (u:tree-get views :main :tables)))
+    (cond
+      ((null view-tables)
+        (report-e "valid-rollup-matrix"
+          "Rollup type ~s :views :main :tables is missing or ~
+           empty."
+          ~type-key))
+      ((not (member grain view-tables))
+        (report-e "valid-rollup-matrix"
+          "Rollup grain ~s of ~s must appear in :views :main ~
+           :tables."
+          ~grain ~type-key))
+      ((not (eq (first view-tables) grain))
+        (report-e "valid-rollup-matrix"
+          "Rollup grain ~s of ~s must be first in :views :main ~
+           :tables; no silent reorder."
+          ~grain ~type-key))))
+  ;; :scope :user requires :users grain or a grain :user field (same requirement
+  ;; as field-level :scope :user). Runtime binding is 08b Step 5; the compile
+  ;; error lives here.
+  (let ((scope (u:tree-get views :main :scope)))
+    (when (or (eq scope :user)
+            (and (u:plistp scope) (getf scope :user)))
+      (unless (or (eq grain :users)
+                (u:tree-get model grain :fields :user))
+        (report-e "valid-rollup-matrix"
+          ":scope :user on rollup ~s requires grain :users or a ~
+           grain type with a :user field; grain ~s has neither."
+          ~type-key ~grain)))))
+
+(defun valid-rollup-fields (type-key raw-fields view-tables)
+  "Field-level rollup matrix (07b): author :id, forbidden attributes, :button,
+missing :agg, and :source :table membership in :tables."
+  (when (u:has (u:plist-keys raw-fields) :id)
+    (report-e "valid-rollup-fields"
+      "Rollup type ~s must not declare :id; the compiler injects ~
+       it from the grain PK."
+      ~type-key))
+  (loop
+    for field-key in raw-fields by #'cddr
+    for field-def in (cdr raw-fields) by #'cddr
+    for source = (getf field-def :source)
+    for source-table = (getf source :table)
+    do
+    (dolist (key *rollup-forbidden-field-keys*)
+      (when (getf field-def key)
+        (report-e "valid-rollup-fields"
+          "Field attribute ~s is not allowed on rollup field ~s ~
+               of ~s."
+          ~key ~field-key ~type-key)))
+    (when (equal (getf field-def :type) :button)
+      (report-e "valid-rollup-fields"
+        ":button fields are not allowed on rollup type ~s."
+        ~type-key))
+    (when (getf field-def :identity)
+      (report-e "valid-rollup-fields"
+        ":identity t is not allowed on rollup field ~s of ~s."
+        ~field-key ~type-key))
+    (when (getf field-def :column)
+      (report-e "valid-rollup-fields"
+        ":column t is a lie on rollup field ~s of ~s; a ~
+             rollup has no table."
+        ~field-key ~type-key))
+    (unless (getf source :agg)
+      (report-e "valid-rollup-fields"
+        "Rollup field ~s of ~s must declare :agg in :source."
+        ~field-key ~type-key))
+    (unless (member source-table view-tables)
+      (report-e "valid-rollup-fields"
+        "Rollup field ~s of ~s reads from table ~s, which is ~
+             not in :views :main :tables."
+        ~field-key ~type-key ~source-table))))
+
+(defun rollup-measure-facts (raw-fields)
+  "Alist of (field-key . source-table) for real measures — fields
+whose :agg is not :first."
+  (loop for field-key in raw-fields by #'cddr
+        for field-def in (cdr raw-fields) by #'cddr
+        for source = (getf field-def :source)
+        unless (eq (getf source :agg) :first)
+        collect (cons field-key (getf source :table))))
+
+(defun rollup-has-target-p (model source-type target-type)
+  (loop with fields = (getf (getf model source-type) :fields)
+        for field-def in (cdr fields) by #'cddr
+        thereis (eq (getf field-def :target) target-type)))
+
+(defun rollup-xref-neighbors (model view-tables table)
+  "Tables in VIEW-TABLES connected to TABLE by a :target field in
+either direction (xref edges are undirected for joins)."
+  (remove table
+    (remove-duplicates
+      (loop for other in view-tables
+            when (or (rollup-has-target-p model table other)
+                     (rollup-has-target-p model other table))
+            collect other))))
+
+(defun rollup-path-tables (model view-tables grain f-table)
+  "Tables on some xref path GRAIN → F-TABLE within VIEW-TABLES.
+NIL when F-TABLE is unreachable from GRAIN."
+  (let ((on-path nil))
+    (labels ((walk (node visited)
+               (if (eq node f-table)
+                 (progn (pushnew node on-path) t)
+                 (let ((reached nil))
+                   (dolist (next
+                             (rollup-xref-neighbors model
+                               view-tables node))
+                     (unless (member next visited)
+                       (when (walk next (cons next visited))
+                         (setf reached t))))
+                   (when reached (pushnew node on-path))
+                   reached))))
+      (walk grain (list grain)))
+    on-path))
+
+(defun valid-rollup-single-fact (model type-key grain raw-fields
+                                 view-tables)
+  "Single fact table (Issue 16) and grain-only (Issue 13) checks."
+  (let ((facts (rollup-measure-facts raw-fields)))
+    (unless facts
+      (report-e "valid-rollup-single-fact"
+        "Rollup type ~s is grain-only; at least one author field ~
+         must have :agg other than :first."
+        ~type-key))
+    (loop for (field-key . table) in facts
+          when (eq table grain)
+          do (report-e "valid-rollup-single-fact"
+               "Measure ~s on rollup ~s reads from the grain ~s; a ~
+                real measure must read from the fact table."
+               ~field-key ~type-key ~table))
+    (loop for field-key in raw-fields by #'cddr
+          for field-def in (cdr raw-fields) by #'cddr
+          for source = (getf field-def :source)
+          for table = (getf source :table)
+          when (and (eq (getf source :agg) :first)
+                    (not (eq table grain)))
+          do (report-e "valid-rollup-single-fact"
+               ":agg :first is grain-only; field ~s on rollup ~s ~
+                reads from non-grain table ~s."
+               ~field-key ~type-key ~table))
+    (let ((fact-tables (remove-duplicates (mapcar #'cdr facts))))
+      (when (> (length fact-tables) 1)
+        (report-e "valid-rollup-single-fact"
+          "Rollup ~s mixes fact tables ~s; one fact table per ~
+           rollup (mixed-depth is post-MVP)."
+          ~type-key ~fact-tables))
+      (let ((f-table (first fact-tables)))
+        (unless (eq f-table (car (last view-tables)))
+          (report-e "valid-rollup-single-fact"
+            "Fact table ~s of rollup ~s must be last in :views ~
+             :main :tables; a hop past F is a compile error."
+            ~f-table ~type-key))
+        (let ((on-path (rollup-path-tables model view-tables
+                          grain f-table)))
+          (unless on-path
+            (report-e "valid-rollup-single-fact"
+              "No xref path from grain ~s to fact table ~s for ~
+               rollup ~s; name the intermediate hops in :tables."
+              ~grain ~f-table ~type-key))
+          (dolist (table view-tables)
+            (unless (member table on-path)
+              (report-e "valid-rollup-single-fact"
+                "Table ~s on rollup ~s is an extra arm (not on the ~
+                 path ~s → ~s); stars are post-MVP."
+                ~table ~type-key ~grain ~f-table))))))))
+
+(defun valid-model-filter-value (type-key clause col-type value)
+  "Discrete-family literal check for :eq / :ne (07c). Boolean
+literals are Lisp t / nil, not \"true\" or 1."
+  (unless (case col-type
+            (:boolean (typep value 'boolean))
+            ((:text :password) (stringp value))
+            (:integer (integerp value))
+            (:real (numberp value))
+            (:uuid (uuid-p value))
+            (t nil))
+    (report-e "valid-model-filter-value"
+      "Filter clause ~s on ~s needs a literal matching column ~
+       type ~s; got ~s."
+      ~clause ~type-key ~col-type ~value)))
+
+(defun valid-model-filter-clause (model type-key view-tables clause)
+  "Validate one model-declared :filter 4-tuple (07c): table in
+:tables, column exists, operator in the closed set, family
+rules."
+  (unless (and (listp clause) (= (length clause) 4))
+    (report-e "valid-model-filter"
+      "Filter clause ~s on ~s must be a list of exactly four ~
+       elements: (table column op value)."
+      ~clause ~type-key))
+  (destructuring-bind (table-key column-key op value) clause
+    (unless (member table-key view-tables)
+      (report-e "valid-model-filter"
+        "Filter clause ~s on ~s names table ~s, which is not in ~
+         :views :main :tables."
+        ~clause ~type-key ~table-key))
+    (unless (or (u:tree-get model table-key :fields column-key)
+                (member column-key (default-fields :keys-only t)))
+      (report-e "valid-model-filter"
+        "Filter clause ~s on ~s names column ~s, which does not ~
+         exist on ~s."
+        ~clause ~type-key ~column-key ~table-key))
+    (let ((ops *model-filter-operators*))
+      (unless (member op ops)
+        (report-e "valid-model-filter"
+          "Filter operator ~s on ~s is not in the closed set ~s."
+          ~op ~type-key ~ops)))
+    (let ((col-type (rollup-column-type model table-key column-key)))
+      (case op
+        ((:eq :ne)
+          (when (eq col-type :timestamp)
+            (report-e "valid-model-filter"
+              ":eq / :ne on date/timestamp column ~s of ~s is a ~
+               compile error; use :last-days or :calendar."
+              ~column-key ~type-key))
+          (valid-model-filter-value type-key clause col-type value))
+        (:last-days
+          (unless (eq col-type :timestamp)
+            (report-e "valid-model-filter"
+              ":last-days on ~s requires a timestamp column; ~s ~
+               is ~s."
+              ~type-key ~column-key ~col-type))
+          (unless (and (integerp value) (>= value 1) (<= value 1825))
+            (report-e "valid-model-filter"
+              ":last-days value ~s on ~s must be an integer in ~
+               1..1825."
+              ~value ~type-key)))
+        (:calendar
+          (unless (eq col-type :timestamp)
+            (report-e "valid-model-filter"
+              ":calendar on ~s requires a timestamp column; ~s is ~
+               ~s."
+              ~type-key ~column-key ~col-type))
+          (unless (eq value :month)
+            (report-e "valid-model-filter"
+              ":calendar value ~s on ~s must be :month (the value ~
+               slot is the extension point)."
+              ~value ~type-key)))))))
+
+(defun valid-model-filter (model type-key view-tables)
+  "Validate a model-declared :filter (07c): always a list of
+4-tuples, own operator table, family rules, path-bound tables
+(a clause table in :tables is on the path after Issue 16
+checks). Absent :filter is legal; nil / () are not."
+  (let ((type-def (getf model type-key)))
+    (when (u:has (u:plist-keys type-def) :filter)
+      (let ((filter (getf type-def :filter)))
+        (unless (and (listp filter) filter (every #'listp filter))
+          (report-e "valid-model-filter"
+            ":filter on ~s must be a non-empty list of 4-tuple ~
+             clauses; nil, (), a singular clause, and non-lists ~
+             are compile errors."
+            ~type-key))
+        (dolist (clause filter)
+          (valid-model-filter-clause model type-key view-tables
+            clause))))))
+
+(defun valid-rollup-field-types (model type-key raw-fields)
+  "Field :type vs :agg checks (07a / Issue 13). The
+default-to-:text rule stands; no inference from grain or agg."
+  (loop for field-key in raw-fields by #'cddr
+        for field-def in (cdr raw-fields) by #'cddr
+        for source = (getf field-def :source)
+        for agg = (getf source :agg)
+        for column = (getf source :column)
+        for declared = (or (getf field-def :type) :text)
+        for source-type = (rollup-column-type model
+                            (getf source :table) column)
+        do (case agg
+             (:first
+               (unless (eq declared source-type)
+                 (report-e "valid-rollup-field-types"
+                   "Pass-through ~s on ~s declares :type ~s but ~
+                    grain column is ~s."
+                   ~field-key ~type-key ~declared ~source-type)))
+             (:count
+               (unless (eq declared :integer)
+                 (report-e "valid-rollup-field-types"
+                   ":count measure ~s on ~s must be :type ~
+                    :integer; got ~s."
+                   ~field-key ~type-key ~declared)))
+             (:avg
+               (unless (eq declared :real)
+                 (report-e "valid-rollup-field-types"
+                   ":avg measure ~s on ~s must be :type :real; ~
+                    got ~s."
+                   ~field-key ~type-key ~declared)))
+             (:sum
+               (unless (member source-type '(:integer :real))
+                 (report-e "valid-rollup-field-types"
+                   ":sum measure ~s on ~s needs a numeric source ~
+                    column; ~s is ~s."
+                   ~field-key ~type-key ~column ~source-type))
+               (unless (eq declared source-type)
+                 (report-e "valid-rollup-field-types"
+                   ":sum measure ~s on ~s must declare :type ~s ~
+                    (same as source); got ~s."
+                   ~field-key ~type-key ~source-type ~declared)))
+             ((:list :distinct)
+               (unless (eq declared source-type)
+                 (report-e "valid-rollup-field-types"
+                   ":list / :distinct measure ~s on ~s must ~
+                    declare :type ~s (same as source); got ~s."
+                   ~field-key ~type-key ~source-type ~declared)))
+             (otherwise
+               (report-e "valid-rollup-field-types"
+                 "Unknown :agg ~s on field ~s of rollup ~s."
+                 ~agg ~field-key ~type-key)))))
+
+(defun rollup-normalize-fields (type-key fields)
+  "Rollup :fields are written as a list of (key def) pairs
+(the 07a–07e authoring form). A plist is also accepted.
+Returns the plist form; signals report-e on any other shape."
+  (cond
+    ((null fields)
+      (report-e "rollup-normalize-fields"
+        "Rollup type ~s has no :fields."
+        ~type-key))
+    ((u:plistp fields) fields)
+    ((and (listp fields)
+          (every (lambda (p)
+                   (and (listp p) (= (length p) 2)
+                        (keywordp (first p))))
+                 fields))
+      (apply #'append fields))
+    (t
+      (report-e "rollup-normalize-fields"
+        ":fields on rollup ~s must be a list of (field ~
+         definition) pairs; got ~s."
+        ~type-key ~fields))))
+
+(defun rollup-injected-id (grain)
+  "The single injected field on a rollup: :id from the grain PK.
+No :column t, no :primary-key t, no :target, no default."
+  `(:id (:type :uuid
+          :source (:view :main :table ,grain :column :id
+                   :agg :first))))
+
+(defun rollup-compile-fields (type-key model grain raw-fields)
+  "Compile a rollup's fields: the injected grain :id plus the
+author fields (already normalized to a plist). Omitted :type
+defaults to :text (07a / Issue 13) — applied here, not in
+compile-field, so base-type behavior is unchanged. No
+:created-at / :updated-at, no :reference renaming."
+  (labels ((default-type (field-def)
+             (if (getf field-def :type)
+               field-def
+               (add-to-plist field-def (list :type :text)))))
+    (let ((fields (append (rollup-injected-id grain)
+                          (mapcar
+                            (lambda (f)
+                              (if (and (listp f) (keywordp (first f)))
+                                (default-type f)
+                                f))
+                            (u:deep-copy raw-fields)))))
+      (loop
+        for field-key in fields by #'cddr
+        for field-def in (cdr fields) by #'cddr
+        appending
+        (list field-key
+              (compile-field model type-key field-key field-key
+                field-def))))))
+
+(defun compile-rollup-type-def (model type-key)
+  "Compile a :rollup t type-def (07a/07b/07c/07d Lisp). No
+:table-name key is stored — a rollup has no physical table, and
+a phantom rt_<rollup> must not exist even as a string. DDL / DML
+skips key off :phase-a-shape :measure (stage-2 /
+create-tables). The measure SQL generator and the be-list branch
+are 08b."
+  (let* ((type-def (getf model type-key))
+         (grain (getf type-def :grain))
+         (views (getf type-def :views))
+         (view-tables (u:tree-get views :main :tables))
+         (raw-fields (rollup-normalize-fields type-key
+                        (getf type-def :fields))))
+    (valid-rollup-matrix model type-key type-def grain views)
+    (valid-rollup-fields type-key raw-fields view-tables)
+    (valid-rollup-single-fact model type-key grain raw-fields
+      view-tables)
+    (valid-model-filter model type-key view-tables)
+    (valid-rollup-field-types model type-key raw-fields)
+    (let* ((fields (rollup-compile-fields type-key
+                    (add-to-plist model
+                      (list type-key
+                        (add-to-plist type-def
+                          (list :fields raw-fields))))
+                    grain raw-fields))
+           (roles (when (type-has-roles type-def)
+                    (getf type-def :type-roles '("admin"))))
+           (final-def (add-to-plist
+                        type-def
+                        (list
+                          :internal nil
+                          :create nil
+                          :type-roles roles
+                          :category (compute-category type-def)
+                          :fields fields
+                          :phase-a-shape :measure
+                          :grain grain
+                          :suppress-roles t
+                          :default-sort (getf type-def :default-sort)
+                          :display
+                          (if (u:has (u:plist-keys type-def)
+                               :display)
+                            (getf type-def :display)
+                            t)))))
+      (valid-form-fields type-key final-def)
+      (valid-default-sort type-key final-def)
+      final-def)))
+
 (defun compile-type-def (model type-key)
+  (if (getf (getf model type-key) :rollup)
+    (compile-rollup-type-def model type-key)
+    (compile-base-type-def model type-key)))
+
+(defun compile-base-type-def (model type-key)
+  (valid-non-rollup-keys model type-key)
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
           (is-joiner (getf type-def :is-joiner))
@@ -2469,6 +3617,7 @@ Validates:
     (validate-tree model type-key tree is-leaf parent-type fs-backed)
     (let* ((fields-with-path (mark-path-field type-key fs-backed fields))
             (user-setting (getf type-def :user-setting))
+            (default-sort (getf type-def :default-sort))
             (augmented-def (augment-update-form type-def fields))
             ;; Expand :compose sugar into lifecycle hook forms
             (compose-hooks (expand-compose-hooks type-key type-def))
@@ -2501,12 +3650,15 @@ Validates:
                              :parent-type parent-type
                              :fs-backed fs-backed
                              :user-setting user-setting
+                             :default-sort default-sort
+                             :phase-a-shape :base
                              :suppress-roles
                              (or (getf type-def :suppress-roles) user-setting))
                            ;; Compiled lifecycle hooks override raw values on 
                            ;; type-def
                            (compile-lifecycle-hooks compose-model type-key)))))
       (valid-form-fields type-key final-def)
+      (valid-default-sort type-key final-def)
       final-def)))
 
 (defun preliminary-model-check (&optional def key-path)
@@ -2523,9 +3675,12 @@ Validates:
              "Quoted list in model definition at ~{~(~s~)~^ -> ~}."
              (append key-path (list key))))
          ((and
-            (equal (second key-path) :views)
+            (member :views key-path)
             (equal key :tables)
             (listp sdef))
+           ;; A :tables list is a list of type keys (never a plist,
+           ;; never 4-tuples); do not recurse into it. Any nesting
+           ;; depth (:views :main :tables and beyond) hits this arm.
            t)
          ((and
             (equal (second key-path) :fields)
@@ -2542,9 +3697,30 @@ Validates:
             (listp sdef)
             t))
          ((and
+            (equal key :filter)
+            (listp sdef))
+           ;; Type-level :filter (rollup-only, 07c). The walker does not recurse
+           ;; into the 4-tuples; grammar validation lives in valid-model-filter.
+           t)
+         ((equal key :default-sort)
+           ;; Type-level :default-sort ((:field :asc|:desc)). The walker
+           ;; must not recurse into it: the 2-element form is a plist,
+           ;; and the 1-element form is not. Shape, field existence, and
+           ;; :sortable are checked in valid-default-sort with specific
+           ;; messages.
+           t)
+         ((and
+            (equal key :fields)
+            (getf (apply #'u:tree-get (cons def key-path)) :rollup))
+           ;; Rollup :fields are written as a list of (key def) pairs (07a–07e
+           ;; form). compile-rollup-type-def normalizes them to a plist; the
+           ;; pair definitions are validated by the rollup validators and
+           ;; compile-field.
+           t)
+         ((and
             (member key '(:pre-create :post-create
-                          :pre-update :post-update
-                          :pre-delete :post-delete))
+                           :pre-update :post-update
+                           :pre-delete :post-delete))
             (listp sdef))
            t)
          ((and
@@ -2578,17 +3754,27 @@ Validates:
 (defun stage-2 (model)
   (loop
     for type-key in model by #'cddr
-    for type-def in (cdr model) by #'cddr
+    for type-def = (getf model type-key)
     for built-in = (getf type-def :built-in)
     for fields = (getf type-def :fields)
     for joiner = (getf type-def :is-joiner)
-    for table-name = (table-name type-key built-in)
+    ;; Rollup (measure shape): no DDL / DML, no table-name
+    ;; recompute. enrich-views still runs (aliases / columns /
+    ;; scope only). Same precedent as the joiner cut.
+    for measure = (eq (getf type-def :phase-a-shape) :measure)
+    for table-name = (unless measure
+                       (table-name type-key built-in))
     for views = (enrich-views model type-key)
-    for insert-sql = (unless joiner (insert-sql model type-key))
-    for update-sql = (unless joiner (update-sql model type-key))
-    for delete-sql = (unless joiner (delete-sql model type-key))
-    for search-sql = (unless joiner (search-sql model type-key))
-    for create-table-sql = (create-table-sql table-name fields)
+    for insert-sql = (unless (or joiner measure)
+                       (insert-sql model type-key))
+    for update-sql = (unless (or joiner measure)
+                       (update-sql model type-key))
+    for delete-sql = (unless (or joiner measure)
+                       (delete-sql model type-key))
+    for search-sql = (unless (or joiner measure)
+                       (search-sql model type-key))
+    for create-table-sql = (unless measure
+                             (create-table-sql table-name fields))
     for new-def = (remove-null-value-pairs
                     (list
                       :create-table-sql create-table-sql
@@ -2729,26 +3915,32 @@ efficiently instantiate and support the application described by MODEL."))
 (defun create-tables ()
   (loop with m = *compiled-model*
     for type-key in m by #'cddr
-    for table-name = (u:tree-get m type-key :table-name)
-    for table = (u:tree-get m type-key :create-table-sql :table)
-    for trigger = (u:tree-get m type-key :create-table-sql :trigger)
-    for index = (u:tree-get m type-key :create-table-sql :index)
-    for sort-indexes = (u:tree-get m type-key :create-table-sql :sort-index)
-    unless (a:with-rbac (*rbac*)
-             (a:rbac-query
-               (list
-                 "select 1 from information_schema.tables where table_name = $1"
-                 table-name)
-               :single))
+    ;; Rollup (measure shape): no physical table, nothing to
+    ;; create. Do not probe information_schema with a nil
+    ;; :table-name and do not db:query nil.
+    unless (eq (u:tree-get m type-key :phase-a-shape) :measure)
     do
-    (a:with-rbac (*rbac*)
-      (db:query table)
-      (db:query trigger)
-      (when index (db:query index))
-      (when sort-indexes
-        (loop for ddl in sort-indexes do (db:query ddl))))
-    (pl:pdebug :in "create-tables" :state "added tables, indexes, and triggers"
-      :table table-name :type-key type-key)))
+    (let* ((table-name (u:tree-get m type-key :table-name))
+           (table (u:tree-get m type-key :create-table-sql :table))
+           (trigger (u:tree-get m type-key :create-table-sql :trigger))
+           (index (u:tree-get m type-key :create-table-sql :index))
+           (sort-indexes (u:tree-get m type-key :create-table-sql
+                            :sort-index)))
+      (unless (a:with-rbac (*rbac*)
+                (a:rbac-query
+                  (list
+                    "select 1 from information_schema.tables where table_name = $1"
+                    table-name)
+                  :single))
+        (a:with-rbac (*rbac*)
+          (db:query table)
+          (db:query trigger)
+          (when index (db:query index))
+          (when sort-indexes
+            (loop for ddl in sort-indexes do (db:query ddl))))
+        (pl:pdebug :in "create-tables"
+          :state "added tables, indexes, and triggers"
+          :table table-name :type-key type-key)))))
 
 (defun type-resource-name (type-key)
   (format nil "type-~(~a~)" type-key))

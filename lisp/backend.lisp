@@ -297,7 +297,9 @@ actual column in the associated table, such as fields that have a non-nil
                (:real (if (numberp value) value (parse-number value)))
                (:integer (if (numberp value) value (parse-number value)))
                (:boolean (format nil "~(~a~)" value))
-               (:uuid value)
+               (:uuid (if (equal value :generate-uuid)
+                        (u:uuid)
+                        value))
                (:timestamp value)
                (:list value)
                (t (report-ve "db-value"
@@ -622,12 +624,35 @@ user-defined types (non-:built-in), excluding \"admin\"."
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
 
+(defun json-sort-echo (sort)
+  ":private: Wire shape of the list-result :sort echo (plan 09 Step 5,
+pinned in plan 01). SORT is nil or (:field-key :asc|:desc). Returns
+(:field <field-key> :dir :asc|:desc) or :null. :dir is a keyword:
+plist-to-json downcases symbols into quoted strings, so the JSON is
+byte-identical to the string form it replaced ({"dir":"desc"}). Built
+explicitly: the raw plist would serialize as a single-key object
+{\"field\": \"dir\"}, and bare nil would serialize as [] (the :avg
+trap), both wrong. rest.lisp ships this plist / :null through
+plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
+  (if sort
+    (list :field (first sort)
+      :dir (or (second sort) :asc))
+    :null))
+
 (defun list-result (type-key user form &key
-                    field-keys view-result total skip-allowed-values)
+                     field-keys view-result total skip-allowed-values
+                     records sort)
   (add-to-plist
     (list
       :type-key type-key
       :total (or total 0)
+      ;; Plan 01 / 09: the user-facing effective sort on every
+      ;; successful list read (base and measure). The measure branch
+      ;; passes the default first-sortable-measure when the request
+      ;; sent none; the base branches pass the effective sort
+      ;; (request or :default-sort) or nil.
+      ;; Never the id / grain-id tiebreaker.
+      :sort (json-sort-echo sort)
       :create (true-or-false type-key :create)
       :update (true-or-false type-key :update)
       :delete (true-or-false type-key :delete)
@@ -635,10 +660,13 @@ user-defined types (non-:built-in), excluding \"admin\"."
                  type-key
                  form
                  user
-                 (mapcar (lambda (r)
-                           (blank-password-fields type-key r))
-                   (view-result-values type-key field-keys view-result
-                     :user user)))
+                 (mapcar
+                   (lambda (r) (blank-password-fields type-key r))
+                   ;; 08b measure path: RECORDS are already field-key plists
+                   ;; from the GROUP BY query.  No Phase B collapse.
+                   (or records
+                     (view-result-values type-key field-keys
+                       view-result :user user))))
       :allowed-values (if skip-allowed-values
                         nil
                         (allowed-values type-key user))
@@ -936,6 +964,11 @@ If DATA points to multiple records, then this function raises an error."
   (or (getf data :id)
     (let ((filters (loop for field in (local-fields type-key)
                      for value = (getf data field)
+                     ;; Reserved default keywords (:generate-uuid, :now)
+                     ;; are not user-supplied identity data; they must
+                     ;; not become :eq filter values (Postgres cannot
+                     ;; bind a function name as a uuid/timestamp).
+                     unless (member value '(:generate-uuid :now))
                      do (valid-value-type type-key field value)
                      collect (list type-key field :eq value))))
       (be-id type-key filters "admin"))))
@@ -1079,14 +1112,18 @@ hashes never reach the frontend."
 accessible to USER. Given the IDs are UUIDs (globally unique), TYPE-KEY is
 optional. However, providing TYPE-KEY helps the function avoid an extra database
 lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs.
-BLANK-PASSWORDS controls whether password hashes are nilled out before
-returning (default T for frontend safety; pass NIL for internal callers
-that need the real hash, e.g. be-update)."
+BLANK-PASSWORDS controls whether password hashes are nilled out before returning
+(default T for frontend safety; pass NIL for internal callers that need the real
+hash, e.g. be-update)."
   (valid-existing-user user)
   (when type-key (if public
                    (valid-be-type-key type-key)
                    (valid-type-key type-key)))
   (let ((type-key (if type-key type-key (id-to-type-key id))))
+    ;; Issue 9: rollups are list-family only; a rollup id never reaches here (no
+    ;; inserts), but an explicit :type-key rollup must reject before the
+    ;; view-SQL path below.
+    (valid-non-rollup-type-key type-key)
     (when (and (user-allowed-resource user id "read") (uuid-exists-p id))
       (pl:pdebug :in "rec" :filters (list type-key :id :eq id))
       (let* ((m *compiled-model*)
@@ -1268,14 +1305,18 @@ type's :type-roles."
     for join-table = (getf field-def :join-table)
     for target = (getf field-def :target)
     for ui-options = (u:tree-get field-def :ui :options)
-    when (and (or join-table target ui-options)
-              (not (equal field-key :id)))
+    when (and
+           (or join-table target ui-options)
+           (not (equal field-key :id)))
     appending
     (list field-key (allowed-values-for-field type-key field-key user))
     into allowed
     finally
     (return
-      (if base
+      (if (or base
+            ;; 08b: :suppress-roles t (rollups, :secrets) has no roles palette.
+            ;; Gate on the flag, not on shape.
+            (u:tree-get *compiled-model* type-key :suppress-roles))
         allowed
         (append
           allowed
@@ -1393,7 +1434,27 @@ type's :type-roles."
                 (insert-row-query (cons (car insert-row-sql)
                                     (loop for key in (cdr insert-row-sql)
                                       collect (getf to-row-values key)))))
-          (a:with-rbac (*rbac*) (a:rbac-query insert-row-query)))))))
+          (handler-case
+            (a:with-rbac (*rbac*) (a:rbac-query insert-row-query))
+            (error (e)
+              ;; The resource row is inserted first because its id is
+              ;; the main row's primary key. When the main insert
+              ;; fails, remove the resource again so it does not leak
+              ;; as an orphan (no transactions in MVP).
+              (a:remove-resource *rbac* resource)
+              (error e)))
+          ;; Role links, mirroring insert-normal / update-roles: the
+          ;; new related row inherits the source record's roles (the
+          ;; resource list is the full role set as stored, including
+          ;; "admin" and the creator's exclusive role). Without them
+          ;; the new row is invisible to every user (user-read-type-ids
+          ;; sees no roles), admin included. Inheriting the source
+          ;; roles makes the related row exactly as visible as the
+          ;; record it was created from.
+          (let ((source-resource (id-to-resource-name uuid)))
+            (loop
+              for role in (a:list-resource-role-names *rbac* source-resource)
+              do (a:add-resource-role *rbac* resource role))))))))
 
 ;;
 ;; END Internal database helper functions
@@ -1484,6 +1545,17 @@ meaning that the type lacks `:base t`."
             (type-key-p type-key)
             (not (u:tree-get *compiled-model* type-key :internal)))
     (report-ve "valid-be-type-key" "Invalid backend type key ~a" ~type-key)))
+
+(defun valid-non-rollup-type-key (type-key)
+  ":private: Rejects rollup (measure-shape) types for every non-list
+record endpoint (Issue 9). Rollups are read-only computed views; only
+be-list / be-list-column may read them. Guards live in the be-*
+functions so REST and REPL share them; rest.lisp does not grow a
+parallel type check."
+  (when (eq (u:tree-get *compiled-model* type-key :phase-a-shape) :measure)
+    (report-ve "valid-non-rollup-type-key"
+      "Rollup type ~s is read-only; only list reads (/api/list, ~
+       /api/column) are supported on it." ~type-key)))
 
 (defun valid-field-key (type-key field-key)
   ":private: Checks that FIELD-KEY is a valid field key for TYPE-KEY in the
@@ -1647,6 +1719,7 @@ validation error."
           path)))))
 
 (defun valid-file-meta (type-key logical-path user roles)
+  (valid-non-rollup-type-key type-key)
   (pl:pdebug :in "valid-file-meta" :step 1
     :type-key type-key
     :logical-path logical-path
@@ -1701,6 +1774,7 @@ Can't specify roles that user doesn't have.
         ~user ~user-roles ~req-roles ~parent-roles non-user-roles))))
 
 (defun valid-new-directory (type-key logical-path file-token user roles)
+  (valid-non-rollup-type-key type-key)
   (when (and logical-path (not file-token))
     (let* ((logical-parent (u:path-parent logical-path))
             (fs-path (fs-path type-key logical-path))
@@ -1830,6 +1904,7 @@ error:
 "
   (valid-compiled-model)
   (valid-be-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (valid-existing-user user)
   (if (stringp filters)
     (valid-uuid filters)
@@ -1861,6 +1936,7 @@ error:
 the value VALUE."
   (valid-compiled-model)
   (valid-be-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (valid-field-key type-key field-key)
   (valid-value-type type-key field-key value)
   (valid-existing-user user)
@@ -1884,6 +1960,7 @@ accessible to USER. Given the IDs are UUIDs (globally unique), TYPE-KEY is
 optional. However, providing TYPE-KEY helps the function avoid an extra database
 lookup."
   (valid-compiled-model)
+  (valid-non-rollup-type-key (if type-key type-key (id-to-type-key id)))
   (rec id user :form form :type-key type-key :public t))
 
 (defun be-val (id field-key user &key (form :update-form) type-key)
@@ -1895,6 +1972,7 @@ database query."
   (valid-existing-user user)
   (let ((type-key (or type-key (id-to-type-key id))))
     (valid-be-type-key type-key)
+    (valid-non-rollup-type-key type-key)
     (valid-field-key type-key field-key)
     (user-allowed-resource user id "read")
     (let ((record (rec id user :form form :type-key type-key)))
@@ -1947,14 +2025,16 @@ if SORT is nil. Validates that the field is marked :sortable t."
 (defun phase-a-build-order-by (type-key sort)
   ":private: Returns an ORDER BY clause string for the Phase A query. SORT is
 nil or a plist (:field-key :asc|:desc). Defaults to ORDER BY id when SORT is
-nil."
+nil. Sorted queries append the table-qualified primary key as a tiebreaker so
+paging (LIMIT/OFFSET) is stable among tied rows."
   (if sort
-    (let* ((column (phase-a-order-by-column type-key sort))
+    (let* ((table (u:tree-get *compiled-model* type-key :table-name))
+           (column (phase-a-order-by-column type-key sort))
             (direction (or (cadr sort) :asc)))
       (unless (member direction '(:asc :desc))
         (report-ve "phase-a-build-order-by"
           "Invalid sort direction ~s. Use :asc or :desc." ~direction))
-      (format nil " order by ~a ~a" column direction))
+      (format nil " order by ~a ~a, ~a.id" column direction table))
     (let ((table (u:tree-get *compiled-model* type-key :table-name)))
       (format nil " order by ~a.id" table))))
 
@@ -2025,6 +2105,21 @@ Non-blank SEARCH on a type with zero :searchable-fields signals report-ve."
                 (fragment (format nil "(~{~a~^ OR ~})" preds)))
           (cons fragment pattern))))))
 
+(defun add-page-clause (sql params limit offset)
+  ":private: Append LIMIT/OFFSET placeholders to SQL when LIMIT is non-nil.
+Returns the full query (cons sql params). With LIMIT nil the query is
+returned unchanged (no limit / all rows). Both be-list Phase A branches
+(base and measure) compose their SQL with this helper; 09 composes the
+measure ORDER BY here too. OFFSET defaults to 0 when nil: callers may
+thread an unsupplied offset down (e.g. be-list-column), and a bare nil
+param would reach Postgres as 'false'."
+  (if limit
+    (cons
+      (format nil "~a~%limit $~a offset $~a"
+        sql (next-param-index sql) (1+ (next-param-index sql)))
+      (append params (list limit (or offset 0))))
+    (cons sql params)))
+
 (defun phase-a-query (type-key filters sort limit offset user
                        &key search)
   ":private: Build and execute Phase A — select a page of primary IDs.
@@ -2055,26 +2150,18 @@ SEARCH is nil or a non-blank string matched with ILIKE against the type's
               where-params))
           (where-result (cons where-sql where-params))
           (order-by (phase-a-build-order-by type-key sort))
-          ;; Build page SQL: ORDER BY always; LIMIT/OFFSET only when limit is
-          ;; non-nil.
-          (page-sql
-            (if limit
-              (format nil "~a~a~%limit $~a offset $~a"
-                where-sql order-by
-                (next-param-index where-sql)
-                (1+ (next-param-index where-sql)))
-              (format nil "~a~a" where-sql order-by)))
-          (page-params
-            (if limit
-              (append where-params (list limit offset))
-              where-params))
-          (page-query (cons page-sql page-params))
+          ;; Build page SQL: ORDER BY always; LIMIT/OFFSET only when limit
+          ;; is non-nil (08b: add-page-clause, shared with the measure
+          ;; branch).
+          (page-query (add-page-clause
+                        (format nil "~a~a" where-sql order-by)
+                        where-params limit offset))
           ;; Count query: same WHERE/JOIN, no ORDER BY/LIMIT/OFFSET.
           (count-result (phase-a-build-count-sql base-sql where-result))
           (count-query count-result))
     (pl:pdebug :in "phase-a-query"
       :base-sql base-sql
-      :page-sql page-sql
+      :page-sql (car page-query)
       :count-sql (car count-query))
     (let ((ids (a:with-rbac (*rbac*)
                  (a:rbac-query page-query :column)))
@@ -2099,7 +2186,8 @@ restores it."
     when record collect record))
 
 (defun phase-b-hydrate (type-key ids user &key 
-                         form field-keys total skip-allowed-values)
+                         form field-keys total skip-allowed-values
+                         sort)
   ":private: Hydrate and collapse the given ID set.
 
 Runs the existing join query with WHERE id IN (ids), collapses fan-out via
@@ -2118,6 +2206,7 @@ PostgreSQL."
                     :field-keys field-keys
                     :view-result view-result
                     :total total
+                    :sort sort
                     :skip-allowed-values skip-allowed-values)))
     (setf (getf result :records)
       (reorder-to-match (getf result :records) ids))
@@ -2133,7 +2222,8 @@ USER has `read` permissions for. Each record is returned as a plist, where the
 keys are field keys and the values are the corresponding field values.
 
 Supports paging via LIMIT (default 20, max 200) and OFFSET (default 0).
-SORT is nil or a plist (:field-key :asc|:desc).
+SORT is nil or a plist (:field-key :asc|:desc). When SORT is nil, the
+type's :default-sort declaration (if any) applies.
 SEARCH is nil or a string; matched with ILIKE against :searchable fields.
 
 The following example returns a list of all the :todos records that have the tag
@@ -2143,12 +2233,38 @@ The following example returns a list of all the :todos records that have the tag
   (valid-compiled-model)
   (valid-be-type-key type-key)
   (valid-user-permissions user type-key "read")
-  (if (uuid-p filters)
-    (valid-existing-uuid filters)
-    (valid-filters filters))
   ;; Validate search early so empty-rbac short-circuit still 400s on
   ;; non-empty search against a type with zero searchable fields.
+  ;; Rollups compile to zero searchable fields, so this is the 07d
+  ;; reject on the measure path too.
   (phase-a-search-clause type-key search 1)
+  (let ((sort (or sort
+                (u:tree-get *compiled-model* type-key :default-sort))))
+    (if (eq (u:tree-get *compiled-model* type-key :phase-a-shape) :measure)
+      ;; 08b measure Phase A: GROUP BY grain, no Phase B, no
+      ;; user-read-type-ids / filters-for-be-list (the rollup has no
+      ;; per-row resources; the type-level role check above already
+      ;; ran on the rollup). The bare-UUID rewrite also lives here:
+      ;; valid-existing-uuid looks at resources / base tables and
+      ;; would 400 an unknown grain id.
+      (measure-be-list type-key user :form form :filters filters
+        :limit limit :offset offset :sort sort
+        :skip-allowed-values skip-allowed-values)
+      (progn
+        (if (uuid-p filters)
+          (valid-existing-uuid filters)
+          (valid-filters filters))
+        (base-be-list type-key user :form form :filters filters
+          :limit limit :offset offset :sort sort :search search
+          :skip-allowed-values skip-allowed-values)))))
+
+(defun base-be-list (type-key user
+                      &key (form :list-form) filters
+                      (limit 20) (offset 0) sort
+                      (search nil)
+                      skip-allowed-values)
+  ":private: Base-shape be-list body (Phase A id select + Phase B hydrate).
+Validations have already run in BE-LIST."
   (let* ((m *compiled-model*)
           (user-roles (a:list-user-role-names *rbac* user))
           (type-roles (u:tree-get m type-key :type-roles))
@@ -2172,14 +2288,291 @@ The following example returns a list of all the :todos records that have the tag
             ;; Phase B: hydrate only the page IDs.
             (phase-b-hydrate type-key ids user
               :form form :field-keys field-keys
-              :total total :skip-allowed-values skip-allowed-values)
+              :total total :sort sort
+              :skip-allowed-values skip-allowed-values)
             ;; Empty page — return empty result with total count.
             (list-result type-key user form
               :field-keys field-keys
               :total total
+              :sort sort
               :skip-allowed-values skip-allowed-values))))
       (list-result type-key user form
+        :sort sort
         :skip-allowed-values skip-allowed-values))))
+
+(defun measure-row-value (type-key field-key value)
+  ":private: Convert one raw measure-Phase-A row value for FIELD-KEY to its
+JSON-ready form (08b Step 6.6). The SQL aliases are the field keys, so no
+alias mapping happens here — only value conversion:
+
+  - :avg → keep :NULL as :null (JSON null; plist-to-json renders nil as
+    []); coerce non-null PG numeric (a Lisp ratio) to a float, like
+    Phase B's aggregate-values does.
+  - :list / :distinct → array_agg vectors to Lisp lists (nil when
+    empty).
+  - boolean pass-throughs → SQL t → :true, SQL nil → :false (never
+    bare nil; plist-to-json renders nil as []). :null stays :null."
+  (let* ((fields (u:tree-get *compiled-model* type-key :fields))
+         (field-def (getf fields field-key))
+         (agg (u:tree-get field-def :source :agg))
+         (field-type (getf field-def :type)))
+    (cond
+      ((eq agg :avg)
+        (if (or (null value) (eq value :null))
+          :null
+          (float value)))
+      ((member agg '(:list :distinct))
+        (etypecase value
+          (null nil)
+          (vector (coerce value 'list))
+          (list value)))
+      ((and (eq field-type :boolean) (eq agg :first))
+        (cond
+          ((eq value :null) :null)
+          (value :true)
+          (t :false)))
+      (t value))))
+
+(defun measure-row-to-plist (type-key row)
+  ":private: Convert one raw GROUP BY row (SQL aliases are field keys)
+to a field-key plist with JSON-ready values."
+  (loop for key in row by #'cddr
+    for value in (cdr row) by #'cddr
+    append (list key (measure-row-value type-key key value))))
+
+(defun measure-grain-column-filter (type-key filter)
+  ":private: Classifier for one request-time filter tuple on a rollup
+(07c / Issue 14). Returns the resolved grain column (qualified
+<table>.<column> SQL string) when the tuple is a grain-column filter —
+table-key equals the listed type AND field-key is the injected :id or an
+author pass-through (:agg :first). Returns NIL otherwise; the caller
+report-ve's anything that is not a grain-column filter."
+  (destructuring-bind (table-key field-key op-key value) filter
+    (declare (ignore op-key value))
+    (when (eq table-key type-key)
+      (let* ((fields (u:tree-get *compiled-model* type-key :fields))
+             (field-def (getf fields field-key))
+             (agg (u:tree-get field-def :source :agg)))
+        (when (and (eq agg :first) field-def)
+          (u:tree-get field-def :source :column-name))))))
+
+(defun measure-scope-predicate (type-key user)
+  ":private: Runtime :scope :user predicate for a rollup (08b Step 5).
+Grain :users → <grain>.id = <users.id UUID>. Grain otherwise → the
+grain's :user column, join-free. The bind value depends on how the
+author declared that :user field: with :target :users (the common
+case — compile-field makes the column a UUID FK storing users.id) bind
+the UUID; a plain text :user column stores the username string, so
+bind the username. Returns two values: the SQL fragment and its
+single bind parameter, or NIL / NIL when the rollup does not declare
+:scope :user."
+  (let* ((m *compiled-model*)
+         (scope (u:tree-get m type-key :views :main :scope)))
+    (when (eq scope :user)
+      (let* ((grain (u:tree-get m type-key :grain))
+             (grain-table (u:tree-get m grain :table-name)))
+        (if (eq grain :users)
+          (values (format nil "~a.id = $1" grain-table)
+            (a:get-id *rbac* "users" user))
+          (let* ((user-def (u:tree-get m grain :fields :user))
+                 (user-col (getf user-def :name-sql))
+                 (fk-p (getf user-def :target)))
+            (values (format nil "~a.~a = $1" grain-table user-col)
+              (if (eq fk-p :users)
+                (a:get-id *rbac* "users" user)
+                user))))))))
+
+(defun measure-request-grain-filters (type-key filters user
+                                       &key (start-at 1))
+  ":private: Classify request-time FILTERS for a rollup (07c option a /
+Issue 14). Rewrites a bare UUID string to a grain-id tuple first (unknown
+id → empty page later, not valid-existing-uuid). Returns (values
+conditions params) where CONDITIONS are parameterized WHERE fragments on
+the grain table. Anything that is not a grain-column filter is
+report-ve'd — one error class, never a silent ignore, never a global
+WHERE on a joined table."
+  (let* ((norm (if (uuid-p filters)
+                 (list (list type-key :id :eq filters))
+                 filters)))
+    (loop
+      with conditions = nil
+      with params = nil
+      for filter in norm
+      do
+      (valid-filter filter :required t)
+      (destructuring-bind (table-key field-key op-key value) filter
+        (let ((column (measure-grain-column-filter type-key filter)))
+          (unless column
+            (report-ve "measure-request-grain-filters"
+              "Filter (~s ~s ~s ...) is not a grain-column filter on ~
+               rollup ~s; only listed-type pass-throughs and :id can be ~
+               filtered (measure fields, fact tables, and unexposed ~
+               grain columns are not supported on rollups)."
+              ~table-key ~field-key ~op-key ~type-key))
+          (let* ((index (+ start-at (length params)))
+                 (op (operator-sql op-key))
+                 (placeholders
+                   (if (member op-key '(:in :not-in))
+                     (format nil "(~{~a~^, ~})"
+                       (placeholders value :start-at index))
+                     (format nil "$~d" index))))
+            (push (format nil "~a ~a ~a" column op placeholders)
+              conditions)
+            (setf params (append params
+                          (if (member op-key '(:in :not-in))
+                            (mapcar
+                              (lambda (v)
+                                (db-value type-key field-key user v))
+                              value)
+                            (list
+                              (db-value type-key field-key user
+                                value))))))))
+      finally
+      (return (values (nreverse conditions) params)))))
+
+(defun measure-default-sort (type-key)
+  ":private: Default user-facing sort for a rollup when neither a request sort
+nor a :default-sort declaration fills it (plan 09 Step 4): the first
+sortable /measure/ field (declaration order), :desc, plus the grain-id
+tiebreaker appended by the caller. Returns nil when the rollup declares no
+sortable measure (caller falls back to grain id ASC only, and the response :sort
+is nil). Pass-throughs (:agg :first) and :list / :distinct measures never
+qualify (compile-time rule)."
+  (loop
+    with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    for agg = (u:tree-get field-def :source :agg)
+    when (and (getf field-def :sortable)
+           (not (eq agg :first)))
+    do (return (list field-key :desc))
+    finally (return nil)))
+
+(defun valid-measure-sort (type-key sort)
+  ":private: Validate a request SORT plist for a rollup. Returns SORT. Unknown
+field keys and non-sortable fields report-ve, same error class as the base
+path (phase-a-order-by-column). Compile-time rules already keep :sortable t off
+:list / :distinct measures and hybrids; this is the belt over live compiled
+defs."
+  (when sort
+    (let* ((field-key (car sort))
+            (field-def (u:tree-get *compiled-model* type-key
+                         :fields field-key)))
+      (unless field-def
+        (report-ve "valid-measure-sort"
+          "Cannot sort on unknown field ~s for type ~s."
+          ~field-key ~type-key))
+      (unless (getf field-def :sortable)
+        (report-ve "valid-measure-sort"
+          "Field ~s is not sortable for type ~s."
+          ~field-key ~type-key))
+      sort)))
+
+(defun resolve-measure-sort-column (type-key field-key)
+  ":private: Resolve a sort field key to its SELECT alias in measure Phase A
+(plan 09 Step 2). Pass-throughs and measures both alias as
+(to-sql-identifier field-key), the injected :id aliases as id, never grain_id.
+Deliberately not :source :column-name (the fact column, not in GROUP BY) and not
+:name-sql (the rollup field's invented name).  Postgres allows ORDER BY on
+output aliases of aggregate expressions."
+  (declare (ignore type-key))
+  (to-sql-identifier field-key))
+
+(defun measure-order-by-sql (type-key grain-table sort)
+  ":private: ORDER BY clause for measure Phase A (plan 09 Step 3 / Step 4). SORT
+is nil or a validated (:field-key :asc|:desc) plist.  Every measure ORDER BY
+appends the grain PK ASC as a tiebreaker so page boundaries stay stable across
+requests (same carve as plan 06 Step 1b). :avg measures append NULLS LAST so
+zero-fact rows trail (Issue 13); :sum / :count are coalesced / naturally 0 and
+do not."
+  (let* ((effective (or sort (measure-default-sort type-key))))
+    (if effective
+      (let* ((field-key (first effective))
+              (direction (or (second effective) :asc)))
+        (unless (member direction '(:asc :desc))
+          (report-ve "measure-order-by-sql"
+            "Invalid sort direction ~s. Use :asc or :desc." ~direction))
+        (let* ((alias (resolve-measure-sort-column type-key field-key))
+                (agg (u:tree-get *compiled-model* type-key :fields
+                       field-key :source :agg))
+                (nulls (when (eq agg :avg) " nulls last")))
+          (format nil "order by ~a ~(~a~)~a, ~a.id"
+            alias direction (or nulls "") grain-table)))
+      (format nil "order by ~a.id" grain-table))))
+
+(defun measure-effective-sort (type-key sort)
+  ":private: The user-facing effective sort for the :sort echo (plan
+09 Step 5): the validated request sort, or the default first-sortable
+measure when the request sent none, or nil. Never the grain-id
+tiebreaker."
+  (or (valid-measure-sort type-key sort)
+    (measure-default-sort type-key)))
+
+(defun measure-be-list (type-key user &key (form :list-form)
+                         filters (limit 20) (offset 0) sort
+                         skip-allowed-values)
+  ":private: Measure-shape be-list body (08b Step 6): assemble the main
+GROUP BY query and the standalone count query from the compiled parts,
+splicing runtime WHERE predicates (compiled grain filters + :scope :user
++ request-time grain filters) between the SELECT part and the GROUP BY
+part. No user-read-type-ids, no id IN (...), no Phase B. ORDER BY is
+plan 09: the SELECT alias of the requested / default sortable field
+(never :source :column-name / :name-sql), grain PK ASC tiebreaker,
+NULLS LAST on :avg."
+  (let* ((m *compiled-model*)
+         (view (u:tree-get m type-key :views :main))
+         (select-sql (getf view :measure-phase-a-select))
+         (group-by-sql (getf view :measure-phase-a-group-by))
+         (count-select-sql (getf view :measure-phase-a-count-select))
+         (grain-where (getf view :measure-phase-a-grain-where))
+         (grain (u:tree-get m type-key :grain))
+         (grain-table (u:tree-get m grain :table-name))
+         (page-limit (clamp-limit limit)))
+    (multiple-value-bind (scope-sql scope-param)
+      (measure-scope-predicate type-key user)
+      (multiple-value-bind (req-conds req-params)
+        (measure-request-grain-filters type-key filters user
+          :start-at (if scope-sql 2 1))
+        (let* ((predicates (append (mapcar
+                                     (lambda (frag)
+                                       (format nil "(~a)" frag))
+                                     grain-where)
+                            (when scope-sql (list scope-sql))
+                            req-conds))
+               (params (append (when scope-param (list scope-param))
+                         req-params))
+               (where-sql
+                 (if predicates
+                   (format nil "~a~%where~%  ~{~a~^~%  and ~}~%"
+                     select-sql predicates)
+                   select-sql))
+               (order-by (measure-order-by-sql type-key grain-table
+                           (valid-measure-sort type-key sort)))
+               (page-query (add-page-clause
+                              (format nil "~a~%~a~%~a"
+                                where-sql group-by-sql order-by)
+                              params page-limit offset))
+               (count-query
+                 (if predicates
+                   (cons
+                     (format nil "~a~%where~%  ~{~a~^~%  and ~}~%"
+                       count-select-sql predicates)
+                     params)
+                   (cons count-select-sql nil))))
+          (pl:pdebug :in "measure-be-list"
+            :page-sql (car page-query)
+            :count-sql (car count-query))
+          (let* ((rows (a:with-rbac (*rbac*) (a:rbac-query page-query)))
+                 (total (a:with-rbac (*rbac*)
+                          (a:rbac-query count-query :single))))
+            (list-result type-key user form
+              :total total
+              :sort (measure-effective-sort type-key sort)
+              :skip-allowed-values skip-allowed-values
+              :records (mapcar
+                         (lambda (row)
+                           (measure-row-to-plist type-key row))
+                         rows))))))))
 
 (defun be-list-column (type-key field-key user
                        &key (form :list-form) 
@@ -2275,6 +2668,7 @@ kitchen\":
 "
   (valid-compiled-model)
   (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (valid-user-roles user roles)
   (valid-user-permissions user type-key "create")
   (valid-file-token file-token)
@@ -2349,6 +2743,7 @@ not.
 "
   (valid-compiled-model)
   (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (pl:pdebug :in "be-insert-internal"
     :type-key type-key :data data :roles roles)
   (valid-user-roles user roles)
@@ -2411,15 +2806,48 @@ update fails.
 "
   (valid-compiled-model)
   (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (if (stringp filters)
     (valid-uuid filters)
     (valid-filters filters :required t))
   (valid-data type-key data)
   (valid-user-roles user (remove-existing-non-user-roles user roles))
+  ;; Type-level update permission (backend standalone safety).
+  (valid-user-permissions user type-key "update")
+  ;; Non-resource, non-base built-in types (e.g. :tokens) are invisible
+  ;; to uuid-exists-p / id-to-type-key / user-allowed-resource, so the
+  ;; record-level checks below would lock their callers (REST
+  ;; store-token) out of login; they get the type-level check only.
   (let* ((m *compiled-model*)
-          (uuid (id-from-filters-and-data type-key filters data))
-          (record (getf (rec uuid user :type-key type-key :blank-passwords nil)
-                    :record))
+          (opaque-type-p (and (built-in-p type-key)
+                           (not (base-type-p type-key))
+                           (not (u:tree-get m type-key :internal))))
+          (uuid (let ((uuid (id-from-filters-and-data type-key filters data)))
+                  (cond
+                    ((and opaque-type-p (uuid-p uuid)) uuid)
+                    (opaque-type-p
+                      (report-ve "be-update"
+                        "No record of type ~s matches FILTERS/DATA."
+                        ~type-key))
+                    ((and uuid (user-allowed-resource user uuid "update"))
+                      (valid-existing-uuid uuid)
+                      uuid)
+                    (uuid
+                      (report-ve "be-update"
+                        "User ~a does not have update permission on record ~a."
+                        ~user ~uuid))
+                    (t
+                      (report-ve "be-update"
+                        "No record of type ~s matches FILTERS/DATA."
+                        ~type-key)))))
+          (record (when (or opaque-type-p (uuid-p uuid))
+                    (getf (rec uuid user :type-key type-key
+                            :blank-passwords nil)
+                      :record)))
+          (record (if (and (not opaque-type-p) (not record))
+                    (report-ve "be-update"
+                      "Record ~a not found for type ~s." ~uuid ~type-key)
+                    record))
           (pre-update (u:tree-get m type-key :pre-update))
           (post-update (u:tree-get m type-key :post-update))
           ;; Pre-update hooks run before validation so they can fill
@@ -2482,6 +2910,7 @@ be selected. Alternatively, FILTERS may be string instead, in which case it is
 treated as the UUID of the record to be deleted."
   (valid-compiled-model)
   (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (if (stringp filters)
     (valid-uuid filters)
     (valid-filters filters :required t))
@@ -2656,6 +3085,7 @@ if VALUE is not valid for the field. `{error-message-list}` is a list of strings
 describing the problems with VALUE."
   (valid-compiled-model)
   (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (valid-field-key type-key field-key)
   (let ((errors (validate-field-internal
                   type-key field-key value user)))
@@ -2676,6 +3106,8 @@ when all values are valid, and
 
 when even one value is invalid. `{error-message-list}` is a list of strings."
   (valid-compiled-model)
+  (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (let ((errors (validate-fields type-key values user)))
     (if errors
       (list :valid :false :errors errors)
@@ -2713,6 +3145,7 @@ TYPE-KEY to be valid, ID to be an existing UUID, FIELD-KEY to exist with :column
 t, and USER to exist."
   (valid-compiled-model)
   (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (valid-existing-uuid id)
   (valid-existing-user user)
   (valid-field-key type-key field-key)
@@ -2750,6 +3183,7 @@ Signals a validation error if:
   - Status is already \"running\" (in-progress guard)"
   (valid-compiled-model)
   (valid-type-key type-key)
+  (valid-non-rollup-type-key type-key)
   (valid-existing-uuid id)
   (valid-existing-user user)
   (valid-field-key type-key field-key)

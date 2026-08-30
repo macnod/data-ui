@@ -155,6 +155,11 @@ snapshot list
     ~/.local/state/data-ui-host/<name>/profile.env exists (suffix strip falls
     back to the profile prefix). Snapshots live in
     ~/.local/state/data-ui-snapshots/.
+    Dump and restore use the server container's own pg_dump/pg_restore, so
+    they work regardless of the host's PostgreSQL client version. Restore
+    takes a safety snapshot of the current database first and rolls back
+    to it if the restore fails; the dump is restored in a single
+    transaction.
 
 help
     Displays this help text.
@@ -1422,37 +1427,109 @@ except Exception:
 " 2>/dev/null || echo "default"
 }
 
-function snapshot_save {
-    local name="${1:-$(detect_model_name)}"
-    local path="${SNAPSHOT_DIR}/${name}.dump"
-    mkdir -p "$SNAPSHOT_DIR"
-    pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-            --format=custom --no-owner --no-privileges \
-            --file="$path"
-    echo "Saved snapshot '${name}' → ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+# Snapshot dump/restore runs inside the server container, whose client
+# tools always match the server's major version. A newer host client
+# (e.g. pg_restore 18 against postgres:16) emits SQL the server rejects
+# (SET transaction_timeout), which used to leave the schema dropped and
+# nothing restored.
+function container_pg_dump {
+    compose exec -T "$DB_SERVICE" \
+        pg_dump -U "$DB_USER" -d "$DB_NAME" \
+                --format=custom --no-owner --no-privileges
 }
 
-function snapshot_restore {
-    local name="${1:-$(detect_model_name)}"
-    local path="${SNAPSHOT_DIR}/${name}.dump"
-    if [[ ! -f "$path" ]]; then
-        echo "Error: snapshot '${name}' not found at ${path}" >&2
-        echo "Available snapshots:"
-        snapshot_list
-        exit 1
-    fi
-    # Drop the entire public schema (tables, functions, triggers,
-    # sequences) and recreate it so the restore is clean.
-    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+function container_pg_restore {
+    # Reads the custom-format archive from stdin. --single-transaction
+    # makes the restore atomic: a failure leaves the schema exactly as
+    # it was before the restore started.
+    compose exec -T "$DB_SERVICE" \
+        pg_restore -U "$DB_USER" -d "$DB_NAME" \
+                   --no-owner --no-privileges --exit-on-error \
+                   --single-transaction
+}
+
+function require_postgres_running {
+    compose exec -T "$DB_SERVICE" pg_isready -U "$DB_USER" &>/dev/null \
+        || die "PostgreSQL (${DB_SERVICE}) is not reachable." \
+               "Start the instance first: $SCRIPT_NAME repl [profile]"
+}
+
+# Drop and recreate the public schema so a restore starts clean.
+function reset_public_schema {
+    compose exec -T "$DB_SERVICE" psql -U "$DB_USER" -d "$DB_NAME" \
          -v ON_ERROR_STOP=1 >/dev/null <<SQL
 DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT ALL ON SCHEMA public TO ${DB_USER};
 GRANT ALL ON SCHEMA public TO public;
 SQL
-    pg_restore -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-               --no-owner --no-privileges --exit-on-error \
-               "$path"
+}
+
+function snapshot_save {
+    local name="${1:-$(detect_model_name)}"
+    local path="${SNAPSHOT_DIR}/${name}.dump"
+    local tmp
+    require_postgres_running
+    mkdir -p "$SNAPSHOT_DIR"
+    # Dump to a temp file first so a partial dump never clobbers an
+    # existing snapshot.
+    tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    if ! container_pg_dump > "$tmp"; then
+        rm -f "$tmp"
+        die "pg_dump failed; snapshot '${name}' not saved."
+    fi
+    mv "$tmp" "$path"
+    echo "Saved snapshot '${name}' → ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+}
+
+function snapshot_restore {
+    local name="${1:-$(detect_model_name)}"
+    local path="${SNAPSHOT_DIR}/${name}.dump"
+    local safety tmp
+    if [[ ! -f "$path" ]]; then
+        echo "Error: snapshot '${name}' not found at ${path}" >&2
+        echo "Available snapshots:"
+        snapshot_list
+        exit 1
+    fi
+    [[ -s "$path" ]] || die "Snapshot '${name}' is empty; nothing to restore."
+    require_postgres_running
+    mkdir -p "$SNAPSHOT_DIR"
+    # Safety net: snapshot the current state so a failed restore cannot
+    # destroy it.
+    safety="${SNAPSHOT_DIR}/pre-restore-${name}-$(date +%Y%m%d-%H%M%S).dump"
+    tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    if ! container_pg_dump > "$tmp"; then
+        rm -f "$tmp"
+        die "Pre-restore pg_dump failed; database untouched."
+    fi
+    mv "$tmp" "$safety"
+    # Read the archive TOC before dropping anything: catches truncated
+    # or corrupt snapshots while the database is still intact.
+    if ! compose exec -T "$DB_SERVICE" pg_restore -l < "$path" >/dev/null; then
+        rm -f "$safety"
+        die "Snapshot '${name}' is not a readable archive;" \
+            "database untouched."
+    fi
+    # Drop the entire public schema (tables, functions, triggers,
+    # sequences) and recreate it so the restore is clean.
+    if ! reset_public_schema; then
+        rm -f "$safety"
+        die "Could not reset the public schema; database may be inconsistent."
+    fi
+    if ! container_pg_restore < "$path"; then
+        echo "ERROR: restoring '${name}' failed; rolling back." >&2
+        if container_pg_restore < "$safety"; then
+            rm -f "$safety"
+            echo "Rolled back to the pre-restore state;" \
+                 "database unchanged." >&2
+        else
+            echo "CRITICAL: rollback failed. Restore the pre-restore" \
+                 "dump manually: ${safety}" >&2
+        fi
+        exit 1
+    fi
+    rm -f "$safety"
     echo "Restored snapshot '${name}' ← ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
 }
 

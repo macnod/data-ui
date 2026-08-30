@@ -284,6 +284,12 @@ profile when
 `~/.local/state/data-ui-host/<name>/profile.env` exists
 (suffix strip falls back to the profile prefix).
 
+Dump and restore run inside the PostgreSQL server container
+(`compose exec`), so the client tools always match the server version.
+A snapshot taken on one machine restores on another regardless of the
+host's installed PostgreSQL client (a newer host client, e.g. pg_restore
+18 against a postgres:16 server, emits SQL the server rejects).
+
 **Typical workflow:**
 
 If you're running `model-1` and want to work on something else without
@@ -306,12 +312,18 @@ name you want to use:
     scripts/data-ui snapshot list
     scripts/data-ui snapshot drop modelbank-1
 
-**How restore works:** The restore drops the entire `public` schema
-(tables, functions, triggers, sequences) and recreates it before
-loading the dump. This ensures a clean restore regardless of what
-tables the currently-loaded model has created. The restore is
-non-transactional — it either succeeds completely or leaves the
-schema partially rebuilt (same as any `pg_restore`).
+**How restore works:** Before touching anything, the restore validates
+that the snapshot is a readable archive (`pg_restore -l`) and takes a
+safety dump of the current database. It then drops the entire `public`
+schema (tables, functions, triggers, sequences), recreates it, and
+loads the dump with `--single-transaction`, so a mid-restore failure
+leaves the schema as it was (empty, in the drop-then-fail window). If
+the restore fails anyway, the script attempts to roll back from the
+safety dump and keeps it (named `pre-restore-<name>-<timestamp>.dump`)
+if the rollback also fails. `save` writes to a temp file first, so a
+failed dump never clobbers an existing snapshot. Both commands require
+the instance's PostgreSQL to be running (`scripts/data-ui repl
+[profile]`).
 
 #### `help`
 

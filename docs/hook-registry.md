@@ -372,6 +372,66 @@ REST endpoint: `POST /api/actions` with `{"type", "id", "field"}`.
 | Name | Parameters | Behavior |
 |------|------------|----------|
 | `:deploy-model` | `:field` (keyword) | Reads model text from the record's `:field`, validates in-process via `validate-model`. On validation failure returns `(:status "failed" :message …)` immediately (no worker). On success spawns an async worker that writes the model file, commits, shells out to `scripts/data-ui deploy`, and records the admin password in `:secrets`. Returns `(:async t :message "Deploy started")`. |
+| `:spawn` | `:close` (plist), `:clear` (list) | Closes the record the button sits on and inserts a fresh successor (template→instance completion). Sync. See below. |
+
+#### `:spawn`
+
+The recurring-instance pattern: completing a chore, ticket, or inspection
+round leaves durable history and produces a fresh open instance in one
+click. The instance is its own template — the hook copies the record it
+sits on (self-template; a separate template type is post-MVP).
+
+```lisp
+:complete
+(:type :button
+  :ui (:label "Complete" :widget :button)
+  :action (:spawn
+            :close (:completed :true
+                    :completed-at :now
+                    :completed-by :user)
+            :clear (:notes :instance-id)))
+```
+
+**Parameters:**
+
+| Param | Type | Meaning |
+|-------|------|---------|
+| `:close` | non-empty plist, field → value | Written to the /old/ row (history). Reserved values: `:now` (hook-run timestamp, `:timestamp` fields only) and `:user` (acting user's name; wrapped in a list on M2M list fields — the write /replaces/ the join list). Any other value is a literal checked against the field's type at compile time. |
+| `:clear` | non-empty list of field keys | Omitted from the new row's insert so their declared `:default` applies (instance scratch state). |
+
+**Copy semantics:** everything else — every non-base, non-button,
+non-status column and M2M field — is copied to the new row. The walk is
+over the compiled field list, never the raw record plist (`:id`, `:roles`,
+timestamps cannot leak).
+
+**Compile-time validation** (`valid-spawn-params`, called from
+`compile-field`'s button branch): fields in `:close`/`:clear` must exist,
+be column or M2M fields, and not be buttons, status companions, or base
+fields; literal close values must pass the field's type predicate; `:now`
+only on `:timestamp`; no field in both lists; and every `:unique t` /
+`:identity t` field must be in `:clear` (a copied unique value can only
+collide). A spawnable type's identity field should carry a dynamic
+default — `:type :uuid :identity t :default :generate-uuid` — so cleared
+successors never collide.
+
+**Runtime:** close via one `be-update` (lifecycle hooks, validation,
+write-through all fire), then insert via one `be-insert` as the acting
+user (create permission required; RBAC role assignment identical to a
+manual Add). The new row inherits the old row's resource roles, so the
+successor is exactly as visible as the record it replaces. Sync: the hook
+returns nil and `be-action` sets the status column to `complete`.
+
+**Failure mode** (no transactions — standing MVP caveat): close first,
+insert second. Insert failure → the old row stays closed with no
+successor; the button is re-runnable (re-close restamps the close fields
+and the insert retries). Note `be-action` checks *update* permission only;
+`be-insert` still requires *create* — a user with update but not create
+lands in the closed-no-successor bucket. The status column records the
+attempt either way.
+
+**Status vs domain truth:** the synthesized `<button>-status` column is
+operational (complete = closed & respawned); history views filter on the
+real `:completed` field, not on status.
 
 
 ## MVP Caveat: No Transactional Guarantees

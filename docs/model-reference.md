@@ -146,6 +146,7 @@ Under `:types`, each entry is `type-key` → plist.
 | `:delete` | Delete strategy | `:auto` \| `nil` \| function. `:auto` + path field → FS delete |
 | `:display` | Show in type selector | `t`/`nil`. Also requires not `:internal` and read permission |
 | `:type-roles` | RBAC roles for the type | list of role-name strings, or `(role-name perm…)` forms. Missing roles are created. `"admin"` is always added |
+| `:default-sort` | Sort used when a list request sends none | `(:field :asc\|:desc)`; direction optional, defaults `:asc` (**always write the direction**: omitted means `:asc` even on measures, where the automatic policy is `:desc`). Field must exist and be `:sortable t` (compile error otherwise). Absent = current behavior (id-ASC on base types, first-sortable-measure `:desc` on rollups). An explicit request sort always wins. Applies to every `be-list` read of the type with no request sort, including `allowed-values` FK option lists targeting it |
 | `:views` | Named join views | plist; see [Views](#views). Default if omitted (non-joiner): `(:main (:tables (<type-key>)))` |
 | `:fields` | Field definitions | plist; see [Fields](#fields) |
 | `:list-form` / `:add-form` / `:update-form` | FE form specs | `(:fields t)` or `(:fields (:a :b))`; absent/nil → no form |
@@ -160,6 +161,7 @@ Under `:types`, each entry is `type-key` → plist.
 | `:built-in` | Built-in table name (no `rt_` prefix) | base-model / secrets |
 | `:internal` | Hidden from public BE API | default = `:is-joiner`; joiners are internal |
 | `:is-joiner` | M2M join table | fields are `:reference` pairs; no public CRUD SQL |
+| `:rollup` | Read-only analytical type (no table) | see [Rollup types](#rollup-types-read-only-analytical); with `:grain` and type-level `:filter` |
 | Lifecycle slots | Custom logic | `:pre-create` `:post-create` `:pre-update` `:post-update` `:pre-delete` `:post-delete`; see [Hooks](#hooks) |
 
 ### CRUD strategy values
@@ -225,6 +227,152 @@ set `:category :settings` without `:user-setting`.
 
 ---
 
+## Rollup types (read-only analytical)
+
+A `:rollup t` type is a read-only analytical view: **no physical table, no
+DDL/DML, no CRUD**. Rows are one per grain record, with measures aggregated
+in SQL (`GROUP BY` + `SUM`/`COUNT`/`AVG`), not collapsed in Lisp.
+
+```lisp
+:user-leaderboard
+(:rollup t
+  :grain :users                          ; one row per user
+  :type-roles ("leaderboard-viewers")    ; the only type-level gate
+  :filter ((:chores :completed :eq t))   ; only completed chores count
+  :views (:main (:tables (:users :chores)))
+  :list-form (:fields t)
+  :fields
+  ((:name (:source (:view :main :table :users :column :name :agg :first)
+             :ui (:label "User")))
+   (:total-points (:type :integer
+                   :source (:view :main :table :chores :column :points :agg :sum)
+                   :ui (:label "Points")))
+   (:chores-done (:type :integer
+                  :source (:view :main :table :chores :column :id :agg :count)
+                  :ui (:label "Completed")))))
+```
+
+Note the `:fields` form on a rollup is a **list of `(field-key def)` pairs**
+(not the plist used by table types).
+
+### Type keys
+
+| Key | Meaning | Notes |
+|-----|---------|-------|
+| `:rollup` | Declares the type a rollup | `t` is the sole declaration; `:type :rollup` / `:table nil` are compile errors |
+| `:grain` | The grain type-key | must be a type with a physical table; must appear in `:views :main :tables` and be **first** (it is the `FROM` anchor) |
+| `:filter` | Model-declared row predicates | list of 4-tuples; see below. Rollup-only; absent is legal, `nil`/`()` are not |
+| `:list-form` | Required | `(:fields t)` or a non-empty field list; missing / nil / `(:fields nil)` is a compile error |
+
+Compiler-injected (not author-set): `:phase-a-shape :measure` (every other type
+compiles with `:phase-a-shape :base`), `:suppress-roles t`,
+`:display t` (default; explicit `nil` honored), category `:user` (via the normal
+derivation), and a single injected `:id` field: a grain pass-through
+(`users.id`, `:agg :first`), not a column. No `:created-at` / `:updated-at`
+are injected, and the compiled type has **no `:table-name`**: a rollup has
+no physical table.
+
+### Single fact table
+
+A rollup has exactly one fact table F. Every real measure (`:sum` / `:count` /
+`:avg` / `:list` / `:distinct`) reads from F; `:tables` is exactly the path
+grain → … → F. Compile errors (all `report-e`):
+
+- grain-only rollup (no non-`:first` measure)
+- a real measure reading from the grain
+- `:agg :first` on a non-grain table (`:first` is grain-only)
+- measures on two different fact tables (mixed-depth)
+- a table in `:tables` but not on the path grain → F (extra arm / star)
+- F not last in `:tables` (a hop past F)
+- no xref path from grain to F (name intermediate hops explicitly)
+
+### Field `:type` vs `:agg`
+
+The default-to-`:text` rule stands (no inference). Validate against the
+grain / source column:
+
+| `:agg` | Required `:type` |
+|--------|-------------------|
+| `:first` | equals the grain field's `:type` (text pass-throughs may omit) |
+| `:count` | `:integer` only |
+| `:avg` | `:real` only |
+| `:sum` | same numeric type as the source column (source must be numeric) |
+| `:list` / `:distinct` | same type as the source column |
+
+### Model-declared `:filter`
+
+Always a list of 4-tuples, `(table column op value)`, even for one clause.
+No singular form, no 3-ary, no sugar. The operator set is separate from the
+request-time one (`:like` / `:in` never appear here):
+
+| Family | Operators | Rules |
+|--------|-----------|-------|
+| Discrete (boolean / text / integer / uuid) | `:eq`, `:ne` | value is a real literal matching the column type; booleans are Lisp `t`/`nil` |
+| Rolling date (timestamp) | `:last-days` | integer `1..1825`; `ratings.created_at >= NOW() - INTERVAL 'n days'` |
+| Calendar date (timestamp) | `:calendar` | value `:month` only (the value slot is the extension point) |
+
+`:eq` / `:ne` on a date/timestamp column is a compile error. The referenced
+table must be in `:views :main :tables` and the column must exist on it.
+Grain-table clauses are not orphans (they become `WHERE`); non-grain clauses
+on the path grain → F bind into every real measure (`FILTER`), never a global
+`WHERE`; that would drop zero-fact grain rows.
+
+### Incompatible keys
+
+`:table`, type-level `:type`, `:tree` / `:fs-backed` / `:is-leaf` /
+`:parent-type`, lifecycle slots, `:write-to`, `:create` / `:update` /
+`:delete`, `:add-form` / `:update-form` (even nil), extra views beyond
+`:main`, author `:id`, `:column t`, `:button` fields, `:suppress-roles nil`,
+and on fields: `:action`, `:validations`, `:compose`, `:autofill`,
+`:source-all`, `:write-to`, `:join-table`, `:target`, `:identity t`.
+`:grain` or `:filter` on a non-rollup type is also a compile error.
+
+### Runtime behavior
+
+Rollups are fully readable. `be-list` / `GET /api/list` on a rollup runs
+**measure Phase A**: one `GROUP BY` grain query with aggregates, no
+per-record RBAC resources, no Phase B hydration. The same paging / sort /
+`filters` request surface and the same `:total` / `:sort` response shape
+apply (see [List queries](#list-queries-paging-sort-search)).
+
+- **SQL shape.** Grain-table `:filter` clauses become `WHERE`; every
+  non-grain clause binds into each real measure as `FILTER (WHERE …)` —
+  never a global `WHERE` on a joined table, which would drop zero-fact
+  grain rows.
+- **Zero-fact grain rows are retained.** `:sum` → 0, `:count` → 0,
+  `:avg` → SQL NULL (JSON `null`; frontend renders "N/A"),
+  `:list` / `:distinct` → empty.
+- **`:total`** is the live grain-row count (users in a users-grain board),
+  never the fact count.
+- **Sort** runs on the measure's SELECT alias with `NULLS LAST` on `:avg`
+  (zero-fact rows trail); every measure ORDER BY appends the grain
+  primary key ASC as a stable-paging tiebreaker. The **default sort**
+  (request sent none, no `:default-sort` declared) is the first sortable
+  non-pass-through measure, descending; it is what the `:sort` echo
+  reports. A declared `:default-sort` overrides this policy.
+- **Request-time `filters` on a rollup** accept grain-column pass-throughs
+  only: a field whose table is the listed rollup type with `:agg :first`,
+  or the injected `:id`. Filters on fact tables, intermediate tables, or
+  measure fields (`HAVING`) → 400. A bare UUID is rewritten to a grain-id
+  filter — a one-row fetch is `be-list` with a grain-id `filters` value.
+- **`search` is rejected** on rollups (no `:searchable` fields exist on a
+  rollup).
+- **View-level `:scope :user`** on `:main` is honored at runtime on the
+  grain table (grain `:users` → `users.id = <you>`; otherwise the grain's
+  `:user` column).
+- **Endpoint restrictions.** Only list-family reads work on a rollup:
+  `GET /api/list` and `GET /api/column` are allowed; `/api/item`,
+  `/api/id`, `/api/value`, `/api/value-id`, `/api/validate-*`,
+  `/api/actions`, and `/api/upload` reject it (400), and `be-insert` /
+  `be-update` / `be-delete` on a rollup signal a validation error. The
+  response carries `:create` / `:update` / `:delete` all `false`, so the
+  frontend renders a read-only board (no Add / Edit / Delete controls).
+- **Timezone stance.** `:last-days` / `:calendar` windows compare against
+  the server's local clock. Timezone-aware windows are a known limitation
+  and are post-MVP.
+
+---
+
 ## Views
 
 ```lisp
@@ -249,7 +397,110 @@ implemented at runtime; use the keyword `:user`.
 Compiler injects per view (not author-set): `:sql`, `:aliases`, `:columns`,
 normalized `:scope`.
 
+Join emission is deterministic: **field declaration order within a type does
+not affect the generated view SQL.** The join walk skips redundant FK edges
+whose both endpoints are already joined and never re-joins a table that is
+already in the view (each table joins exactly once, through one edge).
+**Diamond join graphs remain unsupported.**
+
 Joiners get no views.
+
+---
+
+## List queries: paging, sort, search
+
+Every list read — `be-list` from Lisp, `GET /api/list` over HTTP — accepts the
+same paging / sort / search parameters and returns the same response shape
+regardless of whether the type is a normal table type or a
+[rollup](#rollup-types-read-only-analytical). The caller does not choose an
+execution path; the compiled type declaration does.
+
+### `be-list` keyword arguments
+
+| Argument | Default | Meaning |
+|----------|---------|---------|
+| `:limit` | `20` | Max records to return. Server clamps any larger value to `200`. `nil` means **all rows** (no LIMIT clause) |
+| `:offset` | `0` | Records to skip |
+| `:sort` | `nil` | `(:field :asc)` or `(:field :desc)`; direction optional (defaults `:asc`); `nil` = no requested sort |
+| `:search` | `nil` | Free-text string, ILIKE-matched against the type's `:searchable t` fields |
+
+```lisp
+(be-list :todos "admin" :limit 20 :offset 40 :sort '(:points :desc))
+```
+
+### `/api/list` query parameters
+
+| Param | Default | Meaning |
+|-------|---------|---------|
+| `limit` | `20` | Non-negative integer; clamped server-side to `200` |
+| `offset` | `0` | Non-negative integer |
+| `sort` | — | `"field:asc"` / `"field:desc"`; direction optional (defaults `asc`). Unknown field, non-`:sortable` field, or bad direction → **400** |
+| `search` | — | Trimmed; blank/whitespace-only ignored; silently clamped to 200 characters |
+
+### Response: `:total` and `:sort`
+
+Every successful `be-list` / `/api/list` response carries:
+
+- `:total` — **always present**, the pre-paging count of matching records
+  (RBAC + scope + filters + search applied, no LIMIT/OFFSET). May exceed the
+  number of returned records.
+- `:sort` — the **effective** sort as `{"field": "...", "dir": "asc"|"desc"}`
+  (JSON), or JSON `null`:
+  - the requested sort, when one was sent;
+  - the type's `:default-sort` declaration, when none was sent and the
+    type declares one;
+  - otherwise the **default sort** on a rollup (first sortable
+    non-pass-through measure, `desc`);
+  - JSON `null` when none was sent, the type declares no `:default-sort`,
+    and it is a base (non-rollup) type;
+  - the primary-key tiebreaker that stabilizes paging is **never** echoed.
+
+### `:sort` default and the echo
+
+A type may declare `:default-sort` (see the type-key table above). When a
+request sends no sort, that declaration applies on both base and rollup
+types; an explicit request sort always wins. The `:sort` echo always
+reports the **effective** sort (request, declaration, or rollup policy),
+never the tiebreaker, so the frontend paints the applied order without
+asking. The declaration also orders every `allowed-values` FK option list
+targeting the type, since `be-list` drives those.
+
+### Ordering of operations
+
+RBAC read permissions → view scope → request filters + search → sort →
+page. Filtering always runs on the id-selection query, never on the
+collapsed result; paging is the last step.
+
+### Phase A / Phase B (normal types)
+
+List reads on ordinary table types run in two phases:
+
+- **Phase A** selects the page of primary ids with SQL `WHERE` / `ORDER BY`
+  / `LIMIT` / `OFFSET` — fast and indexed. Joins appear in Phase A **only
+  when filters reference joined tables**, in which case it becomes
+  `SELECT DISTINCT id FROM … JOIN …`.
+- **Phase B** hydrates only those ids (the full join view, `WHERE id IN
+  (…)`) and collapses join fan-out into one plist per record in Lisp
+  (`:agg :first`, `:list`, `:distinct`…).
+
+**Collapse is not paging.** Collapse reduces fan-out rows to one record per
+id; it is a display-shaping step, not a result-limiting step. Paging happens
+entirely in Phase A; the count query runs the same predicates without
+ORDER BY / LIMIT / OFFSET.
+
+On [rollup types](#rollup-types-read-only-analytical), the same request
+surface is served by measure Phase A (`GROUP BY` grain) instead — same
+`be-list` contract, no Phase B.
+
+### Errors
+
+- Sort on unknown field, non-`:sortable` field, or invalid direction → 400
+- Non-blank `search` on a type with zero `:searchable` fields → 400
+  (rollups compile to zero searchable fields, so they reject `search`)
+- Non-integer `limit` / `offset` → 400
+
+REST-specific details (auth, error envelope) live in `docs/rest.md` →
+`GET /api/list`.
 
 ---
 
@@ -281,8 +532,8 @@ Under `:fields`, each entry is `field-key` → plist (except joiner
 | `:force-sql-name` | override generated column name string (e.g. `"rating_user"`) |
 | `:path` | marks the FS path field on fs-backed types (at most one per type) |
 | `:action` | **only** on `:type :button`; single action hook form |
-| `:sortable` | `t` → column is eligible for `ORDER BY` in list queries. Only valid on `:column t` fields. Compiler emits a sort index when no covering index exists |
-| `:searchable` | `t` → column is included in free-text `:search` (ILIKE OR-group in Phase A). Only valid on `:type :text` base columns without `:target`. Independent of `:sortable`. Distinct from type-level `:search-sql` (write-through identity lookup). Serialized as a JSON boolean (`true`/`false`, never `[]`). Base `:users` marks `:name` and `:email` searchable. |
+| `:sortable` | `t` → field is eligible for `ORDER BY` in list queries (clickable header). Base (non-rollup) types: only valid on `:column t` fields; compiler emits a sort index when no covering index exists. Rollup types only: the `:column t` rule is relaxed — pass-throughs and `:sum` / `:count` / `:avg` measures are legal; `:list` / `:distinct` measures are a compile error. On a hybrid (regular type with aggregated fields) `:sortable t` on a Phase B measure stays a compile error |
+| `:searchable` | `t` → column is included in free-text `:search` (ILIKE OR-group in Phase A). Only valid on `:type :text` base columns without `:target`. Independent of `:sortable`. Distinct from type-level `:search-sql` (write-through identity lookup). Serialized as a JSON boolean (`true`/`false`, never `[]`). Base `:users` marks `:name` and `:email` searchable. See [List queries](#list-queries-paging-sort-search) |
 | `:default-from` | `:user` → copy username when creating user-setting rows |
 | `:css-value` | `t` → included in CSS-vars API (e.g. settings `:dark-mode`) |
 | `:primary-key` | DDL primary key (injected on `:id`) |
@@ -329,6 +580,10 @@ If `:source` is omitted but `:column t`, the compiler defaults to:
 | `:sum` | sum |
 | `:count` | count of non-null |
 
+For M2M list fields (`:type :list` + `:join-table`), the row-display
+`:source :agg` **must be `:distinct`** — it is a compile error to write
+any other value there (see [Join tables (M2M)](#join-tables-m2m)).
+
 ### Field-level scope
 
 ```lisp
@@ -337,6 +592,14 @@ If `:source` is omitted but `:column t`, the compiler defaults to:
 
 Filters aggregated rows to the current user's UUID (via the view alias of the
 source table's `:user` field). Used for "my rating" style fields.
+
+**M2M list fields (`:type :list` + `:join-table`) have set semantics: the
+row-display `:source :agg` must be `:distinct`** (omitting `:agg` is
+allowed — the compiler fills `:distinct`; writing `:list` or any other
+agg is a compile error). `:source-all` keeps `:agg :list`. A flat LEFT
+JOIN view with two or more one-to-many arms yields the cross product of
+the arms, so `:agg :list` duplicates every value; see
+[M2M row-display is `:distinct`](#m2m-row-display-is-distinct-fan-out-duplicate-guard).
 
 **Does not** control field visibility or editability in the UI.
 
@@ -349,7 +612,7 @@ lists (distinct from the row-display `:source`). Runtime prefers
 `:source-all` when present, otherwise falls back to `:source`.
 
 ```lisp
-:source     (:view :main :table :tags :column :name :agg :list)
+:source     (:view :main :table :tags :column :name :agg :distinct)
 :source-all (:view :tags :table :tags :column :name :agg :list)
 ```
 
@@ -520,7 +783,7 @@ not for checkbox-list labels.
 
 The `:compose` field attribute is sugar for the `:compose-string` lifecycle
 hook. It lets the compiler build a stored field value from other fields on the
-same type — most commonly to create a single composed identity string from
+same type, most commonly to create a single composed identity string from
 structured parts (e.g. full name from first / middle / last).
 
 ### Format
@@ -552,10 +815,10 @@ available to validation and written to the database like any field value.
 ### Constraints
 
 - **Placeholders must name existing fields** on the type (compile-time error).
-- **The `:into` target is the field itself** — no separate `:into` needed.
-- **Self-reference is a compile error** — a field's `:compose` template may
+- **The `:into` target is the field itself**; no separate `:into` needed.
+- **Self-reference is a compile error**: a field's `:compose` template may
   not reference itself.
-- **Duplicate is a compile error** — if a field has `:compose` *and* the same
+- **Duplicate is a compile error**: if a field has `:compose` *and* the same
   field is targeted by a manual `:compose-string` hook (via `:pre-create` or
   `:pre-update`), compilation fails.
 
@@ -629,10 +892,21 @@ Virtual list field on the owning type:
 (:type :list
   :ui (:label "Tags" :widget :checkbox-list)
   :validations (:join-items-exist)
-  :source (:view :main :table :tags :column :name :agg :list)
+  :source (:view :main :table :tags :column :name :agg :distinct)
   :source-all (:view :tags :table :tags :column :name :agg :list)
   :join-table :todo-tags)
 ```
+
+On `:type :list` + `:join-table`:
+
+- Row-display `:source :agg` must be `:distinct` (omit `:agg` and the
+  compiler fills `:distinct`)
+- `:source (... :agg :list)` is a compile error
+- `:source-all` stays `:agg :list` (dedicated single-table view; no fan-out)
+- Other `:agg` values on that `:source` are compile errors
+- This is set semantics, not a multi-chain special case. Write `:distinct`
+  even on a one-joiner view (todos tags) so a later second arm does not
+  duplicate values
 
 Joiner type:
 
@@ -655,6 +929,52 @@ Joiner type:
   SQL is isolated to its own two FK columns. List field keys need not
   match the target type key; `:source :table` identifies the other
   side (e.g. `:completed-by` → `:users`).
+
+### M2M row-display is `:distinct` (fan-out duplicate guard)
+
+The compiler enforces the rule above: on any `:type :list` field backed
+by a `:join-table`, the row-display `:source :agg` must be `:distinct`
+(`:list` or any other value is a compile error; an omitted `:agg` is
+injected as `:distinct`).
+
+Why the rule exists: when a type's `:main` view includes **two or more
+one-to-many arms** (e.g. `:chores` joins both `chore-tags` → `tags` and
+`chore-users` → `users`; or `:books` joins authors plus ratings), the
+flat LEFT JOIN view SQL produces the **cross product** of the arms: a
+chore with 3 tags and 2 completers yields 3 × 2 = 6 rows, where every
+tag value appears twice and every user value appears three times.
+
+`:agg :list` collects every non-null value from those rows, so the
+duplicates become visible in list cells and edit forms: a single
+completer renders as `("amanda" "amanda")` as soon as the chore has
+2 tags. With only one arm in the view (e.g. todos: tags only) `:list`
+would show each value once; the bug is invisible until a second arm is
+added — which is why the rule is unconditional, not "two or more arms".
+
+This is inherent to flat-join view SQL (no per-arm subqueries in the
+MVP); the data itself is not duplicated. `:source-all` stays
+`:agg :list`; it reads a dedicated single-table view, so it has no
+fan-out to dedupe.
+
+```lisp
+;; chores: main view joins chore-tags AND chore-users arms
+:completed-by
+(:type :list
+  ...
+  :source (:view :main :table :users :column :name :agg :distinct)
+  :source-all (:view :users :table :users :column :name :agg :list)
+  :join-table :chore-users)
+```
+
+Cousin (not covered by the rule): 1:N list fields **without**
+`:join-table` (Model Bank `:images`, FK-based) can still fan out when
+the view has another arm; authors should use `:agg :distinct` there too.
+
+Related trap, **not** fixed by `:distinct`: numeric aggs (`:avg` /
+`:sum` / `:count`) over a sibling arm can still double-count the cross
+product (a book's average rating counts each rating once per author).
+That is a separate backlog item; do not treat `:distinct` on list
+fields as fixing it.
 
 ### Bidirectional M2M (list fields on both ends)
 
@@ -688,7 +1008,7 @@ Example (abbreviated):
   :fields
   (:title (:type :text :identity t ...)
     :authors (:type :list
-      :source (:view :main :table :authors :column :name :agg :list)
+      :source (:view :main :table :authors :column :name :agg :distinct)
       :source-all (:view :authors :table :authors
                    :column :name :agg :list)
       :join-table :book-authors))
@@ -701,7 +1021,7 @@ Example (abbreviated):
   :fields
   (:name (:type :text :identity t ...)
     :books (:type :list
-      :source (:view :main :table :books :column :title :agg :list)
+      :source (:view :main :table :books :column :title :agg :distinct)
       :source-all (:view :books :table :books
                    :column :title :agg :list)
       :join-table :book-authors))
@@ -802,7 +1122,11 @@ See `models/modelbank.lisp` for the canonical example.
 1. Primary insert/update **commits first**
 2. Expand tags → `search-sql` on target identities
 3. Update if found, else insert resource + row
-4. Best-effort `handler-case`; errors are logged, not rolled back
+4. A newly inserted related row **inherits the source record's role set**
+   (plus `admin` and the creator's exclusive role), so its visibility
+   matches what it was derived from (a rating inherits the rated model's
+   visibility) with no author declaration
+5. Best-effort `handler-case`; errors are logged, not rolled back
 
 **MVP:** not transactional with the primary write. Clear-to-NULL and other edge
 cases are still open (see AGENT.md).
@@ -949,6 +1273,9 @@ Lifecycle may be a single form or a list. Validation is always a list.
 | Name | Params | Behavior |
 |------|--------|----------|
 | `:deploy-model` | `:field` keyword | validate model text in-process; async deploy worker |
+| `:spawn` | `:close` plist, `:clear` list | close the record + insert a fresh successor (recurring-instance pattern); sync; reserved close values `:now` / `:user` |
+
+Full contracts and per-hook detail: `docs/hook-registry.md`.
 
 (Test-only hooks may also be registered in the live image: `:test-sync`,
 `:test-async`, `:test-error`.)
@@ -1125,7 +1452,7 @@ resolved `:category` / `:internal`.
         (:type :list
           :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
-          :source (:view :main :table :tags :column :name :agg :list)
+          :source (:view :main :table :tags :column :name :agg :distinct)
           :source-all (:view :tags :table :tags :column :name :agg :list)
           :join-table :todo-tags))
       :list-form (:fields t)
@@ -1181,6 +1508,26 @@ resolved `:category` / `:internal`.
   :ui (:label "Deploy Model" :widget :button)
   :action (:deploy-model :field :model))
 ```
+
+### 3b. Spawn button (recurring instances)
+
+```lisp
+:complete
+(:type :button
+  :ui (:label "Complete" :widget :button)
+  :action (:spawn
+            :close (:completed :true
+                    :completed-at :now
+                    :completed-by :user)
+            :clear (:notes :instance-id)))
+```
+
+One click closes the record (close fields written to the old row, which
+becomes history) and inserts a fresh successor with definition fields
+copied and cleared fields reset to their defaults. A spawnable type's
+`:identity t` field should carry `:default :generate-uuid` so cleared
+successors never collide on the identity index. See
+`docs/hook-registry.md` → `:spawn`.
 
 ### 4. Tree / fs-backed leaf with file upload (file-server)
 
@@ -1258,6 +1605,14 @@ resolved `:category` / `:internal`.
     composition of stored field values (e.g. full name from first/middle/last).
     See [`:compose`](#compose) and [Identity fields](#identity-fields).
 
+14. **Sorting a CRUD list by an aggregated field is not supported.** A
+    regular (non-rollup) type's `:agg` fields — e.g. Model Bank
+    `:models` `:average-rating` — are computed in Phase B and cannot be
+    sorted honestly under `LIMIT`. `:sortable t` on such a field is a
+    compile error on base types (the `:column t` rule). Ranked-by-
+    aggregate UX uses a [rollup](#rollup-types-read-only-analytical)
+    type instead (see MVP Backlog "Regular-type computed-field sort").
+
 ---
 
 ## Quick key index
@@ -1266,9 +1621,11 @@ resolved `:category` / `:internal`.
 `:types`
 
 **Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles`
-`:views` `:fields` `:list-form` `:add-form` `:update-form` `:tree` `:is-leaf`
+`:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form`
+`:tree` `:is-leaf`
 `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category`
-`:base` `:built-in` `:internal` `:is-joiner` lifecycle slots
+`:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter`
+lifecycle slots
 
 **View:** `:tables` `:scope`
 

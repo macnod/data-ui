@@ -10,23 +10,24 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("todo-users")
+      :default-sort (:points :desc)
       :views (:main (:tables (:todos :todo-tags :tags))
                :tags (:tables (:tags)))
       :fields
       (:name 
-        (:type :text :identity t
+        (:type :text :identity t :sortable t
           :ui (:label "To Do" :widget :textbox)
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
         :points
-        (:type :integer :default 0
+        (:type :integer :default 0 :sortable t
           :ui (:label "Points" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :points :agg :first)
           :column t :not-null t)
         :done
-        (:type :boolean :default :false
+        (:type :boolean :default :false :sortable t
           :ui (:label "Done" :widget :checkbox)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
@@ -34,7 +35,7 @@
         (:type :list
           :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
-          :source (:view :main :table :tags :column :name :agg :list)
+          :source (:view :main :table :tags :column :name :agg :distinct)
           :source-all (:view :tags :table :tags :column :name :agg :list)
           :join-table :todo-tags))
       :list-form (:fields t)
@@ -47,7 +48,7 @@
       :type-roles ("todo-users")
       :fields 
       (:name
-        (:type :text :identity t
+        (:type :text :identity t :sortable t
           :ui (:label "Tag" :widget :textbox)
           :validations (:required)
           :source (:view :main :table :tags :column :name :agg :first)

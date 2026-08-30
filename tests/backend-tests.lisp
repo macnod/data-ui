@@ -211,7 +211,7 @@ where users.id in (
 (test aggregations
   (is (equal
         (aggregations :todos (form-field-keys :todos :list-form))
-        (list :first :first :first :first :first :first :list
+        (list :first :first :first :first :first :first :distinct
               :first :first :first))))
 
 (test resource-id-keys

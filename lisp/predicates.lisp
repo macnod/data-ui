@@ -83,14 +83,23 @@ returns NIL."
 (defun value-type-p (type-key field-key value)
   ":private: Returns T if VALUE is of the correct type for FIELD-KEY in
 TYPE-KEY. NIL and :NULL are accepted for nullable fields (fields
-without :not-null t)."
+without :not-null t). :GENERATE-UUID is accepted as the declared
+default on :uuid fields (the compiler maps it to uuid_generate_v4()
+in DDL and db-value passes it through for author fields, mirroring
+the base-model :id default)."
   (let* ((field-def (u:tree-get *compiled-model* type-key :fields field-key))
          (not-null (getf field-def :not-null)))
-    (if (and (or (null value) (equal value :null)) (not not-null))
-      t
-      (let* ((expected-type (getf field-def :type))
-              (test (u:tree-get *field-types* expected-type :test)))
-        (when (and test (funcall test value)) t)))))
+    (cond
+      ((and (or (null value) (equal value :null)) (not not-null))
+        t)
+      ((and (equal value :generate-uuid)
+         (equal (getf field-def :type) :uuid)
+         (equal (getf field-def :default) :generate-uuid))
+        t)
+      (t
+        (let* ((expected-type (getf field-def :type))
+               (test (u:tree-get *field-types* expected-type :test)))
+          (when (and test (funcall test value)) t))))))
 
 (setf *field-types*
   `(:text (:general :text :sql "text" :test ,#'stringp)

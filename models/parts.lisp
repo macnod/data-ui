@@ -76,7 +76,7 @@
          (:type :list
            :ui (:label "Images" :widget :checkbox-list)
            :validations (:join-items-exist)
-           :source (:view :main :table :files :column :name :agg :list)
+           :source (:view :main :table :files :column :name :agg :distinct)
            :source-all (:view :files :table :files :column :name :agg :list)
            :join-table :part-files))
        :list-form (:fields t)

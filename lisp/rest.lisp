@@ -420,7 +420,7 @@ field, or bad direction."
   (cond
     ((or (null sort-string) (zerop (length sort-string))) nil)
     (t
-      (let* ((parts (u:split-n-trim sort-string ":"))
+      (let* ((parts (u:split-n-trim sort-string :on-regex ":"))
              (field-string (car parts))
              (direction-string (or (cadr parts) "asc"))
              (field-key (u:make-keyword field-string))

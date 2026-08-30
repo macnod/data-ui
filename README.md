@@ -158,7 +158,7 @@ This example matches `models/todos.lisp`. Each file in the `models/` directory h
         (:type :list
           :ui (:label "Tags" :widget :checkbox-list)
           :validations (:join-items-exist)
-          :source (:view :main :table :tags :column :name :agg :list)
+          :source (:view :main :table :tags :column :name :agg :distinct)
           :source-all (:view :tags :table :tags :column :name :agg :list)
           :join-table :todo-tags))
       :list-form (:fields t)

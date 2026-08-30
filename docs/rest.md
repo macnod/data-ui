@@ -11,10 +11,41 @@ require a valid access token in the `Authorization` header.
 
 List records for a type. Returns records, form schemas (`list-form`,
 `add-form`, `update-form`), `allowed-values` for dropdown/checkbox
-fields, and permission flags (`create`, `delete`, `update`).
+fields, permission flags (`create`, `delete`, `update`), and paging
+keys `total` and `sort`.
 
-**Parameters:** `type` (required), plus optional pagination/filter
-parameters.
+**Parameters:**
+
+| Param | Required | Default | Meaning |
+|-------|----------|---------|---------|
+| `type` | yes | — | Type key, e.g. `todos`, `users` |
+| `form` | no | `list-form` | `list-form` \| `update-form` \| `add-form` |
+| `filters` | no | — | JSON list of `[type field operator value]` rows |
+| `limit` | no | `20` | Max records; non-negative integer; clamped server-side to `200` |
+| `offset` | no | `0` | Records to skip; non-negative integer |
+| `sort` | no | — | `"field:asc"` / `"field:desc"`; direction defaults to `asc`; field must be `:sortable t` |
+| `search` | no | — | Free-text term, ILIKE against `:searchable t` fields; trimmed; blank ignored; clamped to 200 chars |
+
+**Response** (in addition to `records`, forms, `allowed-values`,
+permission flags): `total` (always present — pre-paging count of
+matching records; may exceed the number of returned records) and
+`sort` (the effective sort: `{"field": "...", "dir": "asc"|"desc"}`).
+When no sort was requested, `sort` reports the type's `:default-sort`
+declaration when one exists, else the rollup default policy (first
+sortable measure, `desc`) on a rollup type, else `null` on a base type.
+
+**400 errors:** non-integer `limit`/`offset`; unknown sort field,
+non-`:sortable` field, or bad direction; non-blank `search` on a type
+with zero `:searchable` fields.
+
+**Rollup types:** `type` may name a read-only analytical
+(rollup) type — served from the same surface (see
+`docs/model-reference.md` → List queries and → Rollup types). Only
+list-family endpoints accept a rollup: `/api/list` and `/api/column`
+work; `/api/item`, `/api/id`, `/api/value`, `/api/value-id`,
+`/api/validate-*`, `/api/actions`, and `/api/upload` reject one.
+Rollup responses carry `create`/`update`/`delete` all `false`, and
+`total` is the grain-row count.
 
 ### `GET /api/item`
 
@@ -42,7 +73,9 @@ Fetch a column value, resolving the record by identity field.
 
 ### `GET /api/column`
 
-Fetch all values for a column across a type.
+Fetch all values for a column across a type. Unpaged / full-set: this
+endpoint ignores the paging parameters (it exists to feed dropdowns and
+autocomplete, not paged tables). Accepts rollup types.
 
 **Parameters:** `type`, `field`.
 

@@ -195,7 +195,133 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
   (th-make-user "user-2" :roles '("role-1"))
   (th-make-model "model-1" "user-1" :roles '("role-1"))
   (list :users '("user-1" "user-2") :models '("model-1")))
+
+(defun th-seed-users (count &rest roles)
+  "Add some users, tags, and todo items to the todos app."
+  (loop with names = (u:choose-some
+                       (mapcar
+                         #'string-downcase
+                         (re:split "\\n"
+                           (u:slurp
+                             (u:join-paths *package-root* "tests/names.txt"))))
+                       count)
+    for name in names
+    for password = (format nil "password-1-~a" (u:safe-encode name))
+    for email = "no-email"
+    for listing = (be-list :users "admin" :filters `((:users :name :eq ,name)))
+    for exists = (plusp (length (getf listing :records)))
+    unless exists
+    do (be-insert
+         :users
+         `(:name ,name :password ,password :email ,email)
+         "admin"
+         :roles roles)
+    and count name))
+
+(defun th-seeded-user-password (user)
+  (format nil "password-1-~a" (u:safe-encode user)))
+
+(defun th-seed-chores (count)
+  "Add some tags and chores to the chores model."
+  (let ((new-tags (loop for a from 1 to 9 collect (format nil "tag-~d" a)))
+         (existing-tags (mapcar
+                          (lambda (r) (getf r :name))
+                          (getf (be-list :tags "admin" :limit 1000) :records))))
+    (loop for tag in new-tags
+      unless (u:has existing-tags tag) do
+      (be-insert :tags `(:name ,tag) "admin" :roles '("chore-users")))
+    (loop
+      with existing-chores = (mapcar
+                               (lambda (c) (getf c :name))
+                               (getf 
+                                 (be-list :chores "admin" :limit 1000)
+                                 :records))
+      for a from 1 to count
+      for name = (format nil "chore-~2,'0d" a)
+      unless (u:has existing-chores name) do
+      (be-insert :chores
+        (list
+          :name name
+          :description (format nil "Long description for ~a" name)
+          :points (1+ (mod a 4))
+          :tags (u:choose-some new-tags 2))
+        "admin"
+        :roles '("chore-users"))
+      and count name)))
+
+(defun th-seed-tags (count)
+  (loop 
+    with new-tags = (loop for a from 1 to count
+                      collect (format nil "tag-~d" a))
+    and existing-tags = (mapcar
+                          (lambda (r) (getf r :name))
+                          (getf (be-list :tags "admin" :limit 1000) :records))
+    for tag in new-tags
+    unless (u:has existing-tags tag) do
+    (be-insert :tags `(:name ,tag) "admin" :roles '("chore-users"))
+    finally (return new-tags)))
+
+(defun th-seed-recurring (count)
+  "Add some tags and recurring chores to the recurring model."
+  (let ((new-tags (loop for a from 1 to 9 collect (format nil "tag-~d" a)))
+         (existing-tags (mapcar
+                          (lambda (r) (getf r :name))
+                          (getf (be-list :tags "admin" :limit 1000) :records))))
+    (loop for tag in new-tags
+      unless (u:has existing-tags tag) do
+      (be-insert :tags `(:name ,tag) "admin" :roles '("chore-users")))
+    (loop
+      with existing-chores = (mapcar
+                               (lambda (c) (getf c :name))
+                               (getf 
+                                 (be-list :chores "admin" :limit 1000)
+                                 :records))
+      for a from 1 to count
+      for name = (format nil "chore-~2,'0d" a)
+      unless (u:has existing-chores name) do
+      (be-insert :chores
+        (list
+          :name name
+          :description (format nil "Long description for ~a" name)
+          :points (1+ (mod a 4))
+          :tags (u:choose-some new-tags 2))
+        "admin"
+        :roles '("chore-users"))
+      and count name)))
   
+
+(defun th-seed-models (count)
+  "Add some models to the modelbank model."
+  (loop with users = (u:exclude
+                       (mapcar
+                         (lambda (r) (getf r :name))
+                         (getf (be-list :users "admin" :limit 1000) :records))
+                       '("admin" "guest"))
+    and roles = '("models-user")
+    and existing-models = (mapcar
+                            (lambda (m) (getf m :name))
+                            (getf 
+                              (be-list :users "admin" :limit 1000)
+                              :records))
+    for a from 1 to count
+    for name = (format nil "Model ~2,'0d" a)
+    for user = (u:choose-one users)
+    for description = (format nil "Description of ~a" name)
+    for model = (format nil "'(:title ~s)" name)
+    for rating = (1+ (random 5))
+    unless (u:has existing-models name) do
+    (be-insert :models
+      (list
+        :name name
+        :user user
+        :description description
+        :model model
+        :rating rating)
+      user
+      :roles roles)
+    and count name))
+        
+
 ;;
 ;; END Test Helpers
 ;;
@@ -418,6 +544,112 @@ compose-sugar-test context."
     (explain! results)
     (when collect results)))
 
+(defun run-rollup-tests (&optional collect)
+  "08a rollup compile-surface tests (compile-only, no DB)."
+  (let ((results (run 'rollup-suite)))
+    (explain! results)
+    (when collect results)))
+
+(defun run-measure-rollup-tests (&optional collect)
+  "08b measure Phase A SQL tests (generator parts + be-list branch).
+Seeds the measure-rollup-test fixture once."
+  (let ((results
+          (with-model "measure-rollup-test" #'mrb-seed-fixture
+            (run 'measure-rollup-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-sort-measures-tests (&optional collect)
+  "09 sort + page on measures: compile relaxation, ORDER BY aliases,
+tiebreaker, NULLS LAST, default sort, :sort echo. Seeds the
+rollup-sort-test fixture once."
+  (let ((results
+          (with-model "rollup-sort-test" #'sms-seed-fixture
+            (run 'sort-measures-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-default-sort-tests (&optional collect)
+  ":default-sort type attribute: compile probes plus base and
+rollup nil-sort behavior. Seeds the default-sort-test fixture
+once; the suite itself is read-only."
+  (let ((results
+          (with-model "default-sort-test" #'dss-seed-fixture
+            (run 'default-sort-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-filtered-rollup-tests (&optional collect)
+  "Run plan 10's behavioral rollup suite (generalization gate).
+Test 10 opens its own unseeded context inside the suite."
+  (let ((results
+          (with-model "rollup-test" #'rt-seed-fixture
+            (run 'filtered-rollup-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-agg-distinct-tests (&optional collect)
+  "M2M row-display :agg :distinct contract: compile-time probes
+(no model needed) plus behavioral two-chain and single-chain
+collapse tests, each in its own model context.
+
+The test-model fixture has :button fields whose actions resolve
+from the registry at compile time, so the test action hooks must
+be registered before set-model. Loading action-tests.lisp does
+that (and is harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (let ((results
+          (append
+            ;; Compile-time probes only (the behavioral tests are
+            ;; run by name below, inside their model contexts)
+            (fiveam:run 'agg-distinct-compile-tests)
+            ;; Behavioral: two joiner chains (seed tags)
+            (with-model "m2m-test" #'seed-m2m-fixture
+              (fiveam:run 'ad-two-chains-values-appear-once))
+            ;; Behavioral: single-chain regression (seed one tag)
+            (with-model "test-model"
+              (lambda ()
+                (be-insert :tags '(:name "red") "admin")
+                nil)
+              (fiveam:run 'ad-single-chain-round-trip)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-update-permission-tests (&optional collect)
+  "be-update permission gate suite on the modelbank-test fixture."
+  (let ((results
+          (with-model "modelbank-test" #'th-up-seed
+            (run 'update-permission-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun seed-spawn-fixture ()
+  "Seed the spawn-test fixture for :spawn behavior tests."
+  (th-make-user "worker" :roles '("item-users"))
+  (be-insert :tags '(:name "home") "admin" :roles '("item-users"))
+  (be-insert :tags '(:name "yard") "admin" :roles '("item-users"))
+  (be-insert :items
+    (list :name "mow-the-lawn"
+      :points 3
+      :tags '("home" "yard")
+      :notes "prior-round-notes")
+    "worker"
+    :roles '("item-users"))
+  nil)
+
+(defun run-spawn-tests (&optional collect)
+  ":spawn action hook tests: compile probes (no model needed) plus
+close-and-respawn behavior on the spawn-test fixture."
+  (let ((results
+          (append
+            ;; Compile-time probes (pure validate-model, no DB)
+            (fiveam:run 'spawn-compile-probes)
+            ;; Behavioral tests in shared seeded context
+            (with-model "spawn-test" #'seed-spawn-fixture
+              (fiveam:run 'spawn-behavior)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -445,7 +677,15 @@ groups."
                    ("compose-sugar"  . run-compose-sugar-tests)
                    ("sortable"       . run-sortable-tests)
                    ("searchable"     . run-searchable-tests)
-                   ("search-or"      . run-search-or-tests))
+                   ("search-or"      . run-search-or-tests)
+                   ("rollup"         . run-rollup-tests)
+                   ("measure-rollup" . run-measure-rollup-tests)
+                   ("sort-measures"  . run-sort-measures-tests)
+                   ("default-sort"   . run-default-sort-tests)
+                   ("filtered-rollup" . run-filtered-rollup-tests)
+                   ("agg-distinct"    . run-agg-distinct-tests)
+                   ("update-permission" . run-update-permission-tests)
+                   ("spawn"          . run-spawn-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

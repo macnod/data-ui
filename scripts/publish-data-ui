@@ -1,8 +1,15 @@
 #!/bin/bash
-# publish-data-ui — squash private work into a clean commit and push
-# to public, then sync the squashed history back to private.
+# publish-data-ui — publish the current master tree to public/master
+# as a single squashed commit, while keeping fine-grained history
+# intact on master and private/master.
 #
 # Usage: publish-data-ui "commit message"
+#
+# Flow: fetch both remotes, merge any incoming private work, back up
+# fine-grained master to private, then push one squash commit (same
+# tree as master, parent = public tip) to public. Local master is
+# never reset and private is never force-pushed, so fine-grained
+# commits always survive. Safe to re-run after any failure.
 
 set -euo pipefail
 
@@ -20,27 +27,60 @@ if ! git diff-index --quiet HEAD --; then
   echo "Uncommitted changes. Commit to private first."
   exit 1
 fi
+UNTRACKED=$(git ls-files --others --exclude-standard)
+if [ -n "$UNTRACKED" ]; then
+  echo "Untracked files present. Add and commit them first:"
+  echo "$UNTRACKED"
+  exit 1
+fi
 
-# Check that we're ahead of public/master
-REMOTE_REF=$(git rev-parse --short public/master 2>/dev/null || echo "none")
-LOCAL_REF=$(git rev-parse --short HEAD)
-if [ "$REMOTE_REF" = "$LOCAL_REF" ]; then
+# Refresh both remotes before comparing anything
+echo "Fetching remotes..."
+git fetch public
+git fetch private
+
+# Integrate work pushed from other machines before publishing
+if ! git merge-base --is-ancestor private/master master; then
+  echo "Merging private/master..."
+  git merge --no-edit private/master || {
+    echo "Merge conflict. Resolve and commit, then re-run."
+    exit 1
+  }
+fi
+
+# Incorporate PR-merged work on public before squashing: the squash
+# carries master's tree, so public-only changes must be merged into
+# master first or the next Update would revert them.
+if ! git merge-base --is-ancestor public/master master; then
+  echo "Merging public/master (PR-merged work)..."
+  git log --oneline master..public/master
+  git merge --no-edit public/master || {
+    echo "Merge conflict. Resolve and commit, then re-run."
+    exit 1
+  }
+fi
+
+# Back up fine-grained history to private before touching public
+git push private master
+
+PUBLIC_TIP=$(git rev-parse public/master)
+
+# Nothing to publish if master's tree already matches public's
+if git diff --quiet "$PUBLIC_TIP" master; then
   echo "Nothing to publish."
   exit 0
 fi
 
-# Count commits to squash
-COUNT=$(git rev-list --count public/master..HEAD)
+# Count fine-grained commits folded into this squash
+COUNT=$(git rev-list --count "$PUBLIC_TIP..master")
 echo "Squashing $COUNT commit(s) into one."
 
-# Soft reset to public/master, then recommit with current time
-git reset --soft public/master
-git commit -m "$COMMIT_MSG"
+# Build the squash commit without moving master: same tree as
+# master, parent = current public tip, so the push fast-forwards.
+SQUASH=$(git commit-tree 'master^{tree}' -p "$PUBLIC_TIP" -m "$COMMIT_MSG")
 
 echo "Pushing to public..."
-git push public master
-
-echo "Syncing squashed history to private..."
-git push private master --force
+git push public "$SQUASH:refs/heads/master"
 
 echo "Done. Published at $(date '+%Y-%m-%d %H:%M')."
+echo "Fine-grained history preserved on master and private/master."

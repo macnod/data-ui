@@ -64,7 +64,7 @@
          (:type :list
            :ui (:label "Authors" :widget :checkbox-list)
            :validations (:join-items-exist)
-           :source (:view :main :table :authors :column :name :agg :list)
+           :source (:view :main :table :authors :column :name :agg :distinct)
            :source-all (:view :authors :table :authors
                          :column :name :agg :list)
            :join-table :book-authors))

@@ -6,8 +6,8 @@
 * Done
 ** DONE Users search 400 + JSON boolean hole              :bug:frontend:backend:
 :PROPERTIES:
-:CREATED: [2026-08-14 Fri]
-:COMPLETED: [2026-08-14 Fri]
+:CREATED: [2026-08-08 Sat]
+:COMPLETED: [2026-08-09 Sun]
 :END:
 Searching the users list for =user-1= returned HTTP 400. Two bugs:
 
@@ -1101,19 +1101,22 @@ Also: =expose-profile=, which makes the app publicly accessible.
 
 Branches/commits: multiple-local, profile-restructure, create-profile,
 expose-profile.
-** IN-PROGRESS List Pipeline
+** DONE List Pipeline
+:PROPERTIES:
+:CREATED: [2026-08-01 Sat]
+:END:
 List pipeline restructuring (Aug 2026). The old items — Filtered
 rollups, Search/Filtering, Sort, Pagination — were peers by UI noun.
 They are now restructured by pipeline stage and Phase A shape, because
 sort/page/search/rollup are all consumers of the same list contract.
 Ordering constraint: (1) → (2)+(3) → (4)(5)(6); (7) → (8) → (9)(10)
 → (11) → (12). Do not gate (2)–(6) on (8).
-
+*** Plan
 Plans for each of these subitems can be found at ~/workbench/list-plan/.
-*** DONE 1. List read contract (spec)                         :backend:mvp:
+**** DONE 1. List read contract (spec)                       :backend:mvp:
 :PROPERTIES:
 :CREATED:  [2026-08-09 Sun]
-:COMPLETED: [2026-08-10 Mon]
+:COMPLETED: [2026-08-09 Sun]
 :END:
 Freeze =be-list= / API params and response: =limit=, =offset=,
 =:sort=, =:filters=, =:total=; RBAC + view interaction; explicit
@@ -1127,10 +1130,10 @@ and views interact with paging — /before/ anyone builds against it.
 It is a spec, not code. Every downstream item (2–6) depends on this
 contract being stable.
 
-*** DONE 2. Id-first Phase A (base grain)            :backend:compiler:mvp:
+**** DONE 2. Id-first Phase A (base grain)          :backend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
-:COMPLETED: [2026-08-13 Thu]
+:COMPLETED: [2026-08-09 Sun]
 :END:
 Select a page of primary ids with SQL =WHERE= / =ORDER BY= base
 columns / =LIMIT=/=OFFSET= + total count. Stop putting limit on
@@ -1144,15 +1147,15 @@ joins), and Phase B (item 3) hydrates only those ids. This is the
 foundation that makes pagination, sort, and search honest — they
 all operate on the id selection, not the collapsed result.
 
-**** Implemented
+***** Implemented
 *Plan 02 — Id-first Phase A* is complete. All 944 tests pass (38 new Phase A checks added).
-***** Files changed
+****** Files changed
 - =lisp/model.lisp=: Added =phase-a-join-sql= function; =enrich-views= now generates =:phase-a-base-sql= and =:phase-a-join-sql= at compile time
 - =lisp/backend.lisp=: New functions: =clamp-limit=, =phase-a-select-sql=, =phase-a-order-by-column=, =phase-a-build-order-by=, =phase-a-build-count-sql=, =phase-a-query=, =reorder-to-match=. Rewrote =be-list= to Phase A → Phase B flow. Updated =list-result= with =:total=. Updated =be-list-column= to pass =:limit nil=.
 - =lisp/rest.lisp=: Added =parse-page-param=, =parse-sort-param=. Updated =/api/list= handler with =limit=, =offset=, =sort= params.
 - =tests/backend-tests.lisp=: 14 new Phase A tests covering paging, sorting, count agreement, join-filter pushdown, compile-time SQL generation
 - =tests/helpers.lisp=: Added =run-phase-a-tests= helper
-**** Key design decisions
+***** Key design decisions
 1. *Phase A base SQL* (=SELECT id FROM <table>=) and *join SQL* (=SELECT DISTINCT id FROM <table> JOIN ...=) are generated at compile time, selected at runtime based on whether filters reference joined tables.
 
 2. *=limit nil=* means "all rows" (no LIMIT clause). The default is 20. This preserves backward compat for =be-list-column=.
@@ -1163,10 +1166,10 @@ all operate on the id selection, not the collapsed result.
 
 5. *All query values parameterized* — LIMIT, OFFSET, and filter values all use =$N= bind parameters.
 
-*** DONE 3. Phase B hydrate (unchanged collapse)              :backend:mvp:
+**** DONE 3. Phase B hydrate (unchanged collapse)            :backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
-:COMPLETED: [2026-08-13 Thu]
+:COMPLETED: [2026-08-09 Sun]
 :END:
 Join + Lisp =:first=/== for the id set only. Shared by all
 Phase A shapes. Document "collapse is not paging." Depends on (2).
@@ -1178,7 +1181,7 @@ stay in Lisp for now. The key documentation point: collapse reduces
 fan-out rows to one plist per id; it is /not/ a paging mechanism.
 It just happens after paging now.
 
-**** Changes
+***** Changes
 - =lisp/backend.lisp= -- Extracted =phase-b-hydrate= from inline code in =be-list=. The function takes =type-key=, =ids=, =user=, and keyword args (=form=, =field-keys=, =total=, =skip-allowed-values=). It runs the join query with =WHERE id IN (ids)=, collapses fan-out via =view-result-values= / =list-result=, and restores Phase A ordering via =reorder-to-match=. No filters applied -- all filtering is in Phase A. =be-list= now calls it in one line instead of having 12 lines of inline hydration logic.
 
 - =tests/backend-tests.lisp= -- Four new tests:
@@ -1188,10 +1191,10 @@ It just happens after paging now.
   - =phase-b-m2m-fanout-collapse= -- verifies multi-join-table fan-out collapse under =m2m-test= (item with 3 tags collapses to one record with a 3-element list)
 
 - =tests/helpers.lisp= -- Added =run-phase-b-tests= that runs the first three tests under =test-model= and the m2m test under =m2m-test=.
-*** DONE 4. Base-column sort                         :backend:compiler:mvp:
+**** DONE 4. Base-column sort                       :backend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
-:COMPLETED: [2026-08-13 Thu]
+:COMPLETED: [2026-08-09 Sun]
 :END:
 Model marks sortable grain fields; compiler/API honor sort in base
 Phase A; FE column sort wired to the contract. Depends on (1)+(2).
@@ -1203,7 +1206,7 @@ the =:sort= API parameter through to the Phase A SQL =ORDER BY=.
 The frontend renders clickable headers. This is /base-column/ sort
 only — sorting by aggregated measures (average rating, count) is
 item 9.
-**** Changes by file:
+***** Changes by file:
 *=lisp/model.lisp=* (3 changes):
 - Added =:sortable= to the =compile-field= =attrs= list so it survives compilation
 - Added compile-time validation: =:sortable t= on a non-=:column t= field signals =report-e=
@@ -1234,7 +1237,7 @@ item 9.
 
 *=tests/helpers.lisp=* + *=data-ui.asd=*: Registered the new test suite
 
-*** TODO 5. Base-column search/filter          :backend:compiler:mvp:
+**** DONE 5. Base-column search/filter              :backend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
@@ -1278,10 +1281,10 @@ Implementation summary:
   on types with zero searchable fields). Base =:users :name= and
   =:email= now =:searchable t=.
 
-
-*** TODO 6. Base list pagination (API + FE)      :frontend:backend:mvp:
+**** DONE 6. Base list pagination (API + FE)        :frontend:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
 :END:
 End-to-end page controls and =total= on ordinary lists. Depends on
 (1)+(2). No measure requirements.
@@ -1293,9 +1296,29 @@ controls know how many pages exist. This is the user-visible payoff
 of items 1–2: lists that load fast and paginate cleanly instead of
 rendering hundreds of rows at once.
 
-*** TODO 7. Analytical authoring surface (spec)  :backend:compiler:mvp:
+Completed:
+
+*Backend* (=lisp/backend.lisp=, the one granted change):
+- =phase-a-build-order-by= now appends =, <table>.id= as a tiebreaker on sorted queries; no-sort default unchanged.
+- Verified live: =(phase-a-build-order-by :todos '(:points :asc))= → =" order by rt_todos.todo_points ASC, rt_todos.id"=. (Note the plan's testing sketch used =:name= — not marked =:sortable= in any fixture; I used =:points= from =test-model=, which is also the better low-cardinality case.)
+- Paging stability proven with 12 seeded rows (6+6 tied on points), page size 5: 3 pages, 12 distinct names, no dups/skips across boundaries, =:total = 12=. Seed rows deleted afterward.
+- =(run-tests)=: all 1044 checks pass, sortable suite included.
+
+*Frontend* (=web/src/App.tsx=, =web/src/index.css=):
+- =PAGE_SIZE = 20=, =currentPage= state, =total= derived from =data.result.total= (never =records.length=); =ListResponse.result.total?= added.
+- =fetchList= is async, sends =limit=/=offset=, keeps the existing error path (=setData(null)= + =setListError=), clamps the page when the result set shrinks, and returns the envelope.
+- Action-button refetch routes through =fetchList()= then =openEditForm({ id })= — no longer searches the current page for the row.
+- =fetchListRef= created; the 3s running-status poll calls =fetchListRef.current()= so it can't snap the list back to a stale page/sort/search.
+- =resetListQuery()= helper shared by =changeType=, =switchViewMode=, =returnToLanding= — resets sort/search/page/selection in the same batch as the type change (one fetch), and fixes the pre-existing stale-sort 400 against the new type.
+- Sort-header click and the search debounce timeout both reset page + selection.
+- Page controls render below the table only when =totalPages > 1=; record count always shows. =selectedIds= cleared via =useEffect([currentPage])= plus the explicit handler clears.
+- CSS: =.list-footer= / =.pagination= / =.record-count=.
+- =npm run build= passes (tsc + vite).
+
+**** DONE 7. Analytical authoring surface (spec)    :backend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
 :END:
 Spec-only; no compiler work; gates measure Phase A. Grain +
 measures + filter/time-window vocab + read-only rollup types; no
@@ -1316,9 +1339,15 @@ use generic nouns — no Model Bank or chores-specific language — so
 the vocabulary is general. Produces a worked example end-to-end
 through sub-items 7a–7d.
 
-**** TODO 7a: Grain and measure shape                         :compiler:mvp:
+Frozen [2026-08-21 Fri]. Decision note is
+=~/workbench/list-plan/07e-freeze-and-write-up.org=. All 18
+review issues closed. Items 8–12 may begin. Do not reopen
+07a–07e vocabulary without a new decision note.
+
+***** DONE 7a: Grain and measure shape                       :compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
 :END:
 How authors declare grain, measures, and join path. One grain + N
 measures vs multi-view field zoo.
@@ -1333,9 +1362,10 @@ express that. The conversation so far favors one grain + N measures
 as fields) over the multi-view zoo (3 views × 6 fields in the
 original chores sketch).
 
-**** TODO 7b: Read-only / rollup types                        :compiler:mvp:
+***** DONE 7b: Read-only / rollup types                      :compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
 :END:
 =:table nil= (or equivalent), no create/update/delete, RBAC/display
 rules, vs hanging measures on =:users= / existing types.
@@ -1348,9 +1378,10 @@ existing type (e.g., adding =:model-count= to =:users=), but that
 mixes computed data with stored data and complicates RBAC. A
 dedicated read-only type keeps the separation clean.
 
-**** TODO 7c: Filter and time-window vocab (MVP)              :compiler:mvp:
+***** DONE 7c: Filter and time-window vocab (MVP)            :compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
 :END:
 Minimal predicate DSL (=:eq=, completed-style flags, one or two date
 windows). Timezone stance: server-local, document as known
@@ -1367,9 +1398,10 @@ and one or two date-window forms (=(:last-days :count 30 :on
 early. Timezone handling is explicitly server-local for MVP —
 documented as a known limitation, not silently wrong.
 
-**** TODO 7d: Phase A shape selection rules           :compiler:backend:mvp:
+***** DONE 7d: Phase A shape selection rules         :compiler:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
 :END:
 When list uses base Phase A vs measure Phase A (sort/filter/page
 keys). Same =be-list= contract. No second product.
@@ -1383,9 +1415,10 @@ which path runs; the API contract from item 1 is the same either
 way. The selection is driven by the type's declaration, not by a
 flag on every request.
 
-**** TODO 7e: Freeze + write-up                               :compiler:mvp:
+***** DONE 7e: Freeze + write-up                             :compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-16 Sun]
 :END:
 Short decision note (authoring examples, non-goals, link to fixture
 plan). Done when (7a–7d) agree and produce a coherent worked example.
@@ -1398,9 +1431,10 @@ four sub-items: grain declaration, read-only type, filter vocab,
 and shape selection. If any sub-item cannot produce a coherent
 answer for the example, the spec is not frozen.
 
-*** TODO 8. Measure Phase A SQL                :backend:compiler:mvp:
+**** DONE 8. Measure Phase A SQL                    :backend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-23 Sun]
 :END:
 Second generator shape: =GROUP BY= grain, =:count=/=:sum=/=:avg=,
 optional row predicates/=FILTER=. Id page (or grain rows) for
@@ -1415,9 +1449,36 @@ fetching all fan-out rows and collapsing them in Lisp. The output is
 a set of grain ids (one per user, one per model) with their
 computed measures — ready for sort, page, and display.
 
-*** TODO 9. Sort and page on measures          :frontend:backend:mvp:
+Split into two review cycles (2026-08-23): 8a compile surface,
+then 8b generator + =be-list=. Plans:
+=~/workbench/list-plan/08-measure-phase-a-sql.org= (index),
+=~/workbench/list-plan/08a-compile-surface.org=,
+=~/workbench/list-plan/08b-measure-phase-a-sql.org=.
+
+***** DONE 8a: Compile surface                     :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-23 Sun]
+:COMPLETED: [2026-08-23 Sun]
+:END:
+Compile surface for rollups: =:phase-a-shape=, incompatible-key
+matrix, no physical table, no =:table-name=, filter grammar,
+=:type= / =:agg= checks. Compile-error tests only. No =be-list=
+stub. Depends on (7). Blocks (8b).
+
+***** DONE 8b: Generator + be-list branch          :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-23 Sun]
+:COMPLETED: [2026-08-23 Sun]
+:END:
+=measure-phase-a-sql= parts, mapper, =FILTER= renderer, count
+query, =be-list= measure branch, Issue 9 guards,
+=:suppress-roles= skip in =allowed-values=. Depends on (8a).
+Blocks (9)(10).
+
+**** DONE 9. Sort and page on measures              :frontend:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-23 Sun]
 :END:
 =ORDER BY=/=LIMIT= on measure Phase A output. Same list contract as
 base. FE can sort leaderboard columns. Depends on (8).
@@ -1426,14 +1487,29 @@ Without sort on measures, a leaderboard is just an unsorted list
 with numbers next to names. This item extends the sort and
 pagination from items 4 and 6 to work on /aggregated/ columns —
 sort by total points, by rating count, by average rating. The SQL
-is straightforward (=ORDER BY= on aggregate aliases) because item 8
+is straightforward (=ORDER BY= on aggregate aliases) because item 8b
 already produces the measures as named columns. The frontend gets
 clickable headers on leaderboard tables, same UX as base-column
 sort.
 
-*** TODO 10. Filtered-rollup fixture + tests          :testing:mvp:
+Completed:
+
+- =lisp/model.lisp= — =compile-field='s =:sortable= check now branches on =:rollup t= from the model: legal on pass-throughs and =:sum=/=:count=/=:avg=; =report-e= on =:list=/=:distinct=; base types (hybrids) keep the =:column t= rule, so no leak.
+- =lisp/backend.lisp= — new =measure-default-sort= (first sortable non-pass-through field, =:desc=), =valid-measure-sort= (unknown / unsortable → =report-ve=), =resolve-measure-sort-column= (SELECT alias via =to-sql-identifier=, deliberately not =:column-name= / =:name-sql=), =measure-order-by-sql= (alias + =NULLS LAST= on =:avg= + grain PK ASC tiebreaker always). =measure-be-list= dropped the =(declare (ignore sort))= and composes ORDER BY into =add-page-clause=. =list-result= gained a =:sort= key on both paths via =json-sort-echo= — =(:field "..." :dir "...")= or =:null=, threaded from =base-be-list= and =phase-b-hydrate= too.
+- =web/src/App.tsx= — paints =sortField=/=sortDir= from =result.sort= on every successful fetch (including null), caches the default only on no-sort requests, and the default column toggles =asc=/=desc= without the unsorted third state. No rollup branch.
+- Fixture =models/test/rollup-sort-test.lisp= (sortable leaderboard, sortable =:avg=, a no-sortable-measure board, and a hybrid =:ratings= for the leak test), suite =tests/sort-measures-tests.lisp=, =run-sort-measures-tests= helper wired into =run-tests=, registered in the asd.
+
+Two judgment calls worth flagging:
+
+1. The plan said "pin the wire shape in =rest.lisp=". I pinned it in =backend.lisp= instead (=json-sort-echo=, called inside =list-result=), so every =be-list= caller gets the same shape and =rest.lisp= needed no change — the plan's own reason for pinning (avoid the single-key-plist / =[]= accidents) is handled at the source. One REST test exercises the serialized form.
+2. The SQL-shape tests read the logged page SQL back out of a temporary string-stream p-log sink (=sms-capture-page-sql=) rather than adding a test-only accessor to =backend.lisp=. The image's file sink logs jsonl; the temp sink uses the plain =key=value= format, which turned out to preserve newlines fine.
+
+One visible echo from the base path: =be-list :chores :sort '(:title :asc)= echoes ={"field":"title","dir":"asc"}=; nil-sort on a base type echoes JSON =null=; nil-sort on the leaderboard echoes ={"field":"total-points","dir":"desc"}= — verified end-to-end through =plist-to-json=.
+
+**** DONE 10. Filtered-rollup fixture + tests                :testing:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-23 Sun]
 :END:
 Stable =models/test/= pilot (chores-shaped or thinner). Behavioral
 tests for complete/points/attribution. Generalization gate before
@@ -1449,9 +1525,39 @@ but lives under =models/test/= so it does not break when demo
 models change. No demo model (chores, Model Bank) may depend on
 the analytical path until this fixture is green.
 
-*** TODO 11. Chores: derived scores, drop stored counters  :mvp:model:
+*Completed:*
+- =models/test/rollup-test.lisp= — new fixture: =:tasks=, =:task-notes= (FK chain via =:target=), and three rollups (=:task-summary=, =:task-summary-recent= with =:last-days 7=, =:notes-summary= 3-table chain with intermediate filter)
+- =tests/filtered-rollup-tests.lisp= — =filtered-rollup-suite= with =rt-seed-fixture= (alice/bob/carol, timestamps computed at seed time with ≥1 day margin via universal time, no =NOW()= literals)
+- =tests/helpers.lisp= — =run-filtered-rollup-tests=, registered in =run-tests=
+- =data-ui.asd= — file registered
+
+*Completed (after review re-open):*
+- =tests/rollup-tests.lisp= — =ru-base-model='s =:tasks= gained
+  =:points= (mirroring the fixture), so plan 10's Test 15 builders
+  validate against the inline base model; green-path baselines added
+- =tests/filtered-rollup-tests.lisp= — green-path =finishes=
+  baselines in Test 15; dead =rt-ru-recent= / =rt-three-users-filter=
+  removed; disjoint-page carve added to Test 6; Test 14's
+  =be-list-column= passes =:limit 200=; =rt-validate= fixed to pass
+  the bare =:types= plist (validate-model = stage-1, not the wrapped
+  model — the old wrapper shape made every Test 15 error case pass
+  for a rotten reason)
+- =lisp/backend.lisp= — =json-sort-echo= now emits =:dir= as a
+  keyword (=(:field :total-points :dir :desc)=); =plist-to-json=
+  downcases symbols so the JSON wire bytes are unchanged; =add-page-clause=
+  defaults a nil =offset= to 0 (be-list-column threads an unsupplied
+  offset down and the bare nil reached Postgres as ="false"=)
+- =lisp/model.lisp= — =preliminary-model-check= accepts =:tables= at
+  any =:views= nesting depth (was =:views :main= only; =ru-base-model='s
+  single-table views died in the walker)
+
+*Results:* =filtered-rollup-suite= 107/107 checks; full =run-tests=
+= 1406 checks across 22 groups, 0 failures.
+
+**** DONE 11. Chores: derived scores, drop stored counters     :mvp:model:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-23 Sun]
 :END:
 First real consumer of measure path. Demote/remove =:scores=
 maintenance. Depends on (10).
@@ -1464,9 +1570,41 @@ the stored scores with rollup reads, proving the measure pipeline
 on a real (non-fixture) model. It also removes the maintenance
 burden and the denormalization bugs that stored counters invite.
 
-*** TODO 12. Model Bank gamification (adopter)           :mvp:model:
+***** Completed
+*Step 1-3: 10b generalization gate*
+- Added =:awards=, =:award-users=, =:award-board= to =models/test/rollup-test.lisp=; existing types untouched (fixture paren count was off by one on my first edit; fixed)
+- Appended the three seed awards to =rt-seed-fixture= (public M2M path only)
+- Redefined =rt-live-user-count= to read =be-list :users= (board-independent)
+- Added Tests 17-21 plus two pure helpers (=rt-ru-award-base=, =rt-ru-award=, =rt-validate-award=) so Test 21's =report-e= probe compiles against a model that actually contains the joiner; Test 1-16 bodies untouched
+- Suite: *128 checks, 100% pass* (104 existing + 24 new)
+
+*Step 4: chores.lisp v0.4*
+- =:scores= type removed; header/prompt now describe a derived scoreboard
+- =:scoreboard= added exactly per plan: hop =(:users :chore-users :chores)=, =:type-roles ("chore-users")=, =:filter= on =:chores :completed=, no =:scope=/=:avg=/tags/window
+
+*Step 5: smoke (hard-reset, set-model chores)*
+- =chore-users= role present; alice/bob created carrying it before any chore insert
+- Board as alice: alice 5/2, bob 3/1, guest/admin 0/0 (integer 0, not NULL), =:total= 4 = live user count
+- Sort =:total-points desc=: alice, bob, then zero tail; default sort echoes; pages 2+2 disjoint, union covers
+- CRUD: insert/update/delete (with tags attach) all move the board correctly; a tag insert on a nonexistent tag correctly =report-ve='d, then passed after creating the tag
+- =be-types "bob"= shows Scoreboard under user types
+
+Then, fixed a bug in the front end (scoreboard page was blank):
+- =tests/helpers.lisp= parens balanced, loads clean. One note: the =th-seed-users= signature change (=count= param + =u:choose-some=) is still in the diff; only the incomplete =th-seed-chore-tags= defun is gone. No callers anywhere, so it's inert either way; flagging in case it wasn't intentional.
+- Reloaded helpers into the live image and re-ran the gate: /128/128 pass/, Tests 1-16 and 17-21 all green.
+
+The branch now carries five files of mine plus your helpers edit:
+
+- =lisp/rest.lisp= — =parse-sort-param= keyword fix (the 500)
+- =web/src/App.tsx= — rollup form guards (the blank page), built to =web/dist/=
+- =models/chores.lisp= — v0.4, =:scores= gone, =:scoreboard= in
+- =models/test/rollup-test.lisp= — 10b award types
+- =tests/filtered-rollup-tests.lisp= — seed, =rt-live-user-count=, Tests 17-21
+
+**** DONE 12. Model Bank gamification (adopter)                :mvp:model:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-23 Sun]
 :END:
 Hot/dead, rating-count/avg sort, user leaderboard metrics. Only
 after fixture is green. Depends on (10).
@@ -1477,16 +1615,57 @@ cannot answer the questions that make a catalog app feel alive:
 Which models are hot (time-windowed rating activity, not lifetime
 average)? Which are dead (zero recent engagement)? Who are the top
 contributors (user-grain leaderboard with model count and average
-rating)? Can I sort by rating count or average? All of this is
+rating)? All of this is
 pure authoring on top of the analytical pipeline — no new compiler
 work, just model declarations using the vocabulary frozen in item 7.
-The constraint is sequencing: the fixture (item 10) must be green
-first, proving the primitive is general before Model Bank consumes
-it.
+Sorting the CRUD =:models= list by lifetime average is not this
+item (Issue 12; Post MVP hybrid measure sort). The constraint is
+sequencing: the fixture (item 10) must be green first, proving the
+primitive is general before Model Bank consumes it.
 
-*** TODO 13. List pipeline documentation                 :docs:mvp:
+***** Completed
+*Deviation: one compiler fix in =lisp/model.lisp= (authorized by your go message; the plan's "Files Touched" was written assuming it wasn't needed)*
+
+Step 0 as planned is uncompilable, not by the rollups but by =:models= itself: adding =:user= → =:users= to =:main= alongside =images→models=, =images→users=, =ratings→models=, =ratings→users= gives five FK edges on four tables. =ordered-xrefs= consumed one edge per table unconditionally, so the leftover redundant =ratings→users= edge hit =xref-reversed= with both endpoints joined: "Cannot determine join direction." No =:tables= ordering avoids it (I traced all placements), and the plan's claim that this "does not add a second 1-N arm" was simply wrong: it adds a third FK arm into =:users=.
+
+The fix, scoped to =ordered-xrefs=:
+- New =xref-joinable-p= (exactly one endpoint joined) and =find-joinable-xref-connecting= (replaces =find-xref-connecting=). Edges with both endpoints joined (redundant second paths) are skipped, not consumed.
+- Among joinable candidates, prefer the edge anchored at the view's base table, so =images= and =ratings= join through =models= (the view subject), not through the =users= lookup row. Without this, first-edge-wins picked =images.image_user=, which silently drops images whose owner differs from the model's owner: wrong query semantics, not just a compile fix.
+- Docstring updated; the diamond-pattern MVP limitation note stands.
+
+Verification of the fix: I captured every generated view SQL string (=view-sql=, =phase-a-base-sql=, =phase-a-join-sql=, =measure-phase-a-select=) across all 26 model files before and after: byte-identical everywhere except modelbank itself. Then the full suite: *1426 checks, 22 groups, all green*, including plan 10's 128.
+
+*Plan steps, all executed:*
+- Step 0/1: version ="0.2"=, =:user= field (=autofill=, =model_user=, =:target :users=, =:not-null t=, read-only Owner textbox, no =:source-all=), =:users= in =:main= tables, list-form updated; =:hot-models= and =:top-contributors= appended per the plan verbatim (one paren typo caught and fixed before load).
+- Step 2/3: both rollups compile as =:measure= with the right tables; =:hot-models= SELECT contains =filter (where rt_ratings.id is not null and rt_ratings.created_at >= now() - interval '30 days')= inside both aggregates, no global WHERE: FILTER, not WHERE.
+- Step 4 smoke (fresh DB): alpha 2/4.5, beta 1/3.0, gamma 0/NULL with row retained; =:total= 3 (live model count). Nil sort echoes =(:field :recent-ratings :dir :desc)=; =:asc= puts gamma first; =:recent-avg :desc= is alpha, beta, gamma (NULLS LAST). =:top-contributors=: alice 2, bob 1, admin/guest integer 0, =:total= 4 (live user count). Pagination disjoint and covering on both boards. Write-through still writes (alice's 5-star beta rating landed, average moved 3.0→5.0), =:average-rating= displays and is refused for sort, owner shows on the CRUD list, guest sees no types while non-admin =models-user= sees both boards with =create/update/delete :false=.
+
+Two things the smoke surfaced, both pre-existing and out of scope:
+- =be-update= as bob on beta failed with "FILTERS cannot be NIL" because beta's only resource role is =alice:exclusive= (be-insert assigns the creator's exclusive role); =user-read-type-ids= for bob comes back empty and a later =valid-filters= call inside =update-roles= trips. Same shape exists on modelbank v0.1; the tests sidestep it by inserting with shared roles. Worth a todo item.
+- The earlier hot-models run on the pre-fix image was also semantically wrong (beta 2/4.0 with a backdated-2020 rating counted): that was the old join plan hydrating through the wrong arm; post-fix numbers match the hand calculation exactly.
+
+Frontend (Step 5) I verified via =fe-fields= shape: both boards expose list-form-only, sortable headers, no add/update forms, and =/api/info= landing resolves for alice.
+
+***** Bug Fix 2: ratings tab empty for admin
+Live repro after Bug Fix 1 (fresh =hard-reset=, =set-model "modelbank"=, seed users + models): admin's ratings tab empty, catherine sees only her own 2 rows. Two stacked causes:
+
+1. *=:scope :user= on =:ratings= =:main=.* The view declared =:scope :user=, and =filters-for-be-list= applies that scope to /every/ user, admin included (=users.id = <acting user>=; the =users= join now resolves to the rater after Bug Fix 1). Admin rated nothing → empty. Fix: removed =:scope :user= from =:ratings= =:main= in =models/modelbank.lisp= (the =:users= source-all view keeps its scope; per-row RBAC is the ratings gate now).
+2. *Write-through role policy was too narrow.* My earlier fix attached =admin= + creator-exclusive to write-through-created rows, which makes rating rows private point-to-point: nobody but admin and the rater could read them. Donnie's product intent is that a rating is visible to everyone who can see the rated model (ratings are the point of the catalog). Fix: =execute-write-to= (backend.lisp) now copies the /source record's/ role set onto the new related row's resource (=admin= + creator exclusive + requested roles). A rating inherits exactly the model's visibility, which is the semantics a model author would expect without declaring anything. Normal =be-insert= onto =:ratings= is unchanged.
+
+Verified on a fresh seed (10 users, 10 models, 10 write-through ratings): =be-list :ratings= total is 10 for admin, for a non-admin non-rater (=brian=), and for a rater; =be-list :models= still 10 for everyone; =hot-models= / =top-contributors= unchanged; a second write-through rating as =bryan= on Model 01 inherited =("admin" "cynthia:exclusive" "models-user")= (the model's roles). Full suite after both fixes: *1426 checks, 22 groups, all green*. Scoping suite (which exercises =modelbank-test=, still carrying =:scope :user= on =:ratings=) also green, so view scoping itself is intact. Live image re-seeded and running modelbank for browser verification.
+
+***** Bug Fix
+Live testing surfaced two stacked bugs behind "the ratings tab is always an empty table":
+
+1. *Write-through rows had no RBAC roles at all.* =execute-write-to= (backend.lisp) inserts the resource row and the data row directly and never attached roles, unlike =insert-normal= → =update-roles=, which adds =admin= + the creator's exclusive role. With zero =resource_roles= links, =user-read-type-ids= returns nil for /every/ user (admin included; resource RBAC has no admin bypass), so the ratings list short-circuits to empty. Pre-existing since write-through landed. Fix: the insert branch now adds =admin= + =(a:exclusive-role-for user)= after a successful main-row insert, and removes the resource again (compensating delete) when the main-row insert fails — that failure path had also been leaking orphan resources (36 resource rows for 11 live rating rows in the live DB).
+2. *The ratings view's =users= join went through the model owner.* Once =model_user= existed (plan 12 Step 0), the =ordered-xrefs= walk consumed =models→users= during =:models='s turn even though =:models= was already joined via =rating_model=; =users= then joined on =rt_models.model_user=, so the =User= column showed the model's owner and =:scope :user= meant "model owner = me" instead of "rater = me". The =:images= view had the same latent bug (Model column = owner's first model). Fix: =ordered-xrefs= now skips a table whose turn comes when it is already joined; consuming a second edge for it would re-join it through a wrong path and steal the edge a later table needs. Consequence for authors: *field declaration order within a type no longer affects view SQL* — =:ratings= with =:model= before or after =:user= compiles identically (verified both orders byte-identical on =:main= SQL). This addresses "a model developer would never think to declare =:user= before =:model=".
+
+Verification: full view-SQL capture across all models before/after is byte-identical except modelbank's =:models= =:main= (join emission order only: images, ratings, users vs users, images, ratings — same multiset semantics), =:ratings= =:main= (=users= now joins on =rating_user=), and =:images= =:main= (=models= now joins on =image_model=). Full suite: *1424 checks, 22 groups, all green*. Live DB restored from the =mbank= snapshot; backfilled =admin= + rater-exclusive role links onto the 10 existing rating resources and deleted the 25 orphaned =ratings:%= resources. =be-list :ratings "beverly"= now returns her 3 ratings (2, 4, 5); =be-update :models <Model 01> '(:rating 5)= as beverly writes through and the new rating resource carries both roles. Note: =:scope :user= on =:ratings= =:main= applies to admin too, so admin's own ratings tab is empty unless admin rates — pre-existing declared behavior, not a bug.
+
+**** DONE 13. List pipeline documentation                       :docs:mvp:
 :PROPERTIES:
-:CREATED: [2026-08-11 Tue]
+:CREATED: [2026-08-08 Sat]
+:COMPLETED: [2026-08-23 Sun]
 :END:
 Document all changes introduced by the list pipeline (items 1–12)
 in a single pass after the feature is working. Centralizing
@@ -1517,9 +1696,241 @@ planning):
 - =AGENT.md=: update the Feature/Status sections to reflect list
   pipeline capabilities
 
-** TODO Template-instance spawn pattern               :backend:compiler:mvp:
+** DONE =be-update= fails misleadingly without record read access :backend:bug:
 :PROPERTIES:
-:CREATED: [2026-08-11 Mon]
+:CREATED: [2026-08-22 Sat]
+:COMPLETED: [2026-08-23 Sun]
+:END:
+Surfaced by the plan 12 Model Bank smoke [2026-08-28]. A user with
+type-level update permission (=models-user=) calling =be-update= on a
+record they cannot /read/ gets a misleading validation error instead of
+a permission error.
+
+Repro (modelbank, fresh DB):
+
+1. alice inserts a model with no =:roles= argument. The new
+   resource's roles are only =("admin" "alice:exclusive")=, so peers
+   with =models-user= cannot read it (intended: point-to-point
+   sharing).
+2. bob (has =models-user=, no share from alice) calls
+   =(be-update :models <id> '(:rating 5) "bob")= and gets
+   "Field validation failed: model name must be a valid :TEXT".
+3. bob retries with complete data ='(:name "beta" :rating 5)= and
+   gets "FILTERS cannot be NIL [GMN aa378b]".
+
+Verified:
+
+- =(rec <id> "bob")= silently returns NIL (admin and the creator
+  get the full record); =be-update= then proceeds on a nil record.
+- =full-data= backfills required fields from that nil record,
+  which produces the "name must be :TEXT" error in step 2.
+- =be-update= has no record-level permission gate; =be-delete=
+  does (=user-allowed-resource ... "delete"=). The type-level
+  update check passes for bob, so nothing rejects the call.
+- admin and the creator (alice) succeed with identical payloads.
+
+Not yet traced:
+
+- The =valid-filters= call site behind step 3's "FILTERS cannot be
+  NIL" (capture a backtrace first).
+- Whether the main row UPDATE commits before that error fires (no
+  transactions; a partial write is possible).
+
+Fix directions to weigh:
+
+- Add the record-level gate to =be-update=, mirroring =be-delete=,
+  so the failure is a clean permission error.
+- Make =rec='s no-access path signal for callers that require the
+  record, instead of silently returning nil.
+
+The default roles on insert (creator exclusive only) are intended;
+the bug is the misleading failure mode, not the default.
+
+*Fix (2026-08-28), per ~/workbench/data-ui-update-perm-plan.org:*
+
+- =lisp/backend.lisp= — =be-update= now gates before any side
+  effects: =valid-user-permissions ... "update"= (type-level),
+  =user-allowed-resource ... "update"= (record-level, error not
+  silent-skip), =valid-existing-uuid=, a clean "No record of type
+  ~s matches FILTERS/DATA" for nil-uuid (unmatched filters), and a
+  truthful "Record not found" guard on the loaded record. A
+  carve-out keeps opaque built-in non-base types (=:tokens=) on the
+  type-level check only, since =uuid-exists-p= /
+  =id-to-type-key= / =user-allowed-resource= cannot see their rows
+  (REST =store-token= login path regression-tested).
+- =tests/update-permission-tests.lisp= — new suite on the
+  =modelbank-test= fixture: peer denial (both repro payloads), no
+  partial write / no write-through orphans, unmatched filters,
+  bogus uuid, creator+admin regression with write-through, base-type
+  =:users= path (hash preserved), =:tokens= carve-out. Registered in
+  =data-ui.asd=; =run-update-permission-tests= wired into
+  =run-tests=.
+- Trace result (answers the two open questions): step 3's
+  "FILTERS cannot be NIL" fired in =update-resource-name= →
+  =find-resource-name= → =be-id ... filters= with =filters= = the
+  *original* UUID string passed to =be-update= — but reaching it
+  requires the caller-supplied filters to be nil at that point
+  (the repro passed the uuid via =data= =:id=, so =filters= was
+  the record uuid only until =id-from-filters-and-data= preferred
+  the data id). With the gate in place the call dies at the
+  permission check long before =update-resource-name=, so the
+  question is moot for unauthorized callers; authorized callers
+  always have a real uuid in =filters=/. The main-row UPDATE had
+  *not* committed before the old error (it fires between
+  validation and the main update), so no partial write occurred in
+  the repro.
+- =rec= left alone deliberately: its nil-return contract is
+  load-bearing (=be-delete= silent-skip, REST /api/rec empty
+  render). The caller that requires the record now guards
+  explicitly in =be-update=.
+- REST unchanged: the permission error is a validation-error →
+  400, same convention as =be-action='s permission error. A proper
+  403 needs a distinct condition type — separate small todo if
+  wanted.
+- Full suite green: 1445 checks, 23 groups. Live modelbank repro:
+  bob now gets one clean "does not have update permission on
+  record" for both payloads; alice/admin still write through
+  (rating 3 landed in =rt_ratings=).
+
+** DONE =:agg :distinct= default on M2M list fields     :model:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-22 Sat]
+:COMPLETED: [2026-08-23 Sun]
+:END:
+Implemented per ~/workbench/todo-distinct-plan.org: strict
+compile rule in =compile-field= via =valid-join-table-agg= —
+on a field with =:join-table=, row-display =:source :agg= must
+be =:distinct= (omitted =:agg= is injected; =:list= and every
+other value =report-e=). =:source-all= untouched. Migrated
+=*base-model*= (users/resources/roles), demos (todos =:tags=,
+parts =:files=), fixtures (bi-m2m, compose, compose-sugar, m2m,
+rollup-test, static-select, test-model), and the
+filtered-rollup-tests inline award model. New
+=tests/agg-distinct-tests.lisp= suite
+(=run-agg-distinct-tests=) covers inject/reject/overreach
+compile probes plus the two-chain behavioral collapse; the
+backend =aggregations= test expectation moved to =:distinct=.
+Docs updated (model-reference, README, AGENT.md). Full suite
+green: 1461 checks, 24 groups.
+M2M list fields (=:type :list= + =:join-table=) have set semantics:
+one join row per (record, related-item) pair. But =:agg :list= is
+today's doc-default for the row-display =:source=, and on any view
+that joins two or more independent one-to-many chains (two M2M
+joiners, or an M2M plus a ratings chain), the flat LEFT JOIN view
+SQL yields the cross product of the chains. Every =:agg :list=
+value is then duplicated (each value appears once per sibling-chain
+row), even though the underlying join rows are correct. See
+=model-reference.md= → "Caution: two joiner chains in one view".
+
+Chores =:completed-by= showed this live ("amanda" twice). Model
+audit [2026-08-22]: =chores= (=:tags=, =:completed-by=) and =books=
+(:authors) are fixed in the models; =modelbank= =:images= was
+already =:agg :distinct=; no other top-level model has a
+multi-chain view.
+
+Decision needed: should the compiler default the row-display
+=:agg= to =:distinct= whenever =:join-table= is present (set
+semantics), keeping =:list= available for authors who truly want
+positional duplicates? Candidates:
+
+- =compile-field= (model.lisp): when =:join-table= is set and
+  =:source= =:agg= is =:list= (declared or defaulted), rewrite to
+  =:distinct= — or =report-e= and force the author to choose.
+- Alternative: leave authoring as-is and only document (current
+  state).
+
+Related trap, not fixed by =:distinct=: non-=:list= aggregates over
+a sibling chain can still be wrong. =:avg= / =:sum= / =:count=
+over the cross product double-count whenever the row's other-chain
+fan-out is non-uniform (book with 2 authors: each rating counted
+twice, and weighted 3x vs a 3-author book). =books.lisp=
+=:average-rating= has exactly this shape. MVP stance: accept for
+display, or restructure (rollup / Issue 16 subquery rules). Do not
+let =:distinct= on list fields hide this second cousin.
+
+Plan: [[/home/macnod/Insync/macnod@gmail.com/Google Drive/dc/cloud-local/workbench/todo-distinct-plan.org][todo-distinct-plan.org]].
+
+** DONE =:default-sort= type attribute   :model:compiler:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-22 Sat]
+:COMPLETED: [2026-08-23 Sun]
+:END:
+Plan: [[file:~/workbench/default-sort-plan.md][default-sort-plan.md]].
+
+Type-level key declaring the sort used when a request sends none:
+
+#+begin_src lisp
+:todos (:type-roles ("logged-in")
+        :default-sort (:points :desc)
+        ...)
+#+end_src
+
+Crucial for the video: the app opens showing each list in its best
+order (Model Bank by rating, todos by points) with no user action.
+Today the default is hardcoded: =order by <table>.id= on base types
+(=phase-a-build-order-by=), first-sortable-measure =:desc= on
+rollups (=measure-default-sort=). Neither is author-controllable.
+
+Shape:
+
+- Type-level plist =(:field :asc|:desc)=; direction optional
+  (default =:asc=). Applies to the main list view.
+- Compile-time validation: field must exist and be =:sortable t=
+  (same rule the request path enforces via
+  =phase-a-order-by-column= / =valid-measure-sort=); report-e on a
+  non-sortable or unknown field.
+- Base path: =be-list= / =base-be-list= use it when the request
+  sort is nil. =phase-a-build-order-by= already appends the
+  table-qualified PK as tiebreaker, so paging stays stable. No
+  declaration keeps today's id-ASC behavior.
+- Rollup path: wins over =measure-default-sort='s
+  first-sortable-measure policy. =measure-effective-sort= must
+  echo it so the =:sort= reflection stays honest.
+- Frontend: free. Initial load already renders from the =:sort=
+  echo; a declared default just shows up without the frontend
+  asking.
+
+Related but separate: "Regular-type computed-field sort" (MVP
+Backlog) is about making =:agg= fields sortable at all;
+=:default-sort= only names already-sortable fields.
+
+Completed (2026-08-28, plan revised after Grok's review, resolve
+once in =be-list=, not separately in both branches):
+
+- =lisp/model.lisp=: new =valid-default-sort= (shape 1–2 elements,
+  keyword first, direction =:asc=/=:desc=, field exists and
+  =:sortable t=, all =report-e=); =:default-sort= passes verbatim
+  into both compiled type-defs beside =:tree=; =preliminary-model-check=
+  gained an unconditional walker arm above the =u:plistp= arm so
+  =(:points :desc)= is not recursed into.
+- =lisp/backend.lisp=: =be-list= binds the effective sort
+  =(or sort (tree-get ... :default-sort))= ahead of the base/measure
+  dispatch; one docstring sentence, one stale comment fix, one
+  =measure-default-sort= docstring reword. =base-be-list=,
+  =measure-be-list=, =measure-default-sort= code untouched, the
+  rollup path rides the request-sort validation (=valid-measure-sort=)
+  and echo (=measure-effective-sort=) for free.
+- Fixture =models/test/default-sort-test.lisp= (:items /
+  :items-plain / :board / :board-plain), suite
+  =tests/default-sort-tests.lisp= (26 checks: compile happy +
+  rejection, base + rollup behavior, absence regressions),
+  =run-default-sort-tests= helper, asd registered. Full =run-tests=:
+  1488 checks green.
+- Demos: =todos= =(:points :desc)=, =modelbank= =:models=
+  =(:name :asc)=; =:hot-models= left undeclared (policy already
+  correct; keeps absence visible in the demo).
+- Docs: =model-reference.md= (type-key row, rollup sort bullet,
+  response-=:sort= bullets, list-queries paragraph, key index),
+  =rest.md= =GET /api/list= sort note.
+
+One test-authoring lesson: "id-ASC" on base types is UUID order,
+not insertion order; the absence-regression test compares against
+the table's actual =order by id= sequence, not the seed order.
+
+** DONE Template-instance spawn pattern              :backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-23 Sun]
 :END:
 When a user completes a recurring item (chore, ticket, inspection
 round), the completion should be durable history while a fresh open
@@ -1536,6 +1947,38 @@ again" workflow. The chores model is the pilot; Model Bank does not
 need this. Depends on the action hook protocol (done) and filtered
 rollups (item 10) for leaderboard reads over completed instances.
 
+Implemented as a single =:spawn= action hook (per the plan's design
+decision 1; the two-hook =:spawn= /=:complete-and-spawn= idea is dead).
+One registry entry in =lisp/model.lisp=; =valid-spawn-params=
+compile-time validation in =compile-field='s button branch;
+=spawn-close-data= / =spawn-data= / =spawn-inherit-roles= runtime
+helpers. Fixture =models/test/spawn-test.lisp= (identity field is
+=:type :uuid :identity t :default :generate-uuid= so cleared
+successors never collide on the identity index); suite
+=tests/spawn-tests.lisp= (33 checks) + =run-spawn-tests= in helpers;
+demo =models/recurring.lisp=; docs in =hook-registry.md= and
+=model-reference.md=. Supporting engine fixes: =value-type-p= and
+=v-type= now accept =:generate-uuid= on =:uuid= fields, =db-value=
+generates a real UUID for it at bind time, and =id-from-data= skips
+reserved default keywords when building dedupe filters. Full
+=(run-tests)= green (1525 checks / 26 groups).
+
+Plan: [[file:~/workbench/spawn-plan.org][spawn-plan.org]].
+
+** TODO Checkbox list with search      :model:frontend:backend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Data UI provides a checkbox list with search for roles. We need to make all checkbox lists support search.
+** TODO Roles checkbox search shows all options               :frontend:bug:
+:PROPERTIES:
+:CREATED: [2026-08-16 Sun]
+:END:
+** TODO New users cannot have other users's exclusive roles        :backend:
+:PROPERTIES:
+:CREATED: [2026-08-16 Sun]
+:END:
+If I create user-1, then create user-2, the Add Users form lists user-1's exclusive role among the roles that can be assigned to user-2. Bad.
 ** TODO :new-roles top-level model key                :compiler:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -1631,11 +2074,6 @@ Additional clean, small models (beyond todos, modelbank, chores, books)
 to prove generality. All models are now fitness functions; Model Bank
 remains primary.
 
-** TODO Checkbox list with search      :model:frontend:backend:compiler:mvp:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:END:
-Data UI provides a checkbox list with search for roles. We need to make all checkbox lists support search.
 ** TODO Text-field width default and hint            :frontend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -1645,21 +2083,46 @@ Data UI provides a checkbox list with search for roles. We need to make all chec
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
+** TODO Date-time picker =:ui= widget                 :model:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-29 Sat]
+:END:
+A =:ui= widget (e.g. =:widget :date-time=) that renders a
+date-time picker on forms and submits ISO 8601 values like
+=2026-08-29T15:53:12= — the same shape =:created-at= /
+=:updated-at= use. Pairs with =:type :timestamp= fields. The
+=:ui= key passes through verbatim, so no backend change is
+expected beyond possibly validating the format on write.
 ** TODO Remove =:private:= from all doc strings                :maintenance:
 Public, exported function will carry the =:public:= label. We'll assume all the rest are private.
-** TODO 30-second demo video                                      :docs:mvp:
+** TODO Reject =:sortable t= on =:target= fields               :compiler:bug:
 :PROPERTIES:
-:CREATED: [2026-08-09 Sun]
+:CREATED: [2026-08-22 Sat]
 :END:
-Nothing → model → deployed app. Deadline: end of December 2026.
+=:sortable t= on a =:target= (FK) field compiles today, then 500s at
+click time. =compile-field-stage-2= rewrites the field's
+=:source :column-name= to the joined table's display column (e.g.
+=users.user_name=), but base Phase A SQL has no join, so Postgres
+raises 42P01 "missing FROM-clause entry". Observed live on Model
+Bank =:models= =:user= (Owner header). The existing guard passes it
+because =compile-field= force-sets =:column t= on any =:target=
+field.
 
-**When to shoot:** mid-to-late December — after polish and the features
-that should appear on camera (search/filtering, sort, static drop-downs,
-boolean list checkmarks, UI polish, etc.).
+Fix: compile-time reject, uniformly (base types and rollups — the
+memorable rule is "=:target= is never sortable"). =compile-field=
+already binds =has-target= beside the =:searchable= check that
+rejects FK fields; add the same shape inside the =:sortable= =when=,
+=report-e= matching its neighbors. Also drop =:sortable t= from
+=:models= =:user= in =models/modelbank.lisp= (the only current
+instance), update the =:sortable= row in =docs/model-reference.md=,
+and add a =(signals error)= compile test to =tests/sortable-tests.lisp=
+(test-suite edit needs human permission).
 
+Plan: [[file:~/workbench/target-non-sortable-plan.org][target-non-sortable-plan.org]]. Superseded by "Joined-column
+sort on base types" below when that lands.
 ** TODO Expose host profiles via HAProxy                      :scripts:
 :PROPERTIES:
-:CREATED: [2026-08-18 Tue]
+:CREATED: [2026-08-15 Sat]
 :END:
 =expose-profile <profile>= / =unexpose-profile <profile>= in
 =scripts/data-ui=: route a locally-run host profile's HTTP port
@@ -1673,11 +2136,60 @@ values =profile= / =profile-*= are reserved by the compiler
 =~/workbench/expose-profile-plan.org=; left TODO until smoke-tested
 on evo-x2.
 
+** TODO Determine how public role is applied              :backend:compiler:
+** TODO 30-second demo video                                      :docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Nothing → model → deployed app. Deadline: end of December 2026.
+
+**When to shoot:** mid-to-late December — after polish and the features
+that should appear on camera (search/filtering, sort, static drop-downs,
+boolean list checkmarks, UI polish, etc.).
+
 * MVP Backlog
+** TODO Sortable =:name= and =:email= in built-in =:users= type :backend:compiler:model:
+:PROPERTIES:
+:CREATED: [2026-08-22 Sat]
+:END:
+Make =:name= in the built-in =:users= type sortable (=:sortable t=).
+Make =:email= sortable too, but only if it already has an index:
+=:users= is a pre-existing rbac table, and we can't add an index
+later.
+** TODO Joined-column sort on base types                :backend:compiler:list:
+:PROPERTIES:
+:CREATED: [2026-08-22 Sat]
+:END:
+Let a base-type list sort by a =:target= field's display column
+(e.g. Model Bank =:models= by Owner name) — the real fix that the
+blanket ":target is never sortable" compile rule is holding the
+door for.
+
+Requirement: when the requested sort field is a =:target= field,
+Phase A runs on the join SQL (=phase-a-join-sql= already builds
+=select distinct rt_models.id ... left join ... users ...= for
+join-filters), ORDER BY the joined display column with the grain-id
+tiebreaker, and count via =COUNT(DISTINCT)= (the count switch in
+=phase-a-build-count-sql= already keys off =" join "=). The
+compile-time reject then relaxes to "=:sortable t= on =:target=
+requires the joined table to be in the view."
+
+Landmines:
+- Postgres rejects =SELECT DISTINCT ... ORDER BY <col>= when <col>
+  is not in the select list — add the sort column to the SELECT
+  (and adjust the id extraction) or wrap in a subquery.
+- =phase-a-join-sql= joins /all/ view tables (=:images=,
+  =:ratings=, ...), so the fan-out multiplies rows before DISTINCT
+  absorbs them; consider joining only the sort path.
+
+Sibling of "Regular-type computed-field sort"; same honesty rules
+(sort before =LIMIT=, stable =:total=, id tiebreaker). No plan yet.
+** TODO Show role's users                                         :compiler:
+:
 ** TODO Validate =:ui= hints                                  :compiler:valdn:
 ** TODO Regular-type computed-field sort             :backend:compiler:list:
 :PROPERTIES:
-:CREATED:  [2026-08-14 Fri]
+:CREATED: [2026-08-08 Sat]
 :END:
 Sort a Lisp-collapsed join aggregate on an ordinary type list
 (e.g. Model Bank =:models= =:average-rating= with =:agg :avg=)
@@ -1708,7 +2220,7 @@ Do not implement as post-collapse sort on a page of rows.
 A bad =:view=, =:table=, =:column=, or =:agg= in a =:source= plist
 should raise a compile-time error, not fail at runtime.
 
-** TODO Frontend accessibility for text-only LLM browser automation :frontend:polish:mvp:
+** TODO FE for text-only LLM browser automation        :frontend:polish:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
@@ -1724,10 +2236,33 @@ See ~/workbench/fe-accessibility-plan.org for the full plan.
 :CREATED: [2026-08-09 Sun]
 :END:
 If roles are given to the landing page type, then select the one with the least permissions and check it by default when adding a new user.
+** TODO Fallback landing page that never requires permissions  :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-15 Sat]
+:END:
+=be-landing-page= today: configured =:landing-page= if the user
+can see it, else first non-base type they can see, else first
+=be-types= entry, else =nil=. Step 4 leaves a blank app when
+=be-types= is empty.
+
+Add a fallback that never requires permissions, including a
+default page that is always reachable. Rollup types (list-plan
+07b) use their own =:type-roles= as the only gate; they do not
+solve this. Existing fallback is enough for users who can see
+some type. This item is the empty-=be-types= case.
 ** TODO Cursor in first field on Edit forms            :frontend:polish:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
+** TODO Refresh button near top right of screen      :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-22 Sat]
+:END:
+Add a refresh button somewhere near the top right of the screen.
+Clicking it re-requests the current data from the server and renders
+again. Useful when the list is stale (another user edited, an action
+hook completed, a deploy finished). Pure frontend: re-run the
+existing fetch path; no backend changes expected.
 ** TODO Break up App.tsx                          :frontend:maintenance:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -1757,9 +2292,9 @@ There are currently no REST API tests. This is a significant gap.
 available disk space before accepting uploads.
 ** TODO =:tree t= should require =:parent-type=             :compiler:valdn:
 
-** TODO Convert remaining =(error ...)= to =report-e= / =report-ve= :maintenance:compiler:
+** TODO =error= to =report-e= / =report-ve=           :maintenance:compiler:
 :PROPERTIES:
-:CREATED: [2026-08-18 Tue]
+:CREATED: [2026-08-15 Sat]
 :END:
 AGENT.md forbids raw =(error ...)= for system and validation
 failures. =report-e= / =report-ve= attach a Guru Meditation Number
@@ -1839,6 +2374,8 @@ unused.
 :CREATED: [2026-08-09 Sun]
 :END:
 Create an app that allows you to upload Markdown and Org-Mode files, and that allows you to search, browse, render them as HTML, and download them.
+
+** TODO Sign in as guest                   :frontend:backend:compiler:model:
 
 * Post MVP
 ** TODO Lifecycle side effects                            :backend:compiler:
@@ -1990,7 +2527,7 @@ matching rows for a user, and a =:pre-delete= hook on =:users=
 We need to be able to add a field and have the underlying table be updated.
 ** TODO Configurable default page size                     :backend:compiler:
 :PROPERTIES:
-:CREATED: [2026-08-11 Tue]
+:CREATED: [2026-08-08 Sat]
 :END:
 The MVP hardcodes the default =limit= at 20 and the server-side
 maximum clamp at 200. Post-MVP, these should be configurable.
@@ -2014,6 +2551,142 @@ Other formats should include:
 - TSV
 - Plain text
 - PDF
+** TODO =:hide-zero t= on rollup types                    :compiler:backend:
+:PROPERTIES:
+:CREATED: [2026-08-15 Sat]
+:END:
+Type-level opt-in that drops grain rows whose measures are empty
+after aggregation. MVP keeps every grain row (zero-fact retention,
+Issue 8). Leaderboards and plan 12's dead-models path (same rollup,
+sort ASC) need those zeros.
+
+Not a default flip: adding the flag later is additive; turning it
+on by default would be a breaking change.
+
+When set:
+- Measure Phase A appends =HAVING= (typically
+  =COUNT(<fact>.id) FILTER (...) > 0=). SUM/COUNT of no facts is
+  0; AVG is NULL. "Zero" is not one predicate; pick the gate
+  (usually the =:count=).
+- =:total= must count only remaining rows. Today's
+  =SELECT COUNT(*) FROM <grain>= becomes a lie. Spec seam is
+  plan 08b Step 5.
+
+Do not open a general HAVING DSL (thresholds, OR, "hide if all
+measures empty"). One boolean.
+
+=:hide-zero= on a non-rollup is a compile error. Absent is legal
+(today's behavior).
+
+** TODO Mixed-depth rollups (one subquery per fact table) :compiler:backend:
+:PROPERTIES:
+:CREATED: [2026-08-15 Sat]
+:END:
+MVP rollups have exactly one fact table F (Issue 16). Mixed-depth
+(count models /and/ avg ratings in one type) and extra arms are
+=report-e=. =COUNT(DISTINCT)= is not a fan-out fix.
+
+The engine is one subquery (or LATERAL) per fact table, joined
+back to grain. That is a different generator than measure Phase
+A's =FROM grain LEFT JOIN … GROUP BY grain=. It reopens FILTER
+placement and zero-fact tails per subquery. Issue 17 is already
+frozen as /downstream/: a clause on table T applies to
+aggregates whose source is T or further down the path toward
+that subquery's F. Do not invent all-to-all (a ratings window
+must not land on =COUNT(models.id)=).
+
+Do not land this as a patch on 08b. Named consumer: a
+=:top-contributors= that shows model count and avg rating
+together. Until then, those are two types.
+
+** TODO =:weighted-score= derived measure         :compiler:backend:model:
+:PROPERTIES:
+:CREATED: [2026-08-15 Sat]
+:END:
+
+Bayesian / IMDB-style composite measure: blend an average and a
+count into one sortable score so low-count items stop outranking
+well-rated ones (one 5-star rating vs fifty ratings averaging
+4.8). First instance of a /registered composite measure/ — a
+registry entry over sibling measure fields with a parameter
+schema (validates the model, drives the no-code palette, serves
+as the AI spec). Not an expression DSL; no raw code in the model.
+
+#+begin_src lisp
+:score (:type :real
+        :derived (:weighted-score
+                   :avg-field :recent-avg
+                   :count-field :recent-ratings
+                   :prior 5)
+        :sortable t)
+#+end_src
+
+Formula: =(v/(v+m))·R + (m/(v+m))·C= where v = the count field,
+R = the avg field, m = author-declared =:prior= (positive), C =
+grand mean of the same (filtered) facts the aggregates read —
+computed once per request, bound as a parameter.
+
+Semantics to freeze when specified:
+- =COALESCE= around R inside the expression; SQL NULL must not
+  propagate through the arithmetic
+- Zero facts → score = C exactly (dead models sit at the prior,
+  mid-board; still findable by ascending sort)
+- =:avg-field= / =:count-field= must name sibling /measure/
+  fields on the same rollup; compile error otherwise
+
+Why post-MVP: it is a measure Phase A expression (sortable,
+page-honest), so it needs items 08–10 green first; and where the
+count is "distinct users that rated", it consumes the Issue 16
+fan-out rules — a wrong count silently poisons the score. Named
+consumers: Model Bank ranked by score instead of raw average.
+Future curated formulas (time decay for "hot", Wilson lower
+bound for "controversial") follow the same registered-measure
+pattern.
+
+** TODO Hybrid measure sort on base types            :compiler:backend:
+:PROPERTIES:
+:CREATED: [2026-08-15 Sat]
+:END:
+Sort a CRUD / hybrid list by a Phase B measure (e.g. click
+Average on Model Bank =:models=). Not in MVP (Issue 12).
+
+MVP: hybrids stay id-first Phase A + Phase B. =:average-rating=
+is visible and not sortable. 09 relaxes =:sortable t= without
+=:column t= for rollups only. =:hot-models= is last-30-days
+activity, not this list.
+
+When this lands:
+- Phase A still selects ids (plan 02). Same hydrate in Phase B.
+- =ORDER BY= is a scalar subquery (or grouped join) from 08b's
+  mapper. Not a third shape. Not measure Phase A on the hybrid
+  (=:models= needs Phase B for images, scoped write-through
+  rating, buttons).
+- =:total= stays =COUNT(*)= on the table. Unrated rows sort
+  with =NULLS LAST= (AVG of zero facts is NULL).
+- Only =:avg= / =:sum= / =:count=. Not =:first= / =:list= /
+  =:distinct=.
+
+Traps (do not close this door in 08b/09):
+1. Do not globalize 09's =:column t= relaxation. Hybrid
+   =:sortable t= on =:average-rating= is a compile error until
+   this item.
+2. 08b's mapper returns the raw SQL agg. Rollup SELECT wraps
+   =COALESCE= for =:sum= / =:list= / =:distinct=. This =ORDER
+   BY= uses the raw form plus =NULLS LAST=. Do not bake rollup
+   zero-fact display into the mapping (ranking 0 while stars
+   show empty).
+3. The subquery reads the fact table directly. Do not replay
+   the hybrid's view join (=:models= joins images and ratings;
+   Lisp =:avg= can double-count). Display fan-out is Issue 16's
+   cousin, not a sort input.
+4. No write-time denormalized =average_rating= column. The
+   compiler stays authoritative.
+5. Do not Lisp-sort the whole table "for now." Do not treat a
+   rollup as the sortable stand-in for the CRUD type.
+
+Depends on 08b's mapper being callable without assuming
+=GROUP BY=.
+
 * Scratch
 * Conf
 #+begin_src org

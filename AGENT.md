@@ -1,778 +1,244 @@
 # Data UI – Agent Overview
 
-Data UI compiles a small nested-plist model into a complete RBAC-backed application (PostgreSQL + generic backend + REST API + React frontend).
+Data UI compiles a small nested-plist model into a complete RBAC-backed
+application (PostgreSQL + generic backend + REST API + React frontend).
+The model is the DNA of the app; the compiler guarantees the expansion
+is consistent. Tagline: "Your whole app, in an email."
 
-## The Thesis (read this first)
+Consequence for agents: the model format is an **API for a non-human
+consumer**. An AI does not write arbitrary code into a Data UI app — it
+selects from a defined vocabulary (the hook registry) and fills
+parameters.
 
-The hard part of building evolving, RBAC-heavy collaborative apps is not writing
-code — it is holding a web of invariants (every role × every resource × every
-operation, over time) globally consistent. Humans and AIs both drift on this at
-scale.
+## Where to Look (read before acting)
 
-Data UI lets the **entire** application be expressed as a small artifact that
-"fits in an email," and the compiler **guarantees** the expansion is consistent.
-The model is the DNA of the app. This is why the project exists and why the model
-stays small and the compiler stays authoritative.
+Detail lives in the docs, not here. Consult the right one before
+touching the corresponding area:
 
-Strategic consequence relevant to agents: the model format is an **API for a
-non-human consumer**. An AI does not write arbitrary code into a Data UI app — it
-selects from a defined vocabulary (the hook registry) and fills parameters. Keep
-this in mind whenever reasoning about how features should be expressed.
-
-Tagline: **"Your whole app, in an email."**
-
-See README.md for the full framing (Big Idea, Why AI Needs Data UI, Hooks and
-the Registry, the Marketplace).
-
-Model vocabulary (top-level keys, types, fields, `:ui`, forms, views): 
-`docs/model-reference.md`. Hook contracts: `docs/hook-registry.md`.
-
-## Core Concept
-
-Describe your data model once. The system generates:
-- PostgreSQL tables, views, and triggers
-- Parameterized CRUD SQL
-- Full RBAC integration (via companion `rbac` library)
-- Generic backend functions (`be-*`)
-- Generic REST endpoints (`/api/list`, `/api/insert`, `/api/update`, `/api/delete`, etc.)
-- Schema-driven React frontend
-- Kubernetes manifests for deployment
-
-The goal is deterministic, repeatable development: change the model, recompile, and the application updates.
+- **Framing, thesis, two tiers, goals, marketplace, current status,
+  road to MVP** → `README.md`
+- **Model vocabulary** — every top-level key, type key, field key,
+  `:ui` subkey, forms, views, write-through, rollups, trees, join
+  tables, known gaps → `docs/model-reference.md` (read before editing
+  any model or fixture). M2M list fields: join-table row-display
+  `:source :agg` is `:distinct` (`:list` there is a compile error;
+  omitted `:agg` defaults to `:distinct`).
+- **Hooks and the registry** — all three contracts, registry API,
+  action hooks, the no-transactions caveat → `docs/hook-registry.md`
+  (read before authoring any hook or touching hook code)
+- **REST endpoints** — all routes with parameters → `docs/rest.md`
+- **Deployment** — every step, traps, admin password location, TLS,
+  troubleshooting, clean-slate recovery → `docs/deployment.md`;
+  session-by-session history in `~/.debug/deployment-work.md`
+- **Lisp style and error reporting** — `u:` preference, small
+  functions, `report-e` / `report-ve`, `valid-*` naming →
+  `docs/lisp-style.md` (read before writing any Lisp: tests, helpers,
+  or engine code with permission)
+- **Dead-code decisions** — `docs/model-accessors.md` (check before
+  removing anything that looks unused)
+- **Backlog** — `docs/todo.org`
 
 ## Key Architecture
 
-- `lisp/model.lisp` – Model compilation and the RBAC base model (`*base-model*`)
-- `lisp/backend.lisp` – Backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-landing-page`, etc.)
+- `lisp/model.lisp` – model compilation and the RBAC base model
+  (`*base-model*`)
+- `lisp/backend.lisp` – backend functions (`be-list`, `be-insert`,
+  `be-update`, `be-delete`, `be-action`, `be-landing-page`, ...)
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
-- `lisp/predicates.lisp` – Type/field predicates (`table-p`, `base-type-p`, etc.; `:button` field type)
-- `lisp/database.lisp` – Database initialization and table creation
-- `lisp/aux.lisp` – Auxiliary helpers (path utilities, scoped paths)
-- `lisp/plist-json.lisp` – Plist ↔ JSON serialization
-- `lisp/deployment.lisp` – Model field extraction for deploy scripts
-- `lisp/startup.lisp`, `lisp/data-ui.lisp`, `lisp/data-ui-package.lisp` – System startup and package definition
-- `models/` – Example models, one per file (e.g. `todos.lisp`, `parts.lisp`, `file-server.lisp`, `modelbank.lisp`, `widgets.lisp`). Each file holds a bare model plist (no `defparameter`, no wrapping variable). Load one with `(set-model "todos")` — pass just the file name, with no path and no `.lisp` extension. Test fixtures live under `models/test/`; `set-model` checks `models/` first, then falls back to `models/test/`. `list-models` returns top-level models only.
-- `web/` – React frontend (Vite + TypeScript)
-- `tests/` – FiveAM test suites: `predicate-tests.lisp`, `backend-tests.lisp`, `rest-tests.lisp`, `scoping-tests.lisp`, `action-tests.lisp`, plus `helpers.lisp` and `model-template.lisp`
+- `lisp/predicates.lisp` – type/field predicates; `:button` field type
+- `lisp/database.lisp` – database initialization and table creation
+- `lisp/aux.lisp` – helpers (`report-e`, `report-ve`, path utilities)
+- `lisp/plist-json.lisp`, `lisp/deployment.lisp`, `lisp/startup.lisp`,
+  `lisp/data-ui.lisp`, `lisp/data-ui-package.lisp`
+- `models/` – example models, one per file (e.g. `todos.lisp`,
+  `modelbank.lisp`, `widgets.lisp`), each a bare model plist. Load with
+  `(set-model "todos")` — bare file name, no path, no `.lisp`
+  extension. Test fixtures under `models/test/`; `set-model` checks
+  `models/` first, then falls back to `models/test/`. `list-models`
+  returns top-level models only.
+- `web/` – React frontend (Vite + TypeScript), intentionally minimal
+  and schema-driven: consumes `list-form` / `add-form` /
+  `update-form`, `records`, and `allowed-values` from the API
+- `tests/` – FiveAM suites (`predicate-`, `backend-`, `rest-`,
+  `scoping-`, `action-tests.lisp`) plus `helpers.lisp` and
+  `model-template.lisp`
 
-The non-frontend code is almost entirely Common Lisp (SBCL).
-
-The frontend is intentionally minimal and schema-driven. It consumes `list-form`/`add-form`/`update-form`, `records`, and `allowed-values` from the API to render dynamic lists and forms.
-
-## Feature and Issue Tracking
-
-Features, issues, and TODOs are tracked in **`docs/todo.org`** (an org-mode file with `TODO` / `DONE` states and tag-based categorization). This is the canonical backlog for MVP work, MVP backlog, and post-MVP items. Refer to it when deciding what to work on next.
-
-Every item carries a `:PROPERTIES:` drawer with date stamps:
-- `:CREATED:` — date the item was added (org inactive timestamp, e.g. `[2026-08-10 Sun]`)
-- `:COMPLETED:` — date the item was marked `DONE` (same format; absent on `TODO` items)
-
-When adding a new item, include a `:PROPERTIES:` drawer with `:CREATED:` set to today's date. When marking an item `DONE`, add (or update) `:COMPLETED:` with today's date.
-
-## Live Introspection: `eval-in-data-ui`
-
-An Elisp helper, `eval-in-data-ui`, evaluates a Common Lisp form against a
-**running** Data UI instance (over Slime, in the `:data-ui` package) and returns
-the result. Use it to inspect live state — the compiled model, RBAC roles/users,
-hook/registry behavior — rather than guessing from source.
-
-- Argument: a single `form`, given as a string (or a Lisp form).
-- Evaluation context: the `:data-ui` package, so package-local nicknames like
-  `a:` (the rbac library) are available.
-- Invoke it via the `Eval` tool.
-
-Example:
-
-    (eval-in-data-ui "(a:list-role-names *rbac*)")
-    ;; => ("admin" "admin:exclusive" "guest:exclusive" "logged-in"
-    ;;     "parts" "public" "settings")
-
-When you have modified a Lisp source file and want to test the changes, you must
-reload the file into the live image before running tests or introspecting. For
-example, after editing `lisp/model.lisp`:
-
-    (eval-in-data-ui "(load \"~/common-lisp/data-ui/lisp/model.lisp\")")
-
-Without this step, the running image still holds the old code and tests will pass
-(or fail) against the stale version.
-
-This is read-most: prefer it for verification and introspection. It runs real
-Lisp against the live image, so treat state-mutating forms with the same care you
-would in a REPL, and remember the project rule that Lisp source outside `web/`
-and `tests/` is not modified without human permission.
-
-**Full image reload:** When you need to reload everything and reset the
-database (rather than reloading a single file), use `(hard-reset)` from
-`lisp/startup.lisp`. It runs `asdf:load-system :force t`,
-`init-database`, and `reset-database` in one call — no need to do the
-three steps manually.
-
-**Gotcha: reloading `rest.lisp` while the web server is running.**
-`start-web-server` (in `rest.lisp`) is guarded by `(unless *http-server* ...)`
-so it is a no-op if the server is already running. However, reloading
-`rest.lisp` into the live image can clobber `*http-server*` (or invalidate
-the existing acceptor object), leaving the global nil while the OS still
-holds the port. The next `set-model` → `start-web-server` then tries to bind
-a new acceptor and fails with `ADDRESS-IN-USE-ERROR`. If you need to reload
-`rest.lisp`, verify `*http-server*` is still live afterward. If it is nil,
-you may need to `(stop-web-server)` (to release any half-open socket) before
-the next `set-model` can restart it cleanly.
-
-## Running Tests
-
-Use the helper functions in `tests/helpers.lisp` — never call
-`fiveam:run!` directly. These helpers handle model loading, database
-resetting, and test-suite selection so you don't run unnecessary tests
-or forget setup steps.
-
-- `(run-tests)` — runs backend, predicates, scoping, hook registry, lifecycle,
-  and action suites using the `test-model` fixture model (via `with-model`,
-  which resets the database and loads the model automatically).
-- `(run-action-tests)` — runs the action hook suite (button fields, `be-action`,
-  status transitions, in-progress guard, permission checks, form exclusions).
-- `(run-scoping-tests)` — runs the scoping suite using the `modelbank-test`
-  fixture under `models/test/` (not the top-level `modelbank` demo).
-
-When you need a focused test run for a specific model or suite, add a
-new `run-*` function to `tests/helpers.lisp`. AI agents are explicitly
-permitted to modify `tests/helpers.lisp` for this purpose — add as many
-`run-*` functions as needed to keep the development cycle tight. Do not
-modify the test suites themselves (`backend-tests.lisp`,
-`scoping-tests.lisp`, etc.) without human permission.
-
-### Writing a New Test Suite
-
-To add a new test suite (e.g. for a new feature), four files change:
-
-1. **Create the test file** in `tests/` (e.g. `tests/secrets-tests.lisp`).
-   Follow the existing pattern:
-   ```lisp
-   (in-package :data-ui)
-
-   (def-suite secrets-suite :description "Secrets type tests")
-
-   (in-suite secrets-suite)
-
-   (test secrets-type-compiles
-     "Description of what this test verifies."
-     (is-true ...))
-   ```
-   - Use FiveAM primitives: `is`, `is-true`, `is-false`, `signals`,
-     `finishes`.
-   - Tests run inside `with-model`, which resets the database and
-     recompiles with the specified model. Base types (from `*base-model*`)
-     are present in every model, so you can test them with any model.
-   - **Test models only from `models/test/`.** Automated tests must
-     load fixtures under `models/test/` (e.g. `test-model`,
-     `m2m-test`, `static-select-test`). Do **not** point `with-model`
-     / `set-model` at top-level demo models (`todos`, `books`,
-     `chores`, `modelbank`, etc.). Those change with product work and
-     break tests. If a suite needs a shape that only exists in a demo,
-     copy a minimal stable fixture into `models/test/` instead.
-     Manual REPL smoke against a demo is fine; it is not part of the
-     suite.
-   - Clean up any data you insert (delete test rows) so tests are
-     order-independent.
-   - `be-types` returns plists, not alists — use `(getf entry :name)`
-     as the `:key` when searching, not `#'car`.
-
-2. **Register the file in `data-ui.asd`** — add it to the `tests`
-   module component list, after the existing test files:
-   ```lisp
-   (:file "secrets-tests")
-   ```
-
-3. **Add a `run-*` helper** in `tests/helpers.lisp`:
-   ```lisp
-   (defun run-secrets-tests ()
-     "Run secrets type tests."
-     (with-model "test-model" nil
-       (run! 'secrets-suite)))
-   ```
-
-4. **Add the helper to `run-tests`** in the same file so the full
-   suite includes it:
-   ```lisp
-   (defun run-tests ()
-     ...
-     (run-secrets-tests))
-   ```
-
-After creating or modifying a test file, reload it into the live image
-with `(load "~/common-lisp/data-ui/tests/secrets-tests.lisp")` before
-running. If you modified `helpers.lisp`, reload that too.
-
-**Full reload + database reset:** When you need to reload all source
-files and reset the database (e.g. after `asdf:load-system` resets
-`*rbac*` to nil), use `(hard-reset)` — defined in `lisp/startup.lisp`.
-It does `asdf:load-system :force t`, `init-database`, and
-`reset-database` in one call. Prefer this over manually calling the
-three steps individually.
+Non-frontend code is SBCL Common Lisp, written by a human.
 
 ## Interaction Conventions
 
-- **"Take a look at our todo list" / "take a look at our next todo item"**
-  (or similar phrasings) means: read the todo list, acknowledge what you
-  see, and **ask the human whether to start working on it**. It does **not**
-  mean "begin researching or implementing immediately." Wait for explicit
-  direction before starting any work.
-- **No Org tables in replies.** Global HARD rule: see
-  `~/r/elisp/ai/global.md`. Do not restate at length here.
-
-
-## AI Agent Workflow & Tooling
-- Use specialized file tools exclusively: `Glob`, `Grep`, `Read`, `Edit`, `Write` (never `Bash` for file inspection/editing)
-- Delegate open-ended research, codebase exploration, or multi-file searches to `researcher` agent
-- Use `TodoWrite` to track any multi-step work (3+ distinct steps/phases)
-- Delegate complex multi-file edits or systematic refactors to `executor`
-- All pre-work discussions and planning remain mandatory before code changes
-- **Never stage or commit changes.** The workflow is:
-  1. The human provides a clean repo (no untracked or unstaged changes).
-  2. The agent makes changes but does not stage or commit anything.
-  3. The human reviews unstaged changes and untracked files.
-  4. If approved, the human stages and commits. If not, the review cycle repeats.
-
-
-- All Lisp code (model compiler, backend functions, REST endpoints, database layer, etc.) was written by a human.
-- AI agents must not modify any Lisp source files outside `web/` and `tests/helpers.lisp` without special permission from a human. That code is complex and largely outside of AI's current capabilities.
-- The React frontend in `web/` was built with AI assistance. Future frontend work will also involve AI.
-- Do not refactor, clean up, or "improve" Lisp code unless explicitly instructed.
-- Before any code is written, a thorough discussion of the goals must happen.
-- Some functions have no in-codebase callers but are intentionally retained (REPL debugging, external scripts). See `docs/model-accessors.md` before removing "dead" code.
-
-## Current Status (MVP)
-
-- **End-to-end pipeline proven (June 2026): model → compile → deploy →
-  live app.** The to-do model is deployed and working at
-  https://todo.demo.data-ui.com via `scripts/data-ui deploy todos`.
-- Backend compilation, SQL generation, RBAC, and generic endpoints are working
-- `models/todos.lisp` contains an example model for a To Do list; load it with
-  `(set-model "todos")`. The deploy pipeline deploys `models/todos.lisp` via
-  `scripts/data-ui deploy todos`.
-- Full CRUD works on **all** types — both the built-in RBAC types (users, roles,
-  permissions, resources, etc.) and user-defined types
-- **Scoping** is implemented at both the view level and the field level.
-  - View-level `:scope :user` filters `be-list` results to records owned by
-    the current user.
-  - Field-level `:scope :user` on a field's `:source` filters aggregated field
-    values to the current user (e.g. Model Bank "my rating"). It does **not**
-    control field visibility or editability in the UI.
-  - Tests in `tests/scoping-tests.lisp`. One view-level behavioral test remains
-    flaky / TODO.
-- **Write-through** (`:write-to` + `:identity t`) is implemented: compile-time
-  validation, `:search-sql`, unique identity indexes, and backend execute path
-  in `be-insert` / `be-update` (best-effort `handler-case`, non-transactional).
-  Used by Model Bank ratings. Remaining work is edge cases (e.g. clear-to-NULL)
-  and Model Bank completion — not the core execute path.
-- **Model features now in use** (exercised by `models/modelbank.lisp`):
-  - `:tree t` / `:is-leaf` / `:parent-type` / `:fs-backed t` — tree-structured
-    types with filesystem backing (directories, file storage)
-  - `:path t` — marks the path field on fs-backed types
-  - `:autofill :user` — auto-populates a field with the current username
-  - `:user-setting t` — type-level flag marking per-user settings types;
-    auto-sets `:suppress-roles t`. Used by the built-in `:settings` type.
-  - `:suppress-roles t` — type-level flag that suppresses the injected `roles`
-    field in forms. Auto-set when `:user-setting t`; can also be set independently.
-  - `:identity t` / `:write-to` — natural keys and related-table upserts
-  - `:compose` field attribute / `:compose-string` lifecycle hook —
-    server-side composition of stored field values (e.g. full name from
-    first/middle/last). `:compose` is sugar that expands to
-    `:compose-string` on `:pre-create` and `:pre-update`. See
-    `docs/model-reference.md` → `:compose` and `docs/hook-registry.md` →
-    Registered Lifecycle Hooks.
-  - `:widget` values: `:textbox`, `:textarea`, `:code`, `:stars`, `:select`,
-    `:file`, `:checkbox`, `:checkbox-list`, `:password`, `:hidden`, `:button`,
-    `:image`, `:image-list` — controls form rendering and list cell display
-  - `:options` on `:ui` — list of non-empty strings for static dropdown
-    values (requires `:widget :select`; mutually exclusive with `:target` /
-    `:join-table`; bare `:select` without `:options` or `:target` is a
-    compile error). See `models/test/static-select-test.lisp`
-  - `:read-only t` boolean on `:ui` — renders a field's display variant
-    instead of an editor (not a widget value)
-  - `:button` field type with `:action` — clickable controls on update forms
-    that invoke registry action hooks. Compiler synthesizes a companion
-    `:<field>-status` column (default `"idle"`) to track action state.
-    See "Action Hooks" section below.
-  - `:title` — top-level key; the human-readable app title (e.g. "To Do List").
-    Used for the page title in the frontend.
-  - `:landing-page` — top-level key; declares which type the frontend
-    shows on load. `/api/info` resolves it per-user via `be-landing-page`
-    (falls back to first non-base type the user can access)
-- React frontend has:
-  - Type selector (`/api/types`); initial type chosen from `/api/info` `:landing-page`
-  - Dynamic list with conditional Add / Delete Selected buttons and per-row Edit buttons
-  - Delete checkboxes (shown when `delete: true`)
-  - Expandable Add/Edit form (uses `add-form` / `update-form`)
-  - Inline edit mode (per-row Edit button populates the form with record values)
-  - Role management via injected `roles` field (filtered `allowed-values`)
-  - Image support: thumbnail grids, image preview modals/lightbox with
-    navigation and download
-  - The `/api/list` response now includes `create`/`delete`/`update` booleans to control which action buttons are shown
-- REST API endpoints (all in `lisp/rest.lisp`):
-  - `/api/list`, `/api/item`, `/api/id`, `/api/value`, `/api/value-id`,
-    `/api/column` — data retrieval
-  - `/api/insert`, `/api/update`, `/api/delete` — CRUD mutations
-  - `/api/actions` — execute an action hook on a button field (POST)
-  - `/api/upload` — file upload (multipart, returns `file-token`)
-  - `/api/validate-field`, `/api/validate-form` — validation
-  - `/api/types`, `/api/info` — schema/metadata (`/api/info` resolves `:landing-page` per-user via `be-landing-page`)
-  - `/api/login`, `/api/refresh` — JWT auth (access + refresh tokens)
-  - `/api/file` — file serving (with token auth)
-  - `/health` — health check
-- File handling: upload, list, and **delete** (including recursive directory
-  delete) work. The upload flow does a two-phase POST (`multipart/form-data`
-  to `/api/upload`, then a JSON `/api/insert` carrying the returned
-  `file-token`)
-
-### Known gaps / next up
-
-- **Write-through edge cases** — core path landed; remaining: clear-to-NULL and
-  other edge cases surfaced by Model Bank. Unblocks remaining scoping
-  behavioral test polish.
-- **Transactions / rollback** — deliberately deferred to post-MVP.
-  Lifecycle hooks and write-through are **not** atomic with the primary
-  write. A failing hook fails the operation without rolling back prior
-  side effects. Database init (`rbac:initialize-database`) is also not
-  idempotent. Design hooks and write-through with eventual transaction
-  wrapping in mind; do not assume atomicity today.
-- File **update** is not implemented; may be deferred past the MVP
-- UI polish — important for the video; deferred relative to compiler /
-  backend capability work (frontend changes are cheaper)
-- More example models (prove generality)
-- The 30-second create-model→deployed-app video (MVP deliverable,
-  deadline end of December 2026)
- 
-## Deployment (working; read this before touching it)
-
-`scripts/data-ui deploy todos` (renamed from `scripts/run.sh`) deploys
-`models/todos.lisp` to a k3d cluster on
-the deploy host (`evo-x2`) behind HAProxy + TLS. Full detail in
-**docs/deployment.md**; session-by-session history of how it was built (with
-every bug and fix) in **~/.debug/deployment-work.md**. Key facts:
-
-- The model's top-level keys (`:title`, `:name`, `:version`, `:domain`, `:repl`, `:landing-page`)
-  drive everything: tag `<name>-<version>-<githash>`, namespace
-  `dataui-<name>`, HAProxy map entry for `:domain`, Swank port iff
-  `:repl t`.
-- Deploy state (rendered manifests, ports.lock, secrets.env) lives
-  outside the repo in `~/.local/state/data-ui-deploy/`. ports.lock and
-  secrets.env are caches; the live cluster is the source of truth.
-  Admin password: `grep ADMIN_PASSWORD
-  ~/.local/state/data-ui-deploy/todos/secrets.env` (or the instance name
-  derived from the model's `:name`).
-- App data is durable on the host: `~/k3d/volumes/dataui` is mounted
-  into the k3d node at `/data/dataui`; instance PVs use
-  `/data/dataui/<name>-<env>/`.
-- TLS: wildcard cert for `*.demo.data-ui.com` (certbot + Route 53
-  DNS-01), auto-renewing via certbot.timer + the hook in
-  `deploy/letsencrypt-haproxy-hook.sh`. One-time host setup:
-  `deploy/setup-tls.sh`.
-- `DRY_RUN=1 scripts/data-ui deploy todos` renders manifests and stops —
-  use it before any template change.
-- **Trap 1:** rbac's `initialize-database` is NOT idempotent. If first
-  boot dies mid-init, the instance wedges ("permission 'create' already
-  exists" crash loop). Recovery = clean-slate procedure in
-  docs/deployment.md (delete namespace + PVs + host data + optionally
-  secrets.env, redeploy). Transactional init is deliberately post-MVP.
-- **Trap 2:** `systemctl reload haproxy` does not pick up newly added
-  EXTRAOPTS (`-f conf.d`); only a full restart does. The script handles
-  this; don't "simplify" it away.
-- **Trap 3:** generated admin passwords must satisfy rbac's policy
-  (letter + digit + punctuation) — hence the `-a1` suffix in
-  `ensure_instance_secrets`.
-- **Always run `npm run build` after making frontend changes.**
-  Hunchentoot serves the built files from `web/dist/`; there is no dev
-  server. `npm run build` runs `tsc` first (typecheck) then `vite build`
-  (bundle). Without this step, changes are invisible.
-- **`:repl t` works** and exposes Swank for the instance (SSH tunnel
-  required to connect). Prefer `:repl nil` in production — it is an
-  extra attack surface even behind a tunnel.
-
-## Two Tiers, One Engine
-
-Data UI serves two audiences through a single compiler. Agents must keep the
-distinction straight:
-
-- **Expert / self-hosting tier** — the open-source Common Lisp engine. Full power:
-  custom registry entries (write your own hook factory in Lisp), function
-  overrides for lifecycle ops.
-  The guardrail is the developer's own judgment (a "shotgun" philosophy — it does
-  not stop you from doing whatever you want). **MVP safety note:** transactions
-  and rollback are deliberately deferred (see Known gaps). A failing lifecycle
-  hook does not roll back the primary write.
-- **AI / no-code / hosted tier** — model is pure data (YAML/JSON), hooks come from
-  a curated, parameterized registry, no raw-code escape hatch. The constraint is
-  the product, not a limitation: it makes the tier safe to operate and consumable
-  by an AI. The escape valve for power users is to self-host the open engine.
- 
-Both tiers reduce to the same hook contract before anything runs; the compiler
-never special-cases one against the other.
-
-## Hooks and the Registry
-
-All custom logic (validation, lifecycle, and actions) attaches via hooks that reduce to a
-single calling contract per kind.
-
-- Validation contract: `(lambda (type-key field-key value user) -> nil | error-string)`
-- Lifecycle contract: `(lambda (type-key data user &key id roles record) -> nil | plist)`.
-  Return `nil` = no change; return a plist = keys are merged into `data`
-  (overwriting); non-plist non-nil = `report-e`. `run-lifecycle-hooks`
-  returns the updated data plist. Pre-create/pre-update hooks run
-  **before** validation and SQL extraction in `be-insert` / `be-update`,
-  so hook-supplied values are validated and written. This is the
-  **data-effect contract** that powers `:compose-string` and future
-  cross-table hooks.
-- Action contract: `(lambda (type-key field-key record user &key roles status-field set-status) -> result-plist-or-nil)`
-- Hooks are **lists**; multiple hooks may attach. The sole surface form:
-  - `(:keyword args...)` — registry entry (data-only; AI/no-code/hosted tier)
-- The **registry** is the sole hook surface form.
-  A registry entry = name +
-  parameter-schema + factory. The parameter schema does triple duty: validates
-  hosted-tier data, drives the no-code UI palette, and serves as the AI
-  function-calling spec. API: `register-hook` (not `register-validation`).
-  Registry kinds: `:validation`, `:lifecycle`, `:action`.
-
-**MVP caveat (transactions deferred):** lifecycle hooks are NOT
-transaction-wrapped. A failing hook fails the operation WITHOUT rollback of
-the primary write or earlier hooks in the list. Write-through follows the
-same rule: primary write commits first; related-table upserts run after and
-are best-effort (`handler-case`, log, continue). Transactions and rollback
-are deliberately deferred to post-MVP; the eventual boundary is intended to
-wrap primary write + hook list + write-through as a unit. Design hooks with
-that future in mind, and never assume atomicity in MVP code or docs.
-
-## Action Hooks
-
-Action hooks are a third hook kind (`:action`) that attach to `:button` fields.
-They let model authors define clickable controls on the update form that execute
-server-side logic — e.g. deploying a model, generating content, running a
-transformation.
-
-### Field authoring
-
-```lisp
-:deploy
-(:type :button
-  :ui (:label "Deploy Model" :widget :button)
-  :action (:deploy-model :field :model))
-```
-
-- `:type :button` — no storage column; the field is a control, not data.
-- `:action` — a single registry form `(:keyword args...)` naming the hook to
-  run. (The plan originally called this `:actions` plural; the implementation
-  uses `:action` singular.)
-- `:ui` must include `:widget :button` so `fe-fields` emits the field.
-- `:action` is valid **only** on `:type :button` fields (compile-time error
-  otherwise).
-
-### Status field (compiler-synthesized)
-
-Every `:button` field gets an auto-generated companion status column named
-`:<field>-status` (e.g. `:deploy` → `:deploy-status`):
-
-- `:type :text`, `:column t`, `:default "idle"`, `:not-null t`
-- `:ui (:widget :textbox :read-only t)`
-- `:update nil` (blocks normal update path; status writes use `be-set-field-value`
-  only)
-- `:source (:view :main :column <status-key> :agg :first)`
-
-The compiler auto-includes the status field on `:update-form` when the button
-field is listed there. If the status key already exists as an author-declared
-field, compilation fails (`report-e`).
-
-### Status protocol
-
-Four canonical status strings:
-
-| Status | Who sets | Terminal? |
-|--------|----------|-----------|
-| `idle` | column default | yes (ready / never started) |
-| `running` | `be-action` before hooks | no (sole in-progress state) |
-| `complete` | framework (sync success) or worker via `set-status` | yes |
-| `failed: <reason>` | framework (sync error) or worker via `set-status` | yes |
-
-- **In-progress guard:** `be-action` refuses to start iff current status is
-  exactly `"running"`. All other values allow a new run.
-- **Sync hooks** (no `:async t` in result): framework sets `complete` on
-  success, `failed: <message>` on error (truncated to 200 chars).
-- **Async hooks** (result plist includes `:async t`): framework does not
-  auto-complete. Worker must call `set-status` with `"complete"` or
-  `"failed: ..."`. If the process restarts mid-deploy, status can remain
-  `running` forever — operator must reset manually (no job queue in MVP).
-
-### Action hook contract
-
-```lisp
-(lambda (type-key field-key record user
-         &key roles status-field set-status)
-  -> nil | plist)
-```
-
-| Parameter | Meaning |
-|-----------|---------|
-| `type-key` | Type containing the button |
-| `field-key` | Button field key (e.g. `:deploy`) |
-| `record` | Full record plist at click time |
-| `user` | Acting username string |
-| `roles` | Optional roles list from the request path |
-| `status-field` | Keyword of companion status column (e.g. `:deploy-status`) |
-| `set-status` | `(lambda (message) ...)` — sole supported way for hooks to write status |
-
-Return `nil` for sync completion, or `(:async t :message "...")` for async.
-
-### Placement and permissions
-
-- Buttons appear on the **update form only** — never list or add forms.
-  `fe-fields` excludes `:button` fields from `:list-form` and `:add-form`.
-- Permission: type-level `update` + record-level access (same path as
-  `be-update`). No separate `execute` permission for MVP.
-
-### `POST /api/actions`
-
-Request:
-```json
-{"type": "models", "id": "<record-uuid>", "field": "deploy"}
-```
-
-Response (sync success):
-```json
-{"status": "success", "result": {"status": "complete"}}
-```
-
-Response (async):
-```json
-{"status": "success", "result": {"status": "accepted", "async": true,
-  "message": "Deploy started"}}
-```
-
-Response (sync failure):
-```json
-{"status": "success", "result": {"status": "failed", "message": "..."}}
-```
-
-Validation errors (unknown type, bad field, missing permissions, action
-already running) return 400. Other errors return 500.
-
-### `validate-model` (pure model validation)
-
-`validate-model` is a pure function (no DB, no RBAC mutation) that runs
-structure checks + stage-1 compilation on a model's `:types` plist. The
-`:deploy-model` hook calls it in-process before spawning a subprocess, so
-compile errors surface immediately as `failed: <message>` without wasting a
-deploy cycle.
-
-### Non-goals (post-MVP)
-
-- Polling / auto-refresh / WebSocket / SSE for live status updates
-- Persistent job queue, retries, cancel
-- Transaction wrapping around actions
-- New RBAC permission `execute` / `action`
-- Buttons on list rows or add forms
-- Reset-status control (operator clears stuck `running` manually)
-
-## Lisp Coding Style
-
-- **Prefer `u:` functions (from `dc-eclectic`) over raw CL or `uiop:`
-  equivalents.** The `dc-eclectic` library (nickname `u:`) provides
-  cleaner, more ergonomic wrappers for common operations. Use them
-  whenever an equivalent exists. Examples: `u:getenv` (not
-  `uiop:getenvp`), `u:join-paths` (not `merge-pathnames`),
-  `u:slurp` (not `with-open-file` + read loops),
-  `u:spew` (not `with-open-file` + write). When writing
-  new Lisp code, check whether `u:` has a suitable function before
-  reaching for the standard library. The library covers environment
-  access (=u:getenv=, =u:setenv=), filesystem (=u:file-exists-p=,
-  =u:directory-exists-p=, =u:copy-file=, =u:file-extension=,
-  =u:file-name-only=, =u:path-only=, =u:path-parent=), plist
-  utilities (=u:plistp=, =u:plist-keys=, =u:plist-values=,
-  =u:tree-get=), string operations (=u:trim=, =u:split-n-trim=,
-  =u:starts-with=, =u:ends-with=, =u:make-keyword=), collections
-  (=u:distinct-values=, =u:distinct-strings=, =u:safe-sort=,
-  =u:has=, =u:has-some=, =u:deep-copy=, =u:singular=, =u:plural=),
-  and shell commands (=u:shell-command-= family). This is a partial
-  list; browse the source in the =dc-eclectic= Quicklisp local
-  project for the full API.
-- **Prefer =u:tree-get= over nested =getf= calls.** When accessing
-  deeply nested plist values, use =(u:tree-get tree :a :b :c)= instead
-  of =(getf (getf (getf tree :a) :b) :c)=. It is cleaner, more
-  readable, and consistent with the =u:= preference above.
-- **Prefer explicit parameter passing over dynamic (special) variables.**
-  Dynamic variables (`*foo*`) are reserved for values that are truly
-  global to the entire system (e.g. `*compiled-model*`, `*rbac*`).
-  Request-scoped or function-chain-scoped values (e.g. the current
-  user's ID during a `be-list` call) must be threaded as parameters,
-  not bound dynamically. Dynamic binding is technically thread-safe in
-  SBCL, but it creates hidden coupling: the reader must know a variable
-  is special, find where it's bound, and trace its extent. Explicit
-  parameters make data flow visible at the call site.
-- **Prefer small, single-purpose functions.** Every function should be
-  short enough to grasp at a glance — roughly half a page or less. When
-  a function grows beyond that, extract named sub-functions even if
-  they're only called once. A descriptive function name documents intent
-  better than inlined code, and the reader sees a simple outline rather
-  than a wall of logic. The complexity of Data UI lives in the
-  architecture and the interaction of its parts — never in any
-  individual function.
-
-## Error Reporting: `report-e` and `report-ve`
-
-Never use raw `(error ...)` calls. Use the two macros defined in
-`lisp/aux.lisp` instead:
-
-- **`report-e`** — for system/structural errors (unknown hooks, wrong
-  kind, unsupported features, model compilation failures). Calls
-  `error` under the hood.
-- **`report-ve`** — for validation errors (bad user input, invalid
-  parameters, schema violations). Signals a validation error condition
-  under the hood.
-
-Both generate a **Guru Meditation Number** (a deterministic 6-hex-hash
-of the function name + 3 random hex digits, e.g. `897270-ff3`) that is
-appended to the error message and logged. The function name can be
-recovered from the hash via `gmn-fname`.
-
-### Signature
-
-Both macros share the same form:
-
-```lisp
-(report-ve function-name format-string &rest var-specs)
-(report-e  function-name format-string &rest var-specs)
-```
-
-- **`function-name`** — string, the name of the calling function
-  (e.g. `"valid-hook-params"`).
-- **`format-string`** — a `format` directive string. Use `~a` (not
-  `~s`) for cleaner error messages; raw values are logged separately.
-  **Exception:** use `~s` for keyword symbols and keys (e.g. type keys,
-  field keys) so they display with their leading colon (e.g.
-  `:FOO-STATUS` rather than `FOO-STATUS`), making them visually
-  identifiable as keys.
-- **`var-specs`** — symbols (variable names), **not** expressions.
-
-### The tilde convention
-
-Each var-spec is a symbol. If the symbol is prefixed with `~`, it is
-included as a `format` argument (the tilde is stripped). If not
-prefixed, it is **log-only** — it appears in the `pl:plog` entry but
-is not interpolated into the error message.
-
-This lets you provide extra debugging context to the log without
-cluttering the error shown to the user:
-
-```lisp
-(report-ve "valid-hook-params"
-           "Hook ~a parameter ~a must be an integer, got ~a"
-           ~hook-name ~key ~val)
-```
-
-All three vars are logged as `:hook-name`, `:key`, `:val`. All three
-are also format arguments (all have tildes).
-
-```lisp
-(report-ve "valid-filter"
-           "Invalid field key ~a for type ~a."
-           ~field-key ~type-key request-id)
-```
-
-Here `request-id` is logged but not shown in the error message.
-
-### Practical constraints
-
-- Var-specs must be **symbols** (lexical variable names), not
-  arbitrary expressions. Bind expressions to local variables first.
-- The log key is derived from the cleaned symbol name (tilde
-  stripped), converted to a keyword (e.g. `~hook-name` → `:hook-name`).
-- When choosing between `report-e` and `report-ve`: if the error is
-  validating user-supplied input against a schema or contract, use
-  `report-ve`. If it's a structural/system error (something is wrong
-  with the model or code path), use `report-e`.
-
-### Naming convention: `valid-*`
-
-Functions that check or validate data are named with the `valid-`
-prefix (e.g. `valid-hook-params`, `valid-target`, `valid-view-scope`).
-Do not use `check-` or other prefixes for this purpose. The `valid-*`
-family has mixed return semantics — some signal on error and return
-`nil` otherwise, others return a resolved value — but they share the
-common purpose of validating input against a schema or contract.
-
-## Important Design Decisions
-
-- RBAC types are treated exactly like user-defined types. Thus, you can add a role to a user in the same way that you would add a tag to a To Do item.
-- Non-base types automatically receive a `roles` field (checkbox-list) in all forms, unless `:suppress-roles t` is set on the type (auto-set by `:user-setting t`)
-- The backend injects filtered `allowed-values.roles` so users only see roles they can assign
-- Forms are schema-driven; the frontend does not hard-code field lists
-- The `:ui` plist is passed through to the frontend verbatim — new `:widget` values work without backend changes
-- `:button` fields are excluded from `:list-form` and `:add-form` by `fe-fields`; they appear only on `:update-form`
-- Delete uses the existing single-record-delete endpoint in a loop (acceptable for MVP)
-- Keep models small; hide RBAC complexity from model authors
-- **Type categorization** — `/api/types` returns a `:category` for each type:
-  `:system`, `:settings`, or `:user`. Authors set `:category` explicitly
-  (e.g. `:category :settings` to place a type under the Settings tab). If
-  omitted, it is derived: `:user-setting t` → `:settings`, `:built-in t` →
-  `:system`, else `:user`. The frontend groups the type selector by category.
+- AI agents must not modify any Lisp source files outside `web/` and
+  `tests/helpers.lisp` without special permission from a human. That
+  code is complex and largely outside of AI's current capabilities.
+- The React frontend in `web/` was built with AI assistance; future
+  frontend work will also involve AI.
+- Do not refactor, clean up, or "improve" Lisp code unless explicitly
+  instructed.
+- Before any code is written, a thorough discussion of the goals must
+  happen.
+- Some functions with no in-codebase callers are intentionally
+  retained; see `docs/model-accessors.md` before removing "dead" code.
+
+## Live Introspection: `eval-in-data-ui`
+
+The Elisp helper `eval-in-data-ui` (in `~/r/elisp/dc-ai.el`) evaluates
+a Common Lisp form against a **running** Data UI instance (over Slime,
+in the `:data-ui` package) and returns the result. Invoke it via the
+`Eval` tool:
+
+    (eval-in-data-ui "(a:list-role-names *rbac*)")
+
+Package-local nicknames like `a:` (the rbac library) are available.
+Read-most: prefer it for verification and introspection over guessing
+from source; treat state-mutating forms with REPL-level care.
+
+**Reload before testing.** After editing a Lisp file, reload it into
+the live image before running tests or introspecting, or you test
+stale code:
+
+    (eval-in-data-ui "(load \"~/common-lisp/data-ui/lisp/model.lisp\")")
+
+**Full reload:** `(hard-reset)` (from `lisp/startup.lisp`) runs
+`asdf:load-system :force t` + `init-database` + `reset-database` in
+one call. Use it (e.g. when `asdf:load-system` resets `*rbac*` to nil)
+instead of the three steps manually.
+
+**Gotcha — reloading `rest.lisp` with the server running** can nil out
+`*http-server*` while the OS still holds the port; the next
+`set-model` → `start-web-server` fails with `ADDRESS-IN-USE-ERROR`.
+After reloading `rest.lisp`, verify `*http-server*`; if nil,
+`(stop-web-server)` before the next `set-model`.
+
+## Running Tests
+
+Use the helpers in `tests/helpers.lisp` — never call `fiveam:run!`
+directly. They handle model loading, database reset, and suite
+selection.
+
+- `(run-tests)` — backend, predicates, scoping, hook registry,
+  lifecycle, and action suites, via `with-model` on the `test-model`
+  fixture (resets the database and loads the model automatically)
+- `(run-action-tests)` — action hook suite (buttons, `be-action`,
+  status transitions, in-progress guard, permissions, form exclusions)
+- `(run-scoping-tests)` — scoping suite on the `modelbank-test`
+  fixture under `models/test/` (not the top-level `modelbank` demo)
+
+For a focused run, add a `run-*` helper to `tests/helpers.lisp` —
+agents are explicitly permitted to modify that file for this. Do not
+modify the test suites themselves without human permission.
+
+### Writing a New Test Suite
+
+1. Create `tests/<name>-tests.lisp` following the existing pattern:
+   `in-package`, `def-suite`, `in-suite`, then `test` forms using
+   FiveAM primitives (`is`, `is-true`, `is-false`, `signals`,
+   `finishes`).
+2. Register the file in `data-ui.asd` in the `tests` module, after the
+   existing test files.
+3. Add a `run-*` helper in `tests/helpers.lisp`, wrapped in
+   `(with-model "test-model" nil ...)`.
+4. Add the helper to `run-tests` in the same file.
+5. `(load "...")` the file (and `helpers.lisp`, if changed) before
+   running.
+
+Rules:
+- Tests run inside `with-model`, which resets the DB and recompiles.
+  Base types (from `*base-model*`) are present in every model.
+- **Test models come only from `models/test/`** (e.g. `test-model`,
+  `m2m-test`, `static-select-test`). Never point `with-model` /
+  `set-model` at top-level demo models (`todos`, `books`, `chores`,
+  `modelbank`, ...) — they change with product work and break tests.
+  If a needed shape only exists in a demo, copy a minimal stable
+  fixture into `models/test/`. Manual REPL smoke against a demo is
+  fine.
+- Clean up any inserted rows so tests are order-independent.
+- `be-types` returns plists, not alists — search with
+  `(getf entry :name)` as the `:key`, not `#'car`.
+
+## Feature and Issue Tracking
+
+`docs/todo.org` is the canonical backlog (org TODO / DONE states +
+tags). Refer to it when deciding what to work on next.
+
+- Every item carries a `:PROPERTIES:` drawer with `:CREATED:` (and,
+  once done, `:COMPLETED:`) org inactive timestamps, e.g.
+  `[2026-08-10 Sun]`.
+- New items: include the drawer with `:CREATED:` set to today. Marking
+  DONE: set `:COMPLETED:` to today.
+- **After any change to `docs/todo.org`, run `(fix-data-ui-todo-dates)`**
+  (defined in `~/r/elisp/dc-ai.el`, no parameters). It enforces the
+  date rules; just write today's date and run it.
+
+Org outline hierarchy: `*` section, `**` parent todo, `***` its direct
+children (children inherit tags/context). Never mix — do not put `**`
+children under a `**` parent; always step to `***`:
+
+    * Post MVP
+    ** TODO Lifecycle side effects
+    *** TODO Cross-table upsert
+    *** TODO HTTP fetch/post
 
 ## Working with the Frontend
 
-- Location: `web/`
-- Build: `npm install && npm run build` (Hunchentoot serves `web/dist/` — there is no dev server)
-- The app is intentionally simple — avoid adding heavy routing, state libraries, or styling until MVP is proven
-- All forms render from the schema returned by `/api/list`
-- Permission flags (`create`/`delete`/`update`) returned by `/api/list` control visibility of Add, Delete, and Edit controls
-- The `:ui` plist is the extension point for frontend rendering — `:widget`, `:read-only`, and `:table` are consumed by the React components
-- Button rendering: `:widget :button` triggers a `<button>` element on the edit form; `onClick` posts to `/api/actions`; the button is disabled while status is `running`
-- Image rendering: `:widget :image` and `:widget :image-list` trigger thumbnail grids with modal/lightbox preview; the `:table` key on the field tells the frontend which type to use for `/api/file` URLs
+- Build: `npm install && npm run build` in `web/`. Hunchentoot serves
+  `web/dist/`; there is no dev server. **Without `npm run build`,
+  frontend changes are invisible** (it runs `tsc`, then `vite build`).
+- The app is intentionally simple — avoid heavy routing, state
+  libraries, or styling until MVP is proven. All forms render from the
+  schema returned by `/api/list`; the frontend does not hard-code
+  field lists.
+- `:ui` is the extension point, passed through verbatim — new
+  `:widget` values work without backend changes. `:widget`,
+  `:read-only`, and `:table` are consumed by the React components.
+- Permission flags (`create` / `delete` / `update`) from `/api/list`
+  control visibility of Add, Delete, and Edit controls.
+- `:widget :button` renders a button on the edit form; `onClick`
+  posts to `/api/actions`; disabled while status is `running`.
+- `:widget :image` / `:image-list` render thumbnail grids with a modal
+  lightbox; the `:table` key tells the frontend which type to use for
+  `/api/file` URLs.
 
-## Goals
+## Status Digest (June 2026)
 
-Deliver a working MVP by December 2026 that demonstrates the full path from model
-to deployed application, including a minimal but functional React UI. The MVP
-ships with a 30-second video that goes from nothing to a deployed app.
+- **End-to-end proven:** `scripts/data-ui deploy todos` →
+  https://todo.demo.data-ui.com (k3d, HAProxy, TLS).
+- Full CRUD on all types (built-in RBAC types included); JWT auth;
+  view-level and field-level scoping; write-through core path; action
+  hooks; rollups (Phase A); file upload / list / delete (two-phase
+  upload: `multipart` to `/api/upload`, then JSON `/api/insert` with
+  the `file-token`).
+- Frontend: type selector with categories, dynamic lists / forms,
+  inline edit, sortable columns, debounced search, pagination driven
+  by `total`, rollup boards, role management, image lightbox.
+- Known gaps: `:agg` fields on regular types are not sortable (use a
+  rollup); file update unimplemented; one flaky scoping test; UI
+  polish pending; frontend shows as logged-in after failed token
+  refresh, and "No records" covers both empty and failed requests
+  (good first UI tasks).
+- Full catalog: README → Current Status; `docs/model-reference.md` →
+  Known gaps and gotchas.
 
-Post-MVP (for context, not current work): hosted service with YAML/JSON model
-input and AI prompts; the curated hook registry as the AI/no-code escape hatch;
-and the Marketplace. The Marketplace exists in two forms — (a) a deliberately
-tiny **open-source reference** app whose smallness is the proof that "the model
-is the whole app," and (b) a **closed-source production** app (YAML/JSON/AI input,
-corpus, hosting, one-click deploy). The line is crisp: the open app is the
-application logic; the closed product adds operational concerns (hosting, AI front
-door, billing) that are infrastructure, not application.
+## Current Focus (MVP)
 
-## Current Focus / To Do (MVP)
-Deadline: complete MVP, including the demo video, by end of December 2026.
+Deadline: complete MVP, including the demo video, by end of December
+2026.
 
-**Model Bank is the priority function.** The MVP must prove that real,
-non-trivial applications can be built on Data UI significantly faster
-than any alternative — and the way to prove that is to build one.
-Model Bank (a model-sharing application with relationships, ownership,
-image association, and ratings) is that application. It is no longer
-just another example model; it is the fitness function for the MVP.
-Gaps surfaced by building Model Bank are, by definition, the
-highest-priority work. Polish and rough edges can wait; capability
-gaps that block building real apps cannot.
+**Model Bank is the priority function** — the MVP's fitness function.
+Gaps surfaced by building it are, by definition, the highest-priority
+work. Polish waits; capability gaps that block real apps do not.
 
-Priorities now:
-1. **Build Model Bank** — the live priority function; gaps it surfaces
-   drive everything below
-2. **Write-through edge cases** — core path (`:write-to` + `:identity t`,
-   search SQL, unique identity indexes, `be-insert` / `be-update` execute)
-   is landed and non-transactional. Remaining: edge cases (e.g.
-   clear-to-NULL) and Model Bank completion. Compiler remains
-   authoritative for all SQL.
-3. **UI polish** — the video shows the UI; it must look clean.
-   Frontend work is deliberately deferred behind compiler/backend
-   capability gaps (frontend is cheaper to change).
-4. **The 30-second video** — nothing → deployed app
-5. File update (only if time permits; otherwise post-MVP)
+1. Build Model Bank (relationships, ownership, images, ratings)
+2. Write-through edge cases (e.g. clear-to-NULL)
+3. UI polish (the video shows the UI)
+4. The 30-second video (nothing → deployed app)
+5. File update (only if time permits)
 
-**Explicitly post-MVP (do not quietly pull in):**
-- Transactions / rollback around primary write + hooks + write-through
-- Idempotent database initialization
-- Single-statement `ON CONFLICT` upserts (blocked on two-phase resource insert)
-- YAML/JSON model input and the hosted AI front door
+**Explicitly post-MVP (do not quietly pull in):** transactions /
+rollback around primary write + hooks + write-through; idempotent
+database initialization; single-statement `ON CONFLICT` upserts;
+YAML/JSON model input and the hosted AI front door.
 
-Frontend known weaknesses (from deployment testing, good first UI
-tasks once capability work is unblocked): failed token refresh leaves
-the app rendering as logged-in instead of returning to the login form;
-"No records" is shown for both empty results and failed requests.
+**Critical invariant — no transactions today.** Hooks, write-through,
+and actions are NOT atomic with the primary write. A failing hook
+fails the operation without rolling back prior side effects.
+Design accordingly; see `docs/hook-registry.md` → MVP caveat.
