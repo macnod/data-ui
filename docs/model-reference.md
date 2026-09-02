@@ -85,7 +85,7 @@ paren-balance checks; it is not how the compiler is invoked.
 ## Top-level keys
 
 Recognized keys: `*top-level-keys*` =
-`(:title :name :version :domain :repl :landing-page)`.
+`(:title :name :version :domain :repl :landing-page :new-roles)`.
 
 `:types` is required alongside those settings but is handled separately by
 `compile-model`. Any other root key is ignored by `top-level-settings`.
@@ -98,6 +98,7 @@ Recognized keys: `*top-level-keys*` =
 | `:domain` | yes | FQDN-like string | HAProxy map, TLS host |
 | `:repl` | no (default `nil`) | boolean | Swank port iff `t`; **nil in production** |
 | `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-base type the user can access |
+| `:new-roles` | no | plist: role-name keyword → non-empty list of permission strings | `ensure-declared-roles` at `set-model` time |
 | `:types` | yes | plist of type-key → type-def | compiler |
 
 `:name` values `profile` and `profile-*` are reserved for host-profile
@@ -201,6 +202,38 @@ declares.
 
 When implementing `:type-roles` overrides on built-in types, these are the
 defaults you are replacing.
+
+### Declared roles (`:new-roles`)
+
+```lisp
+:new-roles (:ai-user ("read")
+            :bank-admin ("create" "read" "update" "delete"))
+```
+
+Optional top-level key declaring additional roles the model needs. Keys are
+role-name keywords (downcased to the rbac string, `:ai-user` → `"ai-user"`);
+values are non-empty lists of permission **strings** from the closed set
+`"create" "read" "update" "delete"` — keywords (`(:read)`) are a compile
+error.
+
+At `set-model` time the compiler creates each declared role that does not
+yet exist, granting exactly the declared permissions. Roles that already
+exist are **never modified** — a role an admin has since edited keeps its
+edits, and redeploying or re-running `set-model` is idempotent. New roles
+are auto-assigned to admin (rbac `add-role` behavior), so they are
+immediately usable and appear in the Roles UI / assignment palettes.
+
+A declared role does not have to appear in any `:type-roles` — badge roles
+(e.g. `:ai-user` for the model-generator button, which gates on membership,
+not permissions) are declared exactly so they exist with known permissions.
+When a declared role is *also* named in a `:type-roles` string list, the
+declared permission list wins over the full-CRUD default that
+`:type-roles` would otherwise grant.
+
+Reserved role names (`"admin"`, `"settings"`, `"logged-in"`, `"public"`,
+`"user-creator"`, `"role-creator"`, `"permission-creator"`, anything ending
+`:exclusive` or prefixed `admin:` / `guest:`) are compile errors: they
+already exist or carry rbac semantics of their own.
 
 ### Category
 
@@ -647,7 +680,8 @@ Widget semantics:
 - `:code`: monospace `<textarea>` (~12 rows)
 - `:stars`: interactive StarRating (editable) or static (read-only / list)
 - `:checkbox`: single boolean checkbox
-- `:checkbox-list`: multi-select from `allowed-values`
+- `:checkbox-list`: multi-select from `allowed-values`; the frontend
+  adds client-side search once the option set reaches 10
 - `:select`: `<select>` dropdown. Two modes:
   - **Relation** (default): options from `allowed-values` via `:target`
     (foreign key). Requires `:target` + `:source` + `:source-all`.
@@ -1317,7 +1351,8 @@ Marked `:base-field t`. Not part of author field lists.
 
 Non-base types without `:suppress-roles` get a synthetic `:roles` checkbox-list
 on forms. `allowed-values.roles` is filtered to roles the current user may
-assign.
+assign: their own roles, "public", the type's `:type-roles`, and every other
+user's shareable exclusive role (point-to-point sharing).
 
 ### Table and column naming
 
@@ -1613,12 +1648,17 @@ successors never collide on the identity index. See
     aggregate UX uses a [rollup](#rollup-types-read-only-analytical)
     type instead (see MVP Backlog "Regular-type computed-field sort").
 
+15. **`:new-roles` is additive-only.** Removing a role from `:new-roles`
+    does not delete it from the database, and changing the permission
+    list of a role that already exists has no effect until the role is
+    deleted (the role keeps whatever permissions it had).
+
 ---
 
 ## Quick key index
 
 **Top-level:** `:title` `:name` `:version` `:domain` `:repl` `:landing-page`
-`:types`
+`:new-roles` `:types`
 
 **Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles`
 `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form`

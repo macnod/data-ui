@@ -2,7 +2,7 @@
 -- schema
 --
 
-\c dataui
+\c modelbank
 
 create extension if not exists "uuid-ossp";
 

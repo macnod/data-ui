@@ -1266,13 +1266,13 @@ compiled model metadata — no naming convention assumptions."
                         :values)))
         (if (and (equal type-key :users)
               (equal field-key :roles))
+          ;; Users can never be assigned an exclusive role directly,
+          ;; so no :exclusive-suffixed role belongs on this palette.
           (remove-if
             (lambda (r)
-              (u:has
-                (list* "admin" "admin:exclusive" "guest:exclusive"
-                  "settings" "logged-in"
-                  (when user (list (a:exclusive-role-for user))))
-                r))
+              (or (member r '("admin" "settings" "logged-in")
+                          :test 'equal)
+                  (exclusive-role-p r)))
             values)
           values)))))
 
@@ -1280,7 +1280,8 @@ compiled model metadata — no naming convention assumptions."
   ":private: Returns the list of roles the current USER can assign on
 TYPE-KEY. For admin, returns all roles minus system exclusives. For
 other users, returns the user's own roles plus \"public\" plus the
-type's :type-roles."
+type's :type-roles plus every other user's shareable exclusive role
+(point-to-point sharing)."
   (let ((system-exclusives
           (list* "admin" "admin:exclusive" "guest:exclusive" "settings"
                  (when user
@@ -1290,11 +1291,15 @@ type's :type-roles."
         (lambda (r) (member r system-exclusives :test 'equal))
         (a:list-role-names *rbac*))
       (let* ((user-roles (a:list-user-role-names *rbac* user))
-             (type-roles (u:tree-get *compiled-model* type-key :type-roles)))
+             (type-roles (u:tree-get *compiled-model* type-key :type-roles))
+             (shareable-exclusives
+               (remove-if-not #'shareable-exclusive-role-p
+                 (a:list-role-names *rbac*))))
         (remove-duplicates
           (remove-if
             (lambda (r) (member r system-exclusives :test 'equal))
-            (append user-roles (list "public") type-roles))
+            (append user-roles (list "public") type-roles
+              shareable-exclusives))
           :test 'equal)))))
 
 (defun allowed-values (type-key user)
@@ -1658,13 +1663,18 @@ for TYPE-KEY."
     when (not (member role existing-roles :test 'equal))
     do (report-ve "valid-existing-roles" "Role ~s does not exist." ~role)))
 
+(defun exclusive-role-p (role)
+  ":private: Returns t if ROLE is any exclusive role
+(\"name:exclusive\"), including \"admin:exclusive\" and
+\"guest:exclusive\"."
+  (and (stringp role)
+       (u:ends-with role ":exclusive")))
+
 (defun shareable-exclusive-role-p (role)
   ":private: Returns t if ROLE is a user-exclusive role that can be
 assigned by any user for point-to-point sharing. Excludes
 \"admin:exclusive\" and \"guest:exclusive\"."
-  (and (stringp role)
-       (> (length role) 10)
-       (string= (subseq role (- (length role) 10)) ":exclusive")
+  (and (exclusive-role-p role)
        (not (member role '("admin:exclusive" "guest:exclusive")
                     :test 'equal))))
 

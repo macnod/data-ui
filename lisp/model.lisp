@@ -2,7 +2,7 @@
 
 (defparameter *top-level-settings* nil)
 (defparameter *top-level-keys*
-  '(:title :name :version :domain :repl :landing-page))
+  '(:title :name :version :domain :repl :landing-page :new-roles))
 
 (defun parse-number (s)
   ":private: Parses S into a number. Returns the number upon success, or NIL if
@@ -3886,6 +3886,7 @@ Files under models/test/ are test fixtures and are excluded."
       finally
       (setf *compiled-model* compiled-model)
       (create-tables)
+      (ensure-declared-roles)
       (ensure-model-roles)
       (add-type-roles)
       (add-system-user-settings)
@@ -3963,6 +3964,25 @@ add-type-roles (which needs roles to exist)."
       unless (a:get-id *rbac* "roles" role)
       do (a:add-role *rbac* role :permissions permissions))))
 
+(defun ensure-declared-roles ()
+  "Create roles declared in the model's :new-roles key that don't yet exist in
+RBAC, granting exactly the declared permissions. Existing roles are never
+modified. Called from set-model after create-tables and before
+ensure-model-roles, so a declared role also named in :type-roles keeps its
+declared permissions (ensure-model-roles would otherwise default a new role to
+full CRUD)."
+  (loop with new-roles = (model-new-roles)
+    for rest = new-roles then (cddr rest)
+    while rest
+    for role-key = (first rest)
+    for permissions = (second rest)
+    for role = (string-downcase (symbol-name role-key))
+    unless (a:get-id *rbac* "roles" role)
+    do
+    (pl:pinfo :in "ensure-declared-roles" :state "adding declared role"
+      :role role :permissions permissions)
+    (a:add-role *rbac* role :permissions permissions)))
+
 (defun add-type-roles ()
   (loop with m = *compiled-model*
     for type-key in m by #'cddr
@@ -4030,6 +4050,99 @@ add-type-roles (which needs roles to exist)."
 (defun booleanp (x)
   (when (member x '(t nil)) t))
 
+(defvar *valid-permissions* '("create" "read" "update" "delete")
+  ":private: Closed permission vocabulary for :new-roles lists. These rows
+already exist in rbac after initialize-database; anything else fails inside
+a:add-role. Keywords are also wrong here — permission values in the model
+language are strings.")
+
+(defvar *reserved-role-names*
+  '("admin" "admin:exclusive" "guest" "guest:exclusive" "public" "settings"
+     "logged-in" "user-creator" "role-creator" "permission-creator")
+  ":private: Role names a model may not declare under :new-roles. These exist
+after initialize-database or carry rbac semantics of their own;
+ensure-declared-roles would silently skip them (they already exist), so they are
+compile errors instead. Any name ending in \":exclusive\" or prefixed \"admin:\"
+/ \"guest:\" is reserved too (checked separately).")
+
+(defun valid-permission-list (permissions role)
+  ":private: Validate PERMISSIONS, the declared permission list for ROLE (a
+downcased role-name string) under :new-roles. Each entry must be a non-keyword
+string from *valid-permissions*; the list must be non-empty and duplicate-free.
+Signals report-e otherwise."
+  (unless (and (listp permissions) permissions)
+    (report-e "valid-permission-list"
+      "Role ~a in :new-roles has an empty permission list."
+      ~role))
+  (loop for permission in permissions
+    unless (stringp permission)
+    do (report-e "valid-permission-list"
+         "Permission ~s for role ~a in :new-roles must be a string."
+         ~permission ~role)
+    unless (member permission *valid-permissions* :test #'equal)
+    do (report-e "valid-permission-list"
+         "Permission ~s for role ~a in :new-roles is not one of ~
+            ~{~a~^, ~}."
+         ~permission ~role *valid-permissions*)
+    when (member permission (cdr (member permission permissions))
+           :test #'equal)
+    do (report-e "valid-permission-list"
+         "Permission ~a appears more than once for role ~a in ~
+            :new-roles."
+         ~permission ~role)))
+
+(defun reserved-role-name-p (role)
+  ":private: T when ROLE (a downcased role-name string) may not be declared
+under :new-roles: an entry in *reserved-role-names*, any name ending in
+\":exclusive\", or any \"admin:\" / \"guest:\" ~ prefixed name."
+  (or
+    (member role *reserved-role-names* :test #'equal)
+    (u:ends-with role ":exclusive")
+    (u:starts-with role "admin:")
+    (u:starts-with role "guest:")))
+
+(defun valid-new-roles (value)
+  ":private: Validate a :new-roles VALUE: a keyword-keyed plist of role name to
+non-empty list of permission strings. Signals report-e on bad shape, duplicate
+keys, reserved role names, invalid role names, or bad permission lists. Returns
+VALUE unchanged — top-level-settings stores the author plist via getf; no
+normalized form exists."
+  (unless (u:plistp value)
+    (report-e "valid-new-roles"
+      ":new-roles value must be a plist of role name to permission ~
+       list, got ~s."
+      ~value))
+  (let ((repeats (plist-repeated-keys value)))
+    (when repeats
+      (report-e "valid-new-roles"
+        ":new-roles has repeated role names ~{~s~^, ~}."
+        ~repeats)))
+  (loop with role-key = nil and permissions = nil
+    for rest = value then (cddr rest)
+    while rest
+    do
+    (setf role-key (first rest) permissions (second rest))
+    (unless (keywordp role-key)
+      (report-e "valid-new-roles"
+        ":new-roles role name ~s must be a keyword."
+        ~role-key))
+    (let ((role (string-downcase (symbol-name role-key))))
+      (when (reserved-role-name-p role)
+        (report-e "valid-new-roles"
+          ":new-roles role name ~a is reserved for the system."
+          ~role))
+      (unless (a:valid-role-p *rbac* role)
+        (report-e "valid-new-roles"
+          ":new-roles role name ~a is not a valid role name."
+          ~role))
+      (valid-permission-list permissions role))))
+
+(defun model-new-roles ()
+  ":public: Declared-roles plist for the current model, or NIL. Keys are
+role-name keywords; values are permission-string lists, exactly as the author
+wrote them."
+  (getf *top-level-settings* :new-roles))
+
 (defun valid-top-level-value (key value regex &key
                                (required t)
                                (predicates (list #'stringp)))
@@ -4081,7 +4194,9 @@ add-type-roles (which needs roles to exist)."
             (error "~(~s~) value ~s is not a defined type." key value))))
       (:types
         (valid-top-level-value key value nil
-          :predicates (list #'u:plistp))))))
+          :predicates (list #'u:plistp)))
+      (:new-roles
+        (when value (valid-new-roles value))))))
 
 (defun top-level-settings (model)
   (loop for k in *top-level-keys*

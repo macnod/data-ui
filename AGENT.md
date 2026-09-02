@@ -157,8 +157,15 @@ Rules:
 
 ## Feature and Issue Tracking
 
-`docs/todo.org` is the canonical backlog (org TODO / DONE states +
-tags). Refer to it when deciding what to work on next.
+`docs/todo.org` is the canonical backlog (org TODO / PLANNING /
+IN-PROGRESS / READY / DONE states + tags). Refer to it when deciding
+what to work on next.
+
+Lifecycle: TODO → PLANNING (a plan is being drafted) → READY (plan
+complete and approved; waiting to implement) → IN-PROGRESS (being
+implemented) → DONE. Plan completion and review happen at READY,
+not IN-PROGRESS; flip to IN-PROGRESS only when implementation
+actually begins.
 
 - Every item carries a `:PROPERTIES:` drawer with `:CREATED:` (and,
   once done, `:COMPLETED:`) org inactive timestamps, e.g.

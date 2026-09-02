@@ -5,6 +5,7 @@
    ;; WARNING: :repl must be nil in production
    :repl t
    :landing-page :models
+   :new-roles (:ai-user ("read"))
    :types
    (:directories
      (:table t

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { apiFetch, setTokens, clearTokens, getAccessToken,
          onAuthFailure } from './api'
 import StarRating from './StarRating'
+import CheckboxList from './CheckboxList'
 
 // Apply CSS-relevant settings values to the document.
 // Currently only dark-mode (boolean → toggle .dark class on body).
@@ -500,10 +501,6 @@ function App() {
   const [editRecord, setEditRecord] = useState<any>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [title, setTitle] = useState('Data UI')
-  const [extraRoles, setExtraRoles] = useState<string[]>([])
-  const [userSearch, setUserSearch] = useState('')
-  const [userSearchResults, setUserSearchResults] = useState<string[]>([])
-  const [userSearchLoading, setUserSearchLoading] = useState(false)
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
   const [elapsed, setElapsed] = useState<number | null>(null)
   const runningStartRef = useRef<number | null>(null)
@@ -648,9 +645,6 @@ function App() {
     setShowAddForm(false)
     setEditRecord(null)
     setFormValues({})
-    setExtraRoles([])
-    setUserSearch('')
-    setUserSearchResults([])
     setListError(null)
     resetListQuery()
   }
@@ -660,9 +654,6 @@ function App() {
     setShowAddForm(false)
     setEditRecord(null)
     setFormValues({})
-    setExtraRoles([])
-    setUserSearch('')
-    setUserSearchResults([])
     resetListQuery()
   }
 
@@ -721,25 +712,12 @@ function App() {
     )
     setFormValues({ ...fullRecord, roles: cleanRoles })
     setShowAddForm(false)
-    // Populate extraRoles with any roles on the record that aren't
-    // in the backend's allowed-values (e.g. other users' exclusive
-    // roles from prior sharing)
-    const allowedRoles = data?.result?.['allowed-values']?.['roles'] || []
-    const extra = cleanRoles.filter(
-      (r: string) => !allowedRoles.includes(r)
-    )
-    setExtraRoles(extra)
-    setUserSearch('')
-    setUserSearchResults([])
   }
 
   const closeForm = () => {
     setEditRecord(null)
     setShowAddForm(false)
     setFormValues({})
-    setExtraRoles([])
-    setUserSearch('')
-    setUserSearchResults([])
   }
 
   // Return to the landing page (used by settings Submit/Cancel).
@@ -815,44 +793,6 @@ function App() {
     setLoggedInUser('')
     resetSessionState()
     document.body.classList.remove('dark')
-  }
-
-  // Debounced user search for role sharing
-  const userSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const handleUserSearch = (query: string) => {
-    setUserSearch(query)
-    if (userSearchTimer.current) clearTimeout(userSearchTimer.current)
-    if (query.trim().length === 0) {
-      setUserSearchResults([])
-      return
-    }
-    setUserSearchLoading(true)
-    userSearchTimer.current = setTimeout(() => {
-      apiFetch(`/api/users?q=${encodeURIComponent(query.trim())}`)
-        .then(res => res.ok ? res.json() : null)
-        .then(json => {
-          setUserSearchResults(json?.result || [])
-        })
-        .catch(() => setUserSearchResults([]))
-        .finally(() => setUserSearchLoading(false))
-    }, 300)
-  }
-
-  const addUserRole = (username: string) => {
-    const role = `${username}:exclusive`
-    // Add to extra roles so it shows as a checkbox
-    if (!extraRoles.includes(role)) {
-      setExtraRoles([...extraRoles, role])
-    }
-    // Check it in form values
-    const currentRoles = formValues.roles || []
-    if (!currentRoles.includes(role)) {
-      setFormValues({ ...formValues, roles: [...currentRoles, role] })
-    }
-    // Clear search
-    setUserSearch('')
-    setUserSearchResults([])
   }
 
   const handleAction = async (fieldKey: string) => {
@@ -1416,9 +1356,6 @@ function App() {
             <button onClick={() => {
               setShowAddForm(true)
               setEditRecord(null)
-              setExtraRoles([])
-              setUserSearch('')
-              setUserSearchResults([])
               const typeRoles = data.result['type-roles'] || []
               if (typeRoles.length > 0) {
                 setFormValues({ roles: [...typeRoles] })
@@ -1485,89 +1422,28 @@ function App() {
 
             if (isCheckboxList) {
               const selected = formValues[f] || []
+              // Safety net: the backend palette already excludes the
+              // viewer's own exclusive role (auto-injected at write
+              // time).
               const isRolesField = f === 'roles'
-              // Merge backend allowed-values with any extra roles
-              // added via user search. The backend's selectable-roles
-              // already excludes the current user's exclusive role,
-              // so this filter is redundant — kept as a safety net.
               const myExclusive = `${loggedInUser}:exclusive`
-              const allOptions = isRolesField
-                ? [...new Set([...allowed, ...extraRoles])]
-                    .filter(r => r !== myExclusive)
-                    .sort((a, b) => a.localeCompare(b))
+              const options = isRolesField
+                ? allowed.filter((r: string) => r !== myExclusive)
                 : allowed
 
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
-                  {allOptions.map((val: string) => (
-                    <label key={val} style={{ display: 'block', marginLeft: '1rem' }}>
-                      <input
-                        type="checkbox"
-                        checked={selected.includes(val)}
-                        onChange={e => {
-                          const next = e.target.checked
-                            ? [...selected, val]
-                            : selected.filter((v: string) => v !== val)
-                          // If unchecking an extra role, remove it
-                          // from extraRoles so the checkbox disappears
-                          if (!e.target.checked && extraRoles.includes(val)) {
-                            setExtraRoles(extraRoles.filter(r => r !== val))
-                          }
-                          setFormValues({ ...formValues, [f]: next })
-                        }}
-                      />
-                      {val}
-                    </label>
-                  ))}
-                  {isRolesField && (
-                    <div style={{ marginTop: '0.5rem', marginLeft: '1rem' }}>
-                      <input
-                        type="text"
-                        value={userSearch}
-                        onChange={e => handleUserSearch(e.target.value)}
-                        placeholder="Search users to share with..."
-                        style={{ width: '200px' }}
-                      />
-                      {userSearchLoading && (
-                        <span style={{ marginLeft: '0.5rem',
-                          color: 'var(--muted)', fontSize: '0.85em' }}>
-                          searching...
-                        </span>
-                      )}
-                      {userSearchResults.length > 0 && (
-                        <div style={{
-                          position: 'relative',
-                          marginTop: '0.25rem',
-                          width: '200px',
-                          border: '1px solid var(--border)',
-                          borderRadius: '3px',
-                          background: 'var(--input-bg)',
-                          zIndex: 10
-                        }}>
-                          {userSearchResults.map(name => (
-                            <div
-                              key={name}
-                              onClick={() => addUserRole(name)}
-                              style={{
-                                padding: '0.25rem 0.5rem',
-                                cursor: 'pointer',
-                                borderBottom: '1px solid var(--border-light)'
-                              }}
-                              onMouseEnter={e =>
-                                (e.currentTarget.style.background = 'var(--hover-bg)')
-                              }
-                              onMouseLeave={e =>
-                                (e.currentTarget.style.background = 'var(--input-bg)')
-                              }
-                            >
-                              {name}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <CheckboxList
+                    options={options}
+                    selected={selected}
+                    onToggle={(val, checked) => {
+                      const next = checked
+                        ? [...selected, val]
+                        : selected.filter((v: string) => v !== val)
+                      setFormValues({ ...formValues, [f]: next })
+                    }}
+                  />
                 </div>
               )
             }

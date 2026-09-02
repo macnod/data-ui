@@ -56,4 +56,5 @@
                                 (:file "filtered-rollup-tests")
                 (:file "agg-distinct-tests")
                 (:file "update-permission-tests")
-                (:file "spawn-tests")))))
+                (:file "spawn-tests")
+                (:file "new-roles-tests")))))

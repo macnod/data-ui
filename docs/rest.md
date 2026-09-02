@@ -158,10 +158,6 @@ Public schema info (no auth required).
 
 CSS variable values from settings types (for theme support).
 
-### `GET /api/users`
-
-User list for the current session.
-
 ## Authentication
 
 ### `POST /api/login`

@@ -1262,27 +1262,6 @@ GET /api/types"
                 :category (getf e :category)))
         (be-types user)))))
 
-(h:define-easy-handler (rest-users :uri "/api/users" :default-request-type :get)
-  ((q :init-form ""))
-  ":public: Endpoint for searching users by name. Returns up to 10
-matching usernames. Used by the roles UI for point-to-point sharing.
-
-GET /api/users?q=<query>"
-  (let* ((user (require-auth '("logged-in")))
-         (query (string-trim '(#\space #\tab) q)))
-    (render-output
-      (if (or (null query) (zerop (length query)))
-        nil
-        (let ((matches
-                (remove-if
-                  (lambda (name) (equal name user))
-                  (remove-if-not
-                    (lambda (name)
-                      (search (string-downcase query)
-                              (string-downcase name)))
-                    (a:list-user-names *rbac*)))))
-          (subseq matches 0 (min 10 (length matches))))))))
-
 (h:define-easy-handler (rest-public-info
                          :uri "/api/public-info"
                          :default-request-type :get)
@@ -1305,6 +1284,8 @@ GET /api/info"
       (let ((settings (copy-list *top-level-settings*)))
         (setf (getf settings :landing-page)
               (be-landing-page user))
+        ;; Declared roles are deployment data that the frontend does not need
+        (remf settings :new-roles)
         (render-output settings)))))
 
 (h:define-easy-handler (rest-css-variables

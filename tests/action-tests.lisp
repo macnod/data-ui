@@ -17,7 +17,7 @@
         (lambda (type-key field-key record user
                  &key roles status-field set-status)
           (declare (ignore type-key field-key record user
-                           roles status-field))
+                           roles status-field set-status))
           (list :async t :message "Async started"))))
 
 (register-hook :test-error :action

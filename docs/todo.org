@@ -1,6 +1,6 @@
 #+title: Data UI — MVP TODO
 #+startup: overview
-#+TODO: TODO IN-PROGRESS | DONE
+#+TODO: TODO PLANNING READY IN-PROGRESS | DONE
 #+TAGS: frontend(f) backend(b) compiler(c) testing(t) docs(d) maintenance(a) polish(p) valdn(v) mvp(x) bug(g) model(m) utility(u) ai(i) scripts(s)
 
 * Done
@@ -1965,36 +1965,122 @@ reserved default keywords when building dedupe filters. Full
 
 Plan: [[file:~/workbench/spawn-plan.org][spawn-plan.org]].
 
-** TODO Checkbox list with search      :model:frontend:backend:compiler:mvp:
+** DONE Users cannot have other users' exclusive roles      :backend:
+:PROPERTIES:
+:CREATED: [2026-08-16 Sun]
+:COMPLETED: [2026-08-29 Sat]
+:END:
+The =:roles= checkbox list on the users add/edit form lists every
+role in RBAC, including *other* users' =name:exclusive= roles. The
+RBAC layer rejects such assignments at write time, so the UI offers
+options that can only fail. Root cause: the =:users= special case in
+=allowed-values-for-field= (backend.lisp) filters only system roles
+and the /current viewer's/ exclusive role, and =selectable-roles=
+(admin branch) has the same blind spot. Resources are unaffected:
+other users' exclusives are legitimately assignable there
+(point-to-point sharing), so their presence is correct on that path.
+Fix: filter all =:exclusive=-suffixed roles out of the users-roles
+palette (a =shareable-exclusive-role-p= analogue without the
+admin/guest exception).
+
+Implemented per plan, including all six review nits. New
+=exclusive-role-p= (backend.lisp, beside =shareable-exclusive-role-p=)
+tests the =:exclusive= suffix via =u:ends-with=;
+=shareable-exclusive-role-p= is now defined in terms of it (existing
+sharing tests unchanged and green). The =:users= =:roles= case in
+=allowed-values-for-field= removes every =exclusive-role-p= hit plus
+="admin" / "settings" / "logged-in"=; the =when user= /
+=a:exclusive-role-for= closure trick is gone (admin:exclusive,
+guest:exclusive, and the viewer's own exclusive all fall out of the
+suffix test). =selectable-roles= deliberately untouched — the resource
+palette intentionally lists other users' exclusives for sharing.
+Tests: =exclusive-role-p= unit test beside its sibling, new
+=allowed-values-for-field-excludes-other-users-exclusives= (two
+throwaway users + =(notany #'exclusive-role-p roles)= so any future
+leak fails), and the stale "same set as selectable-roles" docstring
+in =...-excludes-settings-...= corrected. Full =(run-tests)= green:
+1539 checks / 26 groups. Live smoke: admin's =:users= roles palette
+shows only shareable roles, zero exclusives. No frontend, model, or
+docs changes.
+
+Plan: [[file:~/workbench/exclusive-roles-bug-plan.org][exclusive-roles-bug-plan.org]].
+
+** DONE Checkbox list with search  :model:frontend:backend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-30 Sun]
 :END:
 Data UI provides a checkbox list with search for roles. We need to make all checkbox lists support search.
-** TODO Roles checkbox search shows all options               :frontend:bug:
+
+Implemented per [[file:~/workbench/checkbox-list-plan.org][checkbox-list-plan.org]] (all ten design
+decisions + both Grok review fixes). New shared =web/src/
+CheckboxList.tsx= renders every =:checkbox-list= field: selected
+items always fully visible (replaces the =extraRoles= seeding —
+values on the record but absent from options still render
+checked), client-side substring search once the option set
+reaches 10, unselected options in a compact
+(~5-row) capped (100) sorted scroll box —
+shrink-wrapped so its scrollbar sits beside the
+list, not at the screen edge (Donnie, follow-up
+tweak after live look) — with an "N more — type
+to narrow" hint, both sections sorted.
+=lisp/backend.lisp= =selectable-roles= non-admin branch now
+appends every other user's shareable exclusive role, so the
+roles palette (and thus the checkbox search) covers
+point-to-point sharing; =/api/users= + =rest-users= handler
+deleted (single frontend call site removed with the typeahead).
+Tests: =selectable-roles-non-admin= extended, new
+=selectable-roles-non-admin-includes-all-shareable-exclusives=.
+Full =(run-tests)= green: 1544 checks / 26 groups. Frontend
+built. Live smoke: worker's palette gained =smoke-palette:
+exclusive= after creating that user (and lost it after
+cleanup). The =:model:= / =:compiler:= tags ended up unused
+(no model or compiler change). Child item "Roles checkbox
+search shows all options" left TODO per Donnie (2026-08-31);
+note the underlying behavior is fixed by the full palette.
+
+Plan: [[file:~/workbench/checkbox-list-plan.org][checkbox-list-plan.org]].
+** DONE Roles checkbox search shows all options               :frontend:bug:
 :PROPERTIES:
 :CREATED: [2026-08-16 Sun]
+:COMPLETED: [2026-08-30 Sun]
 :END:
-** TODO New users cannot have other users's exclusive roles        :backend:
-:PROPERTIES:
-:CREATED: [2026-08-16 Sun]
-:END:
-If I create user-1, then create user-2, the Add Users form lists user-1's exclusive role among the roles that can be assigned to user-2. Bad.
-** TODO :new-roles top-level model key                :compiler:backend:mvp:
+Fixed by the previous item, "Checkbox list with search" (DONE
+2026-08-30). Its =selectable-roles= change makes the non-admin
+palette deliver every other user's shareable exclusive role, and
+the old roles typeahead (which searched only =/api/users=
+usernames) was replaced by the shared =web/src/CheckboxList.tsx=
+searching the full palette client-side — exactly what this item
+asked for. No separate work remains.
+** DONE :new-roles top-level model key                  :compiler:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-08-30 Sun]
 :END:
-Add a =:new-roles= top-level key that lets model authors declare
-additional roles with permissions directly in the model:
+Implemented per [[file:~/workbench/new-roles-plan.org][new-roles-plan.org]] (no deviations):
 
-#+begin_src lisp
-  :new-roles (:ai-user (:read)
-              :other-role (:create :read :update :delete))
-#+end_src
-
-The compiler creates these roles during database initialization,
-assigning the specified permissions. This replaces the manual step
-of having the admin create roles after deploy. Needed for the model
-generator button (=ai-user= role).
+- =lisp/model.lisp=: =:new-roles= added to =*top-level-keys*=;
+  new =valid-new-roles= / =valid-permission-list= /
+  =reserved-role-name-p= (+ =*valid-permissions*=,
+  =*reserved-role-names*=, =model-new-roles=) — keyword keys,
+  string permission values from the closed CRUD set, reserved
+  names rejected, =report-e= throughout; new =ensure-declared-roles=
+  called in =set-model= *before* =ensure-model-roles= (declared
+  permissions win over the full-CRUD =:type-roles= default).
+- =lisp/rest.lisp=: =:new-roles= =remf='d from =/api/info= settings.
+- =models/modelbank.lisp=: =:new-roles (:ai-user ("read"))= — the
+  generator button works for admin on a fresh deploy, no Roles-UI
+  step.
+- =models/test/new-roles-test.lisp=, =tests/new-roles-tests.lisp=
+  (registered in =data-ui.asd=), =run-new-roles-tests= in
+  =tests/helpers.lisp= + =run-tests= entry: 46 checks — validation
+  probes plus DB-init (existence, exact permissions, admin
+  linkage, idempotent second =set-model=, declared-perms-win,
+  palette presence, unreferenced-role contract). Full
+  =(run-tests)=: 1591 checks, 27 groups, all green.
+- =docs/model-reference.md=: key table, "Declared roles" section,
+  Known gap 15 (additive-only: removing a role doesn't delete it;
+  changed permissions of an existing role have no effect).
 
 ** TODO Allow =:type-roles= override on base-model types      :compiler:mvp:
 :PROPERTIES:
@@ -2016,6 +2102,78 @@ This unblocks type categorization (system types hidden from
 non-admin users) and is needed for apps like Model Bank where users
 should not browse other users.
 
+Plan: [[file:~/workbench/type-roles-override-plan.org][type-roles-override-plan.org]].
+
+** TODO =allowed-values= must not fail the parent list     :backend:bug:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-29 Sat]
+:END:
+=lisp/backend.lisp= — =allowed-values= walks every field with
+=:target=, =:join-table=, or =:ui :options=. For each,
+=allowed-values-for-field= does =(or :source-all :source)= and
+calls =(be-list-column target-type … user)=. That inner =be-list=
+still runs =valid-user-permissions= on the *target* type.
+=:skip-allowed-values t= only stops recursion (bidirectional M2M);
+it does not skip the permission check. =list-result= has no
+=handler-case=, so a permission error on the target *fails the
+outer list*.
+
+Surfaced by the =:type-roles= override plan. Restricting
+=:users= to =("admin")= would make non-admin =be-list :models=
+signal — Model Bank =:models :user= is autofill / read-only / no
+=:source-all=, but still has =:target :users= and a =:source=
+that names =:users=. Same for =:images=, =:ratings=, chores
+=:completed-by=. Autofill / no =:source-all= is not enough.
+
+Until this lands, the only safe authoring rule is: no
+=:target :users= field on any type non-admins can list. That
+blocks applying the override to Model Bank / chores / books.
+
+Fix directions to weigh (pick one in the plan):
+
+- Skip read-only / autofill fields in =allowed-values= (Owner
+  never needs a palette)
+- Catch the permission error per-field and return an empty
+  palette instead of signaling
+- A narrower options query that does not re-enter
+  =valid-user-permissions= on the target type
+
+Do not fold into the compiler override item. That primitive
+still lands; this is the backend hole that makes it usable on
+real apps.
+
+Blocks: putting =:users (:type-roles ("admin"))= in
+=models/modelbank.lisp= (and the same on chores / books).
+
+** TODO Reject =:sortable t= on =:target= fields               :compiler:bug:
+:PROPERTIES:
+:CREATED: [2026-08-22 Sat]
+:END:
+=:sortable t= on a =:target= (FK) field compiles today, then 500s at
+click time. =compile-field-stage-2= rewrites the field's
+=:source :column-name= to the joined table's display column (e.g.
+=users.user_name=), but base Phase A SQL has no join, so Postgres
+raises 42P01 "missing FROM-clause entry". Observed live on Model
+Bank =:models= =:user= (Owner header). The existing guard passes it
+because =compile-field= force-sets =:column t= on any =:target=
+field.
+
+Fix: compile-time reject, uniformly (base types and rollups — the
+memorable rule is "=:target= is never sortable"). =compile-field=
+already binds =has-target= beside the =:searchable= check that
+rejects FK fields; add the same shape inside the =:sortable= =when=,
+=report-e= matching its neighbors. Also drop =:sortable t= from
+=:models= =:user= in =models/modelbank.lisp= (the only current
+instance), update the =:sortable= row in =docs/model-reference.md=,
+and add a =(signals error)= compile test to =tests/sortable-tests.lisp=
+(test-suite edit needs human permission).
+
+Plan: [[file:~/workbench/target-non-sortable-plan.org][target-non-sortable-plan.org]]. Superseded by "Joined-column
+sort on base types" below when that lands.
+** TODO Password field should include confirmation field      :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
 ** TODO Restrict user names (lowercase, alphanumeric, dash)  :mvp:bug:model:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -2023,35 +2181,16 @@ should not browse other users.
 Basic input hygiene that affects every model and the video. Prevent
 ugly or colliding usernames.
 
-** TODO Cryptic no-model-selected error when uploading image :model:polish:mvp:
+** TODO Date-time picker =:ui= widget                 :model:frontend:mvp:
 :PROPERTIES:
-:CREATED: [2026-08-09 Sun]
+:CREATED: [2026-08-29 Sat]
 :END:
-If no model is selected when uploading an image, the error is cryptic.
-Instead of "Model is required" or something like that, we get:
-"Invalid value type for field :IMAGES :MODEL. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-f02]"
-Model Bank demo polish.
-
-** TODO Type→widget inference                      :compiler:model:mvp:docs:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:END:
-After the =:widget= vocabulary lands, infer a default =:widget= from
-field shape when the author omits =:widget= (beyond the blunt
-=:textbox= default). Goal: smaller models and safer AI authoring
-(pairs with model generator).
-
-Intended inferences (explicit =:widget= always wins):
-
-- =:type :boolean= and no widget → =:checkbox=
-- =:type :password= and no widget → =:password=
-- =:type :file= and no widget → =:file=
-- =:type :list= with =:join-table= and/or =:source-all= and no widget
-  → =:checkbox-list= or =:select= (pick one rule and document it)
-- button field with =:action= and no widget → =:button=
-- status companion fields (already synthesized) → =:textbox= +
-  =:read-only t= (should already be true after the widget series)
-
+A =:ui= widget (e.g. =:widget :date-time=) that renders a
+date-time picker on forms and submits ISO 8601 values like
+=2026-08-29T15:53:12= — the same shape =:created-at= /
+=:updated-at= use. Pairs with =:type :timestamp= fields. The
+=:ui= key passes through verbatim, so no backend change is
+expected beyond possibly validating the format on write.
 ** TODO AI-only model reference                                :docs:mvp:ai:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -2079,47 +2218,8 @@ remains primary.
 :CREATED: [2026-08-09 Sun]
 :END:
 
-** TODO Password field should include confirmation field      :frontend:mvp:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:END:
-** TODO Date-time picker =:ui= widget                 :model:frontend:mvp:
-:PROPERTIES:
-:CREATED: [2026-08-29 Sat]
-:END:
-A =:ui= widget (e.g. =:widget :date-time=) that renders a
-date-time picker on forms and submits ISO 8601 values like
-=2026-08-29T15:53:12= — the same shape =:created-at= /
-=:updated-at= use. Pairs with =:type :timestamp= fields. The
-=:ui= key passes through verbatim, so no backend change is
-expected beyond possibly validating the format on write.
 ** TODO Remove =:private:= from all doc strings                :maintenance:
 Public, exported function will carry the =:public:= label. We'll assume all the rest are private.
-** TODO Reject =:sortable t= on =:target= fields               :compiler:bug:
-:PROPERTIES:
-:CREATED: [2026-08-22 Sat]
-:END:
-=:sortable t= on a =:target= (FK) field compiles today, then 500s at
-click time. =compile-field-stage-2= rewrites the field's
-=:source :column-name= to the joined table's display column (e.g.
-=users.user_name=), but base Phase A SQL has no join, so Postgres
-raises 42P01 "missing FROM-clause entry". Observed live on Model
-Bank =:models= =:user= (Owner header). The existing guard passes it
-because =compile-field= force-sets =:column t= on any =:target=
-field.
-
-Fix: compile-time reject, uniformly (base types and rollups — the
-memorable rule is "=:target= is never sortable"). =compile-field=
-already binds =has-target= beside the =:searchable= check that
-rejects FK fields; add the same shape inside the =:sortable= =when=,
-=report-e= matching its neighbors. Also drop =:sortable t= from
-=:models= =:user= in =models/modelbank.lisp= (the only current
-instance), update the =:sortable= row in =docs/model-reference.md=,
-and add a =(signals error)= compile test to =tests/sortable-tests.lisp=
-(test-suite edit needs human permission).
-
-Plan: [[file:~/workbench/target-non-sortable-plan.org][target-non-sortable-plan.org]]. Superseded by "Joined-column
-sort on base types" below when that lands.
 ** TODO Expose host profiles via HAProxy                      :scripts:
 :PROPERTIES:
 :CREATED: [2026-08-15 Sat]
@@ -2137,6 +2237,35 @@ values =profile= / =profile-*= are reserved by the compiler
 on evo-x2.
 
 ** TODO Determine how public role is applied              :backend:compiler:
+** TODO Type→widget inference                      :compiler:model:mvp:docs:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+After the =:widget= vocabulary lands, infer a default =:widget= from
+field shape when the author omits =:widget= (beyond the blunt
+=:textbox= default). Goal: smaller models and safer AI authoring
+(pairs with model generator).
+
+Intended inferences (explicit =:widget= always wins):
+
+- =:type :boolean= and no widget → =:checkbox=
+- =:type :password= and no widget → =:password=
+- =:type :file= and no widget → =:file=
+- =:type :list= with =:join-table= and/or =:source-all= and no widget
+  → =:checkbox-list= or =:select= (pick one rule and document it)
+- button field with =:action= and no widget → =:button=
+- status companion fields (already synthesized) → =:textbox= +
+  =:read-only t= (should already be true after the widget series)
+
+** TODO Cryptic no-model-selected error when uploading image :model:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+If no model is selected when uploading an image, the error is cryptic.
+Instead of "Model is required" or something like that, we get:
+"Invalid value type for field :IMAGES :MODEL. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-f02]"
+Model Bank demo polish.
+
 ** TODO 30-second demo video                                      :docs:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]

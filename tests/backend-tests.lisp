@@ -1305,6 +1305,19 @@ Notes:
   (is-false (shareable-exclusive-role-p ""))
   (is-false (shareable-exclusive-role-p nil)))
 
+(test exclusive-role-p
+  "Every :exclusive-suffixed role is an exclusive role, including
+system exclusives."
+  (is-true (exclusive-role-p "bob:exclusive"))
+  (is-true (exclusive-role-p "alice:exclusive"))
+  (is-true (exclusive-role-p "admin:exclusive"))
+  (is-true (exclusive-role-p "guest:exclusive"))
+  (is-false (exclusive-role-p "logged-in"))
+  (is-false (exclusive-role-p "public"))
+  (is-false (exclusive-role-p "todo-users"))
+  (is-false (exclusive-role-p ""))
+  (is-false (exclusive-role-p nil)))
+
 (test selectable-roles-admin
   "Admin sees all roles minus system exclusives."
   (let* ((all-roles (a:list-role-names *rbac*))
@@ -1322,10 +1335,14 @@ Notes:
     (is-false (member "settings" result :test 'equal))))
 
 (test selectable-roles-non-admin
-  "Non-admin sees own roles + public + type-roles, minus system exclusives."
-  (let ((user "roles-test-user"))
-    ;; Create test user with a role
+  "Non-admin sees own roles + public + type-roles + every other
+user's shareable exclusive role, minus system exclusives."
+  (let ((user "roles-test-user")
+        (other "roles-other-user"))
+    ;; Create test user with a role, plus a second user whose
+    ;; exclusive role must appear on the first user's palette.
     (th-make-user user :roles '("todo-users"))
+    (th-make-user other)
     (unwind-protect
       (let* ((result (selectable-roles :todos user)))
         ;; User's own role is present
@@ -1334,6 +1351,10 @@ Notes:
         (is-true (member "public" result :test 'equal))
         ;; Type role is present (same as user's role in this case)
         (is-true (member "todo-users" result :test 'equal))
+        ;; The other user's exclusive role is present
+        (is-true (member (a:exclusive-role-for other) result :test 'equal))
+        ;; The viewer's own exclusive role is absent
+        (is-false (member (a:exclusive-role-for user) result :test 'equal))
         ;; System exclusives are absent
         (is-false (member "admin" result :test 'equal))
         (is-false (member "admin:exclusive" result :test 'equal))
@@ -1343,7 +1364,34 @@ Notes:
                (length (remove-duplicates result :test 'equal)))))
       ;; Cleanup
       (be-delete :users
-        `((:users :name :eq ,user)) "admin"))))
+        `((:users :name :eq ,user)) "admin")
+      (be-delete :users
+        `((:users :name :eq ,other)) "admin"))))
+
+(test selectable-roles-non-admin-includes-all-shareable-exclusives
+  "Any future regression that drops all shareable exclusives from
+the non-admin palette fails here (the inverted some pattern of
+allowed-values-for-field-excludes-other-users-exclusives)."
+  (let ((user-a "share-palette-user-a")
+        (user-b "share-palette-user-b"))
+    (th-make-user user-a :roles '("todo-users"))
+    (th-make-user user-b)
+    (unwind-protect
+      (let* ((result (selectable-roles :todos user-a))
+             (exclusives (list (a:exclusive-role-for user-a)
+                               (a:exclusive-role-for user-b))))
+        ;; Some shareable exclusive is on the palette — user-b's at
+        ;; minimum, since the viewer's own is excluded.
+        (is-true (some #'shareable-exclusive-role-p result))
+        (is-true (member (second exclusives) result :test 'equal))
+        ;; The viewer's own exclusive stays absent.
+        (is-false (member (first exclusives) result :test 'equal))
+        ;; System exclusives never appear.
+        (is-false (member "admin:exclusive" result :test 'equal))
+        (is-false (member "guest:exclusive" result :test 'equal)))
+      ;; Cleanup
+      (be-delete :users `((:users :name :eq ,user-a)) "admin")
+      (be-delete :users `((:users :name :eq ,user-b)) "admin"))))
 
 (test selectable-roles-includes-type-roles
   "Type roles appear in selectable-roles even if user doesn't have them."
@@ -1362,8 +1410,9 @@ Notes:
 
 (test allowed-values-for-field-excludes-settings-from-users-roles
   "The :users type's :roles allowed-values excludes system internals
-like settings, admin, logged-in, and exclusive roles — same set as
-selectable-roles. This is the path the Add form hits for :users."
+like settings, admin, logged-in, and every exclusive role — a
+stricter set than selectable-roles, since exclusive roles are never
+assignable on users. This is the path the Add form hits for :users."
   (let ((roles (getf (allowed-values :users "admin") :roles)))
     (is-false (member "settings" roles :test 'equal))
     (is-false (member "admin" roles :test 'equal))
@@ -1375,6 +1424,27 @@ selectable-roles. This is the path the Add form hits for :users."
     ;; Normal roles are still present
     (is-true (member "public" roles :test 'equal))
     (is-true (member "user-creator" roles :test 'equal))))
+
+(test allowed-values-for-field-excludes-other-users-exclusives
+  "The :users :roles palette never contains another user's
+name:exclusive role — the RBAC layer rejects such assignments, so
+they must not be offered."
+  (let ((user-a "excl-palette-user-a")
+        (user-b "excl-palette-user-b"))
+    (th-make-user user-a)
+    (th-make-user user-b)
+    (unwind-protect
+      (let* ((roles (getf (allowed-values :users "admin") :roles))
+             (exclusives (list (a:exclusive-role-for user-a)
+                               (a:exclusive-role-for user-b))))
+        (is-false (member (first exclusives) roles :test 'equal))
+        (is-false (member (second exclusives) roles :test 'equal))
+        ;; Any future exclusive leak fails, not just these two.
+        (is-false (some #'exclusive-role-p roles))
+        ;; A shared role is still assignable.
+        (is-true (member "public" roles :test 'equal)))
+      (be-delete :users `((:users :name :eq ,user-a)) "admin")
+      (be-delete :users `((:users :name :eq ,user-b)) "admin"))))
 
 (test allowed-values-for-field-prefers-source-all
   "When :source-all is present, allowed-values-for-field uses its
