@@ -2,7 +2,7 @@
 
 **Your whole app, in an email.**
 
-> Built by Donnie Cameron at [Sinister Code](https://sinistercode.com), programs that write programs.
+Built by Donnie Cameron at [Sinister Code](https://sinistercode.com), programs that write programs.
 
 Describe your data once. Get a deployed, RBAC-backed application, deterministically. Manage users, roles, and permissions live, in the running app.
 
@@ -15,7 +15,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 Data UI compiles a small model into a complete, RBAC-backed application — database, API, React frontend, Kubernetes deployment — in one command.
 
 - **Evaluating as an investor or partner?** [The Big Idea](#the-big-idea) → [Current Status](#current-status-july-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
-  - **Need an application built?** Client engagements open after the MVP (target: December 2026). Early conversations welcome: [Contact](#contact).
+- **Need an application built?** Client engagements open after the MVP (target: December 2026). Early conversations welcome: [Contact](#contact).
 - **Engineer, or evaluating the tech?** Read top to bottom; the meat starts at [Overview](#overview) and the [Example Model](#example-model).
 
 ## Table of Contents
@@ -41,6 +41,7 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 - [The Marketplace](#the-marketplace)
 - [Business & Monetization](#business--monetization)
 - [Related Repositories](#related-repositories)
+- [Contact](#contact)
 - [License](#license)
 
 
