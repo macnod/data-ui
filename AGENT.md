@@ -174,7 +174,9 @@ actually begins.
   DONE: set `:COMPLETED:` to today.
 - **After any change to `docs/todo.org`, run `(fix-data-ui-todo-dates)`**
   (defined in `~/r/elisp/dc-ai.el`, no parameters). It enforces the
-  date rules; just write today's date and run it.
+  date rules; just write today's date and run it. Currently
+  *disabled* (`dc-ai-fix-todo-dates-enabled` is nil) — it returns 0
+  and touches nothing. Skip it until it is re-enabled.
 
 Org outline hierarchy: `*` section, `**` parent todo, `***` its direct
 children (children inherit tags/context). Never mix — do not put `**`

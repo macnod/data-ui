@@ -2,6 +2,9 @@
 /tests/input-files/
 /tests/shared-files/
 
+# Rendered from tests/init-template.sql by scripts/data-ui
+/tests/init.sql
+
 # Emacs
 *~
 \#*\#

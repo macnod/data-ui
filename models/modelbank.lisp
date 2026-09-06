@@ -1,3 +1,29 @@
+;;
+;; Model Bank
+;;
+;; Track, share, copy, rate, create, and deploy models to production.
+;;
+;; - Create: Enter the code for a model.
+;;
+;; - Generate: Enter a short, plain-English description of the model, and use
+;;   the Generate button to have an AI generate the model code for you.
+;;
+;; - Deploy: Press the Deploy button to compile your model and put it into
+;;   production.
+;;
+;; - Rate: Rate models and sort them by average rating.
+;;
+;; For Deploy, currently being a member of the models-user role allows you to
+;; deploy a model.
+;;
+;; For Generate, you must be a member of the ai-user role.
+;;
+;; For Generate to work, you must provide a secret ("secrets" tab in the
+;; Settings section) with the name llm-config and a value that looks like this:
+;;     :url "https://api.z.ai/api/coding/paas/v4/chat/completions"
+;;     :model "glm-5.3"
+;;     :api-key "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+;;
 '(:title "Model Bank"
    :name "modelbank"
    :version "0.2"

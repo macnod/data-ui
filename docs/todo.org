@@ -2082,6 +2082,22 @@ Implemented per [[file:~/workbench/new-roles-plan.org][new-roles-plan.org]] (no 
   Known gap 15 (additive-only: removing a role doesn't delete it;
   changed permissions of an existing role have no effect).
 
+** PLANNING Environments and :domain-stg :scripts:compiler:model:docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-05 Sat]
+:END:
+Formal *environment* vocabulary (development / staging / production)
+and a new top-level =:domain-stg= key. Staging is the flagship
+environment during MVP (hosts Model Bank, has the Deploy button).
+Compiler derives =:domain-stg= from =:domain= by suffixing =-stg=
+onto the first DNS label unless the author writes it explicitly.
+=profile_domain= reads =:domain-stg= (with the same fallback);
+=deploy= still reads =:domain= only. Modelbank opts out of the
+suffix: staging keeps the clean URL, production takes =-p=.
+
+Plan: [[file:~/workbench/environments-domain-stg-plan.org][environments-domain-stg-plan.org]].
+Flip to READY once Donnie approves the plan.
+
 ** TODO Allow =:type-roles= override on base-model types      :compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -2505,6 +2521,15 @@ unused.
 Create an app that allows you to upload Markdown and Org-Mode files, and that allows you to search, browse, render them as HTML, and download them.
 
 ** TODO Sign in as guest                   :frontend:backend:compiler:model:
+** TODO Update stale AGENT.md reference to ~/.debug/deployment-work.md :docs:maintenance:
+:PROPERTIES:
+:CREATED: [2026-09-05 Sat]
+:END:
+AGENT.md's deployment bullet still points at
+=~/.debug/deployment-work.md= for session-by-session history, but
+that file (and =~/.debug/=) no longer exists. Either restore the
+file at that location or update AGENT.md to wherever the history
+actually lives (or drop the reference).
 
 * Post MVP
 ** TODO Lifecycle side effects                            :backend:compiler:
@@ -2559,11 +2584,88 @@ secrets, timeouts, auth, SSRF, and often =:async=.
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
+** TODO Unify script and compiler model-file reads                :scripts:
+:PROPERTIES:
+:CREATED: [2026-09-05 Sat]
+:END:
+=scripts/data-ui= reads top-level model fields through
+=lisp/deployment.lisp='s raw file reader (=(cadr (read ...))= +
+=getf=), while the compiler normalizes and fills defaults in
+=top-level-settings= (lisp/model.lisp). Two tracks for the same
+facts, and they drift: =:domain-stg='s suffix derivation had to
+be duplicated by hand in =profile_domain= because the raw reader
+never sees compiler defaults.
+
+Fix: one source of truth for top-level field reads — either teach
+the =deployment.lisp= helper the same defaulting rules (shared,
+loadable without a DB), or have the script ask the compiler. No
+more per-key fallback logic in bash.
 ** TODO Deploy from deployed app                             :model:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
 Allow application deployment from a deployed application. See [[/home/macnod/Insync/macnod@gmail.com/Google Drive/dc/cloud-local/workbench/deploy-squared-plan.org][deploy-squared-plan.org]]. But plan is no good. Missing a lot.
+** TODO Role-gated Deploy button                    :frontend:backend:model:
+:PROPERTIES:
+:CREATED: [2026-08-29 Sat]
+:END:
+Gate the Model Bank Deploy button behind a role, so the button is
+*disabled* (unpressable) when the user lacks the role.
+
+Today =be-action= gates every button on record-level update
+permission only; the =:deploy-model= hook ignores =:roles=, so any
+user who can edit a =:models= row can trigger a git commit, k3d
+deploy, NodePort allocation, and HAProxy registration. (By
+contrast, =:generate-model= checks ="ai-user"= inside the hook —
+but that fails *after* the click, with "failed: ai-user role
+required".)
+
+Needs:
+- Model vocabulary: a role requirement on =:button= fields (e.g.
+  =:ui (:roles ("deployer"))= or a field-level =:roles= key)
+- Schema: the form JSON from =/api/list= must expose the
+  requirement (plus the user's roles, or a server-computed
+  enabled/disabled flag) so the frontend renders the button
+  disabled rather than pressable
+- Backend enforcement stays in the hook (the =:generate-model=
+  in-hook check is the existing pattern); the disabled UI is UX,
+  not security
+** TODO Rating privacy and write permissions           :backend:model:
+:PROPERTIES:
+:CREATED: [2026-09-02 Wed]
+:END:
+Revisit Model Bank rating sanity. The modeling is right (own
+=:ratings= table, write-through virtual field on =:models=), but
+the entry point and role inheritance leave open issues:
+
+- *Model owner can see who rated their model.* =execute-write-to='s
+  insert path makes a new =:ratings= row inherit the source
+  model's resource roles — including the creator's exclusive
+  role — so the owner can read rater identities through the
+  =:ratings= type. Rater identity should be the rater's business
+  (and admin's), not the model owner's.
+- *Users must not be able to alter other users' ratings* — neither
+  via the =:ratings= type directly nor via write-through. The
+  write-through upsert is keyed on model + user, so it should only
+  ever touch the acting user's own row; verify every path, then
+  enforce.
+- *Rating currently requires model-update permission.* The rating
+  write rides =be-update= on =:models=, inheriting the host row's
+  type- and record-level update gate: a user who can't edit a
+  model can't rate it, and a user who can edit it can change more
+  than their rating. Likely direction: permission routing for
+  pure write-through fields (gate on the /target/ table's update /
+  create permission, skip the host-row update), not field-level
+  RBAC. Same schema addition as the Role-gated Deploy button
+  (per-field editability flags in the form JSON) would then make
+  the stars editable while the rest of the form is read-only.
+- One rating per (model, user) must hold on every path; the
+  identity keys declare it, but nothing yet verifies it.
+
+Privacy principle to decide deliberately: the aggregate
+(=:average-rating=) is public; individual ratings and rater
+identity are the rater's. Today that split is an accident of
+resource-role propagation, not a decision.
 ** TODO Transactions                                      :backend:compiler:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]

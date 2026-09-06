@@ -2,14 +2,25 @@
 
 **Your whole app, in an email.**
 
+> Built by Donnie Cameron at [Sinister Code](https://sinistercode.com), programs that write programs.
+
 Describe your data once. Get a deployed, RBAC-backed application, deterministically. Manage users, roles, and permissions live, in the running app.
 
-This is no longer just a thesis. As of July 2026, the full pipeline works end to end: a one-page model compiles into a complete application, PostgreSQL, REST API, RBAC, React frontend, and **one command deploys it to Kubernetes behind TLS at its own domain**. The first deployed instance is a to-do app whose entire description fits on a napkin.
+This is no longer just a thesis. As of July 2026, the full pipeline works end to end: a one-page model compiles into a complete application, PostgreSQL, REST API, RBAC, React frontend, and **one command deploys it to Kubernetes behind TLS at its own domain**. The first deployed instance, a to-do app whose entire description fits on a napkin, went from model to production that way.
 
 Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
+## Start Here
+
+Data UI compiles a small model into a complete, RBAC-backed application — database, API, React frontend, Kubernetes deployment — in one command.
+
+- **Evaluating as an investor or partner?** [The Big Idea](#the-big-idea) → [Current Status](#current-status-july-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
+  - **Need an application built?** Client engagements open after the MVP (target: December 2026). Early conversations welcome: [Contact](#contact).
+- **Engineer, or evaluating the tech?** Read top to bottom; the meat starts at [Overview](#overview) and the [Example Model](#example-model).
+
 ## Table of Contents
 
+- [Start Here](#start-here)
 - [The Big Idea](#the-big-idea)
 - [The Thesis in Six Lines](#the-thesis-in-six-lines)
 - [Why AI Needs Data UI](#why-ai-needs-data-ui)
@@ -89,7 +100,7 @@ Data UI is a Common Lisp system that takes a simple nested plist model and **com
 - Complete React frontend
 - Kubernetes manifests for deployment
 
-No manual migrations. No per-type boilerplate. Change the model, call `(set-model "todos")`, and everything updates deterministically. And this is not a half-built promise: write the model, compile it, run `scripts/data-ui deploy todos`, and minutes later your application is serving real users over TLS at its own domain. We know because that is exactly how the [live demo](#deployment) got there.
+No manual migrations. No per-type boilerplate. Change the model, call `(set-model "todos")`, and everything updates deterministically. And this is not a half-built promise: write the model, compile it, run `scripts/data-ui deploy todos`, and minutes later your application is serving real users over TLS at its own domain. That is exactly how the first deployed instance got there (July 2026).
 
 
 ## Core Philosophy
@@ -527,7 +538,7 @@ The full story, every step, every file, where the admin password lives, how cert
 
 The project is in active development, and the core claim is now demonstrated end to end:
 
-- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model is live in production on a k3d cluster, deployed with a single command.
+- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model was deployed to production on a k3d cluster with a single command (July 2026); the public demo is being rebuilt around the successor model.
 - Full CRUD operations work via the backend, REST API, and frontend React code, across **all** types, both the built-in RBAC types (users, roles, permissions, resources, etc.) and user-defined types.
 - JWT-based authentication (access + refresh tokens) protects the API.
 - **Scoping** is implemented at both the view level and the field level. View-level `:scope :user` filters `be-list` results to records owned by the current user. Field-level scoping (`:scope :user` on a field's `:source`) filters aggregated field values to the current user (e.g. "my rating" on Model Bank). It does not control field visibility or editability in the UI.
@@ -596,7 +607,7 @@ The marketplace is the growth engine. It does three things at once: it solves on
 
 Creating a new application becomes: find a model in the marketplace, copy it, modify it slightly, optionally restyle it, and deploy.
 
-We pursue the marketplace in two forms:
+I pursue the marketplace in two forms:
 
 - **(a) An open-source reference Marketplace.** Its job is not to be the product, it is to be the **proof**. You can stare at a fraction of a page of model and realize it represents the entire Marketplace application. Its smallness is the point and is defended as a feature. Being open and copyable, it is also the canonical first entry in the corpus, the template everyone forks.
 
@@ -611,16 +622,18 @@ The Data UI **engine** is and will remain fully open source under the MIT licens
 
 The **hosting** is a separate, closed-source product. Initially it has no raw-code escape hatch: models are pure data, hooks come from the curated registry. When a hosted user needs power beyond the data vocabulary, the escape valve is to self-host the open engine.
 
-Initially we will focus on building custom applications for clients while dogfooding the tool on our own projects.
+After the MVP, I will focus on building custom applications for clients while dogfooding the tool on my own projects.
 
-After the MVP, to fund continued development and provide additional value to users, we plan to provide:
+After the MVP, to fund continued development and provide additional value to users, I plan to provide:
 
 - A user-friendly YAML/JSON + visual modeling frontend, plus AI prompts (for those who prefer not to write Lisp models)
 - Managed hosting (one-click deploy, updates, backups, scaling)
 - The production-grade Marketplace
 - Professional support, SLAs, and custom development services for clients
 
-If you're building internal tools or client apps and want help, feel free to reach out. Contributions and feedback are very welcome; this is still early stage!
+If you're building internal tools or client apps and want help, feel free to reach out; engagements begin after the MVP (December 2026).
+
+Contributions and feedback are very welcome; this is still early stage!
 
 
 ## Related Repositories
@@ -629,6 +642,10 @@ If you're building internal tools or client apps and want help, feel free to rea
 - [macnod/dc-ds](https://github.com/macnod/dc-ds): Nested data structure navigation and operations.
 - [macnod/p-log](https://github.com/macnod/p-log): Simple logging library with support for multiple backends and structured logs.
 - [macnod/dc-eclectic](https://github.com/macnod/dc-eclectic): A collection of utilities and helpers for Common Lisp development.
+
+## Contact
+
+Donnie Cameron - macnod@gmail.com - [Sinister Code](https://sinistercode.com) - [LinkedIn](https://linkedin.com/in/macnod)
 
 
 ## License
