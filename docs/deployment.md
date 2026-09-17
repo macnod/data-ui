@@ -16,6 +16,7 @@ a YAML file without crying, you are qualified.
 - [Quick Start](#quick-start)
 - [What `deploy` Actually Does, Step by Step](#what-deploy-actually-does-step-by-step)
 - [The Model Drives Everything](#the-model-drives-everything)
+- [Environments](#environments)
 - [Deployment State: Where Things Live](#deployment-state-where-things-live)
 - [Secrets, and How to Get the Admin Password](#secrets-and-how-to-get-the-admin-password)
 - [The Kubernetes Manifests](#the-kubernetes-manifests)
@@ -224,6 +225,54 @@ production. The Swank port is never exposed through a Service either way;
 it is reachable only via `kubectl port-forward`, which requires cluster
 credentials.)
 
+## Environments
+
+An *environment* is where a running instance lives. There are three:
+**development**, **staging**, and **production**. The word "mode" and
+ad-hoc "local"/"deployed" phrasing are retired in favor of these.
+
+The environment is a property of the *launch path*, never stored in the
+model:
+
+- `scripts/data-ui repl` (no profile) → development
+- `scripts/data-ui repl <profile>` → staging; `expose-profile` is a
+  visibility toggle, not part of the definition
+- `scripts/data-ui deploy <model>` → production (also the Deploy
+  button, once production supports it — post-MVP)
+
+One model may run in all three environments simultaneously, and each
+instance has its own database by construction:
+
+- development: `dataui` in `pg-data-ui-repl` (port 5444)
+- staging profile: `pg_ident(<profile>)` in `pg-data-ui-<profile>`
+  (its own compose project)
+- production: namespace `dataui-<name>` with its own postgres
+
+Convention: one instance per model per environment; a second copy in
+the same environment is a new model. Data: development is volatile
+(snapshots only); staging and production are persistent — staging is
+*not* disposable. During the MVP, staging is the flagship environment:
+it hosts Model Bank and has the Deploy button, which production lacks.
+Staging does not mirror production's substrate (host process vs k8s);
+passing staging is not a substrate guarantee. An environment is not a
+"tier": tiers are product offerings; environments are where an
+instance runs.
+
+### `:domain-stg`
+
+The model's `:domain` remains the canonical production FQDN, used by
+`deploy`. Staging exposure (`expose-profile`) reads `:domain-stg`;
+when the author omits it, the compiler derives it by suffixing `-stg`
+onto the first DNS label of `:domain` (`todo.demo.data-ui.com` →
+`todo-stg.demo.data-ui.com`). An explicit `:domain-stg` always wins;
+it must differ from `:domain` (one HAProxy map line, one owner) and
+requires `:domain` when written. The deploy-button exception is
+modelbank: staging keeps the clean canonical URL
+(`modelbank.demo.data-ui.com`) and production takes the `-p` suffix —
+both explicit. `-stg` hosts and modelbank's two names all live under
+the existing `*.demo.data-ui.com` wildcard (DNS + TLS), so no new
+zone or certificate is involved.
+
 ## Deployment State: Where Things Live
 
 Deployment state lives **outside the repository**, in
@@ -253,10 +302,10 @@ particular machine's cluster. Deleting the whole state directory is
 recoverable: ports and secrets are re-read from the live cluster on the
 next deploy.
 
-Application *data* lives in a third place: the k3d cluster mounts
-`~/k3d/volumes/dataui` (host) at `/data/dataui` (node), and each
+Application *data* lives in a third place: the k3d cluster binds
+`/data/k8s` (host, on the SSD) into the node at the same path, and each
 instance's PersistentVolumes use
-`/data/dataui/<name>-<env>/{db,files}`. So even `k3d cluster delete`
+`/data/k8s/data-ui/<name>-<env>/{db,files}`. So even `k3d cluster delete`
 cannot destroy application data; it survives on the host filesystem.
 
 Three layers, three lifetimes:
@@ -265,7 +314,7 @@ Three layers, three lifetimes:
 |--------------------------------|-------------------------------|---------------------------|
 | Source (model, templates)      | git repo                      | everything                |
 | Deploy state (secrets, ports)  | `~/.local/state/data-ui-deploy` | cluster recreation      |
-| App data (database, files)     | `~/k3d/volumes/dataui`        | cluster deletion          |
+| App data (database, files)     | `/data/k8s/data-ui`           | cluster deletion          |
 
 ## Secrets, and How to Get the Admin Password
 
@@ -592,8 +641,9 @@ steps 1–3 are enough for a clean redeploy of the same instance):
     # 2. PVs are cluster-scoped with Retain policy; delete them explicitly
     kubectl delete pv dataui-todos-demo-db-pv dataui-todos-demo-files-pv
 
-    # 3. Wipe the instance's data on the host (root-owned; via the node)
-    docker exec k3d-evo-x2-server-0 rm -rf /data/dataui/todo-demo
+    # 3. Wipe the instance's data on the host (root-owned; same path
+    #    on host and node via the /data/k8s bind)
+    sudo rm -rf /data/k8s/data-ui/todo-demo
 
     # 4. Optional: drop cached secrets to get fresh credentials
     rm ~/.local/state/data-ui-deploy/todo/secrets.env
@@ -602,7 +652,7 @@ steps 1–3 are enough for a clean redeploy of the same instance):
     scripts/data-ui deploy todos
 
 Steps 2 and 3 are the ones people forget. A Released PV refuses to bind
-to a new claim, and stale postgres data under `/data/dataui` will be
+to a new claim, and stale postgres data under `/data/k8s/data-ui` will be
 happily adopted by the new instance, old password and all. (Or skip the
 list entirely and use `scripts/data-ui delete`, which forgets nothing.)
 

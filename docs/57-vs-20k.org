@@ -1,0 +1,286 @@
+#+TITLE: 57 vs ~20k
+
+A 57-line Data UI model compiles into a complete to-do application
+with users, roles, row-level RBAC, a React UI, and one-command
+Kubernetes+TLS deployment; the same application in hand-built Java
+is estimated at roughly 20,000 lines of production artifacts.
+
+The 20,000 is an estimate of application source a Java team would
+write, libraries allowed, to match that application. It is not a
+count of the Data UI compiler, which is the analog of Spring plus
+Hibernate plus a UI kit. It is not domain registration, which is
+hours rather than lines. It is production artifacts: persistence,
+auth, row-level RBAC as first-class data, the same UI for
+users/roles/permissions as for todos/tags, REST, frontend,
+Kubernetes manifests, cluster bootstrap, TLS, HAProxy, staging, a
+traffic report, and transactional database snapshots.
+
+A weekend Spring todo with login is 2–4k and is a different
+product. The distinctive cost is row-level RBAC as data (~8k), the
+same UI for admin and application types (~3k), and one-command
+deploy to a domain with TLS, plus traffic and snapshots (~3k).
+Todos and tags are ~2k. Persistence, auth, and REST glue
+(entities, migrations, JWT, DTOs, errors) are ~4k. That is ~20k.
+Application tests to match the compiler's correctness bar are
+another ~9k, because Java has no compiler proving the expansion,
+for a total of ~29k.
+
+These estimates are conservative.
+
+* The 57-line model
+
+#+begin_src lisp
+'(:title "To Do List"
+  :name "todos" :version "0.1"
+  :domain "todo.demo.data-ui.com"
+  :landing-page :todos
+  :api-roles ("logged-in" "public")
+  :repl t :guest-allowed t
+  :types
+  (:todos
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users" "public")
+      :default-sort (:points :desc)
+      :views (:main (:tables (:todos :todo-tags :tags))
+               :tags (:tables (:tags)))
+      :fields
+      (:name
+        (:type :text :identity t :sortable t
+          :ui (:label "To Do" :widget :textbox)
+          :validations (:required (:max-length :max 19))
+          :source (:view :main :column :name :agg :first)
+          :column t :not-null t :unique t)
+        :done
+        (:type :boolean :default :false :sortable t
+          :ui (:label "Done" :widget :checkbox)
+          :source (:view :main :column :done :agg :first)
+          :column t :not-null t)
+        :tags
+        (:type :list
+          :ui (:label "Tags" :widget :checkbox-list)
+          :validations (:join-items-exist)
+          :source (:view :main :table :tags :column :name :agg :distinct)
+          :source-all (:view :tags :table :tags :column :name :agg :list)
+          :join-table :todo-tags))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+
+    :tags
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("todo-users" "public")
+      :fields
+      (:name
+        (:type :text :identity t :sortable t
+          :ui (:label "Tag" :widget :textbox)
+          :validations (:required)
+          :source (:view :main :table :tags :column :name :agg :first)
+          :column t :not-null t :unique t))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+
+    :todo-tags
+    (:table t :is-joiner t :internal t
+      :fields
+      (:reference (:target :todos)
+        :reference (:target :tags)))))
+#+end_src
+
+* What those 57 lines produce
+
+1. An application with a todos tab and a tags tab.
+2. The application has a login screen. When you log in, you land in the todos tab.
+3. The application has an Admin section, with users, roles, and permissions tabs.
+4. The application has a Settings section with a Settings tab and a secrets tab.
+5. The todos tab and the tags tab have roles that allow a user with the same role to create those kinds of rows.
+6. Admin can create users, and can grant those users administrative powers, to any degree.
+7. Users can assign roles to new rows that they create.
+8. The RBAC solution is complete and correct, at the row level, manageable via the UI, in the same way that the user-defined types todos and tags are manageable.
+9. A new row can be accessible exclusively to a user. (However, admin always retains access to everything.)
+10. The application includes its own Kubernetes manifests.
+11. The application is deployable to Kubernetes, behind HAProxy, at the model-specified domain, with TLS, with a single command.
+12. Deployment takes a couple of minutes.
+13. The application is deployable to a staging environment, where the application runs directly on the host, still accessible from the internet at the specified staging URL, which defaults to the production URL.
+14. The application is deployable to a development environment, where it is accessible at localhost:8081.
+15. One can connect to the application while it runs: query the live image for facts, and make live changes to the application.
+16. `data-ui traffic` shows HAProxy per-IP rate-limit counters (concurrent connections, connection rate, request rate) and flags clients near or over the limits.
+17. `data-ui snapshot {list,save,restore,drop}` saves and restores the database for model switching: dump/restore inside the Postgres container (host client version does not matter), restore takes a safety snapshot first and rolls back if restore fails, restore is a single transaction.
+
+* What ~20k is (and is not)
+
+The comparison is not 57 lines of model vs the Data UI compiler.
+The compiler is the analog of Spring + Hibernate + a UI kit: it
+does not count toward the application, just as SBCL does not.
+
+The comparison is: 57 lines of application description vs the
+application source a Java team would write to match the list above.
+
+Item 15 is two capabilities. Live *query* (connect and ask the
+running process for facts) Java can do: Actuator, JMX, jcmd, a
+debugger. Live *update* (redefine the running program) Java
+cannot. JRebel and DevTools reload classes. They are not a Lisp
+image.
+
+The 20k estimate is items 1–14 plus 16–17. Item 15's inspect half
+is cheap in Java (library plus a few custom endpoints) and is not
+a reason to raise 20k. Item 15's mutate half is extra, and it is
+real.
+
+* Estimate
+
+A weekend Spring todo with login is 2–4k and matches items 1–2.
+That is a different product. The cost is row-level RBAC as
+first-class data, the same UI for users/roles/permissions as for
+todos/tags, exclusive rows, and one-command Kubernetes+TLS.
+
+** Tests belong in the Java number
+
+Data UI does not compile tests into the application. Correctness
+comes from the compiler: one expansion path, proven by the
+compiler's own suite (~10k lines in data-ui/tests, ~1k in
+rbac/tests). Those tests are the analog of Spring's tests. They
+do not count toward the 57-line model, and a Java team does not
+rewrite them.
+
+What the Java team does have to write is tests of the
+application. There is no compiler sitting on top of their
+entities, queries, and permission checks. If they promise the
+same correctness — row-level RBAC complete and correct, exclusive
+rows, admin override, type-roles copied onto creates, the admin
+UI not a special case — that promise lives in application tests.
+JUnit plus Testcontainers is more verbose than FiveAM. Omitting
+them understates the Java side.
+
+8k is a tutorial. 40k is padding. For items 1–14 and 16–17,
+production quality, libraries allowed, tests not counted:
+
+- Persistence, 12–15 entities, migrations, joined tag lists :: 1,200–1,800
+- Auth: login, JWT access+refresh, password hash, guest :: 600–1,000
+- Row-level RBAC core (every row a resource; check and list-filter
+  on every op; type-roles copied onto new rows; per-row roles;
+  exclusive-to-user; admin still sees all) :: 3,500–6,000
+- Admin as the same application: users, roles, permissions,
+  grantable to any degree, checkbox-lists, not a one-off panel :: 2,000–3,500
+- App CRUD: todos, tags, M2M, user-scoped settings and secrets,
+  validation, default sort, landing page :: 1,500–2,500
+- REST: DTOs, errors, list payload with schema and permission flags :: 1,200–2,000
+- Frontend (React/TS; the comparison is Java, but the running app
+  has a UI) :: 2,500–4,000
+- Deploy / DevOps (see below) :: 2,300–4,700
+
+Production midpoints sum to about 20k. Range 15–27k.
+
+** DevOps is more than manifests
+
+Items 10–14 are not "write a Deployment YAML." They are: a domain
+that resolves, a certificate that renews, a cluster that exists,
+HAProxy in front, staging on the host, and one command that
+wires the app to all of that. Data UI puts the domain in the
+model and derives the rest. A Java team writes the same surface
+as scripts, YAML, and runbooks.
+
+Java can point the app at any domain more easily. That
+flexibility is real and is not counted here. The count is the
+work to reach the same end state as the 57-line model.
+
+Not lines of code (not in the 20k):
+
+- Registering the domain at a registrar
+- Waiting on DNS
+- Opening a cloud account
+
+Those are hours, not source. The claim is lines.
+
+Lines a Java team does have to write, matching Data UI's
+one-time host plus per-app deploy (k3d, not EKS):
+
+- App manifests, Dockerfile, Postgres in-cluster :: 400–800
+- One-command deploy: build, import, apply, wait, route :: 500–1,000
+- Cluster bootstrap (k3d, volumes, kubeconfig) :: 150–400
+- TLS: wildcard cert, DNS-01, renewal hook, HAProxy PEM :: 300–700
+- HAProxy map + backend drop-ins, validate, reload :: 150–400
+- Staging-on-host (ports, secrets, expose at the staging URL) :: 400–900
+- Dev: localhost:8081 plus local Postgres :: 50–150
+- traffic: HAProxy stick-table report, live limits from config :: 80–200
+- snapshot list/save/restore/drop: container pg_dump/pg_restore,
+  safety snapshot, single-transaction restore, rollback on
+  failure, profile-name resolution :: 250–500
+
+DevOps midpoints sum to about 3.4k. Range 2.3–4.7k.
+
+Data UI's own artifacts in this band: ~1.7k in scripts/data-ui
+(deploy, profiles, HAProxy, staging), ~330 lines of templates,
+~100 lines of TLS hooks. A Java team is not rewriting the
+compiler; they are writing the equivalent path for one app.
+Spring Boot does not give you k3d, Let's Encrypt, or HAProxy.
+
+** Config files
+
+A Java version needs configuration files. Not "extensive" in the
+Spring-XML sense, and most of it is already in the numbers.
+
+Already counted (DevOps): Kubernetes manifests, Dockerfile,
+HAProxy map and backends, TLS hook, profile.env equivalents.
+That is YAML and shell, not extra.
+
+Not already counted, and real:
+
+- application.yml plus application-dev/staging/prod.yml:
+  datasource, JWT, ports, logging. Three environments
+  because Java does not derive them from a model :domain.
+  :: 150–400
+- logback (or equivalent) if not left at defaults :: 30–80
+
+Not distinctive, not added: pom.xml / build.gradle. Data UI has
+ASDF and a Makefile. Both sides have a build file.
+
+Spring Security 6 is Java @Configuration, not XML. That code is
+in the auth / RBAC buckets, not a config-file add-on.
+
+The point is split and drift, not volume. Data UI has one model.
+Java has app YAML, env YAML, k8s YAML, HAProxy, and annotations.
+They disagree under change. The 20k estimate does not add a
+separate config-file bucket for this.
+
+** Application tests
+
+Same correctness bar, frontend tests omitted (the comparison is
+Java; UI tests are extra):
+
+- Auth (login, JWT refresh, guest, password) :: 400–800
+- Row-level RBAC (every op gated; list-filter; type-roles on
+  create; per-row roles; exclusive-to-user; admin sees all;
+  grantable admin powers) :: 3,000–6,000
+- Admin API: users, roles, permissions as data :: 1,000–2,000
+- Todos, tags, M2M, settings/secrets scoping, validation :: 1,200–2,200
+- REST contract / error paths :: 500–1,000
+
+Test midpoints sum to about 9k. Range 6–12k. RBAC is most of it.
+Spring Security's own tests cover login, not this permission
+model.
+
+Java-only (no UI, no YAML): about 12–16k, still without the
+DevOps scripts. The 20k includes deployment script, Kubernetes
+manifests, and cluster setup, not .java files alone.
+
+Production plus tests: 21–39k. Midpoint ~29k.
+
+* Compression grows with the application
+
+The 57-line model is the simplest application that still shows
+the claim. File uploads, template rows (spawn), write-through,
+action buttons, lifecycle hooks, trees, ratings: each of those
+is a few model keys. In Java each is a new subsystem — storage,
+jobs, transactions, UI, tests. The ratio gets worse for Java as
+the app gets real. That explosion is not in the 20k. It is the
+answer to "but a todo app is tiny."
+
+* December 2026 will compress further
+
+Inference is planned to drop model lines that the compiler can
+fill in. The todos model will get shorter. The Java side of the
+comparison does not. The claim is today's 57 vs ~20k. By MVP the
+left side shrinks.

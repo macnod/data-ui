@@ -1,8 +1,23 @@
 (in-package :data-ui)
 
 (defparameter *top-level-settings* nil)
+
+(defparameter *fqdn-regex*
+  (format nil "~a~a"
+    "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+"
+    "[a-zA-Z]{2,}$"))
+
+(defun domain-stg-from-domain (domain)
+  ":private: Derive the staging FQDN from DOMAIN by suffixing -stg
+onto the first DNS label (todo.x.com -> todo-stg.x.com). Assumes
+DOMAIN already passed the :domain validation; no re-check here."
+  (let ((first (subseq domain 0 (position #\. domain)))
+        (rest (subseq domain (position #\. domain))))
+    (concatenate 'string first "-stg" rest)))
+
 (defparameter *top-level-keys*
-  '(:title :name :version :domain :repl :landing-page :new-roles))
+  '(:title :name :version :domain :domain-stg :repl :guest-allowed
+    :api-roles :landing-page :new-roles))
 
 (defun parse-number (s)
   ":private: Parses S into a number. Returns the number upon success, or NIL if
@@ -3728,9 +3743,71 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
               "Invalid value in model definition at ~{~(~s~)~^ -> ~}: ~s"
               (append key-path (list key)) sdef)))))
 
+(defun valid-base-type-overrides (user-types)
+  ":private: Validate redeclarations of *base-model* type keys in
+USER-TYPES (the :types plist). A redeclaration is legal only when
+the base type is not :internal, the def is a plist carrying
+exactly one key — :type-roles — and that value is a non-empty
+list (roles replace, never union, the base default; an explicit
+empty list is a mistake, not a default). Signals report-e on any
+other shape. Types not present in *base-model* are ordinary
+author types and are not checked here."
+  (loop for key in user-types by #'cddr
+    for def = (cadr (member key user-types))
+    for base-def = (cadr (member key *base-model*))
+    when base-def
+    do
+    (unless def
+      (report-e "valid-base-type-overrides"
+        "Redeclared base type ~s has no definition."
+        ~key))
+    (when (getf base-def :internal)
+      (report-e "valid-base-type-overrides"
+        "Cannot override internal base type ~s."
+        ~key))
+    (unless (u:plistp def)
+      (report-e "valid-base-type-overrides"
+        "Override of base type ~s must be a plist, got ~a."
+        ~key ~def))
+    (let ((extra-keys (remove :type-roles (u:plist-keys def))))
+      (when extra-keys
+        (report-e "valid-base-type-overrides"
+          "Override of base type ~s may only declare ~
+           :type-roles; got ~s."
+          ~key ~extra-keys)))
+    (let ((roles (getf def :type-roles)))
+      (unless (and (listp roles) roles)
+        (report-e "valid-base-type-overrides"
+          ":type-roles override on ~s must be a non-empty list; ~
+           got ~a."
+          ~key ~roles)))))
+
+(defun merge-with-base-model (user-types)
+  ":private: Returns the plist used to compile: every *base-model*
+type in base order, base types redeclared in USER-TYPES patched
+with the author's :type-roles (partial overlay — fields, views,
+and CRUD functions are kept), then user-only types in author
+order. Validated first by valid-base-type-overrides. Does not
+mutate *base-model*."
+  (valid-base-type-overrides user-types)
+  (append
+    ;; Base types, in base order, patched with any author override
+    (loop for key in *base-model* by #'cddr
+      for base-def = (cadr (member key *base-model*))
+      for user-roles = (getf (cadr (member key user-types)) :type-roles)
+      collect key
+      when user-roles
+      collect (add-to-plist base-def (list :type-roles user-roles))
+      else collect base-def)
+    ;; User-only types, in author order
+    (loop for key in user-types by #'cddr
+      unless (member key *base-model*)
+      collect key
+      and collect (cadr (member key user-types)))))
+
 (defun stage-1 (model)
   (loop
-    with full-model = (append *base-model* model)
+    with full-model = (merge-with-base-model model)
     initially (preliminary-model-check full-model)
     for type-key in full-model by #'cddr
     for type-def in (cdr full-model) by #'cddr
@@ -4129,6 +4206,26 @@ role-name keywords; values are permission-string lists, exactly as the author
 wrote them."
   (getf *top-level-settings* :new-roles))
 
+(defun valid-api-roles (value)
+  ":private: Validate a :api-roles VALUE: a non-empty list of non-empty,
+unique role-name strings. Signals report-e on any other shape. Shape only —
+role *existence* is not checked: top-level-settings runs inside set-model
+before ensure-declared-roles / ensure-model-roles create :new-roles /
+:type-roles roles, so an existence check would fail first-load on custom
+names. Returns VALUE unchanged."
+  (unless (and (listp value) value (every #'stringp value))
+    (report-e "valid-api-roles"
+      ":api-roles value must be a list of role-name strings, got ~a."
+      ~value))
+  (let ((empty (find "" value :test #'equal)))
+    (when empty
+      (report-e "valid-api-roles"
+        ":api-roles role names must be non-empty strings.")))
+  (let ((dupes (u:distinct-values value)))
+    (unless (= (length dupes) (length value))
+      (report-e "valid-api-roles"
+        ":api-roles has repeated role names."))))
+
 (defun valid-top-level-value (key value regex &key
                                (required t)
                                (predicates (list #'stringp)))
@@ -4140,7 +4237,7 @@ wrote them."
       do (error "~(~s~) value ~s looks fishy, doesn't pass ~{~a~}."
            key value predicates))
     (loop for r in regexes
-      unless (re:scan r value)
+      unless (or (null value) (re:scan r value))
       do (error "~(~s~) value ~s does not look like a ~(~a~)."
            key value key))))
 
@@ -4164,13 +4261,35 @@ wrote them."
         (valid-top-level-value key value
           "^[a-z0-9.](?:[a-z0-9]|[._+-][a-z0-9])*$"))
       (:domain
-        (valid-top-level-value key value
-          (format nil "~a~a"
-            "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
-            "[a-zA-Z]{2,}$")))
+        (valid-top-level-value key value *fqdn-regex*))
+      (:domain-stg
+        ;; Optional staging FQDN; the compiler derives the default
+        ;; from :domain in top-level-settings. Same FQDN rule; the
+        ;; predicate tolerates nil so validation can pass it through.
+        (valid-top-level-value key value *fqdn-regex*
+          :required nil
+          :predicates (list (lambda (x) (or (null x) (stringp x)))))
+        (when value
+          (unless (getf model :domain)
+            (error "~(~s~) value ~s requires :domain."
+              key value))
+          (when (equal value (getf model :domain))
+            (error "~(~s~) value ~s must differ from :domain \
+(staging and production would claim the same HAProxy map line)."
+              key value))))
       (:repl
         (valid-top-level-value key value nil
           :required nil :predicates (list #'booleanp)))
+      (:guest-allowed
+        (valid-top-level-value key value nil
+          :required nil :predicates (list #'booleanp)))
+      (:api-roles
+        ;; getf cannot distinguish "key present, value nil" from "key
+        ;; absent" — member on the model plist detects presence so an
+        ;; explicit nil / () is rejected while an absent key defaults
+        ;; in model-api-roles.
+        (when (member :api-roles model)
+          (valid-api-roles value)))
       (:landing-page
         (valid-top-level-value key value nil
           :required nil
@@ -4188,7 +4307,13 @@ wrote them."
   (loop for k in *top-level-keys*
     do (valid-top-level-field model k)
     unless (equal k :types)
-    append (list k (getf model k))))
+    append (list k
+             ;; First compiler-derived top-level default: staging
+             ;; FQDN from :domain unless the author wrote one.
+             (if (and (eq k :domain-stg)
+                   (not (getf model :domain-stg)))
+               (domain-stg-from-domain (getf model :domain))
+               (getf model k)))))
 
 (defun top-level-model-field (key &key
                                (top-level *top-level-settings*)
@@ -4210,8 +4335,23 @@ wrote them."
 (defun model-domain ()
   (top-level-model-field :domain))
 
+(defun model-domain-stg ()
+  "Staging FQDN (explicit or derived from :domain by the
+compiler)."
+  (top-level-model-field :domain-stg))
+
 (defun model-repl ()
   (top-level-model-field :repl :default nil))
+
+(defun model-guest-allowed ()
+  "T when the model enables passwordless guest login, NIL otherwise."
+  (getf *top-level-settings* :guest-allowed))
+
+(defun model-api-roles ()
+  "Roles required by the app-level API endpoints (types, info,
+css-variables). Defaults to (\"logged-in\") when the model omits
+the key."
+  (or (getf *top-level-settings* :api-roles) '("logged-in")))
 
 (defun model-landing-page ()
   "Configured (not user-resolved) landing type, or NIL."

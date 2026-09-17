@@ -159,7 +159,9 @@ snapshot list
     they work regardless of the host's PostgreSQL client version. Restore
     takes a safety snapshot of the current database first and rolls back
     to it if the restore fails; the dump is restored in a single
-    transaction.
+    transaction. Snapshots include the files tree (DOCUMENT_ROOT) as
+    <name>.files.tar.gz when present; restore swaps it back in after the
+    database.
 
 help
     Displays this help text.
@@ -406,9 +408,12 @@ function require_haproxy_host {
 }
 
 function profile_domain {
-    # The public hostname comes from the model's :domain (pure file
-    # read via lisp/deployment.lisp; no database). MODEL_NAME is read
-    # from the profile env, not sourced.
+    # The public hostname comes from the model's :domain-stg when
+    # present, else :domain with -stg suffixed onto the first DNS
+    # label (the compiler's default, duplicated here because this is
+    # a pure file read via lisp/deployment.lisp; no database, no
+    # compiler — see the unify-reads todo). MODEL_NAME is read from
+    # the profile env, not sourced.
     local name="$1" model domain
     model=$(grep -oP '^MODEL_NAME=\K.*' "$(profile_env_path "$name")")
     [[ -n "$model" ]] || die "Profile '${name}' has no MODEL_NAME."
@@ -417,9 +422,14 @@ function profile_domain {
     fi
     MODEL_NAME="$model" FIELD_NAME="domain" get_model_field >/dev/null 2>&1 \
         || die "Could not read :domain from $(model_file_path "$model")."
-    domain=$(MODEL_NAME="$model" model_field domain)
-    [[ -n "$domain" && "$domain" != "NIL" ]] \
-        || die "Model '${model}' has no :domain; cannot expose."
+    domain=$(MODEL_NAME="$model" model_field domain-stg)
+    if [[ -z "$domain" || "$domain" == "NIL" ]]; then
+        domain=$(MODEL_NAME="$model" model_field domain)
+        [[ -n "$domain" && "$domain" != "NIL" ]] \
+            || die "Model '${model}' has no :domain; cannot expose."
+        local first="${domain%%.*}" rest="${domain#*.}"
+        domain="${first}-stg.${rest}"
+    fi
     echo "$domain"
 }
 
@@ -964,7 +974,11 @@ function create_deploy_tag {
 function build_image {
     echo
     echo "Building Docker image ${IMAGE}"
-    docker build -t "$IMAGE" . || die "Docker build failed."
+    # --no-cache: cached RUN layers (e.g. `ros install macnod/*`) can hold
+    # old dependency versions while COPY picks up fresh data-ui source,
+    # producing an image that mixes new code with stale deps. Deploys are
+    # rare; always pay for a clean build.
+    docker build --no-cache -t "$IMAGE" . || die "Docker build failed."
     echo
     echo "Importing image into k3d cluster ${K3D_CLUSTER}"
     k3d image import "$IMAGE" -c "$K3D_CLUSTER" \
@@ -997,13 +1011,40 @@ function assign_node_port {
                    -o jsonpath='{.items[*].spec.ports[*].nodePort}' \
                    2>/dev/null | tr ' ' '\n')
     port=$PORT_MIN
-    while printf '%s\n%s\n' "$used_lock" "$used_k8s" \
+    # Reserved NodePorts: published via k3d -p loopback lines
+    # (127.0.0.1:3130x:3030x) and pinned by their owners. Never offer
+    # them to a new instance -- a stranded -p mapping means another
+    # recreate. ($reserved deliberately UNQUOTED in the printf:
+    # quoted it is one line "30300 30301 30302" and grep -qx never
+    # matches a single port.)
+    local reserved="30300 30301 30302"
+    while printf '%s\n%s\n%s\n' "$used_lock" "$used_k8s" $reserved \
             | grep -qx "$port"; do
         port=$(( port + 1 ))
     done
     NODE_PORT=$port
     echo "$NAME $DEPLOY_ENV $NODE_PORT" >> "$PORTS_LOCK"
     echo "Assigned new NodePort ${NODE_PORT} (recorded in ${PORTS_LOCK})."
+}
+
+function assign_backend_target {
+    # HAProxy target for the backend snippet: prefer the k3d-published
+    # loopback hop (127.0.0.1:<nodePort+1000>, stable across bridge-IP
+    # drift and cluster recreation), fall back to the node's bridge IP
+    # when no -p mapping exists for this port. Any HTTP response counts
+    # as "answers" -- we are probing routing, not content. Probe logic
+    # deliberately mirrors k3d_backend_target (~/r/k3d-tools/nodeport.sh
+    # and jina-kube's render_snippet); this script cannot source that
+    # lib -- the deploy clone must stay self-contained.
+    local host_port=$(( NODE_PORT + 1000 ))
+    if curl -s -o /dev/null -m 2 "http://127.0.0.1:${host_port}/"; then
+        NODE_TARGET="127.0.0.1:${host_port}"
+        echo "HAProxy target: ${NODE_TARGET} (published loopback hop)."
+    else
+        NODE_TARGET="${NODE_IP}:${NODE_PORT}"
+        echo "HAProxy target: ${NODE_TARGET} (bridge fallback; no -p" \
+             " mapping for host port ${host_port})."
+    fi
 }
 
 function get_cluster_secret {
@@ -1057,6 +1098,7 @@ function render_template {
         -e "s|{{MODEL_NAME}}|${MODEL_NAME}|g" \
         -e "s|{{NODE_PORT}}|${NODE_PORT}|g" \
         -e "s|{{NODE_IP}}|${NODE_IP}|g" \
+        -e "s|{{NODE_TARGET}}|${NODE_TARGET}|g" \
         -e "s|{{DB_PASSWORD}}|${DB_PASSWORD}|g" \
         -e "s|{{ADMIN_PASSWORD}}|${ADMIN_PASSWORD}|g" \
         -e "s|{{JWT_SECRET}}|${JWT_SECRET}|g" \
@@ -1100,6 +1142,14 @@ function generate_manifests {
 function apply_manifests {
     echo
     echo "Applying manifests to cluster ${K3D_CLUSTER}"
+    # Host path == node path (k3d -v /data/k8s:/data/k8s): create the
+    # data dirs on the host before apply, with correct ownership.
+    # postgres:16 refuses a root- or user-owned PGDATA: db/ must be
+    # 999:999. DirectoryOrCreate would make root-owned dirs instead.
+    local data_dir="/data/k8s/data-ui/${NAME}-${DEPLOY_ENV}"
+    sudo mkdir -p "${data_dir}/db" "${data_dir}/files"
+    sudo chown 999:999 "${data_dir}/db"
+    sudo chown "$(id -u):$(id -g)" "${data_dir}/files" "${data_dir}"
     kubectl apply -f "$OUT_DIR" || die "kubectl apply failed."
     kubectl -n "$NAMESPACE" rollout status \
             "deploy/dataui-${NAME}-postgres" --timeout=300s \
@@ -1239,6 +1289,7 @@ function deploy {
         jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
     [[ -n "$NODE_IP" ]] || die "Could not determine the k3d node IP."
     assign_node_port
+    assign_backend_target
     ensure_instance_secrets
     generate_manifests
     if [[ -n "$DRY_RUN" ]]; then
@@ -1339,7 +1390,7 @@ function undeploy {
     fi
     NAMESPACE="dataui-${NAME}"
     local node="k3d-${K3D_CLUSTER}-server-0"
-    local data_dir="/data/dataui/${NAME}-${DEPLOY_ENV}"
+    local data_dir="/data/k8s/data-ui/${NAME}-${DEPLOY_ENV}"
     local state_dir="${DEPLOY_STATE_DIR}/${NAME}"
     echo "About to delete instance '${NAME}' (${DEPLOY_ENV}):"
     echo "  - Kubernetes namespace ${NAMESPACE} and its PVs"
@@ -1363,10 +1414,13 @@ function undeploy {
             "dataui-${NAME}-${DEPLOY_ENV}-db-pv" \
             "dataui-${NAME}-${DEPLOY_ENV}-files-pv"
     echo "Deleting application data in ${node}:${data_dir}..."
-    if docker inspect "$node" &>/dev/null; then
-        docker exec "$node" rm -rf "$data_dir"
+    # Host path == node path (k3d -v /data/k8s:/data/k8s), so remove
+    # on the host directly; docker exec still works, but the host
+    # view is authoritative and needs no running node.
+    if [[ -d "$data_dir" ]]; then
+        sudo rm -rf "$data_dir"
     else
-        echo "  Node container ${node} not found; skipping."
+        echo "  ${data_dir} not found on host; skipping."
     fi
     echo "Removing HAProxy backend and map entry (requires sudo)..."
     sudo rm -f "${HAPROXY_CONF_D}/dataui-${NAME}.cfg"
@@ -1465,6 +1519,12 @@ GRANT ALL ON SCHEMA public TO public;
 SQL
 }
 
+function snapshot_files_path {
+    # Files side of a snapshot pair (may not exist; old snapshots and
+    # DOCUMENT_ROOT-less saves have DB only).
+    echo "${SNAPSHOT_DIR}/${1}.files.tar.gz"
+}
+
 function snapshot_save {
     local name="${1:-$(detect_model_name)}"
     local path="${SNAPSHOT_DIR}/${name}.dump"
@@ -1480,6 +1540,32 @@ function snapshot_save {
     fi
     mv "$tmp" "$path"
     echo "Saved snapshot '${name}' → ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+    snapshot_save_files "$name"
+}
+
+function snapshot_save_files {
+    # Tar DOCUMENT_ROOT beside the dump (same never-clobber discipline:
+    # tar to a temp file, then mv onto the final name). The tar packs
+    # the basename with -C dirname so the restore lands a tree named
+    # like the original. Temp is a sibling of files/, never inside it,
+    # so staging garbage is excluded by construction.
+    local name="$1"
+    local fpath tmp
+    fpath="$(snapshot_files_path "$name")"
+    if [[ ! -d "$DOCUMENT_ROOT" ]]; then
+        echo "warning: DOCUMENT_ROOT (${DOCUMENT_ROOT}) missing;" \
+             "snapshot '${name}' saved DB only"
+        return
+    fi
+    tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    if ! tar -czf "$tmp" -C "$(dirname "$DOCUMENT_ROOT")" \
+              "$(basename "$DOCUMENT_ROOT")"; then
+        rm -f "$tmp"
+        die "tar failed; DB snapshot '${name}' saved but files side" \
+            "is missing."
+    fi
+    mv "$tmp" "$fpath"
+    echo "Saved files side → ${fpath}"
 }
 
 function snapshot_restore {
@@ -1530,7 +1616,59 @@ function snapshot_restore {
         exit 1
     fi
     rm -f "$safety"
+    snapshot_restore_files "$name"
     echo "Restored snapshot '${name}' ← ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+}
+
+function snapshot_restore_files {
+    # Swap, never delete-then-untar: extract to staging beside the
+    # snapshots, validate the layout, then mv old tree aside and the
+    # fresh one in. A failed untar must not leave the instance
+    # fileless (same shape as the pre-restore safety dump).
+    local name="$1"
+    local fpath staging parent base ts keep
+    fpath="$(snapshot_files_path "$name")"
+    if [[ ! -f "$fpath" ]]; then
+        echo "(no files side; restored database only)"
+        return
+    fi
+    base=$(basename "$DOCUMENT_ROOT")
+    parent=$(dirname "$DOCUMENT_ROOT")
+    staging=$(mktemp -d "${SNAPSHOT_DIR}/.tmp-files-XXXXXX")
+    if ! tar -xzf "$fpath" -C "$staging"; then
+        rm -rf "$staging"
+        die "files tar for '${name}' unreadable; database restored," \
+            "files left untouched."
+    fi
+    # Exactly one top-level entry, named like DOCUMENT_ROOT: guards
+    # against a hand-made tar with an unexpected layout.
+    if [[ "$(ls -A "$staging")" != "$base" ]] \
+       || [[ ! -d "${staging}/${base}" ]]; then
+        rm -rf "$staging"
+        die "files tar for '${name}' has unexpected layout (wanted" \
+            "one top-level '${base}'); database restored, files left" \
+            "untouched."
+    fi
+    ts=$(date +%Y%m%d-%H%M%S)
+    keep="${parent}/${base}.pre-restore-${ts}"
+    if [[ -e "$DOCUMENT_ROOT" ]]; then
+        mv "$DOCUMENT_ROOT" "$keep" || {
+            rm -rf "$staging"
+            die "Could not move the old files tree aside; database" \
+                "restored, files left untouched."
+        }
+    fi
+    if ! mv "${staging}/${base}" "$DOCUMENT_ROOT"; then
+        rm -rf "$staging"
+        if [[ -e "$keep" ]]; then
+            mv "$keep" "$DOCUMENT_ROOT" \
+                || echo "CRITICAL: could not restore the old files" \
+                     "tree; recover it from ${keep}" >&2
+        fi
+        die "Could not move the restored files tree into place."
+    fi
+    rm -rf "$staging" "$keep"
+    echo "Restored files side ← ${fpath}"
 }
 
 function snapshot_list {
@@ -1542,10 +1680,12 @@ function snapshot_list {
     echo "Snapshots in ${SNAPSHOT_DIR}:"
     for f in "$SNAPSHOT_DIR"/*.dump; do
         [[ -f "$f" ]] || continue
-        local base size
+        local base size files
         base=$(basename "$f" .dump)
         size=$(du -h "$f" | cut -f1)
-        echo "  ${base}  (${size})"
+        files=""
+        [[ -f "$(snapshot_files_path "$base")" ]] && files=", +files"
+        echo "  ${base}  (${size}${files})"
     done
 }
 
@@ -1557,6 +1697,7 @@ function snapshot_drop {
         exit 1
     fi
     rm "$path"
+    rm -f "$(snapshot_files_path "$name")"
     echo "Deleted snapshot '${name}'"
 }
 
@@ -1711,6 +1852,9 @@ case "$ACTION" in
                 echo "model name (e.g. 'modelbank'). Use a suffix for multiple"
                 echo "snapshots: modelbank-1, modelbank-2, etc. Names resolve"
                 echo "a host profile when present under data-ui-host/."
+                echo "Snapshots include the files tree (DOCUMENT_ROOT) as"
+                echo "<name>.files.tar.gz when present; restore swaps it back"
+                echo "in after the database."
                 exit 1
                 ;;
         esac

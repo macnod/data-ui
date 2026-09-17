@@ -2,6 +2,7 @@
   :name ":model:"
   :version "0.1"
   :domain ":model:.demo.data-ui.com"
+  :domain-stg ":model:-stg.demo.data-ui.com"
   :repl t
   :types
   (::model:

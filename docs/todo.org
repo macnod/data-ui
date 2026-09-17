@@ -2082,9 +2082,61 @@ Implemented per [[file:~/workbench/new-roles-plan.org][new-roles-plan.org]] (no 
   Known gap 15 (additive-only: removing a role doesn't delete it;
   changed permissions of an existing role have no effect).
 
-** PLANNING Environments and :domain-stg :scripts:compiler:model:docs:mvp:
+** DONE =:api-roles= top-level model key                       :compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-07 Mon]
+:COMPLETED: [2026-09-07 Sun]
+:END:
+Implemented from [[file:~/workbench/api-roles-plan.org][api-roles-plan.org]] (D1–D10):
+
+- Compiler: =:api-roles= in =*top-level-keys*=; =valid-api-roles=
+  (shape only — non-empty list of non-empty unique strings, no
+  role-existence check, =report-e=); =valid-top-level-field= uses
+  =(member :api-roles model)= so an explicit =nil= / =()= is
+  rejected while absence defaults; accessor =model-api-roles=
+  (default =("logged-in")= lives in the accessor).
+- REST: the three hardcoded sites now =(require-auth
+  (model-api-roles))= (=/api/types=, =/api/info=,
+  =/api/css-variables=); =/api/info= remfs =:api-roles=;
+  =/api/public-info= adds =:guest-allowed= (JSON boolean via
+  =register-json-boolean-key=); =/api/css-variables= always
+  renders JSON — empty =[]= for a user with no readable settings
+  row (was a blank body).
+- =list-result= =:create= / =:update= / =:delete= now AND the
+  model capability with =a:user-allowed= on the type resource
+  (=user-capability=); wire flags are per-user, write gates
+  unchanged.
+- =models/todos.lisp=: =:api-roles ("logged-in" "public")= and
+  ="public"= added to =:todos= / =:tags= =:type-roles=.
+- Frontend =App.tsx=: shared =completeLogin=; auto-guest on mount
+  when =/api/public-info= says =guest-allowed === true= and the
+  =data-ui-skip-auto-guest= sessionStorage flag is unset;
+  "Continue as guest" button (clears the flag); guest logout sets
+  the flag so the login form stays reachable. =npm run build=
+  done.
+- Tests: new =tests/api-roles-tests.lisp= (validation probes bare
+  + behavior on =models/test/api-roles-test.lisp=), registered in
+  =data-ui.asd=, =run-api-roles-tests= helper added to
+  =run-tests=. 31/31 green.
+- Docs: =docs/model-reference.md= (key table, API-roles section,
+  guest-login section fixed to point at =/api/public-info=, quick
+  index) and =docs/rest.md= (endpoint roles, public-info payload,
+  css-variables always-JSON).
+
+Live smoke: guest token on todos model → =/api/types= (todos,
+tags), =/api/info= (no =:api-roles= key), =/api/css-variables=
+(200 JSON), =/api/list?type=todos= (row present,
+create/update/delete false); model without =:api-roles= → guest
+=/api/types= 401. =(run-tests)=: 1650/1651; the one failure is a
+pre-existing =guest-tests.lisp= bug (=th-ga-model= passes a plist
+as the =:guest-allowed= /value/), unrelated to this change.
+
+Also marked DONE: "Sign in as guest" (absorbed here).
+
+** DONE Environments and :domain-stg      :scripts:compiler:model:docs:mvp:
 :PROPERTIES:
 :CREATED: [2026-09-05 Sat]
+:COMPLETED: [2026-09-13 Sun]
 :END:
 Formal *environment* vocabulary (development / staging / production)
 and a new top-level =:domain-stg= key. Staging is the flagship
@@ -2096,11 +2148,68 @@ onto the first DNS label unless the author writes it explicitly.
 suffix: staging keeps the clean URL, production takes =-p=.
 
 Plan: [[file:~/workbench/environments-domain-stg-plan.org][environments-domain-stg-plan.org]].
-Flip to READY once Donnie approves the plan.
 
-** TODO Allow =:type-roles= override on base-model types      :compiler:mvp:
+*Summary (2026-09-13):* Implemented per plan, no deviations.
+- =lisp/model.lisp=: =:domain-stg= in =*top-level-keys*= (after
+  =:domain=); =*fqdn-regex*= defparameter + =domain-stg-from-domain=
+  helper (first-label =-stg= suffix, no re-validation);
+  =valid-top-level-field= =:domain-stg= case (same FQDN rule,
+  optional, nil-tolerant predicate — =valid-top-level-value= gained
+  an =(or (null value) …)= regex guard for this, minimal and
+  shared with nobody else today); explicit value requires =:domain=
+  and must differ from it (raw =error= style, matching siblings);
+  =top-level-settings= materializes the derived default (first
+  compiler-derived top-level default, M2M =:agg= precedent);
+  accessor =model-domain-stg= beside =model-domain=. =/api/info=
+  auto-exposes the key (serializes =*top-level-settings*=; no
+  rest.lisp change).
+- Tests: =tests/domain-stg-tests.lisp= (14 checks: helper rule,
+  derived default, explicit wins, missing-=:domain= signals,
+  equal-to-=:domain= signals, absent finishes, bad values signal,
+  accessor in =with-model=) + fixture =models/test/domain-stg-test.lisp=
+  (declares =:domain= only); registered in =data-ui.asd=;
+  =run-domain-stg-tests= in =run-tests=. Full suite: 1707/1707
+  across 31 groups.
+- =scripts/data-ui=: =profile_domain= resolves =:domain-stg= first
+  (raw file read via deployment.lisp), else derives from =:domain=
+  with the same =${first}-stg.${rest}= suffix (Grok's snippet;
+  bash duplication is the unify-reads todo's business). =deploy=
+  / =undeploy= untouched.
+- Models: explicit =:domain-stg= on all non-Deploy models with
+  =:domain= (books, chores, file-server, gift-tracker, parts,
+  recurring, todos, widgets placeholder). modelbank swap:
+  =:domain "modelbank-p.demo.data-ui.com"= +
+  =:domain-stg "modelbank.demo.data-ui.com"=. =models/test/= and
+  =modelbank-test= fixture untouched. =widgets.lisp= (with the
+  placeholder) does not load as a model — pre-existing; the added
+  key follows the same mechanical rule.
+- Prerequisite wipe done on evo-x2: =delete-profile modelbank=
+  (unexposed first); map now only chat + =todo.demo.data-ui.com
+  dataui-todos=.
+- Verification: =(set-model "todos")= → explicit
+  =todo-stg.demo.data-ui.com=; =modelbank= → =modelbank-p= +
+  clean staging name; =domain-stg-test= → derived
+  =domain-stg-stg.demo.data-ui.com=; =expose-profile modelbank=
+  on a fresh profile served =modelbank.demo.data-ui.com= →
+  =dataui-profile-modelbank= (then unexposed + profile deleted —
+  clean slate restored for the job-search work). Regression
+  =deploy todos= NOT run: =require_clean_tree= aborts on
+  unstaged edits (09-13 trap); after commit, a plain deploy is
+  the verification, and =gather_deploy_facts= still reads
+  =:domain= only.
+- Docs: =docs/deployment.md= (new "Environments" section + TOC),
+  =docs/model-reference.md= (key list, table row, skeleton,
+  quick index), =docs/model-accessors.md= (=model-domain-stg=),
+  =docs/rest.md= (=/api/info= payload), =models/README.md= (new
+  "Domains" paragraph — file never mentioned =:domain= before),
+  =scripts/README.md= (=expose-profile= hostname resolution),
+  =AGENT.md= (deployment bullet + status digest), =README.md=
+  (key list, deployment example, environments sentence).
+
+** DONE Allow =:type-roles= override on base-model types      :compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-09-07 Sun]
 :END:
 =lisp/model.lisp= — The base model hardcodes =:type-roles= on system
 types (e.g. =:users= gets =("logged-in" "user-creator")=, meaning
@@ -2119,6 +2228,135 @@ non-admin users) and is needed for apps like Model Bank where users
 should not browse other users.
 
 Plan: [[file:~/workbench/type-roles-override-plan.org][type-roles-override-plan.org]].
+
+*Summary (2026-09-07):* Implemented per plan, no deviations.
+- =lisp/model.lisp=: new =valid-base-type-overrides= (allowlist:
+  non-internal base key, def is a plist with exactly =:type-roles=,
+  non-empty list — =report-e= otherwise) and =merge-with-base-model=
+  (base order, =add-to-plist= patch of =:type-roles= only, user-only
+  types appended in author order; =*base-model*= not mutated).
+  =stage-1= now uses the merge instead of raw =append=, so the old
+  duplicate-=:users= walk cannot recur. =add-type-roles= /
+  =ensure-model-roles= untouched (admin still appended; stale-grant
+  behavior documented, not fixed).
+- =tests/type-roles-override-tests.lisp= (new suite, registered in
+  =data-ui.asd=): 15 compile probes + 5 behavioral tests.
+  =models/test/type-roles-override-test.lisp= fixture restricts
+  =:users= / =:roles= / =:permissions= to =("admin")=; =:settings=
+  deliberately unrestricted.
+- =tests/helpers.lisp=: =run-type-roles-override-tests= added and
+  wired into =run-tests=.
+- =docs/model-reference.md=: "Overriding defaults on built-in types"
+  subsection (replace-not-union, partial overlay, allowlist, clean-DB
+  caveat, FK-picker gap) + Known gap 16.
+- Tests: suite 36/36 green; full =run-tests= 1691 checks, 30 groups,
+  100% pass.
+- Demo models untouched (blocked on the =allowed-values= hardening
+  item); no frontend changes.
+
+** DONE Include files in snapshots                                 :scripts:
+:PROPERTIES:
+:CREATED: [2026-09-13 Sun]
+:COMPLETED: [2026-09-13 Sun]
+:END:
+=snapshot= captures only the database; uploaded files
+(=DOCUMENT_ROOT=) are untouched, so a restore leaves the DB
+pointing at files the snapshot never captured. Blocks the
+scheduled-reset story for the public demo instances (image
+uploads surviving every reset).
+
+Work, all in =scripts/data-ui= (bash; no Lisp): a snapshot
+becomes a pair — =<name>.dump= plus optional
+=<name>.files.tar.gz= tarring the whole =DOCUMENT_ROOT= tree
+(temp dir is a sibling, so nothing to exclude). =save= tars to a
+temp file and =mv=s it in beside the dump (same never-clobber
+discipline). =restore= restores the DB as today, then /swaps/
+the files tree: untar to staging, =mv= the old tree aside as
+=files.pre-restore-<ts>=, =mv= the fresh one in, delete the old
+copy only on success (a failed untar never leaves the instance
+fileless — same shape as the pre-restore safety dump). Old
+snapshots without a tar restore DB-only, no error. =drop=
+removes both; =list= annotates =+files=.
+
+Plan: [[file:~/workbench/snapshot-files-plan.org][snapshot-files-plan.org]].
+
+Summary (2026-09-13): Implemented per the plan, no deviations.
+=scripts/data-ui=: new =snapshot_files_path= helper;
+=snapshot_save= now calls =snapshot_save_files= (tar
+=DOCUMENT_ROOT= basename via =-C dirname= to a temp file, =mv=
+in place; missing =DOCUMENT_ROOT= warns and saves DB-only; tar
+failure after a successful dump is fatal with the DB-saved
+message); =snapshot_restore= calls =snapshot_restore_files=
+after the DB restore (untar to staging under the snapshot dir,
+layout check — exactly one top-level entry named like
+=basename $DOCUMENT_ROOT= —, swap the old tree aside as
+=<base>.pre-restore-<ts>=, =mv= the fresh one in, delete the
+old copy only on success; failed-second-=mv= puts the old tree
+back; unreadable/wrong-layout tar dies with "database restored,
+files left untouched"); =snapshot_drop= removes the pair;
+=snapshot_list= appends =, +files=; usage and =snapshot= help
+text mention the files side. Old dump-only snapshots restore
+DB-only with a note. =scripts/README.md=: new "Files side"
+paragraph in the snapshot section (pair naming, optional tar,
+swap semantics, =.pre-restore-= recovery, non-atomic caveats,
+=FS_TEMP_DIRECTORY= excluded by construction). Verified on the
+dev path: save/list/restore round-trip (scratch file gone and
+back, no residue), truncated tar and wrong-layout tar both die
+correctly with files untouched, drop removes both, old snapshot
+restores DB-only. Profile path (evo-x2 staging) untested —
+deferred with the smoke; the env threading is the same
+=load_profile= / =export_repl_environment= path the dev test
+exercised. No Lisp changed.
+
+** TODO Job-search cleanup                          :mvp:model:scripts:docs:
+:PROPERTIES:
+:CREATED: [2026-09-07 Mon]
+:END:
+Public, read-only demo deployments to point at from the resume,
+the Data UI README, and sinistercode.com. Timeboxed: one day —
+resumes go out tomorrow. Preference: guest access if a small fix
+can do it; otherwise the read-only-role fallback below. Video
+note: the real 30-second MVP video ("30-second demo video",
+below) is December work; anything shot now is a job-search
+stand-in that says the MVP lands end of December 2026.
+
+*** TODO Determine guest feasibility
+Read-only scout: can a small fix let non-authenticated users
+navigate the site as a "guest" with read on everything? Related
+existing item: "Sign in as guest" (MVP Backlog). If not feasible
+in a short time, run the fallback items below instead.
+
+*** TODO Add read-only roles
+For every model made visible for the job search: add read-only
+roles to the user-defined types (and maybe some of the built-in
+types).
+
+*** TODO App-specific prep
+- todos: careful review of the running app before linking it
+- chores: delete the old chores model, rename recurring to
+  chores
+- shopping list: add missing =th-seed-= functions (realistic
+  stores, items, prices) so demos work without manual setup
+
+*** TODO Deploy the applications
+Model Bank -> staging (Deploy button is staging-only; it must
+look production-grade, and a read-only user clicking it must get
+a graceful denial, not a 500 — see "Role-gated Deploy button").
+Others -> production.
+
+*** TODO Get Model Bank to survive reboots
+Even if the solution is just a note-to-self in the deployment
+docs.
+
+*** TODO Add read-only users
+Add a user holding the read-only roles instead of the standard
+roles, per deployed app. Then hammer every write path as that
+user — insert, update, delete, actions, upload — and confirm
+denial.
+
+*** TODO Placeholder demo video
+Job-search stand-in only; make clear the MVP is not out until
+end of December 2026. Not the real MVP video.
 
 ** TODO =allowed-values= must not fail the parent list     :backend:bug:mvp:
 :PROPERTIES:
@@ -2292,7 +2530,243 @@ Nothing → model → deployed app. Deadline: end of December 2026.
 that should appear on camera (search/filtering, sort, static drop-downs,
 boolean list checkmarks, UI polish, etc.).
 
+** DONE Post-recreate deploy addressing: loopback, not bridge IP :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-12 Sat]
+:COMPLETED: [2026-09-13 Sun]
+:END:
+After the k3d recreate (~/workbench/k8s-to-ssd2-plan.org, Risks
+"Post-recreate data-ui deploy"), the first =scripts/data-ui
+deploy= reintroduces exactly the drift class that plan kills:
+
+1. With the reserved-set guard in =assign_node_port= (folded in
+   step 2 of that plan), the scan hands out =30303= — but the
+   create block publishes no =-p= for =31303=, so the deploy has
+   no loopback hop.
+2. =deploy/templates/haproxy-backend.cfg.tpl= renders
+   ={{NODE_IP}}:{{NODE_PORT}}= with the node InternalIP
+   (=scripts/data-ui= ~1242) — a =172.18.*= *target* in
+   =conf.d=, which the plan's acceptance grep forbids.
+   jina-kube and monitor-host already prefer
+   =127.0.0.1:<nodePort+1000>= with a bridge fallback; data-ui
+   has no such logic.
+
+Design decision needed, then implement: reserve a data-ui
+NodePort (e.g. =30303=), publish =31303= at the next recreate,
+pin the Service, and render the loopback address in the template
+(mirroring the =ensure_node_port= consumers) — or keep
+per-instance scans and render whatever mapping exists. Until
+this lands, the post-recreate smoke deploy carries a bridge-IP
+target and an unmapped NodePort. Note: =require_clean_tree=
+means the k8s-to-ssd2 step-2/3 edits must be committed before
+that deploy runs.
+
+*** Context from the 2026-09-13 smoke deploy (todos, post-recreate)
+
+Both landmines fired exactly as predicted; the deploy itself was
+otherwise green (SSD paths, host mkdir+chown, PV bindings, API
+insert/list/delete round-trip, record survived pod reschedule):
+
+1. =assign_node_port= handed out =30303= (guard working:
+   skipped 30300 jina, 30301 reserved, 30302 grafana). No
+   =-p 31303= exists.
+2. =conf.d/dataui-todos.cfg= rendered
+   =server dataui-todos 172.18.0.2:30303= — works only because
+   the recreate happened to re-land the server on =.2= of the
+   same subnet. That's the drift class, live again.
+
+Resolution shape (settles the "decision" above — no single-port
+pin needed):
+
+- *Render-side (the real fix, no recreate required):* in
+  =deploy()=, after =assign_node_port= and before
+  =generate_manifests=, probe
+  =curl -m2 http://127.0.0.1:$((NODE_PORT+1000))/= and set
+  =NODE_TARGET= — loopback when it answers,
+  =${NODE_IP}:${NODE_PORT}= fallback otherwise (copy of
+  jina-kube =render_snippet= / monitor-host:~250; any HTTP
+  response counts, connection refused = fallback). Wire the
+  placeholder into =render_template= (scripts/data-ui ~1052):
+  add =-e "s|{{NODE_TARGET}}|${NODE_TARGET}|g"= next to the
+  ={{NODE_IP}}= / ={{NODE_PORT}}= lines. Template changes: swap
+  the server line + comment. Correct on any
+  cluster; until a port is published, behavior is unchanged
+  (fallback = today's snippet).
+- *Port block (one line, next recreate only):* docker =-p=
+  accepts ranges —
+  =-p 127.0.0.1:31303-31312:30303-31312@server:0= covers ten
+  future instances in one flag. Scans already start at 30303;
+  pinned ports + reserved-set guards mean nothing else takes
+  them, so no reserved-set changes are needed. Multi-instance is
+  why a single reserved port was the wrong frame.
+- *Instance fix-up:* snippets render at deploy time only.
+  Existing =conf.d= entries keep their bridge target until
+  redeployed (or hand-edit + reload — did /not/ do this for
+  todos; its =172.18.0.2:30303= is live by choice, not
+  accident).
+
+Size: ~15 script lines + template tweak, well under an hour with
+a todos redeploy as the verification.
+
+Related: =~/r/k3d-tools/nodeport.sh= (2026-09-13) centralizes this
+exact logic for the manager scripts (jina-kube / monitor-host
+source it; reserved set derived from docker residue). data-ui
+cannot source it — deploy clone must stay self-contained — so when
+implementing, either copy =k3d_backend_target='s probe verbatim
+into =scripts/data-ui=, or keep the inline 10-line scan for ports
+and only take the probe. If adopting the block-owner pattern,
+=k3d_reserved_ports 30303:30312= in the lib shows the
+exclusion shape for an inline portblock equivalent.
+
+Summary (2026-09-13): Implemented the resolution shape above,
+exactly as written. =scripts/data-ui=: new =assign_backend_target=
+(probe copied verbatim from =k3d_backend_target=; any HTTP response
+counts, curl exit status decides) called in =deploy()= right after
+=assign_node_port=; =render_template= gained a ={{NODE_TARGET}}=
+substitution; =deploy()='s closing =NodePort:= echo line still
+prints the raw =${NODE_IP}:${NODE_PORT}= (diagnostic, unchanged
+from the plan). =deploy/templates/haproxy-backend.cfg.tpl=: server
+line now renders ={{NODE_TARGET}}=; header comment explains
+loopback-hop vs bridge fallback. =~/workbench/k8s-to-ssd2-plan.org=:
+create block gained
+=-p 127.0.0.1:31303-31312:30303-30312@server:0= with rationale
+(one range flag, ten instances, no reserved-set changes — ports
+stay offerable to data-ui only); next recreate makes every
+=data-ui deploy= render loopback. No other files touched; no Lisp
+changed. Verified: bash -n clean; both probe branches live (probe
+31300 answers → =127.0.0.1:31300=, 31303 refused → bridge
+fallback); =DRY_RUN=1 deploy todos= reuses NodePort 30303 and
+renders =server dataui-todos 172.18.0.2:30303= — the bridge
+fallback, byte-identical behavior to the live =conf.d= snippet
+until the range is published at next recreate. Full non-DRY redeploy
+deferred: =require_clean_tree= would abort on these unstaged edits;
+Donnie commits first, then a plain =deploy todos= is the
+verification. Loopback branch itself is untestable until a
+recreate publishes 31303 (k3d cannot add =-p= live) — the probe
+logic is the same verbatim copy already proven in jina-kube.
+
 * MVP Backlog
+** TODO Migrate =*.sinistercode.com= from GlobeSSL to Let's Encrypt :scripts:tls:maintenance:
+:PROPERTIES:
+:CREATED: [2026-09-13 Sun]
+:END:
+Replace the paid GlobeSSL wildcard on evo-x2's HAProxy with a
+Let's Encrypt wildcard issued by the existing DNS-01 rig, then
+/drop the paid GlobeSSL renewal entirely/ (no fallback kept).
+Target: before the GlobeSSL cert expires 2027-01-04.
+
+*Current state (all verified 2026-09-13):*
+
+- evo-x2 HAProxy terminates TLS in =/etc/haproxy/haproxy.cfg=:
+  =frontend https= =bind *:443 ssl crt /etc/haproxy/sinistercode-haproxy.pem crt /etc/haproxy/certs/=
+  (explicit GlobeSSL pem first = default for non-SNI; directory
+  bind = SNI per name).
+- The GlobeSSL pem = leaf =*.sinistercode.com= (GlobeSSL RSA DV,
+  expires 2027-01-04) + =GlobeSSLRSADVSSLCA2= intermediate + key.
+  It was rebuilt 2026-09-13 (the shipped bundle carried a stale
+  USERTrust intermediate — leaf-first/key-last order matters;
+  see the GlobeSSL lesson in ~/workbench/docs/certificates.org).
+  Corrected copy: =~/google-drive/dc/cloud-local/Keys/sinistercode/2026/sinistercode-haproxy.pem=.
+- Hosts behind that pem on evo-x2: =monitor= (Grafana, added
+  2026-09-13, =backend monitor= → =127.0.0.1:3120=) is the only
+  public sinistercode host (A → 47.143.192.92, residential,
+  re-upserted by ~/r/update-dns/update-dns.sh). The =guru=,
+  =files=, =files-dev=, and =grafana= backends/ACLs still sit in
+  haproxy.cfg (k3d serverlb on 127.0.0.1:8080) but their DNS
+  records were deliberately deleted 2026-09-13 and
+  update-dns.conf trimmed to =darkstar= + =monitor= — dead
+  config by design.
+- The LE rig already on evo-x2: =certbot= (timer) + DNS-01 via
+  Route53 as IAM user =certbot-evo-x2= (creds in =/root/.aws=),
+  lineage =demo.data-ui.com= in =/etc/haproxy/certs/=, renewed
+  automatically; deploy hook
+  =/etc/letsencrypt/renewal-hooks/deploy/haproxy-pem.sh= is
+  generic (derives pem name from lineage basename — zero edits
+  needed for a new lineage). Script of record:
+  =deploy/setup-tls.sh= (parameterize =LINEAGE=; it is
+  idempotent and documents every step).
+
+*Implementation steps:*
+
+1. IAM: extend =certbot-evo-x2= policy =certbot-dns-route53-data-ui=
+   (currently allows =ChangeResourceRecordSets= only on hosted
+   zone =Z0152779JVWMFEK6RAKU=, data-ui.com) to also allow
+   =Z2YP4EHL6JNPJV= (sinistercode.com). AWS admin creds
+   (=evo-x2= user, same account 232168665831) are live on
+   evo-x2; =aws iam create-policy-version= with both zones.
+2. Issue the cert: =sudo certbot certonly --dns-route53 -n
+   --cert-name sinistercode.com -d sinistercode.com -d
+   '*.sinistercode.com'= (wildcard needs DNS-01; apex included
+   because the wildcard does not cover it — mirror the
+   =demo.data-ui.com= shape).
+3. First pem build by hand (hooks do not fire when certbot skips
+   a still-valid cert): =sudo RENEWED_LINEAGE=/etc/letsencrypt/live/sinistercode.com /etc/letsencrypt/renewal-hooks/deploy/haproxy-pem.sh=
+   → creates =/etc/haproxy/certs/sinistercode.com.pem=; the
+   directory bind SNI-picks it for =*.sinistercode.com= with no
+   haproxy.cfg changes.
+4. Verify per name (=openssl s_client -servername … | openssl
+   x509 -noout -issuer -enddate= shows the LE issuer; curl full
+   verification, not =-k=): =monitor.sinistercode.com= is the
+   only one with public DNS; for the rest use
+   =--resolve <host>:443:127.0.0.1=.
+5. Cut over: remove =crt /etc/haproxy/sinistercode-haproxy.pem=
+   from the =bind *:443= line (=sudo haproxy -c -f … && sudo
+   systemctl reload haproxy= — reload, never restart). Keep the
+   LE pem first-in-line semantics: no explicit pem remains, so
+   SNI carries everything; non-SNI clients get
+   =demo.data-ui.com= (acceptable — or re-add an explicit crt
+   for sinistercode.com.pem first if that ordering matters).
+6. Exercise the deploy hook manually once (dry-runs do NOT fire
+   hooks): =sudo certbot renew --force-renewal --cert-name
+   sinistercode.com=, confirm
+   =/etc/haproxy/certs/sinistercode.com.pem= mtime changed and
+   HAProxy reloaded.
+7. Retire the paid cert: archive
+   =/etc/haproxy/sinistercode-haproxy.pem= (e.g. =.retired-globessl=),
+   do NOT renew with GlobeSSL/Key-Systems. The 2026 key folder
+   in google-drive becomes historical. Update
+   ~/workbench/docs/certificates.org (operating manual — both
+   rigs, pem formats, history section) to record the cutover.
+
+*Gotchas:*
+
+- Pem format everywhere: leaf first, then intermediates
+  (fullchain order), key last. Wrong order = browser failures
+  with no error in HAProxy logs.
+- =certbot renew --dry-run= does not fire deploy hooks.
+- HAProxy reload keeps connections; restart drops them.
+- Side-fix while in there: the =guru= / =files= / =files-dev= /
+  =grafana= ACLs + backends — and =default_backend guru= — are
+  dead config now (DNS deliberately gone; see above). Bots
+  hitting the bare IP already land on the dead guru backend and
+  get 503s. Either delete them during the cutover (and repoint
+  or drop =default_backend=) or confirm they're expected to
+  come back first. Step 4 verification then needs =monitor=
+  only. Constraint: =monitor= must NOT become the default
+  backend — the preferred end state is no =default_backend=
+  line at all (HAProxy's built-in 503), so bare-IP scanners
+  never reach Grafana.
+** TODO Message of the day (=:motd=)                  :compiler:frontend:
+:PROPERTIES:
+:CREATED: [2026-09-09 Wed]
+:END:
+A =:motd= / =:banner= / =:notice= top-level model key (pick one
+name) that, when non-null, shows that text at the top of every
+page of the application. Static text only (a string; no date
+windows, no per-user targeting).
+
+- Compiler: new top-level key, validated string-or-nil at compile
+  time; surfaced to the frontend through an existing
+  always-fetched payload (=/api/info=) so no extra request is
+  needed
+- Frontend: render above the header on every page when present;
+  hidden entirely when null
+- Also evaluate before implementing (worthiness call, not scope
+  creep): a per-type =:notice= key shown above that type's list,
+  and a =:login-notice= shown on the login screen. The login
+  screen is pre-auth, so it would ride =/api/public-info= rather
+  than =/api/info=. Decide whether these earn their keep or just
+  clutter the vocabulary
 ** TODO Sortable =:name= and =:email= in built-in =:users= type :backend:compiler:model:
 :PROPERTIES:
 :CREATED: [2026-08-22 Sat]
@@ -2520,7 +2994,15 @@ unused.
 :END:
 Create an app that allows you to upload Markdown and Org-Mode files, and that allows you to search, browse, render them as HTML, and download them.
 
-** TODO Sign in as guest                   :frontend:backend:compiler:model:
+** DONE Sign in as guest                   :frontend:backend:compiler:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-09-07 Sun]
+:END:
+Implemented as part of =:api-roles= (2026-09-07): frontend
+auto-guest + "Continue as guest" button in =App.tsx=, driven by
+=:guest-allowed= on =/api/public-info=; see the summary on that
+item.
 ** TODO Update stale AGENT.md reference to ~/.debug/deployment-work.md :docs:maintenance:
 :PROPERTIES:
 :CREATED: [2026-09-05 Sat]

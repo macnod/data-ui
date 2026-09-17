@@ -2,15 +2,24 @@
   :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
+  :domain-stg "todo-stg.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
   :repl t
+  ;; Anyone can log in as the read-only seeded guest user, with any
+  ;; password. :api-roles lets the guest (public role, no logged-in)
+  ;; reach the app-level endpoints (/api/types, /api/info,
+  ;; /api/css-variables), and "public" in :type-roles opens the todos
+  ;; and tags types to guest reads; row visibility is still per-record
+  ;; (rows created via the UI copy the type roles, including public).
+  :guest-allowed t
+  :api-roles ("logged-in" "public")
   :landing-page :todos
   :types
   (:todos
     (:table t
       :create :auto :update :auto :delete :auto :display t
-      :type-roles ("todo-users")
-      :default-sort (:points :desc)
+      :type-roles ("todo-users" "public")
+      :default-sort (:name :asc)
       :views (:main (:tables (:todos :todo-tags :tags))
                :tags (:tables (:tags)))
       :fields
@@ -20,12 +29,6 @@
           :validations (:required (:max-length :max 19))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
-        :points
-        (:type :integer :default 0 :sortable t
-          :ui (:label "Points" :widget :textbox)
-          :validations (:required)
-          :source (:view :main :column :points :agg :first)
-          :column t :not-null t)
         :done
         (:type :boolean :default :false :sortable t
           :ui (:label "Done" :widget :checkbox)
@@ -45,7 +48,7 @@
     :tags
     (:table t
       :create :auto :update :auto :delete :auto :display t
-      :type-roles ("todo-users")
+      :type-roles ("todo-users" "public")
       :fields 
       (:name
         (:type :text :identity t :sortable t

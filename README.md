@@ -38,6 +38,7 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 - [Road to MVP](#road-to-mvp)
 - [Goals & Vision](#goals--vision)
 - [Competitive Landscape](docs/competitive-landscape.md)
+- [57 vs ~20k](docs/57-vs-20k.org)
 - [The Marketplace](#the-marketplace)
 - [Business & Monetization](#business--monetization)
 - [Related Repositories](#related-repositories)
@@ -51,7 +52,7 @@ Building solid, evolving, RBAC-heavy collaborative applications requires holding
 
 Data UI lets you express the **entire** application as a small, reviewable artifact that fits comfortably in the body of an email, and **guarantees** that the expansion of that artifact into a running system is correct. You describe your application (entities, relationships, UI hints, etc.) once. The compiler produces the database, the API, the RBAC enforcement, the frontend, and the deployment, deterministically, with no per-type boilerplate and no hidden permission bugs.
 
-Change the model, recompile, and everything updates consistently. The model is the DNA of the application. At less than a page of code for many applications, that DNA is tiny compared to the many thousands of lines that would otherwise be needed to describe such an application.
+Change the model, recompile, and everything updates consistently. The model is the DNA of the application. At less than a page of code for many applications, that DNA is tiny compared to the many thousands of lines that would otherwise be needed to describe such an application. The napkin-sized to-do model is 57 lines; a Java team matching what it produces would need to write an estimated ~20,000 lines of production artifacts. The walkthrough: [57 vs ~20k](docs/57-vs-20k.org).
 
 
 ## The Thesis in Six Lines
@@ -132,7 +133,7 @@ That the power of Common Lisp is invisible to most working programmers is itself
 
 ## Example Model
 
-This example matches `models/todos.lisp`. Each file in the `models/` directory holds a bare model plist (no `defparameter` and no wrapping variable). The top-level keys (`:title`, `:name`, `:version`, `:domain`, `:repl`, `:landing-page`) carry the model's identity, and `:types` holds the type definitions. Load the model with `(set-model "todos")`, pass just the file name, with no path and no `.lisp` extension. Prefer `:repl nil` in production (see [Deployment](#deployment)).
+This example matches `models/todos.lisp`. Each file in the `models/` directory holds a bare model plist (no `defparameter` and no wrapping variable). The top-level keys (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:landing-page`) carry the model's identity, and `:types` holds the type definitions. Load the model with `(set-model "todos")`, pass just the file name, with no path and no `.lisp` extension. Prefer `:repl nil` in production (see [Deployment](#deployment)).
 
 ```lisp
 (:title "To Do List"
@@ -211,6 +212,8 @@ This single definition aims to give you:
 - Kubernetes manifests for easy, consistent, reproducible deployment
 
 The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and associated join tables) is automatically included from `*base-model*`. A user settings table is also included.
+
+What that 57-line model produces, and why a matching Java application is estimated at ~20,000 lines: [57 vs ~20k](docs/57-vs-20k.org).
 
 ### Example Compilation Results
 
@@ -514,6 +517,7 @@ Deployment is part of the compiler's promise, not an afterthought. The model its
   :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
+  :domain-stg "todo-stg.demo.data-ui.com"
   ;; Prefer :repl nil in production (extra attack surface; SSH tunnel still required)
   :repl t
   :landing-page :todos
@@ -533,6 +537,8 @@ The deploy is deterministic and repeatable: every fact is derived from the model
 `:repl t` works and exposes Swank for the instance (reachable over an SSH tunnel). Prefer `:repl nil` in production, it is an extra attack surface even behind a tunnel.
 
 The full story, every step, every file, where the admin password lives, how cert renewal works, troubleshooting, is in [docs/deployment.md](docs/deployment.md).
+
+Instances run in one of three *environments* — development (`scripts/data-ui repl`), staging (`repl <profile>`, exposed via the model's `:domain-stg`), or production (`deploy`, which serves `:domain`). Tiers are product offerings; environments are where an instance runs. See [docs/deployment.md](docs/deployment.md) → Environments.
 
 
 ## Current Status (July 2026)

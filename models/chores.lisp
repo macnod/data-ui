@@ -20,6 +20,7 @@
   :name "chores"
   :version "0.4"
   :domain "chores.demo.data-ui.com"
+  :domain-stg "chores-stg.demo.data-ui.com"
   :repl t
   :landing-page :chores
   :types

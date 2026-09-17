@@ -624,6 +624,24 @@ user-defined types (non-:built-in), excluding \"admin\"."
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
 
+(defun user-can-p (user type-key permission)
+  ":private: T when USER holds PERMISSION on TYPE-KEY's type resource.
+list-result ANDs this with the model's :create/:update/:delete
+capabilities so the wire flags reflect the actual user (a guest
+who can read a public type must not see Add / Edit / Delete)."
+  (a:user-allowed *rbac* user permission
+    (type-resource-name type-key)))
+
+(defun user-capability (user type-key capability)
+  ":private: :true when the model grants CAPABILITY (:create, :update,
+:delete) on TYPE-KEY and USER holds the matching RBAC permission on the
+type's resource, :false otherwise. Model nil (e.g. read-only rollups)
+always wins."
+  (if (and (u:tree-get *compiled-model* type-key capability)
+           (user-can-p user type-key
+             (string-downcase capability)))
+    :true :false))
+
 (defun json-sort-echo (sort)
   ":private: Wire shape of the list-result :sort echo (plan 09 Step 5,
 pinned in plan 01). SORT is nil or (:field-key :asc|:desc). Returns
@@ -653,9 +671,9 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
       ;; (request or :default-sort) or nil.
       ;; Never the id / grain-id tiebreaker.
       :sort (json-sort-echo sort)
-      :create (true-or-false type-key :create)
-      :update (true-or-false type-key :update)
-      :delete (true-or-false type-key :delete)
+      :create (user-capability user type-key :create)
+      :update (user-capability user type-key :update)
+      :delete (user-capability user type-key :delete)
       :records (add-roles-to-view
                  type-key
                  form

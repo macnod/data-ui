@@ -141,6 +141,12 @@ Full-form validation (all fields at once).
 
 ## Schema and metadata
 
+The three app-level endpoints in this section have no type whose roles they
+could consult, so they gate on the model's top-level `:api-roles` key
+(default `("logged-in")`). A request whose user holds none of the listed
+roles gets **401**. Type-gated endpoints (`/api/list`, `/api/item`, ...)
+are unaffected; see `docs/model-reference.md` → API roles.
+
 ### `GET /api/types`
 
 Available types, grouped by category (`:user`, `:settings`, `:system`).
@@ -148,15 +154,21 @@ Available types, grouped by category (`:user`, `:settings`, `:system`).
 ### `GET /api/info`
 
 Schema metadata, landing page resolution (per-user via
-`be-landing-page`).
+`be-landing-page`). Includes the top-level settings (`:title`,
+`:name`, `:version`, `:domain`, `:domain-stg`, `:repl`,
+`:guest-allowed`, with `:landing-page` resolved per user).
 
 ### `GET /api/public-info`
 
-Public schema info (no auth required).
+Public schema info (no auth required). Returns the model `title` and a
+`guest-allowed` JSON boolean (whether `:guest-allowed t` is set — the
+login screen uses it to offer / auto-run guest sign-in).
 
 ### `GET /api/css-variables`
 
-CSS variable values from settings types (for theme support).
+CSS variable values from settings types (for theme support). Always
+responds with a JSON object; a user with no readable settings row (e.g.
+guest) gets `{}`, which the frontend treats as the default light theme.
 
 ## Authentication
 

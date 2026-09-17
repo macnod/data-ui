@@ -85,7 +85,8 @@ paren-balance checks; it is not how the compiler is invoked.
 ## Top-level keys
 
 Recognized keys: `*top-level-keys*` =
-`(:title :name :version :domain :repl :landing-page :new-roles)`.
+`(:title :name :version :domain :domain-stg :repl :guest-allowed
+:api-roles :landing-page :new-roles)`.
 
 `:types` is required alongside those settings but is handled separately by
 `compile-model`. Any other root key is ignored by `top-level-settings`.
@@ -96,7 +97,10 @@ Recognized keys: `*top-level-keys*` =
 | `:name` | yes | string `^[a-z][-a-z0-9]*`; `profile` and `profile-*` are reserved | deploy tag/namespace `dataui-<name>` |
 | `:version` | yes | string (semver-ish) | image tag |
 | `:domain` | yes | FQDN-like string | HAProxy map, TLS host |
+| `:domain-stg` | no (default: `-stg` suffixed onto the first DNS label of `:domain`) | FQDN-like string | staging exposure (`expose-profile`); must differ from `:domain`; requires `:domain` when written explicitly |
 | `:repl` | no (default `nil`) | boolean | Swank port iff `t`; **nil in production** |
+| `:guest-allowed` | no (default `nil`) | boolean | passwordless guest login via `/api/login`; see [Guest login](#guest-login) |
+| `:api-roles` | no (default `("logged-in")`) | non-empty list of role-name strings, no duplicates | app-level REST endpoints; see [API roles](#api-roles) |
 | `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-base type the user can access |
 | `:new-roles` | no | plist: role-name keyword → non-empty list of permission strings | `ensure-declared-roles` at `set-model` time |
 | `:types` | yes | plist of type-key → type-def | compiler |
@@ -112,7 +116,9 @@ Minimal skeleton:
   :name "todos"
   :version "0.1"
   :domain "todo.demo.data-ui.com"
+  :domain-stg "todo-stg.demo.data-ui.com"
   :repl t
+  :guest-allowed t
   :landing-page :todos
   :types
   (:todos
@@ -194,14 +200,49 @@ participates in RBAC also receives `"admin"`.
 | `:settings` | `("settings")` | Gated behind the `settings` role |
 | `:secrets` | `("settings")` | Same as settings |
 | `:resources` | *(none; internal, no CRUD)* | |
-| `:tokens` | *(none; internal)* | |
+| `:role-permissions` / `:resource-roles` / `:role-users` | *(none; internal joiners)* | |
+| `:tokens` | `("admin")` via the no-declaration default | `:display nil` (hidden from the selector) but **not** internal, so it still gets a `type-tokens` resource — and is overridable |
 
 Types with no explicit `:type-roles` default to `("admin")`. The `"admin"`
 role is always appended by `add-type-roles` regardless of what the model
 declares.
 
-When implementing `:type-roles` overrides on built-in types, these are the
-defaults you are replacing.
+#### Overriding defaults on built-in types
+
+A model may redeclare a non-internal built-in type with **only**
+`:type-roles`; the author's list **replaces** the default above (it is not
+unioned). The redeclaration is a partial overlay — fields, views, and RBAC
+CRUD functions come from the base model, so you never restate them:
+
+```lisp
+:types
+(:items (...)                             ; ordinary author types
+ :users (:type-roles ("admin"))           ; hide Users from non-admins
+ :roles (:type-roles ("admin"))
+ :permissions (:type-roles ("admin")))
+```
+
+Rules (all compile errors via `report-e`):
+
+- `:type-roles` is the only legal key on a redeclaration ("you may retarget
+  who sees a built-in type; you may not reshape it"). `:display` included —
+  visibility is `:type-roles`, and hiding the tab would not close the API.
+- Internal base types (`:resources`, the three joiners) cannot be
+  overridden. `:tokens`, `:settings`, and `:secrets` can.
+- The value must be a non-empty list (same shapes as any `:type-roles`);
+  `nil`, `()`, a bare string, or a redeclaration without `:type-roles` is
+  rejected.
+- `"admin"` is still always granted by `add-type-roles`.
+
+Tightening roles on an **existing** database does not revoke old grants —
+`add-type-roles` only inserts missing resources. Role tightening needs a
+clean slate (`reset-database` / fresh deploy); new deploys are correct on
+first boot.
+
+Known gap: any type with a `:target :users` field becomes unlistable for
+non-admins until `allowed-values` is hardened (the FK palette read
+re-enters `be-list :users` as the acting user). Restricting `:users` is
+not yet safe on models like Model Bank / chores / books.
 
 ### Declared roles (`:new-roles`)
 
@@ -234,6 +275,62 @@ Reserved role names (`"admin"`, `"settings"`, `"logged-in"`, `"public"`,
 `"user-creator"`, `"role-creator"`, `"permission-creator"`, anything ending
 `:exclusive` or prefixed `admin:` / `guest:`) are compile errors: they
 already exist or carry rbac semantics of their own.
+
+### Guest login (`:guest-allowed`)
+
+```lisp
+:guest-allowed t
+```
+
+Optional boolean, default `nil`. When `t`, `POST /api/login` accepts the
+seeded `guest` user with **any password** (including blank): the login
+handler short-circuits password verification and issues normal access and
+refresh tokens for the guest user id.
+
+- The model is the switch: `t` opens the door even if an admin later changes
+  the guest password, and removing the key (or setting `nil`) closes it
+  again — guest login then requires the actual password.
+- Guest stays read-only: it carries only the seeded `public` and
+  `guest:exclusive` roles, and roles are resolved from the database per
+  request, not baked into the token.
+- Login is not access. Guest still sees only types whose resources carry a
+  guest-readable role — resources created by `add-type-roles` are
+  admin-plus-declared-roles only, so without `:type-roles` (or admin
+  role-editing) that names a guest role, guest sees an empty type selector.
+  Combine with [`:api-roles`](#api-roles) (so guest can even reach
+  `/api/types`) and `"public"` in a type's `:type-roles` (so guest can read
+  that type) for a browse-only guest demo. Row visibility is still
+  per-record: rows created via the UI copy the type's roles, so new rows
+  carry `public` too, but pre-existing rows need their resources edited.
+- The flag flows to the frontend through `/api/public-info` (no auth) as
+  `guest-allowed` (JSON boolean), so the login screen can offer — and the
+  app auto-run — a guest sign-in without further backend support.
+
+### API roles (`:api-roles`)
+
+```lisp
+:api-roles ("logged-in" "public")
+```
+
+Optional list of role-name strings, default `("logged-in")` (via
+`model-api-roles`; the default lives in the accessor, the model plist stays
+verbatim). Names the roles required by the **app-level** REST endpoints
+that have no type to consult: `/api/types`, `/api/info`, and
+`/api/css-variables`. A request whose user holds none of the roles gets
+**401**.
+
+- Shape validation only: non-empty list of non-empty, unique strings. Role
+  *existence* is not checked at `set-model` time (`:new-roles` /
+  `:type-roles` roles are created after top-level validation runs, so an
+  existence check would reject first loads). `"logged-in"` and `"public"`
+  always exist after database initialization.
+- Type-gated endpoints (`/api/list`, `/api/item`, `/api/insert`, ...) are
+  untouched — they read the type's own roles (`get-type-roles`).
+- `/api/login`, `/api/refresh`, and `/api/public-info` stay
+  unauthenticated / token-only.
+- Adding `"public"` here does not open any type or row: it only lets the
+  seeded guest user past the app-level gates. Pair it with `"public"` in
+  `:type-roles` (see [Guest login](#guest-login)).
 
 ### Category
 
@@ -1653,12 +1750,22 @@ successors never collide on the identity index. See
     list of a role that already exists has no effect until the role is
     deleted (the role keeps whatever permissions it had).
 
+16. **`:type-roles` override on built-in types does not revoke live
+    grants.** `add-type-roles` only inserts missing resources, so
+    tightening `:users` to `("admin")` on an already-initialized database
+    leaves `"logged-in"` attached to `type-users`. Clean slate (new deploy
+    / `reset-database`) required. Also, any type with a
+    `:target :users` field becomes unlistable for non-admins until
+    `allowed-values` is hardened — see
+    [Overriding defaults on built-in types](#overriding-defaults-on-built-in-types).
+
 ---
 
 ## Quick key index
 
-**Top-level:** `:title` `:name` `:version` `:domain` `:repl` `:landing-page`
-`:new-roles` `:types`
+**Top-level:** `:title` `:name` `:version` `:domain` `:domain-stg`
+`:repl` `:guest-allowed`
+`:api-roles` `:landing-page` `:new-roles` `:types`
 
 **Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles`
 `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form`

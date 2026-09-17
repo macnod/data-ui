@@ -81,7 +81,16 @@ RUN ros run -- --eval "(ql:register-local-projects)" --quit
 # Pre-compile at build time so container start is fast. Without this,
 # every container start recompiles the system, which is slow enough to
 # trip the liveness probe during first-boot database initialization.
-RUN ros run -- --eval "(require :data-ui)" --quit
+#
+# Failure must exit nonzero, or docker build ships broken images: plain
+# `ros run --eval ... --quit` exits 0 even when the require aborts.
+# Likewise for data-ui.lisp's *doc-root* error: build containers have no
+# DOCUMENT_ROOT, so mkdir the defaults first and let load-time checks run.
+RUN mkdir -p /app/shared-files /app/temp-files \
+    && ros run -- --disable-debugger \
+       --eval '(setf asdf:*compile-file-failure-behaviour* :error)' \
+       --eval '(handler-case (progn (require :data-ui) (uiop:quit 0)) (error (c) (format t "data-ui load failed: ~a" c) (uiop:quit 1)))' \
+       --quit
 
 # Frontend (served by the Lisp server; see WEB_DIRECTORY, default /app/web)
 COPY --from=web-build /web/dist /app/web

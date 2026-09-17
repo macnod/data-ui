@@ -249,7 +249,7 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
         :roles '("chore-users"))
       and count name)))
 
-(defun th-seed-tags (count)
+(defun th-seed-tags (count &rest roles)
   (loop 
     with new-tags = (loop for a from 1 to count
                       collect (format nil "tag-~d" a))
@@ -258,8 +258,32 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
                           (getf (be-list :tags "admin" :limit 1000) :records))
     for tag in new-tags
     unless (u:has existing-tags tag) do
-    (be-insert :tags `(:name ,tag) "admin" :roles '("chore-users"))
+    (be-insert :tags `(:name ,tag) "admin" :roles roles)
     finally (return new-tags)))
+
+(defun th-seed-todos (count &rest roles)
+  (loop
+    with tags = (mapcar
+                  (lambda (r) (getf r :name))
+                  (getf (be-list :tags "admin" :limit 1000) :records))
+    with existing-todos = (mapcar
+                            (lambda (r) (getf r :name))
+                            (getf
+                              (be-list :todos "admin" :limit 1000)
+                              :records))
+    for a from 1 to count
+    for todo = (format nil "todo-~2,'0d" a)
+    for points = (random 5)
+    for todo-tag-count = (1+ (random 3))
+    for todo-tags = (u:choose-some tags todo-tag-count)
+    unless (u:has existing-todos todo) do
+    (be-insert :todos
+      (list
+        :name todo
+        :points points
+        :tags todo-tags)
+      "admin"
+      :roles roles)))
 
 (defun th-seed-recurring (count)
   "Add some tags and recurring chores to the recurring model."
@@ -664,6 +688,65 @@ new-roles-test context."
     (explain! results)
     (when collect results)))
 
+(defun run-guest-tests (&optional collect)
+  ":guest-allowed top-level key tests.
+Validation probes run bare (no model). Login behavior runs in a
+guest-allowed-test context."
+  (let ((results
+          (append
+            ;; Compile-time probes (no model, no DB)
+            (run 'guest-validation-suite)
+            ;; Login behavior (fixture sets :guest-allowed t)
+            (with-model "guest-allowed-test" nil
+              (run 'guest-db-suite)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-api-roles-tests (&optional collect)
+  ":api-roles top-level key tests.
+Validation probes run bare (no model). Accessor and behavior tests
+run in an api-roles-test context."
+  (let ((results
+          (append
+            ;; Compile-time probes (no model, no DB)
+            (run 'api-roles-validation-suite)
+            ;; Accessor + guest behavior (fixture sets
+            ;; :api-roles ("logged-in" "public"))
+            (with-model "api-roles-test" nil
+              (run 'api-roles-db-suite)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-type-roles-override-tests (&optional collect)
+  ":type-roles override on base-model types: compile probes
+plus behavioral RBAC checks. Compile probes run bare; behavior
+runs in a type-roles-override-test context."
+  (let ((results
+          (append
+            ;; Compile-time probes (no model, no DB)
+            (fiveam:run 'type-roles-override-compile-tests)
+            ;; Behavioral (fixture restricts :users / :roles /
+            ;; :permissions to admin)
+            (with-model "type-roles-override-test" #'tro-seed-fixture
+              (fiveam:run 'type-roles-override-behavior)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-domain-stg-tests (&optional collect)
+  ":domain-stg top-level key tests.
+Validation probes run bare (no model). Accessor tests run in a
+domain-stg-test context (fixture declares :domain only; the
+derived value is asserted there)."
+  (let ((results
+          (append
+            ;; Compile-time probes (no model, no DB)
+            (run 'domain-stg-validation-suite)
+            ;; Accessor (fixture declares :domain only)
+            (with-model "domain-stg-test" nil
+              (run 'domain-stg-db-suite)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -700,7 +783,11 @@ groups."
                    ("agg-distinct"    . run-agg-distinct-tests)
                    ("update-permission" . run-update-permission-tests)
                    ("spawn"          . run-spawn-tests)
-                   ("new-roles"      . run-new-roles-tests))
+                   ("new-roles"      . run-new-roles-tests)
+                   ("guest"          . run-guest-tests)
+                   ("api-roles"      . run-api-roles-tests)
+                   ("type-roles-override" . run-type-roles-override-tests)
+                   ("domain-stg"     . run-domain-stg-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

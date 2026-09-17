@@ -27,7 +27,8 @@
 '(:title "Model Bank"
    :name "modelbank"
    :version "0.2"
-   :domain "modelbank.demo.data-ui.com"
+   :domain "modelbank-p.demo.data-ui.com"
+   :domain-stg "modelbank.demo.data-ui.com"
    ;; WARNING: :repl must be nil in production
    :repl t
    :landing-page :models

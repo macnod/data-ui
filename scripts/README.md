@@ -119,7 +119,7 @@ Behavior:
 
 Makes a locally-run host profile reachable from the outside through
 the existing HAProxy TLS front door:
-`https://<model :domain>` → `127.0.0.1:<HTTP_PORT>`.
+`https://<model :domain-stg>` → `127.0.0.1:<HTTP_PORT>`.
 
     scripts/data-ui expose-profile <profile>
 
@@ -129,8 +129,11 @@ Behavior:
   `modelbank` yes, `modelbank-2` no)
 - Requires `sudo` and must run on `DEPLOY_HOST` (default `evo-x2`),
   from a checkout containing `models/<model>.lisp` (and `ros`)
-- The hostname comes from the model's `:domain`; the model must have
-  one, or the profile cannot be exposed
+- The hostname comes from the model's `:domain-stg` when present,
+  else `:domain` with `-stg` suffixed onto the first DNS label
+  (the compiler's default derivation, duplicated here because the
+  script reads the raw model file); the model must have a
+  `:domain`, or the profile cannot be exposed
 - Refuses if the domain is claimed by a deployed instance (use
   `delete` first) or by another profile (use `unexpose-profile`
   first); re-exposing the same profile is idempotent
@@ -290,6 +293,28 @@ A snapshot taken on one machine restores on another regardless of the
 host's installed PostgreSQL client (a newer host client, e.g. pg_restore
 18 against a postgres:16 server, emits SQL the server rejects).
 
+**Files side:** A snapshot is a pair — `<name>.dump` (the database)
+plus `<name>.files.tar.gz` (the `DOCUMENT_ROOT` tree) whenever that
+directory exists at save time. `list` annotates those entries with
+`+files`; `drop` removes both. The tar is optional throughout:
+old snapshots without one restore the database only, and a save with
+a missing `DOCUMENT_ROOT` warns and saves the DB alone.
+
+The files tar packs the *basename* of `DOCUMENT_ROOT` (e.g. `files/`
+for a profile), so the restore lands a tree named like the original.
+Restore swaps, never deletes-then-untars: extract to staging, move
+the old tree aside as `files.pre-restore-<timestamp>`, move the
+fresh one in, and delete the old copy only after the swap succeeds.
+An unreadable or wrong-layout tar dies with the database restored
+and the files left untouched. If the swap itself is interrupted
+between the two `mv`s, the `.pre-restore-` copy (timestamped, beside
+`DOCUMENT_ROOT`) recovers the previous tree by a manual `mv`.
+Two accepted caveats: the dump and the tar are not atomic with each
+other (an upload racing the save can leave them briefly
+inconsistent), and uploads 404 for the moment of the swap when the
+app is running. `FS_TEMP_DIRECTORY` (two-phase upload staging) is a
+sibling of `files/`, so staging garbage is deliberately not captured.
+
 **Typical workflow:**
 
 If you're running `model-1` and want to work on something else without
@@ -335,8 +360,10 @@ Named local instances live under `~/.local/state/data-ui-host/`. A
 profile exists if and only if `<name>/profile.env` exists. Profile
 identity is the directory name. Create profiles with `create-profile`
 and destroy them with `delete-profile`. A primary profile can be made
-publicly reachable through HAProxy with `expose-profile` (and removed
-again with `unexpose-profile`).
+publicly reachable through HAProxy with `expose-profile` (staging
+hostname: the model's `:domain-stg`, or the `-stg`-suffixed
+`:domain`; see [Environments](`docs/deployment.md`)) and removed
+again with `unexpose-profile`.
 
 Unnamed `repl` / `db` / `psql` still use built-in dev defaults
 (HTTP 8081, Swank 4010, DB 5444, `tests/shared-files/`) and do not

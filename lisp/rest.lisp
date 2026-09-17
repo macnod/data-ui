@@ -1254,7 +1254,7 @@ POST /api/validate-form"
 for dynamically creating a menu in the frontend.
 
 GET /api/types"
-  (let* ((user (require-auth '("logged-in"))))
+  (let* ((user (require-auth (model-api-roles))))
     (render-output
       (mapcar
         (lambda (e)
@@ -1267,10 +1267,14 @@ GET /api/types"
                          :default-request-type :get)
   ()
   ":public: Unauthenticated endpoint for non-sensitive app metadata.
-Currently returns only the model title.
+Returns the model title and whether the model allows passwordless
+guest login (the login screen uses :guest-allowed to offer /
+auto-run the guest path without needing a token).
 
 GET /api/public-info"
-  (render-output (list :title (getf *top-level-settings* :title))))
+  (render-output
+    (list :title (getf *top-level-settings* :title)
+      :guest-allowed (model-guest-allowed))))
 
 (h:define-easy-handler (rest-info :uri "/api/info" :default-request-type :get)
   ()
@@ -1279,13 +1283,16 @@ including title, name, version, domain, and repl (which indicates if the app
 provides a Common Lisp REPL.
 
 GET /api/info"
-  (let* ((user (require-auth '("logged-in"))))
+  (let* ((user (require-auth (model-api-roles))))
     (when user
       (let ((settings (copy-list *top-level-settings*)))
         (setf (getf settings :landing-page)
               (be-landing-page user))
         ;; Declared roles are deployment data that the frontend does not need
         (remf settings :new-roles)
+        ;; The roles required by app-level endpoints are authorization
+        ;; internals, not frontend data
+        (remf settings :api-roles)
         (render-output settings)))))
 
 (h:define-easy-handler (rest-css-variables
@@ -1294,21 +1301,35 @@ GET /api/info"
   ()
   ":public: Returns a JSON map of field-name -> value for every :css-value t
 field on the current user's settings record. Pure data extraction — the frontend
-owns all CSS interpretation.
+owns all CSS interpretation. The settings row is looked up as the \"admin\"
+row but read with the requesting user's permissions; a user who cannot read
+it (e.g. guest) gets an empty JSON object, never a blank body — the frontend
+treats that as the default light theme.
 
 GET /api/css-variables"
-  (let* ((user (require-auth '("logged-in")))
+  (let* ((user (require-auth (model-api-roles)))
          (settings-id (be-value-id :settings :user user "admin")))
-    (when settings-id
-      (let ((record (be-rec settings-id user :type-key :settings)))
-        (when record
-          (let ((rec-data (getf record :record)))
-            (loop with fields = (u:tree-get *compiled-model* :settings :fields)
-              for field-key in fields by #'cddr
-              for field-def in (cdr fields) by #'cddr
-              when (getf field-def :css-value)
-              append (list field-key (getf rec-data field-key)) into css-vars
-              finally (return (render-output css-vars)))))))))
+    (render-output
+      (loop
+        with record = (when settings-id
+                        (be-rec settings-id user :type-key :settings))
+        with rec-data = (getf record :record)
+        with fields = (u:tree-get *compiled-model* :settings :fields)
+        for field-key in fields by #'cddr
+        for field-def in (cdr fields) by #'cddr
+        when (and rec-data (getf field-def :css-value))
+        append (list field-key (getf rec-data field-key))))))
+
+(defun login-user-id (username password)
+  ":private: User ID for USERNAME given PASSWORD, covering the passwordless
+guest path. When the model sets :guest-allowed and USERNAME is the guest
+user, returns the guest's user ID without checking PASSWORD (the guest
+account carries only a seed placeholder password, which is not documented
+anywhere). Otherwise delegates to a:login, which returns NIL on any
+mismatch."
+  (if (and (equal username *guest*) (model-guest-allowed))
+    (a:get-id *rbac* "users" *guest*)
+    (a:login *rbac* username password)))
 
 (h:define-easy-handler (rest-login :uri "/api/login" :default-request-type :post)
   ()
@@ -1319,7 +1340,7 @@ POST /api/login"
           (username (getf tree :username))
           (password (getf tree :password))
           (user-id (let ((id (handler-case
-                               (a:login *rbac* username password)
+                               (login-user-id username password)
                                (error (e) (abort-error e
                                             :reason "Error during login")))))
                      (unless id (abort-auth "Invalid username or password"))

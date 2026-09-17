@@ -35,8 +35,8 @@ Example REPL usage:
 ## `model-` Top-Level Accessors: Used by Deployment Scripts
 
 These read top-level model metadata (`:name`, `:title`, `:version`, `:domain`,
-`:repl`) from `*top-level-settings*` (populated during `set-model`). They are
-used at runtime by deployment tooling.
+`:domain-stg`, `:repl`) from `*top-level-settings*` (populated during
+`set-model`). They are used at runtime by deployment tooling.
 
 | Function | Model Key |
 |---|---|
@@ -44,6 +44,7 @@ used at runtime by deployment tooling.
 | `model-name` | `:name` |
 | `model-version` | `:version` |
 | `model-domain` | `:domain` |
+| `model-domain-stg` | `:domain-stg` (explicit or compiler-derived from `:domain`) |
 | `model-repl` | `:repl` (defaults to nil) |
 
 The `scripts/data-ui` deploy script reads the same fields from the raw model

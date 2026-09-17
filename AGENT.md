@@ -29,7 +29,10 @@ touching the corresponding area:
 - **REST endpoints** — all routes with parameters → `docs/rest.md`
 - **Deployment** — every step, traps, admin password location, TLS,
   troubleshooting, clean-slate recovery → `docs/deployment.md`;
-  session-by-session history in `~/.debug/deployment-work.md`
+  session-by-session history in `~/.debug/deployment-work.md`.
+  Environments (development / staging / production, `:domain` vs
+  `:domain-stg`) are defined in its "Environments" section — read it
+  before any deploy / expose work.
 - **Lisp style and error reporting** — `u:` preference, small
   functions, `report-e` / `report-ve`, `valid-*` naming →
   `docs/lisp-style.md` (read before writing any Lisp: tests, helpers,
@@ -210,7 +213,11 @@ children under a `**` parent; always step to `***`:
 ## Status Digest (June 2026)
 
 - **End-to-end proven:** `scripts/data-ui deploy todos` →
-  https://todo.demo.data-ui.com (k3d, HAProxy, TLS).
+  https://todo.demo.data-ui.com (k3d, HAProxy, TLS) — production.
+  Staging (host profiles + `expose-profile`, serving each model's
+  `:domain-stg`, derived as `-stg` on the first DNS label of
+  `:domain`) is the flagship environment during MVP: it hosts Model
+  Bank and has the Deploy button.
 - Full CRUD on all types (built-in RBAC types included); JWT auth;
   view-level and field-level scoping; write-through core path; action
   hooks; rollups (Phase A); file upload / list / delete (two-phase

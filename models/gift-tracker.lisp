@@ -5,6 +5,7 @@
   :name "gift-tracker"
   :version "0.1"
   :domain "gift-tracker.demo.data-ui.com"
+  :domain-stg "gift-tracker-stg.demo.data-ui.com"
   :repl t
   :landing-page :gifts
   :types

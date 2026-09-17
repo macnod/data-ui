@@ -13,6 +13,7 @@
   :name "recurring"
   :version "0.1"
   :domain "recurring.demo.data-ui.com"
+  :domain-stg "recurring-stg.demo.data-ui.com"
   :repl t
   :landing-page :chores
   :types

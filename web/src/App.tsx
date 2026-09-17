@@ -493,6 +493,10 @@ function renderReadOnlyField(
 function App() {
   const [data, setData] = useState<ListResponse | null>(null)
   const [types, setTypes] = useState<TypeInfo[]>([])
+  // True once the login-time /api/types fetch has settled (even to
+  // an empty list). Distinguishes "still resolving" from "this user
+  // can see no types at all" for the header label.
+  const [typesLoaded, setTypesLoaded] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('app')
   const [type, setType] = useState('__init__')
   const [showAddForm, setShowAddForm] = useState(false)
@@ -521,6 +525,7 @@ function App() {
   const [loginError, setLoginError] = useState('')
   const [loggedIn, setLoggedIn] = useState(false)
   const [loggedInUser, setLoggedInUser] = useState('')
+  const [guestAllowed, setGuestAllowed] = useState(false)
 
   // When token refresh fails, force return to login screen
   useEffect(() => {
@@ -532,17 +537,69 @@ function App() {
     })
   }, [])
 
-  // Fetch the app title on mount (pre-login, no auth required)
+  // Shared post-login path: the Login button, "Continue as guest",
+  // and auto-guest all land here.
+  const completeLogin = (user: string, access: string, refresh: string) => {
+    setTokens(access, refresh)
+    setLoggedIn(true)
+    setLoggedInUser(user)
+    setUsername('')
+    setPassword('')
+    fetchAndApplyCssVariables()
+  }
+
+  const loginAsGuest = async (): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'guest', password: '' })
+      })
+      const json = await res.json()
+      if (json.status === 'success' && json.result) {
+        const access = json.result['access-token']
+        const refresh = json.result['refresh-token']
+        if (access && refresh) {
+          completeLogin('guest', access, refresh)
+          return true
+        }
+      }
+    } catch {
+      /* fall through — leave the login form up */
+    }
+    return false
+  }
+
+  // Fetch the app title + guest flag on mount (pre-login, no auth
+  // required). When the model allows guest login, transparently sign
+  // in as guest unless this tab opted out via the skip flag (set on
+  // guest logout, so the login form stays reachable for an admin).
   useEffect(() => {
+    let cancelled = false
     fetch('/api/public-info')
       .then(r => r.ok ? r.json() : null)
-      .then(json => {
-        if (json?.result?.['title']) {
+      .then(async json => {
+        if (cancelled || !json?.result) return
+        if (json.result['title']) {
           setTitle(String(json.result['title']))
+        }
+        // Strict true: plist-to-json emits [] for a bare nil, which
+        // must not count as allowed.
+        if (json.result['guest-allowed'] === true) {
+          setGuestAllowed(true)
+          if (!sessionStorage.getItem('data-ui-skip-auto-guest')) {
+            await loginAsGuest()
+          }
         }
       })
       .catch(() => {})
+    return () => { cancelled = true }
   }, [])
+
+  const handleContinueAsGuest = async () => {
+    sessionStorage.removeItem('data-ui-skip-auto-guest')
+    await loginAsGuest()
+  }
 
   const isEditMode = !!editRecord
 
@@ -558,6 +615,14 @@ function App() {
   const activeTypes = viewMode === 'admin' ? systemTypes
     : viewMode === 'settings' ? settingsTypes
     : userTypes
+
+  // Header shows the selected type name, except before any type is
+  // selected: blank while the type list is still resolving on login,
+  // "No Access" once it has resolved and the user can see no types
+  // (e.g. guest). Never render the __init__ sentinel.
+  const headerLabel = type !== '__init__' ? type
+    : typesLoaded ? 'No Access'
+    : ''
 
   const fetchList = async (): Promise<ListResponse | null> => {
     setListError(null)
@@ -641,6 +706,7 @@ function App() {
     setViewMode('app')
     setType('__init__')
     setTypes([])
+    setTypesLoaded(false)
     setData(null)
     setShowAddForm(false)
     setEditRecord(null)
@@ -770,12 +836,7 @@ function App() {
         const access = json.result['access-token']
         const refresh = json.result['refresh-token']
         if (access && refresh) {
-          setTokens(access, refresh)
-          setLoggedIn(true)
-          setLoggedInUser(username)
-          setUsername('')
-          setPassword('')
-          fetchAndApplyCssVariables()
+          completeLogin(username, access, refresh)
         } else {
           setLoginError('Invalid response from server')
         }
@@ -788,6 +849,11 @@ function App() {
   }
 
   const handleLogout = () => {
+    // Leaving guest mode in this tab: opt out of auto-guest until the
+    // tab closes, so the login form stays up for a real sign-in.
+    if (loggedInUser === 'guest') {
+      sessionStorage.setItem('data-ui-skip-auto-guest', '1')
+    }
     clearTokens()
     setLoggedIn(false)
     setLoggedInUser('')
@@ -1001,6 +1067,7 @@ function App() {
             ? 'user' : t.category
         }))
       setTypes(typeInfos)
+      setTypesLoaded(true)
       const t = info.result?.['title']
       if (t) setTitle(String(t))
       const lp = info.result?.['landing-page']
@@ -1034,6 +1101,7 @@ function App() {
       // else: no types at all; leave __init__ (empty app)
     }).catch(() => {
       setTypes([])
+      setTypesLoaded(true)
     })
   }, [loggedIn])
 
@@ -1170,6 +1238,14 @@ function App() {
           />
           <button type="submit" style={{ width: '100%' }}>Login</button>
         </form>
+        {guestAllowed && (
+          <button
+            onClick={handleContinueAsGuest}
+            style={{ width: '100%', marginTop: 8 }}
+          >
+            Continue as guest
+          </button>
+        )}
         {loginError && <p style={{ color: 'var(--error-bright)' }}>{loginError}</p>}
       </div>
     )
@@ -1195,7 +1271,7 @@ function App() {
             fontSize: '1.1rem',
             fontWeight: 'bold'
           }}>
-            {type}
+            {headerLabel}
           </div>
           <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <button
@@ -1287,7 +1363,7 @@ function App() {
           fontSize: '1.1rem',
           fontWeight: 'bold'
         }}>
-          {type}
+          {headerLabel}
         </div>
         <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <button

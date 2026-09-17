@@ -2,6 +2,7 @@
   :name "books"
   :version "0.1"
   :domain "books.demo.data-ui.com"
+  :domain-stg "books-stg.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
   :repl t
   :landing-page :books
