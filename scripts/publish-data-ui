@@ -94,9 +94,19 @@ fi
 COUNT=$(git rev-list --count "$PUBLIC_TIP..master")
 echo "Squashing $COUNT commit(s) into one."
 
+# Collect their subjects for the squash message body (merge commits
+# skipped — they're plumbing, not content)
+BULLETS=$(git log --no-merges --format='- %s' "$PUBLIC_TIP..master")
+
 # Build the squash commit without moving master: same tree as
 # master, parent = current public tip, so the push fast-forwards.
-SQUASH=$(git commit-tree 'master^{tree}' -p "$PUBLIC_TIP" -m "$COMMIT_MSG")
+# Two -m's: first line = COMMIT_MSG, body = the collected bullets.
+if [ -n "$BULLETS" ]; then
+  SQUASH=$(git commit-tree 'master^{tree}' -p "$PUBLIC_TIP" \
+             -m "$COMMIT_MSG" -m "$BULLETS")
+else
+  SQUASH=$(git commit-tree 'master^{tree}' -p "$PUBLIC_TIP" -m "$COMMIT_MSG")
+fi
 
 echo "Pushing to public..."
 git push public "$SQUASH:refs/heads/master"
