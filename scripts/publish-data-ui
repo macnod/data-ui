@@ -97,9 +97,11 @@ fi
 # master's fine-grained commits, so "$PUBLIC_TIP..master" would
 # re-list the entire history every publish. The public tip's tree
 # is exactly master's tree at last-publish time, so anchor on the
-# newest master commit carrying that tree instead.
+# newest master commit carrying that tree instead. --first-parent
+# is essential: full history also traverses the squash lineages
+# merged in by earlier publish merges, where old trees reappear.
 PUBLIC_TREE=$(git rev-parse "$PUBLIC_TIP^{tree}")
-RANGE_START=$(git log --format='%H %T' master \
+RANGE_START=$(git log --first-parent --format='%H %T' master \
                 | awk -v t="$PUBLIC_TREE" '$2 == t {print $1; exit}') || true
 if [ -n "$RANGE_START" ]; then
   RANGE="$RANGE_START..master"
