@@ -3,7 +3,9 @@
 # as a single squashed commit, while keeping fine-grained history
 # intact on master and private/master.
 #
-# Usage: publish-data-ui "commit message" [--prefer-private]
+# Usage: publish-data-ui [--prefer-private] "commit message"
+# (flag and message in either order; message optional, defaults to
+# "Update")
 #
 # --prefer-private: when merging public/master, keep master's tree
 # wholesale ("git merge -s ours") — never conflicts. Use when nobody
@@ -19,15 +21,15 @@
 
 set -euo pipefail
 
-COMMIT_MSG="${1:-Update}"
-shift || true
 PREFER_PRIVATE=no
+ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --prefer-private) PREFER_PRIVATE=yes ;;
-    *) echo "Unknown option: $arg"; exit 1 ;;
+    *) ARGS+=("$arg") ;;
   esac
 done
+COMMIT_MSG="${ARGS[0]:-Update}"
 
 # Ensure we're on master
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
