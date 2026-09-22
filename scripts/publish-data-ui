@@ -3,7 +3,13 @@
 # as a single squashed commit, while keeping fine-grained history
 # intact on master and private/master.
 #
-# Usage: publish-data-ui "commit message"
+# Usage: publish-data-ui "commit message" [--prefer-private]
+#
+# --prefer-private: when merging public/master, keep master's tree
+# wholesale ("git merge -s ours") — never conflicts. Use when nobody
+# else pushes to public/master (the squash tip is your own tree, so a
+# normal merge re-applies your recent work and conflicts with itself).
+# Omit the flag to merge PR-merged work from public normally.
 #
 # Flow: fetch both remotes, merge any incoming private work, back up
 # fine-grained master to private, then push one squash commit (same
@@ -14,6 +20,14 @@
 set -euo pipefail
 
 COMMIT_MSG="${1:-Update}"
+shift || true
+PREFER_PRIVATE=no
+for arg in "$@"; do
+  case "$arg" in
+    --prefer-private) PREFER_PRIVATE=yes ;;
+    *) echo "Unknown option: $arg"; exit 1 ;;
+  esac
+done
 
 # Ensure we're on master
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -54,10 +68,15 @@ fi
 if ! git merge-base --is-ancestor public/master master; then
   echo "Merging public/master (PR-merged work)..."
   git log --oneline master..public/master
-  git merge --no-edit public/master || {
-    echo "Merge conflict. Resolve and commit, then re-run."
-    exit 1
-  }
+  if [ "$PREFER_PRIVATE" = yes ]; then
+    echo "--prefer-private: keeping master's tree wholesale."
+    git merge -s ours --no-edit public/master
+  else
+    git merge --no-edit public/master || {
+      echo "Merge conflict. Resolve and commit, then re-run."
+      exit 1
+    }
+  fi
 fi
 
 # Back up fine-grained history to private before touching public
