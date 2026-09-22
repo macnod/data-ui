@@ -84,6 +84,13 @@
 (test filter-p
   (is-true (filter-p '(:users :name :eq "alice")))
   (is-true (filter-p '(:users :roles :in '("admin" "editor"))))
+  (is-true (filter-p '(:todos :name :in ("chores" "errands"))))
+  (is-true (filter-p '(:todos :name :not-in ("chores"))))
+  (is-false (filter-p '(:todos :name :in ())))
+  (is-false (filter-p '(:todos :name :in nil)))
+  (is-false (filter-p '(:todos :name :in ("chores" 5))))
+  (is-true (filter-p '(:todos :created-at :in
+                       ("2026-04-17T14:38:01" "2026-04-18T09:00:00"))))
   (is-false (filter-p '(:users :non-existent :eq "value")))
   (is-false (filter-p '(:non-existent :name :eq "value")))
   (is-false (filter-p '(nil :name :eq "value")))

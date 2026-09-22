@@ -97,7 +97,7 @@ Recognized keys: `*top-level-keys*` =
 | `:name` | yes | string `^[a-z][-a-z0-9]*`; `profile` and `profile-*` are reserved | deploy tag/namespace `dataui-<name>` |
 | `:version` | yes | string (semver-ish) | image tag |
 | `:domain` | yes | FQDN-like string | HAProxy map, TLS host |
-| `:domain-stg` | no (default: `-stg` suffixed onto the first DNS label of `:domain`) | FQDN-like string | staging exposure (`expose-profile`); must differ from `:domain`; requires `:domain` when written explicitly |
+| `:domain-stg` | no (default: `-stg` suffixed onto the first DNS label of `:domain`) | FQDN-like string | staging exposure (`profile expose`); must differ from `:domain`; requires `:domain` when written explicitly |
 | `:repl` | no (default `nil`) | boolean | Swank port iff `t`; **nil in production** |
 | `:guest-allowed` | no (default `nil`) | boolean | passwordless guest login via `/api/login`; see [Guest login](#guest-login) |
 | `:api-roles` | no (default `("logged-in")`) | non-empty list of role-name strings, no duplicates | app-level REST endpoints; see [API roles](#api-roles) |
@@ -106,7 +106,7 @@ Recognized keys: `*top-level-keys*` =
 | `:types` | yes | plist of type-key → type-def | compiler |
 
 `:name` values `profile` and `profile-*` are reserved for host-profile
-HAProxy backends (`scripts/data-ui expose-profile`); models using them
+HAProxy backends (`scripts/data-ui profile expose`); models using them
 fail compilation. Similar words (e.g. `profiles`) are fine.
 
 Minimal skeleton:

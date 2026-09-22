@@ -176,7 +176,13 @@ for the placeholders."
                            (format nil "(~{~a~^, ~})"
                              (placeholders value :start-at index))
                            (format nil "$~d" index))
-      collect (db-value table-key field-key user value) into values
+      collect (if (member op-key '(:in :not-in))
+               (mapcar
+                 (lambda (v)
+                   (db-value table-key field-key user v))
+                 value)
+               (db-value table-key field-key user value))
+        into values
       collect (format nil "~a ~a ~a" alias op placeholders)
       into conditions
       finally
@@ -825,6 +831,56 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
 ;; BEGIN Database helper functions
 ;;
 
+(defun admin-only-user-roles ()
+  '("ai-user" "deployer"))
+
+(defun valid-admin-only-user-roles (user new-roles
+                                     &optional existing-roles)
+  ":private: FR-11 gate. Signals a validation error when a non-admin
+actor is *adding* an admin-only role (ai-user / deployer) to a user's
+membership. Stripping a stale grant is allowed (demos cannot lock a
+VIP in). Keyword :roles on a non-:users be-insert / be-update is
+resource roles and must not call this."
+  (unless (equal user "admin")
+    (let* ((existing (or existing-roles
+                       (a:list-user-role-names *rbac* user)))
+           (adds (set-difference new-roles existing :test 'equal)))
+      (loop for role in (admin-only-user-roles)
+        when (member role adds :test 'equal)
+        do (report-ve "valid-admin-only-user-roles"
+             "Only admin may assign role ~s to a user." ~role)))))
+
+(defun protected-users ()
+  ":private: FR-12. Extra protected user names from the
+PROTECTED_USERS environment variable (comma-separated), read at call
+time so a test can bind it. NIL when unset or empty."
+  (let ((raw (u:getenv "PROTECTED_USERS")))
+    (when (and raw (plusp (length raw)))
+      (remove "" (mapcar #'u:trim (re:split "," raw))
+        :test #'equal))))
+
+(defun valid-protected-record (type-key record user)
+  ":private: FR-12 gate. Signals a validation error when a non-admin
+actor updates or deletes a record whose identity is in the protected
+set for TYPE-KEY: admin / guest / PROTECTED_USERS on :users,
+*reserved-role-names* on :roles, a:*init-permissions* on
+:permissions. No-op for every other type and for admin."
+  (unless (or (equal user "admin")
+            (not (member type-key '(:users :roles :permissions))))
+    (let ((name (getf record :name)))
+      (when (and name
+              (member name
+                (case type-key
+                  (:users
+                    (list* a:*admin* a:*guest* (protected-users)))
+                  (:roles *reserved-role-names*)
+                  (:permissions (a:initial-permissions)))
+                :test #'equal))
+        (report-ve "valid-protected-record"
+          "Record ~s of type ~s is protected; only admin may change ~
+           or delete it."
+          ~name ~type-key)))))
+
 (defun update-roles (type-key filters user roles)
   ":private: Updates the RBAC roles for the resource of type TYPE-KEY with ID.
 ROLES is a list of role names. ID is a UUID string. This function returns the
@@ -842,10 +898,28 @@ the update fails."
       (let* ((user-id (be-id :users filters user))
               (user-name (a:get-value *rbac* "users" "user_name" "id" user-id))
               (exclusive-roles (a:exclusive-role-for user-name))
-              (roles (add-to-list roles "logged-in" exclusive-roles))
+              ;; D12 keep-only force-reattach: the Edit form never
+              ;; sends these three (add-roles-to-view strips them from
+              ;; the view; App.tsx resubmits the stripped list), so
+              ;; re-attach each only when the target already holds it.
+              ;; An unconditional add would grant settings to guest on
+              ;; any save (the D1 theme leak) and strip a demoted
+              ;; VIP's self-serve secrets path.
+              (held-roles (a:list-user-role-names *rbac* user-name))
+              (reattach (loop for role in (list "logged-in" "settings"
+                                          exclusive-roles)
+                          when (member role held-roles :test 'equal)
+                          collect role))
+              (roles (append reattach roles))
               (existing-roles (a:list-user-role-names *rbac* user-name))
               (to-add (set-difference roles existing-roles :test 'equal))
               (to-remove (set-difference existing-roles roles :test 'equal)))
+        ;; FR-11 gate: the single must-gate. The Edit form's keyword
+        ;; :roles path lands here (App.tsx sends roles top-level →
+        ;; REST → be-update &key roles → this branch). be-update has
+        ;; already loosened the holder check with
+        ;; remove-existing-non-user-roles; this is the re-tightening.
+        (valid-admin-only-user-roles user roles existing-roles)
         (loop for role in to-add
           do (a:add-user-role *rbac* user-name role))
         (loop for role in to-remove
@@ -1286,10 +1360,15 @@ compiled model metadata — no naming convention assumptions."
               (equal field-key :roles))
           ;; Users can never be assigned an exclusive role directly,
           ;; so no :exclusive-suffixed role belongs on this palette.
+          ;; FR-11: ai-user / deployer are admin-only assignments —
+          ;; hide them from non-admins (the visible path; the write
+          ;; gate lives in update-roles).
           (remove-if
             (lambda (r)
               (or (member r '("admin" "settings" "logged-in")
                           :test 'equal)
+                  (and (not (equal user "admin"))
+                    (member r (admin-only-user-roles) :test 'equal))
                   (exclusive-role-p r)))
             values)
           values)))))
@@ -1533,13 +1612,18 @@ FILTER."
               (u:tree-get *compiled-model* type-key :fields field-key :type))
       (report-ve "valid-filter" "Invalid field type key for field ~s ~s ~s."
         ~type-key ~field-key ~type-key))
-    (unless (value-type-p type-key field-key value)
+    (unless (filter-value-type-p type-key field-key op-key value)
       (let* ((field-type (u:tree-get *compiled-model*
                            type-key :fields field-key :type))
-              (err (eformat "
+              (err (if (member op-key '(:in :not-in))
+                     (eformat "
+Invalid value type for field ~s ~s.
+Expected a non-empty list of values of type ~s, but got value ~s."
+                       type-key field-key field-type value)
+                     (eformat "
 Invalid value type for field ~s ~s.
 Expected a value of type ~s, but got value ~s."
-                   type-key field-key field-type value)))
+                       type-key field-key field-type value))))
         (report-ve "valid-filter" err)))))
 
 (defun valid-filters (filters &key required)
@@ -1804,6 +1888,18 @@ Can't specify roles that user doesn't have.
 (defun valid-new-directory (type-key logical-path file-token user roles)
   (valid-non-rollup-type-key type-key)
   (when (and logical-path (not file-token))
+    ;; A directory path names a directory when it ends in / (the
+    ;; same contract as u:path-parent: a directory path must end
+    ;; in /, and file parents are looked up with the trailing
+    ;; slash). A slash-less name like "/gallery" slips through the
+    ;; parent checks below, but no file can ever be stored under
+    ;; it: check-file computes the parent of "/gallery/x.png" as
+    ;; "/gallery/" and finds no such row — and store-directory,
+    ;; handed a slash-less path, creates only the parent. Reject
+    ;; the shape at insert time instead.
+    (unless (u:ends-with logical-path "/")
+      (report-ve "valid-new-directory"
+        "Directory path must end with a slash: ~a" ~logical-path))
     (let* ((logical-parent (u:path-parent logical-path))
             (fs-path (fs-path type-key logical-path))
             (fs-parent-path (fs-path type-key logical-parent))
@@ -2180,9 +2276,32 @@ SEARCH is nil or a non-blank string matched with ILIKE against the type's
           (order-by (phase-a-build-order-by type-key sort))
           ;; Build page SQL: ORDER BY always; LIMIT/OFFSET only when limit
           ;; is non-nil (08b: add-page-clause, shared with the measure
-          ;; branch).
-          (page-query (add-page-clause
-                        (format nil "~a~a" where-sql order-by)
+          ;; branch). When join-filters + sort are both in play, splice
+          ;; the sort column into the page projection: Postgres requires
+          ;; DISTINCT ORDER BY expressions to appear in the select list.
+          ;; The (id, sort-col) pair still dedups exactly — sort columns
+          ;; are base-table columns functionally determined by id. The
+          ;; count query below is fed the pre-splice strings, so :total
+          ;; never sees the extra column. Query in default plist mode
+          ;; and extract (getf row :id).
+          (page-sql
+            (let* ((spliced-p (and
+                                (filters-require-join-p type-key filters)
+                                sort))
+                    (sort-col (when spliced-p
+                                (phase-a-order-by-column type-key sort)))
+                    (page-base (if spliced-p
+                                 (format nil "select distinct ~a.id, ~a~a"
+                                   (u:tree-get *compiled-model* type-key
+                                     :table-name)
+                                   sort-col
+                                   (subseq where-sql
+                                     (search " from" where-sql
+                                       :test #'char-equal)))
+                                 where-sql)))
+              (declare (ignore spliced-p))
+              (format nil "~a~a" page-base order-by)))
+          (page-query (add-page-clause page-sql
                         where-params limit offset))
           ;; Count query: same WHERE/JOIN, no ORDER BY/LIMIT/OFFSET.
           (count-result (phase-a-build-count-sql base-sql where-result))
@@ -2191,11 +2310,12 @@ SEARCH is nil or a non-blank string matched with ILIKE against the type's
       :base-sql base-sql
       :page-sql (car page-query)
       :count-sql (car count-query))
-    (let ((ids (a:with-rbac (*rbac*)
-                 (a:rbac-query page-query :column)))
+    (let ((raw-rows (a:with-rbac (*rbac*)
+                      (a:rbac-query page-query)))
            (total (a:with-rbac (*rbac*)
                     (a:rbac-query count-query :single))))
-      (values ids total))))
+      (values (mapcar (lambda (row) (getf row :id)) raw-rows)
+        total))))
 
 ;;;
 ;;; be-list - Phase A -> Phase B flow.
@@ -2876,6 +2996,22 @@ update fails.
                     (report-ve "be-update"
                       "Record ~a not found for type ~s." ~uuid ~type-key)
                     record))
+          ;; FR-11 belt: a data-plisted :roles on be-update :users
+          ;; rides update-join-tables (the role-users join) instead of
+          ;; the keyword path. The frontend never sends this shape
+          ;; (App.tsx destructures roles out of data), but a direct
+          ;; caller could. Bound for effect inside the let*.
+          (roles-belt (when (and (equal type-key :users)
+                              (getf data :roles))
+                        (valid-admin-only-user-roles user
+                          (getf data :roles))))
+          ;; FR-12 gate: system accounts and base roles are
+          ;; admin-only to change. Runs immediately after the record
+          ;; load — before hooks, before the main update, before
+          ;; update-join-tables / update-roles, so the Edit-form
+          ;; keyword :roles path and the data-plist belt are both
+          ;; behind it. Bound for effect inside the let*.
+          (protected (valid-protected-record type-key record user))
           (pre-update (u:tree-get m type-key :pre-update))
           (post-update (u:tree-get m type-key :post-update))
           ;; Pre-update hooks run before validation so they can fill
@@ -2957,6 +3093,10 @@ treated as the UUID of the record to be deleted."
       :record record
       :path-field path-field
       :logical-path logical-path)
+    ;; FR-12 gate: system accounts and base roles are admin-only to
+    ;; delete (record is loaded as "admin", so :name is always
+    ;; present; uuid nil = nothing matched, nothing to protect).
+    (valid-protected-record type-key record user)
     (valid-existing-file-or-directory type-key logical-path)
     (when (and uuid (user-allowed-resource user uuid "delete"))
       (run-lifecycle-hooks pre-delete type-key nil user

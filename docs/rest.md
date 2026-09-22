@@ -20,7 +20,7 @@ keys `total` and `sort`.
 |-------|----------|---------|---------|
 | `type` | yes | — | Type key, e.g. `todos`, `users` |
 | `form` | no | `list-form` | `list-form` \| `update-form` \| `add-form` |
-| `filters` | no | — | JSON list of `[type field operator value]` rows |
+| `filters` | no | — | JSON list of `[type field operator value]` rows; `in` / `not-in` take a non-empty list of the field's atom type (join-table fields may also be targeted, e.g. `["tags","name","in",["chores","errands"]]`) |
 | `limit` | no | `20` | Max records; non-negative integer; clamped server-side to `200` |
 | `offset` | no | `0` | Records to skip; non-negative integer |
 | `sort` | no | — | `"field:asc"` / `"field:desc"`; direction defaults to `asc`; field must be `:sortable t` |

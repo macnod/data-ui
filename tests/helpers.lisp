@@ -285,6 +285,35 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
       "admin"
       :roles roles)))
 
+(defun th-seed-todos-real ()
+  (let* ((todos-path "/home/macnod/workbench/todos-demo.lisp")
+          (todos (with-open-file (in todos-path) (cadr (read in))))
+          (roles '("public" "todo-users")))
+    (loop
+      with existing-tags = (mapcar 
+                             (lambda (x) (getf x :name))
+                             (getf
+                               (be-list :tags "admin" :limit 1000)
+                               :records))
+      for tag in (getf todos :tags)
+      unless (member tag existing-tags)
+      do (be-insert :tags `(:name ,tag) "admin" :roles roles))
+    (loop
+      with existing-todos = (mapcar
+                              (lambda (x) (getf x :name))
+                              (getf
+                                (be-list :todos "admin" :limit 1000)
+                                :records))
+      for todo in (getf todos :todos)
+      for name = (getf todo :title)
+      for tags = (getf todo :tags)
+      for done = (if (getf todo :done) :true :false)
+      unless (member todo existing-todos)
+      do (be-insert :todos `(:name ,name :done ,done :tags ,tags)
+           "admin" :roles roles))))
+      
+      
+
 (defun th-seed-recurring (count)
   "Add some tags and recurring chores to the recurring model."
   (let ((new-tags (loop for a from 1 to 9 collect (format nil "tag-~d" a)))
@@ -344,7 +373,140 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
       user
       :roles roles)
     and count name))
-        
+
+(defun th-seed-books-model-users (books-directory)
+  (loop with existing-users = (u:exclude
+                                (mapcar
+                                  (lambda (r) (getf r :name))
+                                  (getf
+                                    (be-list :users "admin" :limit 1000)
+                                    :records))
+                                '("admin" "guest"))
+    with new-users = (u:exclude
+                       (re:split "\\n"
+                         (u:slurp
+                           (u:join-paths books-directory "book-users.txt")))
+                       existing-users)
+    and roles = '("public" "books-user")
+    and email = "no-email"
+    for user in new-users
+    for password = (format nil "password-1-~a" (u:safe-encode user))
+    do (be-insert :users
+         `(:name ,user :password ,password :email ,email)
+         "admin"
+         :roles roles)
+    counting user))
+
+(defun th-seed-book-cover (title source)
+  (let* ((logical-path (u:join-paths "/" (u:filename-only source)))
+          (file-token (th-make-file :covers logical-path :source-file source))
+          (in-database (be-list :covers "admin" 
+                         :filters `((:covers :name :eq ,logical-path)))))
+    (unless (plusp (length (getf in-database :records)))
+      (be-insert :covers
+        `(:name ,logical-path :book ,title)
+        "admin"
+        :roles '("public" "books-user")
+        :file-token file-token))))
+
+(defun th-seed-books-model-authors (books-directory)
+  (loop with existing-authors = (mapcar 
+                                  (lambda (b) (getf b :title))
+                                  (getf 
+                                    (be-list :authors "admin" :limit 1000)
+                                    :records))
+    with books-path = (u:join-paths books-directory "books.lisp")
+    with books = (with-open-file (in books-path) (cadr (read in)))
+    and new-author-count = 0
+    for book in books
+    for authors = (getf book :authors)
+    do (loop for author in authors
+         unless (u:has existing-authors author) do
+         (be-insert :authors `(:name ,author) "admin"
+           :roles '("public" "books-user"))
+         (push author existing-authors)
+         (incf new-author-count))
+    finally (return new-author-count)))
+
+(defun th-seed-books-model-books (books-directory)
+  (loop with existing-books = (mapcar
+                                (lambda (b) (getf b :title))
+                                (getf
+                                  (be-list :books "admin" :limit 1000)
+                                  :records))
+    with books-path = (u:join-paths books-directory "books.lisp")
+    with books = (with-open-file (in books-path) (cadr (read in)))
+    with one-day = (* 3600 24)
+    with ten-years = (* one-day 365 10)
+    with ten-years-ago = (- (get-universal-time) ten-years)
+    for book in books
+    for title = (getf book :title)
+    for genre = (getf book :genre)
+    for description = (getf book :description)
+    for isbn = (getf book :isbn)
+    for authors = (getf book :authors)
+    for covers = (getf book :cover)
+    for random-time = (- (+ ten-years-ago (random ten-years)) one-day)
+    for published = (dt:timestamp-string :universal-time  random-time)
+    unless (u:has existing-books title) do
+    (be-insert :books
+      `(:title ,title
+         :genre ,genre
+         :description ,description
+         :isbn ,isbn
+         :authors ,authors
+         :published ,published)
+      "admin"
+      :roles '("public" "books-user"))
+    and count book))
+
+(defun th-seed-books-model-covers (books-directory)
+  (loop with existing-covers = (mapcar
+                                 (lambda (c) (getf c :name))
+                                 (getf
+                                   (be-list :covers "admin" :limit 1000)
+                                   :records))
+    and books-path = (u:join-paths books-directory "books.lisp")
+    with books = (with-open-file (in books-path) (cadr (read in)))
+    for book in books
+    for title = (getf book :title)
+    for covers = (getf book :cover)
+    for front-source = (car covers)
+    for back-source = (cadr covers)
+    for front-name = (u:join-paths "/" (u:filename-only front-source))
+    for back-name = (u:join-paths "/" (u:filename-only back-source))
+    unless (u:has existing-covers front-name)
+    do (th-seed-book-cover title front-source)
+    and count front-source
+    unless (u:has existing-covers back-name)
+    do (th-seed-book-cover title back-source)
+    and count back-source))
+
+(defun th-seed-books-model-user-ratings (books-directory)
+  (loop with users = (re:split "\\n"
+                         (u:slurp
+                           (u:join-paths books-directory "book-users.txt")))
+    for user in users do
+    (loop with books = (u:choose-some
+                         (mapcar
+                           (lambda (b) (getf b :title))
+                           (getf
+                             (be-list :books "admin" :limit 1000)
+                             :records))
+                         (random 20))
+      for book in books
+      for rating = (1+ (random 5))
+      do (be-insert :my-ratings
+           `(:book ,book :user ,user :rating ,rating)
+           "admin"
+           :roles '("public" "books-user")))))
+
+(defun th-seed-books-model (books-directory)
+  (th-seed-books-model-users books-directory)
+  (th-seed-books-model-authors books-directory)
+  (th-seed-books-model-books books-directory)
+  (th-seed-books-model-covers books-directory)
+  (th-seed-books-model-user-ratings books-directory))
 
 ;;
 ;; END Test Helpers

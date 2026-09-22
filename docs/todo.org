@@ -2308,55 +2308,416 @@ deferred with the smoke; the env threading is the same
 =load_profile= / =export_repl_environment= path the dev test
 exercised. No Lisp changed.
 
-** TODO Job-search cleanup                          :mvp:model:scripts:docs:
+** DONE Snapshot 2: explicit addresses, portable snapshots    :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-19 Sat]
+:COMPLETED: [2026-09-19 Sat]
+:END:
+Implemented from the plan ([[file:~/workbench/snapshot-2-plan.org][snapshot-2-plan.org]]).
+=scripts/data-ui= =snapshot= now speaks explicit addresses:
+=snapshot save <name> <src-address>= / =restore <name>
+<dst-address>= with =dev:<model>= / =stg:<profile>= (mandatory
+qualification, case-sensitive two-arm registry, per-shape parse
+errors naming both legal shapes; one-arg forms and extra args
+hard-error; snapshot names share the profile charset, colon
+illegal). Save/restore wrappers (=snapshot_save_pair= /
+=snapshot_restore=) own the /api/info confirm and the .meta write
+(dump + .meta + optional tar triple-staging; tar canonicalized to
+=files/=, restore renames any single top-level dir to the dest
+DOCUMENT_ROOT basename — old tars portable retroactively).
+Restore refuses model mismatch (.meta vs the dest address's
+model; never FORCE-able), warns on tri-state version compare,
+stages the prerestore slot keyed on the DEST address with its own
+.meta, and prints the cross-env password notice (source-address ≠
+dest address, password location named by source qualifier, JWT
+story honest). Unreachable policy splits by verb: save + dev:
+refuses unless FORCE=1, save + stg: quiet skip, restore + either:
+quiet skip — verb_stop's p-last save and the nightly reset path
+proceed with the app down. =snapshot list= annotates provenance
+((no .meta) when absent), =drop= removes the triple, =migrate=
+(NEW, idempotent per file: dump, tar, stub .meta each keyed on
+their own destination) loops =$DATA_UI_STATE/profiles/= →
+=stg-<p>-{golden,last,prerestore}=. Call sites updated:
+petting-zoo-reset.sh (all six slot-name strings; restore call now
+=snapshot restore stg-<p>-golden stg:<p>=), verb_start (both
+class branches + bootstrap hint), verb_stop (=stg-<p>-last
+stg:<p>=), delete_profile (glob ∪ .meta scan), require_postgres_running
+(dev-aware die hint; single definition now). =die= takes =$*=
+(multi-arg errors keep their second line). usage() and
+scripts/README.md snapshot section rewritten (FORCE's second
+meaning documented; stale D15 paths fixed). petting-zoo.org
+workbench doc-synced (§2-§6, §9-§11, Quick reference).
+=detect_model_name= / =snapshot_save= / =snapshot_profile_base= /
+=resolve_snapshot_profile= lost their callers — retained pending
+a human retire/retain decision per docs/model-accessors.md (they
+are bash, not the Lisp accessors that file covers, so noted here).
+Verified: bash -n on both scripts; isolated harness over the
+sourced function library for all parse errors, address resolution
+(both qualifiers, referent validation), migrate full/partial/no-op
+runs, tar canonicalization + retroactive restore shapes, triple
+drop, password-notice matrix (cross-env, same-address quiet,
+same-qualifier fires, missing .meta), save+unreachable-dev refusal
+and FORCE escape, model-mismatch refusal, missing-.meta warning.
+Live-DB paths (actual dump/restore) not exercised — the ordered
+window (disable timer → land CLI → migrate as macnod → reinstall
+ops script → explicit reset run → re-enable timer) is still to be
+executed by Donnie. No Lisp changed.
+
+** DONE Post-recreate deploy addressing: loopback, not bridge IP :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-12 Sat]
+:COMPLETED: [2026-09-13 Sun]
+:END:
+After the k3d recreate (~/workbench/k8s-to-ssd2-plan.org, Risks
+"Post-recreate data-ui deploy"), the first =scripts/data-ui
+deploy= reintroduces exactly the drift class that plan kills:
+
+1. With the reserved-set guard in =assign_node_port= (folded in
+   step 2 of that plan), the scan hands out =30303= — but the
+   create block publishes no =-p= for =31303=, so the deploy has
+   no loopback hop.
+2. =deploy/templates/haproxy-backend.cfg.tpl= renders
+   ={{NODE_IP}}:{{NODE_PORT}}= with the node InternalIP
+   (=scripts/data-ui= ~1242) — a =172.18.*= *target* in
+   =conf.d=, which the plan's acceptance grep forbids.
+   jina-kube and monitor-host already prefer
+   =127.0.0.1:<nodePort+1000>= with a bridge fallback; data-ui
+   has no such logic.
+
+Design decision needed, then implement: reserve a data-ui
+NodePort (e.g. =30303=), publish =31303= at the next recreate,
+pin the Service, and render the loopback address in the template
+(mirroring the =ensure_node_port= consumers) — or keep
+per-instance scans and render whatever mapping exists. Until
+this lands, the post-recreate smoke deploy carries a bridge-IP
+target and an unmapped NodePort. Note: =require_clean_tree=
+means the k8s-to-ssd2 step-2/3 edits must be committed before
+that deploy runs.
+
+*** Context from the 2026-09-13 smoke deploy (todos, post-recreate)
+
+Both landmines fired exactly as predicted; the deploy itself was
+otherwise green (SSD paths, host mkdir+chown, PV bindings, API
+insert/list/delete round-trip, record survived pod reschedule):
+
+1. =assign_node_port= handed out =30303= (guard working:
+   skipped 30300 jina, 30301 reserved, 30302 grafana). No
+   =-p 31303= exists.
+2. =conf.d/dataui-todos.cfg= rendered
+   =server dataui-todos 172.18.0.2:30303= — works only because
+   the recreate happened to re-land the server on =.2= of the
+   same subnet. That's the drift class, live again.
+
+Resolution shape (settles the "decision" above — no single-port
+pin needed):
+
+- *Render-side (the real fix, no recreate required):* in
+  =deploy()=, after =assign_node_port= and before
+  =generate_manifests=, probe
+  =curl -m2 http://127.0.0.1:$((NODE_PORT+1000))/= and set
+  =NODE_TARGET= — loopback when it answers,
+  =${NODE_IP}:${NODE_PORT}= fallback otherwise (copy of
+  jina-kube =render_snippet= / monitor-host:~250; any HTTP
+  response counts, connection refused = fallback). Wire the
+  placeholder into =render_template= (scripts/data-ui ~1052):
+  add =-e "s|{{NODE_TARGET}}|${NODE_TARGET}|g"= next to the
+  ={{NODE_IP}}= / ={{NODE_PORT}}= lines. Template changes: swap
+  the server line + comment. Correct on any
+  cluster; until a port is published, behavior is unchanged
+  (fallback = today's snippet).
+- *Port block (one line, next recreate only):* docker =-p=
+  accepts ranges —
+  =-p 127.0.0.1:31303-31312:30303-31312@server:0= covers ten
+  future instances in one flag. Scans already start at 30303;
+  pinned ports + reserved-set guards mean nothing else takes
+  them, so no reserved-set changes are needed. Multi-instance is
+  why a single reserved port was the wrong frame.
+- *Instance fix-up:* snippets render at deploy time only.
+  Existing =conf.d= entries keep their bridge target until
+  redeployed (or hand-edit + reload — did /not/ do this for
+  todos; its =172.18.0.2:30303= is live by choice, not
+  accident).
+
+Size: ~15 script lines + template tweak, well under an hour with
+a todos redeploy as the verification.
+
+Related: =~/r/k3d-tools/nodeport.sh= (2026-09-13) centralizes this
+exact logic for the manager scripts (jina-kube / monitor-host
+source it; reserved set derived from docker residue). data-ui
+cannot source it — deploy clone must stay self-contained — so when
+implementing, either copy =k3d_backend_target='s probe verbatim
+into =scripts/data-ui=, or keep the inline 10-line scan for ports
+and only take the probe. If adopting the block-owner pattern,
+=k3d_reserved_ports 30303:30312= in the lib shows the
+exclusion shape for an inline portblock equivalent.
+
+Summary (2026-09-13): Implemented the resolution shape above,
+exactly as written. =scripts/data-ui=: new =assign_backend_target=
+(probe copied verbatim from =k3d_backend_target=; any HTTP response
+counts, curl exit status decides) called in =deploy()= right after
+=assign_node_port=; =render_template= gained a ={{NODE_TARGET}}=
+substitution; =deploy()='s closing =NodePort:= echo line still
+prints the raw =${NODE_IP}:${NODE_PORT}= (diagnostic, unchanged
+from the plan). =deploy/templates/haproxy-backend.cfg.tpl=: server
+line now renders ={{NODE_TARGET}}=; header comment explains
+loopback-hop vs bridge fallback. =~/workbench/k8s-to-ssd2-plan.org=:
+create block gained
+=-p 127.0.0.1:31303-31312:30303-30312@server:0= with rationale
+(one range flag, ten instances, no reserved-set changes — ports
+stay offerable to data-ui only); next recreate makes every
+=data-ui deploy= render loopback. No other files touched; no Lisp
+changed. Verified: bash -n clean; both probe branches live (probe
+31300 answers → =127.0.0.1:31300=, 31303 refused → bridge
+fallback); =DRY_RUN=1 deploy todos= reuses NodePort 30303 and
+renders =server dataui-todos 172.18.0.2:30303= — the bridge
+fallback, byte-identical behavior to the live =conf.d= snippet
+until the range is published at next recreate. Full non-DRY redeploy
+deferred: =require_clean_tree= would abort on these unstaged edits;
+Donnie commits first, then a plain =deploy todos= is the
+verification. Loopback branch itself is untestable until a
+recreate publishes 31303 (k3d cannot add =-p= live) — the probe
+logic is the same verbatim copy already proven in jina-kube.
+
+** DONE Password field should include confirmation field      :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-09-21 Mon]
+:END:
+=web/src/App.tsx=: =:widget :password= forms now render two boxes
+(password + confirm). =submitForm= gates on every password field
+before either the JSON or file-upload path runs — mismatched or
+half-filled pairs alert and abort, nothing is sent. Confirm value
+lives in separate =passwordConfirm= state (never in the payload),
+cleared with the form in =closeForm= / =resetSessionState=. Live
+match/mismatch hint under the confirm box; edit mode shows a
+"Leave blank to keep current password" placeholder.
+** DONE Browser title bar shows the app name            :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:COMPLETED: [2026-09-21 Mon]
+:END:
+The browser tab / title bar showed the static =<title>Data UI</title>=
+from =web/index.html= instead of the running application's name.
+
+One =useEffect= in =web/src/App.tsx= (after the mount fetch)
+syncs the existing =title= state into =document.title=. The state
+is already fed by all three title fetch paths — =/api/public-info=
+on mount (pre-login), =/api/info= on login, and =returnToLanding=
+— so the tab updates on every path without further wiring. The
+static =index.html= title remains only as the pre-fetch fallback.
+Frontend built (=npm run build= passes); no backend changes.
+
+** DONE Class and exposure columns in =profile list=            :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:COMPLETED: [2026-09-21 Mon]
+:END:
+=scripts/data-ui profile list= gained two columns between MODEL
+and the ports: CLASS (the =DEMO_CLASS= stamp from =profile.env= —
+e-demo | demo, blank when the profile has never been started) and
+HOST (the exposed hostname with =.demo.data-ui.com= stripped,
+blank when not exposed). Two new helpers: =profile_demo_class=
+(greps the stamp) and =profile_exposed_host= (backend-keyed map
+lookup — same keying as =profile_is_exposed=, so a =:domain=
+change cannot strand the old host; deliberately keyed on the
+=$HAPROXY_MAP= line only, not the conf.d file, because a bare
+backend config routes nothing). =show_profiles= calls =haproxy_env=
+once for the paths; the map is mode 644, so listing needs no
+sudo. Usage help for =profile list= updated to match. Verified
+live (books =books-stg=, modelbank =modelbank=, todos
+=todo-stg=) plus a synthetic never-started, unexposed profile
+to exercise both blank paths.
+
+** DONE Job-search cleanup                          :mvp:model:scripts:docs:
 :PROPERTIES:
 :CREATED: [2026-09-07 Mon]
 :END:
-Public, read-only demo deployments to point at from the resume,
-the Data UI README, and sinistercode.com. Timeboxed: one day —
-resumes go out tomorrow. Preference: guest access if a small fix
-can do it; otherwise the read-only-role fallback below. Video
-note: the real 30-second MVP video ("30-second demo video",
-below) is December work; anything shot now is a job-search
-stand-in that says the MVP lands end of December 2026.
-
-*** TODO Determine guest feasibility
-Read-only scout: can a small fix let non-authenticated users
-navigate the site as a "guest" with read on everything? Related
-existing item: "Sign in as guest" (MVP Backlog). If not feasible
-in a short time, run the fallback items below instead.
-
-*** TODO Add read-only roles
-For every model made visible for the job search: add read-only
-roles to the user-defined types (and maybe some of the built-in
-types).
-
-*** TODO App-specific prep
-- todos: careful review of the running app before linking it
-- chores: delete the old chores model, rename recurring to
-  chores
-- shopping list: add missing =th-seed-= functions (realistic
-  stores, items, prices) so demos work without manual setup
-
-*** TODO Deploy the applications
-Model Bank -> staging (Deploy button is staging-only; it must
-look production-grade, and a read-only user clicking it must get
-a graceful denial, not a 500 — see "Role-gated Deploy button").
-Others -> production.
-
-*** TODO Get Model Bank to survive reboots
-Even if the solution is just a note-to-self in the deployment
-docs.
-
-*** TODO Add read-only users
-Add a user holding the read-only roles instead of the standard
-roles, per deployed app. Then hammer every write path as that
-user — insert, update, delete, actions, upload — and confirm
-denial.
+Superseded by [[file:~/workbench/demo-apps-plan.org][demo-apps-plan.org]] (2026-09-17): the public
+demo posture is the petting-zoo tiers, not read-only
+deployments — guest reads via the D1 role overlays, demos CRUD,
+VIP / day accounts, systemd units for reboot survival, nightly
+golden resets on todos / books, and Generate / Deploy denial
+enforced in the hook (FR-7). That plan is the work; guest
+feasibility, read-only roles / users, app-specific prep,
+deployment, and reboot survival are all plan phases now.
+Chores / shopping-list prep from the old framing is dropped —
+not among the plan's demos. The disabled-button Deploy UX stays
+in "Role-gated Deploy button" (post-MVP polish).
 
 *** TODO Placeholder demo video
 Job-search stand-in only; make clear the MVP is not out until
 end of December 2026. Not the real MVP video.
+
+** DONE Books: book-ratings rollup board                    :model:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:COMPLETED: [2026-09-21 Mon]
+:END:
+Added a =:book-ratings= rollup to =models/books.lisp=: a read-only
+board of book titles with average rating and rating count, sortable
+by either measure. Pure model authoring on the analytical pipeline
+(list-plan 07–09); no engine changes.
+
+#+begin_src lisp
+:book-ratings
+(:rollup t
+  :grain :books
+  :type-roles ("books-user" "public")
+  :default-sort (:average-rating :desc)
+  :views (:main (:tables (:books :ratings)))
+  :list-form (:fields t)
+  :fields
+  (:title
+    (:source (:view :main :table :books :column :title :agg :first)
+      :sortable t
+      :ui (:label "Title"))
+    :average-rating
+    (:type :real
+      :source (:view :main :table :ratings :column :rating :agg :avg)
+      :sortable t
+      :ui (:label "Rating" :widget :stars :read-only t :precision 1))
+    :ratings-count
+    (:type :integer
+      :source (:view :main :table :ratings :column :id :agg :count)
+      :sortable t
+      :ui (:label "Ratings"))))
+#+end_src
+
+Notes: =:ratings= is the single fact table, joined via the ratings
+=:book= =:target= edge. =:sortable t= on measures is legal only on
+rollups (the =:hot-models= pattern). Unrated books stay on the
+board (=:avg= NULL renders "N/A", =NULLS LAST= on sort, count 0).
+=:default-sort= is declared with an explicit =:desc=; without a
+declaration the automatic policy (first sortable measure, desc)
+would land the same order. Verified working live.
+
+** DONE Clickable list-value chips (filter by M2M values) :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:COMPLETED: [2026-09-21 Sun]
+:END:
+Render =:checkbox-list= cells (todos =:tags=, chores =:tags= /
+=:completed-by=, books =:authors=, Model Bank =:images=) as
+clickable chips instead of the flat ="a, b, c"= text. Clicking a
+chip filters the list to records having that value — the reason
+tagging exists. Backend already supports it:
+=/api/list?type=todos&filters=[["tags","name","in",
+["chores","errands"]]]= is the join-aware request-time filter
+surface (=parse-filters=, =add-where-clause= =:in=, Phase A
+SELECT DISTINCT). Frontend-only work in =web/src/App.tsx=:
+filter state, chip rendering in list cells, active-filter chips
+with clear affordance next to the search box, reset in
+=resetListQuery=.
+
+Plan: [[file:~/workbench/clickable-checkbox-chips-plan.org][clickable-checkbox-chips-plan.org]].
+
+Implemented 2026-09-21 per the plan (Rev 6), Steps 0a/0b +
+frontend:
+
+- *0a* =filter-value-type-p= (predicates.lisp, new): the one
+  home of the =:in= / =:not-in= case split; =filter-p= and
+  =valid-filter= both call it. =:in= takes a non-empty list of
+  the field's atom type (=:list= fields keep the whole-value
+  check, tightened to consp); empty list / nil now 400 with a
+  split message ("Expected a non-empty list of values of type
+  ~s"). =add-where-clause= maps =db-value= element-wise in the
+  =:in= branch (numeric fields no longer feed the list to
+  parse-number).
+- *0b* =phase-a-query=: when join-filters + sort are both in
+  play, splices the table-qualified sort column into the page
+  projection (="select distinct <t>.id, <sort-col> from ..."=);
+  page query runs in default plist mode, ids extracted with
+  =(getf row :id)=. Count query fed pre-splice SQL. Fixes 42P10
+  ("SELECT DISTINCT, ORDER BY expressions must appear in select
+  list") — todos declares =:default-sort=, so every join-filtered
+  request hit it.
+- *Frontend* (App.tsx + index.css): =listFilters= state
+  (fieldKey → values; union within field via one =:in= row, AND
+  across fields), chip cells at the =<td>= call site (clamp
+  exempt), toolbar chips prefixed with the field label + =×=
+  remove + Clear filters, wire-first-element from list-form
+  field meta (=field.table=, not the state key — chores
+  =:completed-by= sends ="users"=), =field.table !== type=
+  eligibility keeps the synthetic Roles column off (users.roles
+  still qualifies), reset in =resetListQuery=, empty arrays
+  omitted from the URL.
+- Tests: predicate =filter-p= =:in= cases (accept / empty /
+  nil / mixed-type), backend =valid-filter= =:in= lines, new
+  =m2m-join-filter-with-sort-42p10= regression in
+  tests/m2m-tests.lisp (fixture =:items :name= gained
+  =:sortable t=; unique index covers, no new DDL).
+  =(run-tests)=: 1771 checks, 31 groups, all pass. Live REST
+  smoke (todos seeded): union filter 2/2, sort-while-filtered
+  asc/desc, search+filter AND, users-by-role join filter,
+  empty-list 400.
+- Files: lisp/backend.lisp, lisp/predicates.lisp,
+  tests/predicate-tests.lisp, tests/backend-tests.lisp,
+  tests/m2m-tests.lisp, models/test/m2m-test.lisp, docs/rest.md
+  (=:in= value shape), web/src/App.tsx, web/src/index.css.
+- Deviations: none. Browser-level smoke of the chip clicks
+  themselves still pending Donnie's eyeball (curl proved the
+  wire; the UI build is current).
+
+** DONE Negative list search (hide exclusive roles, "Not…" input) :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-22 Tue]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+The admin | roles list drowns in per-user exclusive roles (111
+total, 9 real on the dev books image). Phase 1: a "Hide
+exclusive" checkbox (on by default) that appends a =not-like=
+row to the existing =/api/list= =filters= parameter. Phase 2:
+a general "Not…" input next to the search box on every type
+with =:searchable= fields, one =:not-ilike= row per searchable
+field, mirroring =search='s case-insensitive semantics. Both
+AND with search, chips, and the count query (=total= /
+pagination stay correct). Frontend-only (=web/src/App.tsx=);
+no Lisp changes — the wire contract already supports it
+(verified by live REPL probe: 111 → 9).
+
+Plan: [[file:~/workbench/search-not-plan.org][search-not-plan.org]] (FINAL — all decisions resolved
+[2026-09-22 Tue]; awaiting go-ahead).
+
+Summary ([2026-09-23 Wed]): Implemented both phases exactly per the
+plan; =web/src/App.tsx= only, no Lisp changes. Phase 1:
+=hideExclusive= state (default checked) appends
+=["roles","name","not-like","%:exclusive"]= to the =/api/list=
+=filters= rows when the listed type is roles; checkbox in the list
+toolbar after the search box, before the chips; toggle resets page
+1 + clears selection. Phase 2: =notTerm= / =debouncedNotTerm= /
+=notTimer= mirror the search triple — =handleListNot= (300ms
+debounce, trim, page 1, clear selection), cleared by
+=resetListQuery= (all three type-change paths), =not-ilike= row
+per =searchable= field in =fetchList=, second input with
+placeholder "Not… (wildcards: % and _)" and × clear button inside
+the =hasSearchable= fragment. Effect deps gained =hideExclusive=
+and =debouncedNotTerm=. Verified: REPL probe re-run fresh
+(111 → 9), =tsc= + =vite build= clean. Deviations: none.
+Browser-level smoke of the checkbox / Not… box still pending
+Donnie's eyeball (curl-level wire semantics proven by the probe;
+the UI build is current).
+
+** TODO Broken format string in =validate-new-directory= error :backend:bug:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-18 Fri]
+:END:
+=lisp/backend.lisp= (the "Can't assign roles that parent doesn't
+have" =report-ve= in =validate-new-directory=). Adding a
+directory with roles the parent doesn't have — =/garbage/= on
+the books demo — dies with the raw error instead of the intended
+message:
+
+#+begin_example
+error in FORMAT: Unknown format directive (character: Space)
+
+Can't assign roles that parent doesn't have.
+  - Parent directory: ~a
+  - Parent roles: ~{~a^~, ~}
+  - Requested roles: ~{~a~^, ~}
+#+end_example
+
+Workaround observed 2026-09-18: removing the =public= role from
+the request let the directory through.
 
 ** TODO =allowed-values= must not fail the parent list     :backend:bug:mvp:
 :PROPERTIES:
@@ -2424,10 +2785,6 @@ and add a =(signals error)= compile test to =tests/sortable-tests.lisp=
 
 Plan: [[file:~/workbench/target-non-sortable-plan.org][target-non-sortable-plan.org]]. Superseded by "Joined-column
 sort on base types" below when that lands.
-** TODO Password field should include confirmation field      :frontend:mvp:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:END:
 ** TODO Restrict user names (lowercase, alphanumeric, dash)  :mvp:bug:model:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -2519,6 +2876,49 @@ If no model is selected when uploading an image, the error is cryptic.
 Instead of "Model is required" or something like that, we get:
 "Invalid value type for field :IMAGES :MODEL. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-f02]"
 Model Bank demo polish.
+
+** DONE =:in= / =:not-in= filters reject list values (validation gate) :backend:valdn:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:COMPLETED: [2026-09-21 Sun]
+:END:
+An =:in= filter whose VALUE is a list 400s before any SQL runs:
+=valid-filter= (backend.lisp) hands the whole value to
+=value-type-p=, which tests it against the field's /atom/ type. So
+=/api/list?type=todos&filters=[["tags","name","in",
+["chores","errands"]]]= fails with "Expected a value of type
+:TEXT" even though =add-where-clause= already builds
+=in ($1, $2)= placeholders and Phase A join-pushdown handles the
+joined table. It works today only by accident when the field
+itself is =:type :list= (=listp= test passes any list), e.g.
+=[["users","roles","in",[...]]]= — the case the predicate suite
+already asserts.
+
+Fix in =valid-filter=: for =:in= / =:not-in=, accept a /non-empty/
+list whose every element satisfies =value-type-p= (an empty list
+would render =in ()= — invalid SQL; keep that a 400). Mirror the
+same special case in =filter-p= (predicates.lisp) so the
+predicate and the validator cannot drift.
+
+Scope note: =add-where-clause= calls =(db-value ...)= on the
+whole list and flattens the result into bind params. Text fields
+pass through unchanged; numeric fields would feed the list to
+=parse-number= — map =db-value= element-wise in the =:in= branch,
+or scope the fix to text fields and document the gap.
+
+Consumer: "Clickable list-value chips" (above) — unlocks has-any
+multi-select chips. Donnie approved =:in= multi-select 2026-09-21;
+implemented as Step 0a of
+[[file:~/workbench/clickable-checkbox-chips-plan.org][clickable-checkbox-chips-plan.org]]
+(also fix the downstream Phase A 42P10 there, Step 0b — this item
+alone does not ship chips).
+
+DONE 2026-09-21 as Step 0a of the chips item (see its summary):
+shared =filter-value-type-p= in predicates.lisp behind both
+=filter-p= and =valid-filter=, split error message, element-wise
+=db-value= in =add-where-clause=, =docs/rest.md= =:in= line,
+predicate + backend test extensions. =:not-in= became legal at
+the validation layer with no UI (plan out-of-scope).
 
 ** TODO 30-second demo video                                      :docs:mvp:
 :PROPERTIES:
@@ -2646,6 +3046,15 @@ recreate publishes 31303 (k3d cannot add =-p= live) — the probe
 logic is the same verbatim copy already proven in jina-kube.
 
 * MVP Backlog
+** DONE Sign in as guest                   :frontend:backend:compiler:model:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:COMPLETED: [2026-09-07 Sun]
+:END:
+Implemented as part of =:api-roles= (2026-09-07): frontend
+auto-guest + "Continue as guest" button in =App.tsx=, driven by
+=:guest-allowed= on =/api/public-info=; see the summary on that
+item.
 ** TODO Migrate =*.sinistercode.com= from GlobeSSL to Let's Encrypt :scripts:tls:maintenance:
 :PROPERTIES:
 :CREATED: [2026-09-13 Sun]
@@ -2994,15 +3403,6 @@ unused.
 :END:
 Create an app that allows you to upload Markdown and Org-Mode files, and that allows you to search, browse, render them as HTML, and download them.
 
-** DONE Sign in as guest                   :frontend:backend:compiler:model:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:COMPLETED: [2026-09-07 Sun]
-:END:
-Implemented as part of =:api-roles= (2026-09-07): frontend
-auto-guest + "Continue as guest" button in =App.tsx=, driven by
-=:guest-allowed= on =/api/public-info=; see the summary on that
-item.
 ** TODO Update stale AGENT.md reference to ~/.debug/deployment-work.md :docs:maintenance:
 :PROPERTIES:
 :CREATED: [2026-09-05 Sat]
@@ -3112,6 +3512,36 @@ Needs:
 - Backend enforcement stays in the hook (the =:generate-model=
   in-hook check is the existing pattern); the disabled UI is UX,
   not security
+** TODO Roles column in list views of user-defined types :backend:model:frontend:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:END:
+User-defined types (e.g. books =:authors=) show a Roles column in
+the list view even with =:list-form (:fields t)=. The column is not
+model-declared: =fe-fields= (backend.lisp) synthesizes a =:roles=
+checkbox-list field for every non-base, non-=:suppress-roles= type,
+and its =non-base-roles-field= clause forces it into every form —
+even a form whose =:fields= list doesn't name =:roles=. It's admin
+plumbing on ordinary app screens.
+
+Fix in the backend, not the frontend: the schema stays
+authoritative (the frontend hard-codes no field lists), and
+=/api/list= is a first-class surface for API / marketplace
+consumers.
+
+- =show-roles-p= already takes FORM and ignores it; make it return
+  nil for =:list-form= unless =:roles= is explicitly in that form's
+  =:fields= list (symmetry with base =:users=, which lists =:roles=
+  by name).
+- *Keep =:roles= values in the record payload* (=add-roles-to-view=
+  for non-list forms, or ungated). The inline edit form populates
+  from the list record; stripping values there makes a plain edit
+  save clear the record's resource roles (=update-roles='s
+  otherwise branch diffs against the submitted list — the D12
+  reattach trap's cousin).
+- Decide separately whether the *add* form should also drop the
+  Roles palette (a new record has no resource yet; hard to pick
+  roles for a row that doesn't exist).
 ** TODO Rating privacy and write permissions           :backend:model:
 :PROPERTIES:
 :CREATED: [2026-09-02 Wed]
@@ -3152,7 +3582,7 @@ resource-role propagation, not a decision.
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
-*** TODO Single-statement =ON CONFLICT= upserts
+** TODO Single-statement =ON CONFLICT= upserts
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
@@ -3400,6 +3830,34 @@ Traps (do not close this door in 08b/09):
 Depends on 08b's mapper being callable without assuming
 =GROUP BY=.
 
+** TODO =:searchable= on M2M list fields (search through join tables) :backend:compiler:frontend:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:END:
+Improvement to "Clickable list-value chips" (MVP Now): teach
+free-text =:search= to match through join tables, so typing
+"chores" in the todos search box also finds todos tagged
+=chores=. Today =:searchable t= is compile-rejected on
+=:type :list= fields (=compile-field= requires =:column t=,
+=:type :text=, no =:target=; =collect-searchable-fields= only
+gathers base column names).
+
+Engine work: relax the compile rule for M2M list fields;
+=phase-a-search-clause= gains an =EXISTS= subquery arm per
+searchable list field (match when /any/ joined value ILIKEs the
+term) instead of the flat OR-group over base columns; test
+suites + =model-reference.md= updates.
+
+Lower priority than the chips: exact-match chips are the better
+tag UX, and once they exist this only adds fuzzy substring
+matching on top. Value rises for large tag vocabularies where
+clicking is impractical.
+
+** TODO Generate operating manual for site from model             :compiler:
+:PROPERTIES:
+:CREATED:  [2026-09-19 Sat]
+:END:
+Data UI creates a web site from a model, and deploys the web site, even including a domain name and TLS. However, that web site doesn't include instructions. Data UI should also compile instructions for using the web site. Those instructions, and other information about the web site should be available via some kind of help menu.
 * Scratch
 * Conf
 #+begin_src org

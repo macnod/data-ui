@@ -5,6 +5,9 @@
 # Rendered from tests/init-template.sql by scripts/data-ui
 /tests/init.sql
 
+# VIP-deployed models (FR-9: never in git history)
+/models/local/
+
 # Emacs
 *~
 \#*\#

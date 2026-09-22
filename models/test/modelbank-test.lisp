@@ -154,4 +154,12 @@
            :column t))
        :list-form (:fields t)
        :update-form (:fields t)
-       :add-form (:fields t))))
+       :add-form (:fields t))
+     ;; Petting-zoo D1 overlays: guest reads the built-in account /
+     ;; role / permission lists (tier identity stays visible; :settings
+     ;; stays structurally unreachable — guest is never granted the
+     ;; settings role). add-type-roles only inserts missing resources,
+     ;; so these must be present before the profile's first set-model.
+     :users (:type-roles ("logged-in" "public" "user-creator"))
+     :roles (:type-roles ("logged-in" "public" "role-creator"))
+     :permissions (:type-roles ("logged-in" "public" "permission-creator"))))

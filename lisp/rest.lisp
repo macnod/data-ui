@@ -1269,12 +1269,15 @@ GET /api/types"
   ":public: Unauthenticated endpoint for non-sensitive app metadata.
 Returns the model title and whether the model allows passwordless
 guest login (the login screen uses :guest-allowed to offer /
-auto-run the guest path without needing a token).
+auto-run the guest path without needing a token), plus :guest-auto
+(FR-6: whether the frontend may auto-login; nil keeps the login
+page as the first screen).
 
 GET /api/public-info"
   (render-output
     (list :title (getf *top-level-settings* :title)
-      :guest-allowed (model-guest-allowed))))
+      :guest-allowed (model-guest-allowed)
+      :guest-auto (model-guest-auto))))
 
 (h:define-easy-handler (rest-info :uri "/api/info" :default-request-type :get)
   ()

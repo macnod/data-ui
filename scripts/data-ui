@@ -23,8 +23,15 @@ TIMEOUT=60
 SLEEP_INTERVAL=1
 SLEEP_MAX=10
 
-HOST_STATE_DIR="${HOME}/.local/state/data-ui-host"
-SNAPSHOT_DIR="${HOME}/.local/state/data-ui-snapshots"
+# D15: one env-overridable state root for all growing host state
+# (profiles, snapshots, deploy). /data as a host convention is product
+# precedent (apply_manifests hardcodes /data/k8s/data-ui/...); the
+# override keeps other hosts possible. Every context that touches this
+# state (units, interactive shells, the reset script) must agree — a
+# mismatch silently splits state.
+DATA_UI_STATE="${DATA_UI_STATE:-/data/data-ui}"
+HOST_STATE_DIR="$DATA_UI_STATE/profiles"
+SNAPSHOT_DIR="$DATA_UI_STATE/snapshots"
 
 function profile_dir {
     echo "${HOST_STATE_DIR}/${1}"
@@ -60,9 +67,11 @@ Commands:
 repl [profile]
     Starts a Common Lisp REPL (using Roswell) that loads the test file at
     \$TEST_FILE, but doesn't run the tests. You can connect to the REPL with a
-    client like Slime at the reported Swank port. With [profile], loads
-    ~/.local/state/data-ui-host/<profile>/profile.env (complete partition) and
-    auto set-model when MODEL_NAME is set.
+    client like Slime at the reported Swank port. Dev verb (throwaway
+    5444 database) — demo profiles run under systemd units via the
+    e-demo / demo verbs. With [profile], loads the profile's
+    profile.env (complete partition) and auto set-model when MODEL_NAME
+    is set.
 
 db [profile]
     Start the PostgreSQL database for the profile (or dev) and connect to it;
@@ -72,38 +81,67 @@ psql [profile]
     Connect to an already-running PostgreSQL for the profile (or dev). Does not
     start or stop the database.
 
-create-profile <model> [profile]
-    Create a host profile for a top-level model (models/<model>.lisp). Profile
-    name defaults to the model name. Fails if the profile already exists (no
-    --force). Allocates free HTTP/Swank/DB ports, generates secrets, prints the
-    admin password, and writes profile.env (mode 600). Does not start Postgres
-    or the REPL.
+e-demo start <profile> [--from <snapshot>]
+e-demo stop <profile>
+e-demo reset [profile...]
+    Lifecycle verbs for the nightly-reset demo class (todos, books).
+    "e-demo" = ephemeral: the *data* is disposable, the process is
+    permanent. start = preflight (app port only) → vacuum check →
+    compose up → restore stg-<profile>-golden into a vacuum (degrade
+    to empty start when absent) → stamp DEMO_CLASS → systemctl enable
+    --now dataui@<profile>. stop is the shared class-blind teardown
+    (refreshes stg-<profile>-last before tearing down). reset = the
+    nightly golden reset on demand: no args = every enabled e-demo
+    (dataui-reset.service; blocks until done); explicit profiles =
+    the grungy-day path, any class. reset reinstalls the ops reset
+    script first when the installed copy is stale.
 
-delete-profile <profile>
-    Delete a host profile: stops its Docker compose project with volumes and
-    removes the profile directory. Refuses if the profile's HTTP or DB port is
-    listening (exit the REPL first). Asks to type the profile name unless
-    FORCE=1. Snapshots and deploy state are left alone.
+demo start <profile> [--from <snapshot>]
+demo stop <profile>
+demo reset <profile> [...]
+    Same verbs for the no-reset class (modelbank). Bare start resumes
+    from stg-<profile>-last (the state at the last deliberate pause);
+    the golden stays manual-only. stop is the same teardown as e-demo.
+    reset is explicit-only (demo profiles are never in the nightly
+    set): 'demo reset modelbank' is the grungy-day golden restore.
 
-list-profiles
-    List host profiles with model, ports, and whether the instance is running
-    (HTTP port listening).
+profile create <model> [profile]
+        delete <profile>
+        list
+        expose <profile>
+        unexpose <profile>
+    Manage host profiles for locally-run instances.
 
-expose-profile <profile>
-    Make a locally-run host profile reachable from the outside through the
-    existing HAProxy TLS front door:
+    create: host profile for a top-level model (models/<model>.lisp);
+    profile name defaults to the model name. Fails if the profile already
+    exists (no --force). Allocates free HTTP/Swank/DB ports, generates
+    secrets, prints the admin password, and writes profile.env (mode 600).
+    Does not start Postgres or the REPL.
+
+    delete: stops the profile's Docker compose project with volumes and
+    removes the profile directory. Refuses if the profile's HTTP or DB
+    port is listening (exit the REPL first). Asks to type the profile
+    name unless FORCE=1. Snapshots and deploy state are left alone.
+
+    list: host profiles with model, ports, and whether the instance is
+    running (HTTP port listening), plus the demo class (e-demo | demo;
+    blank = never started) and the exposed hostname (blank = not
+    exposed).
+
+    expose: make a locally-run host profile reachable from the outside
+    through the existing HAProxy TLS front door:
     https://<model :domain> -> 127.0.0.1:<HTTP_PORT>. Primary profiles only
-    (profile name == model name). Requires sudo and must run on \$DEPLOY_HOST
-    (default evo-x2), from a checkout containing models/<model>.lisp (and ros).
-    TLS is covered by the existing *.demo.data-ui.com wildcard. Refuses if the
-    domain is claimed by a deployed instance: 'delete' it first. Warns (does not
-    fail) if the profile is not listening yet.
+    (profile name == model name). Requires sudo and must run on
+    \$DEPLOY_HOST (default evo-x2), from a checkout containing
+    models/<model>.lisp (and ros). TLS is covered by the existing
+    *.demo.data-ui.com wildcard. Refuses if the domain is claimed by a
+    deployed instance: 'delete' it first. Warns (does not fail) if the
+    profile is not listening yet.
 
-unexpose-profile <profile>
-    Remove a profile's HAProxy exposure (backend file and map entry).
-    Idempotent: prints 'not exposed' and exits 0 if there is nothing to remove.
-    Requires sudo and must run on \$DEPLOY_HOST. 'delete-profile' does this
-    cleanup automatically.
+    unexpose: remove a profile's HAProxy exposure (backend file and map
+    entry). Idempotent: prints 'not exposed' and exits 0 if there is
+    nothing to remove. Requires sudo and must run on \$DEPLOY_HOST.
+    'profile delete' does this cleanup automatically.
 
 tests
     Runs all the tests and reports success or failure.
@@ -144,24 +182,42 @@ traffic
     connection rate, request rate) and flags clients near or over the limits.
     Requires sudo.
 
-snapshot list
-         save [name]
-         restore [name]
-         drop [name]
-    Save or restore the database for model switching. If [name] is omitted,
-    defaults to the currently-loaded model name (e.g. 'modelbank'). Use a suffix
-    for multiple snapshots of the same model: modelbank-1, modelbank-2, etc.
-    Snapshot names resolve a host profile when
-    ~/.local/state/data-ui-host/<name>/profile.env exists (suffix strip falls
-    back to the profile prefix). Snapshots live in
-    ~/.local/state/data-ui-snapshots/.
-    Dump and restore use the server container's own pg_dump/pg_restore, so
-    they work regardless of the host's PostgreSQL client version. Restore
-    takes a safety snapshot of the current database first and rolls back
-    to it if the restore fails; the dump is restored in a single
+snapshot save <name> <src-address>
+         restore <name> <dst-address>
+         list
+         drop <name>
+         migrate
+    Save or restore a snapshot between explicit environments. Every
+    address is <qualifier>:<name>, both tokens mandatory — no
+    defaults, no unqualified fallback:
+      dev:<model>   the built-in dev environment (5444 REPL),
+                    asserting the loaded model: dev:books
+      stg:<profile> a host profile: stg:books
+    The second token is the SOURCE on save, the DESTINATION on
+    restore — same position, same vocabulary, role fixed by the verb.
+    Snapshots live in the shared pool /data/data-ui/snapshots/
+    (DATA_UI_STATE) and carry a .meta manifest (model,
+    source-address, timestamp, model-version best-effort); restore
+    refuses a model mismatch (never FORCE-able) and re-stamps the
+    destination's own admin password (auth rows travel with the
+    dump; the dest's ADMIN_PASSWORD does not, so restore writes the
+    dest's hash back — dev: admin-password-1, stg: the profile.env
+    value) and prints a notice on a cross-environment restore.
+    Dump and restore use the server container's own pg_dump/pg_restore,
+    so they work regardless of the host's PostgreSQL client version.
+    Restore takes a safety snapshot of the current database first
+    (slot <dest>-prerestore, with its own .meta) and rolls back to it
+    if the restore fails; the dump is restored in a single
     transaction. Snapshots include the files tree (DOCUMENT_ROOT) as
-    <name>.files.tar.gz when present; restore swaps it back in after the
-    database.
+    <name>.files.tar.gz when present — packed under a canonical
+    files/ top-level entry, so tars are portable across environments
+    and old tars restore retroactively. Restore swaps it back in
+    after the database.
+    migrate is a one-time maintenance verb (idempotent): renames
+    legacy profile-keyed slots to stg-<p>-* and stubs their .meta.
+    FORCE=1 skips confirmations and is the only escape for
+    'save' + unreachable dev: /api/info; it never overrides a
+    model mismatch, and restore-unreachable skips need no FORCE.
 
 help
     Displays this help text.
@@ -169,7 +225,9 @@ EOF
 }
 
 function die {
-    echo "ERROR: $1" >&2
+    # $* (space-joined, one line) so multi-arg parse errors keep their
+    # legal-shapes line on screen; matching the ops script's die.
+    echo "ERROR: $*" >&2
     exit 1
 }
 
@@ -186,30 +244,55 @@ function list_profiles {
     done
 }
 
+function profile_demo_class {
+    # Class stamp from profile.env (D14): e-demo | demo. Empty when the
+    # profile has never been started (the start verb owns the stamp).
+    grep -oP '^DEMO_CLASS=\K.*' "$(profile_env_path "$1")"
+}
+
+function profile_exposed_host {
+    # Exposed hostname (leading labels; .demo.data-ui.com stripped)
+    # from the map line owned by the profile's backend; empty when not
+    # exposed. Backend-keyed like profile_is_exposed, so a :domain
+    # change cannot strand the old host here, and the map is the
+    # router's truth — a bare conf.d file routes nothing. The map is
+    # mode 644; reading it needs no sudo.
+    [[ -f "$HAPROXY_MAP" ]] || return 0
+    local domain
+    domain=$(awk -v b="$(profile_backend_name "$1")" \
+                 '$2 == b { print $1; exit }' "$HAPROXY_MAP")
+    [[ -n "$domain" ]] || return 0
+    echo "${domain%.demo.data-ui.com}"
+}
+
 function show_profiles {
-    local name env model http swank db status
+    local name env model http swank db status class host
     local names
     names=$(list_profiles)
     if [[ -z "$names" ]]; then
         echo "No host profiles in ${HOST_STATE_DIR}"
         return
     fi
-    printf '%-12s %-12s %-5s %-6s %-5s %s\n' \
-           "PROFILE" "MODEL" "HTTP" "SWANK" "DB" "STATUS"
+    haproxy_env
+    printf '%-12s %-12s %-7s %-12s %-5s %-6s %-5s %s\n' \
+           "PROFILE" "MODEL" "CLASS" "HOST" "HTTP" "SWANK" "DB" "STATUS"
     for name in $names; do
         env="$(profile_env_path "$name")"
         model=$(grep -oP '^MODEL_NAME=\K.*' "$env")
+        class=$(profile_demo_class "$name")
         http=$(grep -oP '^HTTP_PORT=\K\d+' "$env")
         swank=$(grep -oP '^SWANK_PORT=\K\d+' "$env")
         db=$(grep -oP '^DB_PORT=\K\d+' "$env")
+        host=$(profile_exposed_host "$name")
         if ss -ltn 2>/dev/null | awk '{print $4}' \
                | grep -qE "[:.]${http}\$"; then
             status="running"
         else
             status="stopped"
         fi
-        printf '%-12s %-12s %-5s %-6s %-5s %s\n' \
-               "$name" "$model" "$http" "$swank" "$db" "$status"
+        printf '%-12s %-12s %-7s %-12s %-5s %-6s %-5s %s\n' \
+               "$name" "$model" "$class" "$host" \
+               "$http" "$swank" "$db" "$status"
     done
 }
 
@@ -278,6 +361,14 @@ function generate_profile_secrets {
 
 function write_profile_env {
     local dir="$1"
+    # D16: PGDATA_DIR / PG_UID / PG_GID are the unit user's ids
+    # (macnod's), never $(id -u) of whoever ran profile create — a
+    # sudo or agent caller would stamp the wrong owner. Without the
+    # stamps compose substitutes empty and docker creates the bind
+    # source as root, the exact failure this design prevents.
+    local pg_uid pg_gid
+    pg_uid=$(id -u macnod)
+    pg_gid=$(id -g macnod)
     cat > "$(profile_env_path "$PROFILE_NAME")" <<ENV
 HTTP_PORT=${HTTP_PORT}
 SWANK_PORT=${SWANK_PORT}
@@ -287,10 +378,14 @@ DB_NAME=${DB_NAME}
 DB_USER=${DB_USER}
 DB_PASSWORD=${DB_PASSWORD}
 DB_CONTAINER=pg-data-ui-${PROFILE_NAME}
-DB_SERVICE=pg-data-ui-repl
-DB_DOCKER_COMPOSE=tests/docker-compose-pg-data-ui-repl.yaml
+DB_SERVICE=pg-data-ui
+DB_DOCKER_COMPOSE=ops/pg-profile.yaml
+PGDATA_DIR=${dir}/pgdata
+PG_UID=${pg_uid}
+PG_GID=${pg_gid}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
 JWT_SECRET=${JWT_SECRET}
+PROTECTED_USERS=demos
 DOCUMENT_ROOT=${dir}/files
 FS_TEMP_DIRECTORY=${dir}/temp
 LOG_FILE=${dir}/repl.log
@@ -314,7 +409,7 @@ function create_profile {
         die "No top-level model '${MODEL_NAME}' (looked for $(model_file_path "$MODEL_NAME"))"
     fi
     if [[ -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
-        die "Profile '${PROFILE_NAME}' already exists. Use '$SCRIPT_NAME delete-profile ${PROFILE_NAME}' first."
+        die "Profile '${PROFILE_NAME}' already exists. Use '$SCRIPT_NAME profile delete ${PROFILE_NAME}' first."
     fi
     allocate_profile_ports
     generate_profile_secrets
@@ -334,12 +429,14 @@ function create_profile {
     echo "  DB container: pg-data-ui-${PROFILE_NAME}"
     echo "  Admin:      admin / ${ADMIN_PASSWORD}"
     echo
-    echo "Next: $SCRIPT_NAME repl ${PROFILE_NAME}"
+    echo "Next: edit $(profile_env_path "$PROFILE_NAME") (LOG_SEVERITY=INFO),"
+    echo "then: $SCRIPT_NAME e-demo start ${PROFILE_NAME}   (nightly-reset class)"
+    echo "  or: $SCRIPT_NAME demo start ${PROFILE_NAME}    (no-reset class)"
 }
 
 function delete_profile {
     PROFILE_NAME="$1"
-    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME delete-profile <profile>"
+    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME profile delete <profile>"
     valid_profile_name "$PROFILE_NAME"
     if [[ ! -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
         local available
@@ -351,7 +448,7 @@ function delete_profile {
     local port
     for port in "$HTTP_PORT" "$DB_PORT"; do
         if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
-            die "Profile '${PROFILE_NAME}' appears to be running (port ${port} in use). Exit the REPL first, then retry."
+            die "Profile '${PROFILE_NAME}' appears to be running (port ${port} in use). Run '$SCRIPT_NAME e-demo stop ${PROFILE_NAME}' (or 'demo stop') first, then retry."
         fi
     done
     if [[ -z "$FORCE" ]]; then
@@ -365,7 +462,7 @@ function delete_profile {
     haproxy_env
     if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
         echo "HAProxy cleanup skipped (not on ${DEPLOY_HOST})."
-        echo "If '${PROFILE_NAME}' is exposed, run '$SCRIPT_NAME unexpose-profile ${PROFILE_NAME}' on ${DEPLOY_HOST}."
+        echo "If '${PROFILE_NAME}' is exposed, run '$SCRIPT_NAME profile unexpose ${PROFILE_NAME}' on ${DEPLOY_HOST}."
     elif profile_is_exposed "$PROFILE_NAME"; then
         remove_profile_exposure "$PROFILE_NAME"
         haproxy_validate_and_reload "" tolerant
@@ -381,6 +478,32 @@ function delete_profile {
     local f
     for f in "${SNAPSHOT_DIR}/${PROFILE_NAME}-"*.dump; do
         [[ -f "$f" ]] && snapshots+=("$(basename "$f")")
+    done
+    # Snapshot 2: address-keyed slots (stg-<p>-golden etc.) match
+    # neither selector above. Union glob AND .meta scan, not one or
+    # the other: the glob catches stubless slots (a partial
+    # migration), and scanning .meta for source-address=stg:<p>
+    # catches hand-named saves (books-1) the glob silently drops.
+    # Dev-keyed slots (dev-<model>-prerestore) are dev state; they
+    # survive a profile delete.
+    local seen m base
+    declare -A seen=()
+    for f in "${SNAPSHOT_DIR}/stg-${PROFILE_NAME}-"*.dump; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        [[ -n "${seen[$base]:-}" ]] && continue
+        seen[$base]=t
+        snapshots+=("$base.dump")
+    done
+    for m in "$SNAPSHOT_DIR"/*.meta; do
+        [[ -f "$m" ]] || continue
+        [[ "$(sed -n 's/^source-address=//p' "$m" | tail -n1)" \
+           == "stg:${PROFILE_NAME}" ]] || continue
+        base="$(basename "$m" .meta)"
+        [[ -f "${SNAPSHOT_DIR}/${base}.dump" ]] || continue
+        [[ -n "${seen[$base]:-}" ]] && continue
+        seen[$base]=t
+        snapshots+=("$base.dump")
     done
     if (( ${#snapshots[@]} > 0 )); then
         echo "Leaving snapshot(s): ${snapshots[*]}"
@@ -454,7 +577,7 @@ function profile_is_exposed {
 
 function expose_profile {
     PROFILE_NAME="$1"
-    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME expose-profile <profile>"
+    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME profile expose <profile>"
     valid_profile_name "$PROFILE_NAME"
     if [[ ! -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
         local available
@@ -462,7 +585,7 @@ function expose_profile {
         die "Unknown profile '${PROFILE_NAME}'. Available: ${available:-"(none)"}"
     fi
     haproxy_env
-    require_haproxy_host "expose-profile"
+    require_haproxy_host "profile expose"
     local model_name
     model_name=$(grep -oP '^MODEL_NAME=\K.*' "$(profile_env_path "$PROFILE_NAME")")
     if [[ "$PROFILE_NAME" != "$model_name" ]]; then
@@ -482,7 +605,7 @@ function expose_profile {
         if [[ -n "$owner" && "$owner" != "$backend" ]]; then
             if [[ "$owner" == dataui-profile-* ]]; then
                 local other="${owner#dataui-profile-}"
-                die "Domain ${domain} is claimed by host profile '${other}'; run '$SCRIPT_NAME unexpose-profile ${other}' first."
+                die "Domain ${domain} is claimed by host profile '${other}'; run '$SCRIPT_NAME profile unexpose ${other}' first."
             fi
             die "Domain ${domain} is claimed by deployed instance backend '${owner}'; run '$SCRIPT_NAME delete' on that instance first."
         fi
@@ -509,14 +632,14 @@ CFG
     haproxy_validate_and_reload "$need_restart"
     if ! ss -ltn 2>/dev/null | awk '{print $4}' \
            | grep -qE "[:.]${http_port}\$"; then
-        echo "WARNING: profile '${PROFILE_NAME}' is not listening on ${http_port} yet; start it with '$SCRIPT_NAME repl ${PROFILE_NAME}'." >&2
+        echo "WARNING: profile '${PROFILE_NAME}' is not listening on ${http_port} yet; start it with '$SCRIPT_NAME e-demo start ${PROFILE_NAME}' (or 'demo start')." >&2
     fi
     echo "Exposed '${PROFILE_NAME}': https://${domain} -> 127.0.0.1:${http_port}"
 }
 
 function unexpose_profile {
     PROFILE_NAME="$1"
-    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME unexpose-profile <profile>"
+    [[ -n "$PROFILE_NAME" ]] || die "Usage: $SCRIPT_NAME profile unexpose <profile>"
     valid_profile_name "$PROFILE_NAME"
     if [[ ! -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
         local available
@@ -524,7 +647,7 @@ function unexpose_profile {
         die "Unknown profile '${PROFILE_NAME}'. Available: ${available:-"(none)"}"
     fi
     haproxy_env
-    require_haproxy_host "unexpose-profile"
+    require_haproxy_host "profile unexpose"
     if ! profile_is_exposed "$PROFILE_NAME"; then
         echo "Profile '${PROFILE_NAME}' is not exposed."
         return 0
@@ -556,6 +679,7 @@ function load_profile {
     required=(
         HTTP_PORT SWANK_PORT SWANK_INTERFACE DB_PORT DB_NAME DB_USER
         DB_PASSWORD DB_CONTAINER DB_SERVICE DB_DOCKER_COMPOSE
+        PGDATA_DIR PG_UID PG_GID
         ADMIN_PASSWORD JWT_SECRET DOCUMENT_ROOT FS_TEMP_DIRECTORY
         LOG_FILE MODEL_NAME
     )
@@ -575,28 +699,298 @@ function load_profile {
     [[ -n "${WEB_DIRECTORY:-}" ]] && export WEB_DIRECTORY
     [[ -n "${LOG_SEVERITY:-}" ]] && export LOG_SEVERITY
     [[ -n "${RUN_TESTS:-}" ]] && export RUN_TESTS
+    # FR-12: accounts only admin may change or delete (besides
+    # admin / guest, which the Lisp protects unconditionally).
+    [[ -n "${PROTECTED_USERS:-}" ]] && export PROTECTED_USERS
+    # D14: how the profile was last started (e-demo | demo). Absent =
+    # not in the nightly set; the start verb owns the stamp.
+    [[ -n "${DEMO_CLASS:-}" ]] && export DEMO_CLASS
 
     export PGPASSWORD="$DB_PASSWORD"
     render_init_sql
 }
 
-function resolve_snapshot_profile {
-    # Resolve env from snapshot name: exact profile, then strip trailing
-    # -<segment> repeatedly; else dev defaults.
+#
+# Snapshot addresses (Snapshot 2)
+#
+# A snapshot is a portable artifact in one shared pool, aimed at an
+# explicit address. Every address is <qualifier>:<name>, mandatory,
+# no unqualified fallback: stg:<profile> is a host profile, dev:<model>
+# is the built-in dev environment (the 5444 REPL) asserting its model.
+# Identity comes from the address, never from the live app.
+#
+
+function valid_snapshot_name {
+    # Same grammar as profile names; the colon is illegal so an
+    # address-shaped token at the name slot is a parse error, not a
+    # minted file. Message says "snapshot name", never "profile name".
     local name="$1"
-    local candidate="$name"
-    while true; do
-        if [[ -f "$(profile_env_path "$candidate")" ]]; then
-            load_profile "$candidate"
-            return
-        fi
-        if [[ "$candidate" != *-* ]]; then
-            break
-        fi
-        candidate="${candidate%-*}"
-    done
-    export_repl_environment
-    render_init_sql
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] \
+        || die "Invalid snapshot name '${name}' (must match ^[A-Za-z0-9][A-Za-z0-9_-]*$)"
+}
+
+function resolve_snapshot_address {
+    # Parse and resolve an explicit <qualifier>:<name> address into the
+    # shell environment (DB_CONTAINER etc.) plus ADDRESS_MODEL (the
+    # asserted model: the dev token, or the profile's MODEL_NAME — a
+    # colon-tail is a PROFILE name, never a model name) and
+    # ADDRESS_QUALIFIER. The referent is validated: dev: requires
+    # models/<model>.lisp, stg: requires profile.env.
+    local raw="$1" role="$2"
+    [[ -n "$raw" ]] \
+        || die "Missing ${role} address. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+    [[ "$raw" != *:* ]] \
+        && die "Invalid ${role} address '${raw}': no qualifier. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+    [[ "$raw" != *:*:* ]] \
+        || die "Invalid ${role} address '${raw}': extra colon. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+    local qualifier="${raw%%:*}" name="${raw#*:}"
+    [[ -n "$qualifier" ]] \
+        || die "Invalid ${role} address '${raw}': empty qualifier. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+    [[ -n "$name" ]] \
+        || die "Invalid ${role} address '${raw}': empty name. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+    # Qualifiers are case-sensitive and resolved through this registry;
+    # it IS the grammar spec (cluster substrates are post-MVP arms).
+    case "$qualifier" in
+        dev)
+            if [[ ! -f "$(model_file_path "$name")" ]]; then
+                die "No top-level model '${name}' for ${role} address dev:${name} (looked for $(model_file_path "$name"))."
+            fi
+            export_repl_environment
+            render_init_sql
+            ADDRESS_MODEL="$name"
+            ;;
+        stg)
+            if [[ ! -f "$(profile_env_path "$name")" ]]; then
+                local available
+                available=$(list_profiles | tr '\n' ' ')
+                die "Unknown profile '${name}' for ${role} address stg:${name}. Available: ${available:-(none)}"
+            fi
+            load_profile "$name"
+            ADDRESS_MODEL="$MODEL_NAME"
+            ;;
+        *)
+            die "Unknown ${role} address qualifier '${qualifier}' in '${raw}'. Known qualifiers: dev, stg."
+            ;;
+    esac
+    ADDRESS_QUALIFIER="$qualifier"
+    ADDRESS_NAME="$name"
+}
+
+function address_slot_prefix {
+    # Destination-address slot key, colon -> dash (stg:books ->
+    # stg-books-golden / stg-books-last / stg-books-prerestore;
+    # dev:books -> dev-books-prerestore).
+    echo "${1/:/-}"
+}
+
+function meta_path {
+    # .meta manifest beside a snapshot pair (may not exist).
+    echo "${SNAPSHOT_DIR}/${1}.meta"
+}
+
+function meta_read {
+    # Read one KEY from a .meta file (parsed, never sourced — the pool
+    # is shared and writable; a sidecar must never reach the shell env).
+    # Empty when absent or key-less.
+    [[ -f "$(meta_path "$1")" ]] || return 0
+    sed -n "s/^${2}=//p" "$(meta_path "$1")" | tail -n1
+}
+
+function confirm_model_via_api {
+    # Positive check only: can never be the source of identity. Prints
+    # the live /api/info model (lowercase keyword) and exits:
+    #   0  answered and matches the expected model
+    #   3  answered with a different model (refuse)
+    #   7  login failed (401 residue — expected after a cross-env
+    #      restore), unreachable (no HTTP response: refused or
+    #      timeout), any other failed check (non-200 status,
+    #      unparseable body) — the check confirmed nothing.
+    # /api/info is never written into .meta.
+    local expected="$1" model
+    model=$(api_info_model)
+    case "$?" in
+        0)
+            if [[ "$model" == "$expected" ]]; then
+                echo confirmed
+                return 0
+            fi
+            echo "mismatch: server reports model '${model}'"
+            return 3
+            ;;
+        1)
+            # /api/info login itself 401s only via the retry below;
+            # reaching here means info failed without the token step.
+            echo "unconfirmed"
+            return 7
+            ;;
+        2)
+            # Token worked but info failed/unparseable.
+            echo "unconfirmed"
+            return 7
+            ;;
+        4)
+            echo "unconfirmed"
+            return 7
+            ;;
+        5)
+            echo "unconfirmed"
+            return 7
+            ;;
+        6)
+            # Login failed with 401: known residue (the DB carries the
+            # source's auth rows while the env keeps the dest
+            # ADMIN_PASSWORD). Treat as check-unconfirmed; the caller
+            # prints the residue note where appropriate.
+            echo "unconfirmed"
+            return 7
+            ;;
+        *)
+            echo "unconfirmed"
+            return 7
+            ;;
+    esac
+}
+
+function api_info_model {
+    # The live model name from /api/info, or an exit status classifying
+    # the failure: 1 = login request failed (unreachable), 2 = token
+    # obtained but /api/info failed, 4 = /api/info unparseable, 5 = no
+    # token (login refused / bad body), 6 = login explicitly 401.
+    # Prints the model name (exit 0) on success. Any HTTP response on
+    # the login path is inspected: a 401 is classified apart from
+    # network failure so the caller can treat the two differently.
+    local login_status token body code
+    login_status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                      "http://${HTTP_HOST}:${HTTP_PORT}/api/login" \
+                      -H 'Content-Type: application/json' \
+                      -d "{\"username\":\"admin\",\"password\":\"${ADMIN_PASSWORD}\"}" \
+                      2>/dev/null) || login_status="000"
+    case "$login_status" in
+        200)
+            token=$(curl -s --max-time 5 \
+                        "http://${HTTP_HOST}:${HTTP_PORT}/api/login" \
+                        -H 'Content-Type: application/json' \
+                        -d "{\"username\":\"admin\",\"password\":\"${ADMIN_PASSWORD}\"}" \
+                | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['result']['access-token'])
+except Exception:
+    sys.exit(1)
+" 2>/dev/null) || token=""
+            [[ -n "$token" ]] || return 5
+            ;;
+        401)
+            return 6
+            ;;
+        000)
+            return 1
+            ;;
+        *)
+            return 5
+            ;;
+    esac
+    body=$(curl -s -w '\n%{http_code}' --max-time 5 \
+               "http://${HTTP_HOST}:${HTTP_PORT}/api/info" \
+               -H "Authorization: Bearer ${token}" 2>/dev/null) || return 2
+    code="${body##*$'\n'}"
+    [[ "$code" == 200 ]] || return 2
+    printf '%s' "${body%$'\n'*}" \
+        | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d['result']['name'])
+except Exception:
+    sys.exit(1)
+" 2>/dev/null || return 4
+}
+
+function save_unreachable_policy {
+    # Verb-split unreachable policy (review round 3/5), keyed on the
+    # operation's address qualifier. SKIP means skip the /api/info
+    # confirm ONLY, then proceed; REFUSE aborts (no dump taken).
+    # save + unreachable dev: refuses (cannot check "what am I
+    # dumping"; the DB may hold anything) unless FORCE=1.
+    # save + unreachable stg: skips quietly — identity is
+    # profile.env, a file already checked. One log-shaped line, never
+    # fault-shaped (verb_stop's p-last refresh shares this branch and
+    # the pause must not look like a fault).
+    local qualifier="$1"
+    case "$qualifier" in
+        dev)
+            if [[ -z "$FORCE" ]]; then
+                die "Cannot confirm what the dev database holds (/api/info unreachable; start the dev REPL first), and 'snapshot save' refuses an unchecked dump. FORCE=1 overrides this check only (never a model mismatch)."
+            fi
+            echo "note: /api/info unreachable; FORCE=1 set — saving dev: dump unverified" >&2
+            ;;
+        stg)
+            echo "note: /api/info unreachable; identity taken from profile.env (already checked) — saving anyway"
+            ;;
+    esac
+}
+
+# Save-path 401 residue (Snapshot 2), now historical: /api/login
+# could 401 with the app up — the DB carried the SOURCE's auth rows
+# after a cross-env restore while the env kept the dest
+# ADMIN_PASSWORD. Restore re-stamps the dest password now, so the
+# confirm logs in positively whenever the app is reachable. Kept as
+# a note because the exit-6 branch in api_info_model documents the
+# same residue shape.
+function confirm_model_for_save {
+    # SAVE-side confirm. Dev asserts the loaded model, so a mismatch or
+    # an unreachable server matters; stg identity is the profile env.
+    local qualifier="$1" expected="$2"
+    local verdict
+    verdict=$(confirm_model_via_api "$expected")
+    case "$?" in
+        0)
+            ;;
+        3)
+            # A positive mismatch is a refused save even under FORCE=1:
+            # FORCE only buys the unreachable-dev escape.
+            die "Refusing save: ${verdict}, but the address asserts '${expected}'. A model mismatch is never overridable (FORCE does not apply)."
+            ;;
+        7)
+            if [[ "$verdict" == "mismatch:"* ]]; then
+                : # unreachable never lands here
+            fi
+            save_unreachable_policy "$qualifier"
+            ;;
+    esac
+}
+
+function confirm_model_for_restore {
+    # RESTORE-side confirm. "What am I overwriting" never reads the DB:
+    # identity is .meta vs the address, both static, checked with the
+    # app down, and the prerestore slot is the net. Unreachable (either
+    # qualifier) skips the confirm with one quiet line — the journal
+    # then shows which branch ran. The 401 residue note rides the save
+    # path only (it describes the state entered earlier, not this
+    # check).
+    local expected="$1"
+    local verdict
+    verdict=$(confirm_model_via_api "$expected")
+    case "$?" in
+        0)
+            ;;
+        3)
+            die "Refusing restore: ${verdict}, but the destination address asserts '${expected}'. A model mismatch is never overridable (FORCE does not apply)."
+            ;;
+        7)
+            echo "note: /api/info unreachable; proceeding (identity is .meta vs the address, both static)"
+            ;;
+    esac
+}
+
+function require_postgres_running {
+    # The die hint keys on the destination qualifier (Snapshot 2):
+    # dev: is the natural restore shape (REPL down, Postgres up) and
+    # "e-demo start" is wrong advice there.
+    compose exec -T "$DB_SERVICE" pg_isready -U "$DB_USER" &>/dev/null \
+        || die "PostgreSQL (${DB_SERVICE}) is not reachable." \
+               "Start it with '$SCRIPT_NAME db' (or 'repl') first."
 }
 
 function preflight_ports {
@@ -832,12 +1226,16 @@ function export_docs_environment {
 
 function get_model_field {
     # top-level-model-field takes just the basename without extension.
+    # MODEL_FILE (FR-9) overrides the canonical models/<name>.lisp path;
+    # VIP deploys pass models/local/<name>.lisp so facts come from the
+    # local model without it being committed.
+    local model_path="${MODEL_FILE:-models/${MODEL_NAME}.lisp}"
     local model_base
-    model_base=$(basename "models/${MODEL_NAME}.lisp" .lisp)
+    model_base=$(basename "$model_path" .lisp)
     ros run -- --disable-debugger \
         --load "lisp/deployment.lisp" \
         --eval '(in-package :deployment)' \
-        --eval "(top-level-model-field \"${FIELD_NAME}\" \"${model_base}\")" \
+        --eval "(top-level-model-field \"${FIELD_NAME}\" \"${model_base}\" :model-path \"${model_path}\")" \
         --quit
 }
 
@@ -868,7 +1266,7 @@ function export_deploy_environment {
     # Machine-local deployment state (rendered manifests, ports.lock,
     # per-instance secrets). Deliberately outside the repository: it is
     # derived output and cluster-state cache, not source.
-    export DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-$HOME/.local/state/data-ui-deploy}"
+    export DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-$DATA_UI_STATE/deploy}"
     export K3D_CLUSTER="${K3D_CLUSTER:-evo-x2}"
     export IMAGE_REPO="macnod/data-ui"
     export TEMPLATES_DIR="deploy/templates"
@@ -899,8 +1297,11 @@ function export_deploy_db_environment {
 }
 
 function compile_model {
+    # MODEL_FILE (FR-9) overrides the canonical path; VIP deploys
+    # compile models/local/<name>.lisp directly, no commit, no copy.
+    local model_file="${MODEL_FILE:-models/${MODEL_NAME}.lisp}"
     echo
-    echo "Compiling model from models/${MODEL_NAME}.lisp..."
+    echo "Compiling model from ${model_file}..."
     # Runs the compilation phase of SET-MODEL (validation, SQL generation,
     # lambda compilation) against a throwaway database, skipping the
     # cluster-facing side effects (CREATE-TABLES, START-WEB-SERVER, etc).
@@ -913,7 +1314,6 @@ function compile_model {
     start_postgres_quietly
     initialize_database_quietly
     local status=0
-    local model_file="models/${MODEL_NAME}.lisp"
     # Pin ASDF to this checkout so the deploy clone compiles its own
     # source rather than whatever other data-ui checkout is registered
     # in local-projects.
@@ -960,6 +1360,13 @@ function gather_deploy_facts {
 }
 
 function create_deploy_tag {
+    # FR-9: a git tag <name>-<version>-<hash> in the public repo names
+    # the deploying VIP's model — a radar trace even though the file is
+    # gitignored. Skip under MODEL_FILE; keep the docker tag.
+    if [[ -n "${MODEL_FILE:-}" ]]; then
+        echo "MODEL_FILE set; skipping git tag (FR-9)."
+        return
+    fi
     if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
         if [[ "$(git rev-parse "${TAG}^{commit}")" != "$(git rev-parse HEAD)" ]]; then
             die "Tag ${TAG} exists but points at a different commit."
@@ -1186,7 +1593,7 @@ function haproxy_bootstrap {
 function haproxy_validate_and_reload {
     # Validate the whole config, then restart (conf.d just enabled) or
     # reload. Dies on validation failure unless the second arg is
-    # "tolerant" (delete-profile only: warn and continue).
+    # "tolerant" (profile delete only: warn and continue).
     local need_restart="$1"
     if sudo haproxy -c -f "$HAPROXY_CFG" -f "$HAPROXY_CONF_D" >/dev/null; then
         if [[ -n "$need_restart" ]]; then
@@ -1222,13 +1629,13 @@ function update_haproxy {
     local need_restart
     need_restart=$(haproxy_bootstrap)
     # One domain, one owner: refuse to hijack a host-profile exposure
-    # (expose-profile backend). Never rewrite the other side's entry.
+    # (profile expose backend). Never rewrite the other side's entry.
     if [[ -f "$HAPROXY_MAP" ]]; then
         local owner=""
         owner=$(awk -v d="$DOMAIN" '$1 == d { print $2; exit }' "$HAPROXY_MAP")
         if [[ "$owner" == dataui-profile-* ]]; then
             local claimed_by="${owner#dataui-profile-}"
-            die "Domain ${DOMAIN} is claimed by host profile '${claimed_by}'; run '$SCRIPT_NAME unexpose-profile ${claimed_by}' first."
+            die "Domain ${DOMAIN} is claimed by host profile '${claimed_by}'; run '$SCRIPT_NAME profile unexpose ${claimed_by}' first."
         fi
     fi
     # Per-instance backend and map entry.
@@ -1281,7 +1688,14 @@ function deploy {
         remote_deploy
         return
     fi
-    [[ -n "$DRY_RUN" ]] || require_clean_tree
+    # MODEL_FILE (FR-9): the local model is untracked by design, so a
+    # clean tree is neither expected nor required; the canonical path
+    # keeps the strict check.
+    if [[ -n "${MODEL_FILE:-}" ]]; then
+        echo "MODEL_FILE set (${MODEL_FILE}); skipping clean-tree check."
+    else
+        [[ -n "$DRY_RUN" ]] || require_clean_tree
+    fi
     compile_model
     gather_deploy_facts
     [[ -n "$DRY_RUN" ]] || create_deploy_tag
@@ -1452,7 +1866,9 @@ function undeploy {
 
 # Detect the currently-loaded model name by querying the running
 # instance's /api/info endpoint. Falls back to "default" if the
-# server is down or unreachable.
+# server is down or unreachable. Retired from snapshot duty by
+# Snapshot 2 (no-arg defaults are gone); retained pending a retire /
+# retain decision — see docs/model-accessors.md.
 function detect_model_name {
     local token
     token=$(curl -s --max-time 3 \
@@ -1502,12 +1918,6 @@ function container_pg_restore {
                    --single-transaction
 }
 
-function require_postgres_running {
-    compose exec -T "$DB_SERVICE" pg_isready -U "$DB_USER" &>/dev/null \
-        || die "PostgreSQL (${DB_SERVICE}) is not reachable." \
-               "Start the instance first: $SCRIPT_NAME repl [profile]"
-}
-
 # Drop and recreate the public schema so a restore starts clean.
 function reset_public_schema {
     compose exec -T "$DB_SERVICE" psql -U "$DB_USER" -d "$DB_NAME" \
@@ -1525,53 +1935,111 @@ function snapshot_files_path {
     echo "${SNAPSHOT_DIR}/${1}.files.tar.gz"
 }
 
-function snapshot_save {
-    local name="${1:-$(detect_model_name)}"
-    local path="${SNAPSHOT_DIR}/${name}.dump"
-    local tmp
-    require_postgres_running
-    mkdir -p "$SNAPSHOT_DIR"
-    # Dump to a temp file first so a partial dump never clobbers an
-    # existing snapshot.
-    tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
-    if ! container_pg_dump > "$tmp"; then
-        rm -f "$tmp"
-        die "pg_dump failed; snapshot '${name}' not saved."
-    fi
-    mv "$tmp" "$path"
-    echo "Saved snapshot '${name}' → ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
-    snapshot_save_files "$name"
+function write_snapshot_meta_atomically {
+    # Stage the .meta; the caller moves it onto the slot name with the
+    # rest of the triple (never a half-written manifest beside a
+    # committed dump). Identity comes from the address plus the model
+    # file — never from /api/info. model-version is best-effort
+    # (get_model_field reads the model file; a ros blip must not fail
+    # a save); its absence is legal.
+    local staged="$1" src_address="$2" model="$3" version
+    {
+        echo "model=${model}"
+        echo "source-address=${src_address}"
+        echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        version=$(MODEL_NAME="$model" model_field version)
+        if [[ -n "$version" && "$version" != "NIL" ]]; then
+            echo "model-version=${version}"
+        fi
+    } > "$staged"
 }
 
-function snapshot_save_files {
-    # Tar DOCUMENT_ROOT beside the dump (same never-clobber discipline:
-    # tar to a temp file, then mv onto the final name). The tar packs
-    # the basename with -C dirname so the restore lands a tree named
-    # like the original. Temp is a sibling of files/, never inside it,
-    # so staging garbage is excluded by construction.
-    local name="$1"
-    local fpath tmp
+function snapshot_save_pair {
+    # Snapshot 2 save wrapper: <name> <src-address>. Owns the
+    # /api/info confirm and the .meta write so internal callers
+    # (verb_stop's p-last refresh) share the CLI path's checks.
+    # Triple-staging (D16 pair rule grown a manifest): dump and .meta
+    # are required, the files tar stages only when DOCUMENT_ROOT
+    # exists; the triple moves onto the slot names when dump + .meta
+    # succeeded (the tar moves too, when staged). A missing files
+    # tree must not fail the save — DB-only snapshots stay legal and
+    # still drop a stale tar (pair-consistency rule unchanged).
+    local name="$1" src_address="$2"
+    local dpath fpath dump_tmp files_tmp meta_tmp
+    valid_snapshot_name "$name"
+    resolve_snapshot_address "$src_address" "source"
+    confirm_model_for_save "$ADDRESS_QUALIFIER" "$ADDRESS_MODEL"
+    dpath="${SNAPSHOT_DIR}/${name}.dump"
     fpath="$(snapshot_files_path "$name")"
-    if [[ ! -d "$DOCUMENT_ROOT" ]]; then
+    require_postgres_running
+    mkdir -p "$SNAPSHOT_DIR"
+    dump_tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    if ! container_pg_dump > "$dump_tmp"; then
+        rm -f "$dump_tmp"
+        die "pg_dump failed; snapshot '${name}' not saved (previous" \
+            "triple intact)."
+    fi
+    meta_tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    if ! write_snapshot_meta_atomically "$meta_tmp" \
+             "$src_address" "$ADDRESS_MODEL"; then
+        rm -f "$dump_tmp" "$meta_tmp"
+        die "could not write .meta; snapshot '${name}' not saved" \
+            "(previous triple intact)."
+    fi
+    files_tmp=""
+    if [[ -d "$DOCUMENT_ROOT" ]]; then
+        files_tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+        # Canonical top-level entry files/ regardless of the source's
+        # basename (dev packs tests/shared-files/, stg packs
+        # profiles/<p>/files/): the tar is portable across
+        # environments; restore renames the single top-level dir to
+        # the destination's DOCUMENT_ROOT basename during the swap.
+        # Straight from the tree (same shape as snapshot_restore's
+        # prerestore staging); no staging copy of DOCUMENT_ROOT.
+        if ! tar -czf "$files_tmp" -C "$(dirname "$DOCUMENT_ROOT")" \
+                  --transform "s|^$(basename "$DOCUMENT_ROOT")|files|" \
+                  "$(basename "$DOCUMENT_ROOT")"; then
+            rm -f "$dump_tmp" "$meta_tmp" "$files_tmp"
+            die "tar failed; snapshot '${name}' not saved (dump staged," \
+                "not moved; previous triple intact)."
+        fi
+    fi
+    mv "$dump_tmp" "$dpath"
+    mv "$meta_tmp" "$(meta_path "$name")"
+    if [[ -n "$files_tmp" ]]; then
+        mv "$files_tmp" "$fpath"
+        echo "Saved snapshot '${name}':"
+        echo "  ${dpath}"
+        echo "  ${fpath}"
+        echo "  $(meta_path "$name")"
+    else
+        # A triple must be internally consistent: a fresh dump beside a
+        # stale tar is the mixed state this helper exists to prevent.
+        if [[ -f "$fpath" ]]; then
+            echo "warning: DOCUMENT_ROOT (${DOCUMENT_ROOT}) missing;" \
+                 "dropping stale files side ${fpath}"
+            rm -f "$fpath"
+        fi
         echo "warning: DOCUMENT_ROOT (${DOCUMENT_ROOT}) missing;" \
              "snapshot '${name}' saved DB only"
-        return
+        echo "Saved snapshot '${name}':"
+        echo "  ${dpath} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
     fi
-    tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
-    if ! tar -czf "$tmp" -C "$(dirname "$DOCUMENT_ROOT")" \
-              "$(basename "$DOCUMENT_ROOT")"; then
-        rm -f "$tmp"
-        die "tar failed; DB snapshot '${name}' saved but files side" \
-            "is missing."
-    fi
-    mv "$tmp" "$fpath"
-    echo "Saved files side → ${fpath}"
 }
 
 function snapshot_restore {
-    local name="${1:-$(detect_model_name)}"
+    # Snapshot 2 restore wrapper: <name> <dst-address>. Owns the
+    # model-mismatch refusal (.meta vs the destination address's
+    # model), the /api/info confirm (skip on unreachable — the app
+    # down is the natural restore shape), the cross-env password
+    # notice, and the prerestore slot's own .meta. The prerestore
+    # slot is derived from the DEST address (dev:books ->
+    # dev-books-prerestore); the slot name alone does not imply it.
+    local name="$1" dst_address="$2"
     local path="${SNAPSHOT_DIR}/${name}.dump"
-    local safety tmp
+    local slot safety_tmp safety_files safety_meta
+    valid_snapshot_name "$name"
+    resolve_snapshot_address "$dst_address" "destination"
     if [[ ! -f "$path" ]]; then
         echo "Error: snapshot '${name}' not found at ${path}" >&2
         echo "Available snapshots:"
@@ -1579,45 +2047,164 @@ function snapshot_restore {
         exit 1
     fi
     [[ -s "$path" ]] || die "Snapshot '${name}' is empty; nothing to restore."
+    # Model mismatch is never overridable: the snapshot's .meta.model
+    # vs the DESTINATION address's model (never require profile name
+    # == model name). Missing .meta (old snapshots): prominent
+    # warning — password provenance unknown — then proceed.
+    local snap_model src_address
+    snap_model="$(meta_read "$name" model)"
+    src_address="$(meta_read "$name" source-address)"
+    if [[ -n "$snap_model" ]]; then
+        if [[ "$snap_model" != "$ADDRESS_MODEL" ]]; then
+            die "Refusing restore: snapshot '${name}' holds model '${snap_model}' (.meta), but the destination ${dst_address} is model '${ADDRESS_MODEL}'. A model mismatch is never overridable (FORCE does not apply)."
+        fi
+    else
+        echo "WARNING: snapshot '${name}' has no .meta — model and" \
+             "password provenance unknown; proceeding." >&2
+    fi
+    # Model-version compare is tri-state: warn only when BOTH sides
+    # have a version and they differ (migration stubs carry none and
+    # must not journal a warning on every nightly restore forever).
+    local snap_version dest_version
+    snap_version="$(meta_read "$name" model-version)"
+    dest_version=$(MODEL_NAME="$ADDRESS_MODEL" model_field version)
+    if [[ -n "$snap_version" && -n "$dest_version" \
+          && "$dest_version" != "NIL" \
+          && "$snap_version" != "$dest_version" ]]; then
+        echo "warning: model version differs — snapshot '${name}' is" \
+             "v${snap_version}, destination is v${dest_version}" >&2
+    fi
+    confirm_model_for_restore "$ADDRESS_MODEL"
     require_postgres_running
     mkdir -p "$SNAPSHOT_DIR"
-    # Safety net: snapshot the current state so a failed restore cannot
-    # destroy it.
-    safety="${SNAPSHOT_DIR}/pre-restore-${name}-$(date +%Y%m%d-%H%M%S).dump"
-    tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
-    if ! container_pg_dump > "$tmp"; then
-        rm -f "$tmp"
+    # The pre-restore safety net is the rotating address-keyed slot
+    # (dest address, colon -> dash). Stage the current DB, files tree,
+    # and a fresh .meta to temp names; on failure roll back FROM temp;
+    # on success move all onto the slot names. The slot's .meta:
+    # source-address = the DEST address of THIS restore (the slot
+    # holds the dest's pre-restore data), model from that address.
+    slot="$(address_slot_prefix "$dst_address")-prerestore"
+    safety_tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    if ! container_pg_dump > "$safety_tmp"; then
+        rm -f "$safety_tmp"
         die "Pre-restore pg_dump failed; database untouched."
     fi
-    mv "$tmp" "$safety"
+    safety_meta=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    if ! write_snapshot_meta_atomically "$safety_meta" \
+             "$dst_address" "$ADDRESS_MODEL"; then
+        rm -f "$safety_tmp" "$safety_meta"
+        die "could not stage the prerestore .meta; database untouched."
+    fi
+    safety_files=""
+    if [[ -d "$DOCUMENT_ROOT" ]]; then
+        safety_files=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+        # Canonical files/ top level, same as the save path.
+        if ! tar -czf "$safety_files" -C "$(dirname "$DOCUMENT_ROOT")" \
+                  --transform "s|^$(basename "$DOCUMENT_ROOT")|files|" \
+                  "$(basename "$DOCUMENT_ROOT")"; then
+            rm -f "$safety_files"
+            safety_files=""
+            echo "warning: could not stage the files tree; prerestore" \
+                 "slot will hold DB only" >&2
+        fi
+    fi
     # Read the archive TOC before dropping anything: catches truncated
     # or corrupt snapshots while the database is still intact.
     if ! compose exec -T "$DB_SERVICE" pg_restore -l < "$path" >/dev/null; then
-        rm -f "$safety"
+        rm -f "$safety_tmp" "$safety_files" "$safety_meta"
         die "Snapshot '${name}' is not a readable archive;" \
             "database untouched."
     fi
     # Drop the entire public schema (tables, functions, triggers,
     # sequences) and recreate it so the restore is clean.
     if ! reset_public_schema; then
-        rm -f "$safety"
+        rm -f "$safety_tmp" "$safety_files" "$safety_meta"
         die "Could not reset the public schema; database may be inconsistent."
     fi
     if ! container_pg_restore < "$path"; then
         echo "ERROR: restoring '${name}' failed; rolling back." >&2
-        if container_pg_restore < "$safety"; then
-            rm -f "$safety"
+        if container_pg_restore < "$safety_tmp"; then
+            rm -f "$safety_tmp" "$safety_files" "$safety_meta"
             echo "Rolled back to the pre-restore state;" \
                  "database unchanged." >&2
         else
-            echo "CRITICAL: rollback failed. Restore the pre-restore" \
-                 "dump manually: ${safety}" >&2
+            # Rollback failed: promote the staged dump + .meta to the
+            # slot so the only copy is findable, and say where.
+            mv "$safety_tmp" "${SNAPSHOT_DIR}/${slot}.dump" 2>/dev/null
+            mv "$safety_meta" "$(meta_path "$slot")" 2>/dev/null
+            rm -f "$safety_files"
+            echo "CRITICAL: rollback failed. The pre-restore state is" \
+                 "saved at ${SNAPSHOT_DIR}/${slot}.dump; recover" \
+                 "manually." >&2
         fi
         exit 1
     fi
-    rm -f "$safety"
-    snapshot_restore_files "$name"
+    snapshot_restore_files "$name" || true
+    stamp_admin_password
+    # Full success: rotate the staged triple onto the prerestore slot.
+    mv "$safety_tmp" "${SNAPSHOT_DIR}/${slot}.dump"
+    mv "$safety_meta" "$(meta_path "$slot")"
+    if [[ -n "$safety_files" ]]; then
+        mv "$safety_files" "$(snapshot_files_path "$slot")"
+    fi
+    echo "Pre-restore state saved to slot '${slot}'" \
+         "(rotating; overwritten by the next restore)"
+    snapshot_password_notice "$name" "$dst_address" "$src_address"
     echo "Restored snapshot '${name}' ← ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+}
+
+function stamp_admin_password {
+    # Re-stamp the admin password hash after a restore, so the
+    # destination's own ADMIN_PASSWORD is the working password again
+    # (auth rows travel with the dump; the env does not). Hash must
+    # match rbac's a:password-hash exactly: sha512(salt ++ password)
+    # hex, first 32 chars, salt = the username ("admin"). Verified
+    # against the live REPL: printf '%s' "adminadmin-password-1" |
+    # sha512sum | cut -c1-32 == d8249d32... The hash is provably
+    # [0-9a-f]{32}, so interpolating it into the SQL is safe (the
+    # password itself never reaches a query). Warn, never die, on a
+    # zero-row update — the restore already succeeded; killing the
+    # command here would strand a good database.
+    local hash rows
+    hash=$(printf '%s' "admin${ADMIN_PASSWORD}" | sha512sum | cut -c1-32)
+    [[ "$hash" =~ ^[0-9a-f]{32}$ ]] \
+        || die "Could not compute the admin password hash (got '${hash}'); database restored, password NOT re-stamped."
+    rows=$(compose exec -T "$DB_SERVICE" psql -U "$DB_USER" -d "$DB_NAME" \
+             -v ON_ERROR_STOP=1 -tA \
+             -c "update users set password_hash = '${hash}', updated_at = now() where user_name = 'admin' returning id")
+    if [[ -z "$rows" ]]; then
+        echo "WARNING: no 'admin' user in the restored database —" \
+             "password not re-stamped." >&2
+        return 1
+    fi
+    local origin
+    case "$ADDRESS_QUALIFIER" in
+        dev) origin="the dev environment (static admin-password-1)" ;;
+        *)   origin="${ADDRESS_QUALIFIER}:${ADDRESS_NAME}'s profile.env" ;;
+    esac
+    echo "Admin password re-stamped to the destination's own" \
+         "(ADMIN_PASSWORD from ${origin})."
+}
+
+function snapshot_password_notice {
+    # Cross-env restore notice. The stamp already re-wrote the
+    # destination's admin password (stamp_admin_password), so this
+    # no longer explains where the working password lives — only that
+    # auth rows otherwise traveled (other users' hashes included) and
+    # sessions break. Keyed on .meta.source-address ≠ dest address —
+    # NOT on qualifier equality (stg:todos → stg:mytodos is
+    # same-qualifier but still a cross-address swap). Equal addresses
+    # stay quiet (the nightly; migrated stubs carry
+    # source-address=stg:<p>). The dest JWT_SECRET is unchanged (it
+    # lives in the env, never in the dump — sessions break because
+    # the user table was swapped).
+    local name="$1" dst_address="$2" src_address="$3"
+    [[ "$src_address" == "$dst_address" ]] && return 0
+    echo "NOTICE: cross-environment restore (${src_address:-unknown source} → ${dst_address})."
+    if [[ -z "$src_address" ]]; then
+        echo "  Snapshot '${name}' has no .meta — provenance unknown; the admin password was still re-stamped from the destination's env."
+    fi
+    echo "  The auth rows traveled with the dump (only 'admin' was re-stamped); log in again. The destination's JWT_SECRET is unchanged (it lives in the env, never in the dump); old sessions break because the user table was swapped, not because the secret was."
 }
 
 function snapshot_restore_files {
@@ -1625,8 +2212,12 @@ function snapshot_restore_files {
     # snapshots, validate the layout, then mv old tree aside and the
     # fresh one in. A failed untar must not leave the instance
     # fileless (same shape as the pre-restore safety dump).
+    # Snapshot 2: the tar's top-level entry is any single directory
+    # (new saves canonicalize it to files/); it is renamed to the
+    # destination's DOCUMENT_ROOT basename during the swap — old tars
+    # on disk become portable retroactively.
     local name="$1"
-    local fpath staging parent base ts keep
+    local fpath staging parent base ts keep top
     fpath="$(snapshot_files_path "$name")"
     if [[ ! -f "$fpath" ]]; then
         echo "(no files side; restored database only)"
@@ -1640,14 +2231,15 @@ function snapshot_restore_files {
         die "files tar for '${name}' unreadable; database restored," \
             "files left untouched."
     fi
-    # Exactly one top-level entry, named like DOCUMENT_ROOT: guards
-    # against a hand-made tar with an unexpected layout.
-    if [[ "$(ls -A "$staging")" != "$base" ]] \
-       || [[ ! -d "${staging}/${base}" ]]; then
+    # Exactly one top-level directory (any name): guards against a
+    # hand-made tar with an unexpected layout.
+    top=$(ls -A "$staging")
+    if [[ $(printf '%s\n' "$top" | wc -l) -ne 1 ]] \
+       || [[ ! -d "${staging}/${top}" ]]; then
         rm -rf "$staging"
         die "files tar for '${name}' has unexpected layout (wanted" \
-            "one top-level '${base}'); database restored, files left" \
-            "untouched."
+            "exactly one top-level directory); database restored," \
+            "files left untouched."
     fi
     ts=$(date +%Y%m%d-%H%M%S)
     keep="${parent}/${base}.pre-restore-${ts}"
@@ -1658,7 +2250,7 @@ function snapshot_restore_files {
                 "restored, files left untouched."
         }
     fi
-    if ! mv "${staging}/${base}" "$DOCUMENT_ROOT"; then
+    if ! mv "${staging}/${top}" "$DOCUMENT_ROOT"; then
         rm -rf "$staging"
         if [[ -e "$keep" ]]; then
             mv "$keep" "$DOCUMENT_ROOT" \
@@ -1672,33 +2264,102 @@ function snapshot_restore_files {
 }
 
 function snapshot_list {
+    # The shared pool: names + provenance from .meta (annotated, never
+    # resolved). A missing .meta prints (no .meta) — hand-named and
+    # orphan dumps stay legal, and silent empty provenance looks like
+    # a bug.
     if [[ ! -d "$SNAPSHOT_DIR" ]] \
        || [[ -z "$(ls -A "$SNAPSHOT_DIR" 2>/dev/null)" ]]; then
         echo "No snapshots found in ${SNAPSHOT_DIR}"
         return
     fi
     echo "Snapshots in ${SNAPSHOT_DIR}:"
+    local f base size files provenance model version source
     for f in "$SNAPSHOT_DIR"/*.dump; do
         [[ -f "$f" ]] || continue
-        local base size files
         base=$(basename "$f" .dump)
         size=$(du -h "$f" | cut -f1)
         files=""
         [[ -f "$(snapshot_files_path "$base")" ]] && files=", +files"
-        echo "  ${base}  (${size}${files})"
+        model="$(meta_read "$base" model)"
+        version="$(meta_read "$base" model-version)"
+        source="$(meta_read "$base" source-address)"
+        if [[ -f "$(meta_path "$base")" ]]; then
+            provenance="${source:-?}, model ${model:-?}"
+            [[ -n "$version" ]] && provenance+=" v${version}"
+        else
+            provenance="(no .meta)"
+        fi
+        echo "  ${base}  (${size}${files})  ${provenance}"
     done
 }
 
 function snapshot_drop {
-    local name="${1:-$(detect_model_name)}"
+    # Removes the whole triple: .dump + .files.tar.gz + .meta.
+    local name="$1"
+    valid_snapshot_name "$name"
     local path="${SNAPSHOT_DIR}/${name}.dump"
     if [[ ! -f "$path" ]]; then
         echo "Error: snapshot '${name}' not found" >&2
         exit 1
     fi
     rm "$path"
-    rm -f "$(snapshot_files_path "$name")"
+    rm -f "$(snapshot_files_path "$name")" "$(meta_path "$name")"
     echo "Deleted snapshot '${name}'"
+}
+
+function snapshot_migrate {
+    # One-time migration to address-keyed slots (stays in the tree as
+    # a maintenance verb; idempotent, safe to re-run by hand if the
+    # ordered window is interrupted). Loops $DATA_UI_STATE/profiles/
+    # ($HOST_STATE_DIR, never a hardcoded /data/data-ui/profiles/ —
+    # the dumps live under $DATA_UI_STATE/snapshots and a split
+    # between the two spellings is the D15 footgun), and for each
+    # renames the {golden,last,prerestore} slots. Idempotence is PER
+    # SLOT, PER FILE — never a whole-slot skip: a crash between
+    # dump-mv and tar-mv leaves the dest dump in place with the tar
+    # at its legacy name; a re-run keyed on the dest dump alone would
+    # skip the tar forever. Three independent steps, each keyed on
+    # its own destination file:
+    #   rename the dump iff the dest dump is missing
+    #   rename the tar iff the dest tar is missing AND the source
+    #     exists (a DB-only slot has no tar — nothing to move)
+    #   write the stub .meta iff the dest .meta is missing
+    # Without the stub, every nightly restore of a migrated golden
+    # prints the missing-.meta warning into the journal, forever.
+    # Orphans and hand-named non-slot dumps stay unrenamed and
+    # .meta-less — legal (names are plain names now).
+    mkdir -p "$SNAPSHOT_DIR"
+    local d p model slot name src dst moved=0
+    [[ -d "$HOST_STATE_DIR" ]] || { echo "No profiles in ${HOST_STATE_DIR}; nothing to migrate."; return 0; }
+    for d in "$HOST_STATE_DIR"/*/; do
+        [[ -f "${d}profile.env" ]] || continue
+        p="$(basename "$d")"
+        model=$(sed -n 's/^MODEL_NAME=//p' "${d}profile.env" | tail -n1)
+        for slot in golden last prerestore; do
+            name="${p}-${slot}"
+            for ext in dump files.tar.gz; do
+                src="${SNAPSHOT_DIR}/${name}.${ext}"
+                dst="${SNAPSHOT_DIR}/stg-${name}.${ext}"
+                if [[ -f "$src" && ! -f "$dst" ]]; then
+                    mv "$src" "$dst"
+                    moved=$(( moved + 1 ))
+                    echo "renamed ${name}.${ext} → stg-${name}.${ext}"
+                fi
+            done
+            dst="${SNAPSHOT_DIR}/stg-${name}.meta"
+            if [[ ! -f "$dst" && -f "${SNAPSHOT_DIR}/stg-${name}.dump" ]]; then
+                {
+                    echo "model=${model}"
+                    echo "source-address=stg:${p}"
+                    echo "timestamp=migrated"
+                } > "$dst"
+                echo "stubbed stg-${name}.meta (model ${model})"
+            fi
+        done
+    done
+    echo "Migration complete: ${moved} file(s) renamed." \
+         "Re-runs are no-ops (per-file idempotence)."
 }
 
 function setup_repl_env {
@@ -1713,6 +2374,259 @@ function setup_repl_env {
         preflight_ports "dev"
     fi
     ensure_storage_dirs
+}
+
+#
+# Demo lifecycle verbs (D14/D16): e-demo for the nightly-reset class
+# (todos, books), demo for the no-reset class (modelbank). Both are
+# sugar over systemctl + the snapshot machinery; one start shape, one
+# class-blind teardown. =repl= is retired from profile duty — units
+# own demo apps, and Slime rides the unit's swank port as a passenger.
+#
+
+function verb_app_port_listening {
+    # The verb's own preflight: the *app* is up iff HTTP_PORT listens.
+    # Never preflight_ports here — that helper also refuses on DB_PORT
+    # / SWANK_PORT, and DB_PORT held by our own compose is the
+    # raw-stop / aborted-stop / partial-start state the start verb
+    # must proceed through (D16 don't-unify).
+    ss -ltn 2>/dev/null | awk '{print $4}' \
+        | grep -qE "[:.]${HTTP_PORT}\$"
+}
+
+function verb_profile_container_up {
+    docker ps --format '{{.Names}}' \
+        | grep -qx "$DB_CONTAINER"
+}
+
+function stamp_demo_class {
+    # Idempotent rewrite of the DEMO_CLASS line in profile.env (D14):
+    # class = how the profile was last started. A *first* start is
+    # unconstrained (no stamp exists to contradict), so a wrong verb
+    # silently opts a fresh profile out of the nightly set — the
+    # "class stamped" print is the tripwire.
+    local profile="$1" class="$2" env staged
+    env="$(profile_env_path "$profile")"
+    if grep -q "^DEMO_CLASS=" "$env" 2>/dev/null; then
+        if grep -qx "^DEMO_CLASS=${class}$" "$env"; then
+            return
+        fi
+        sed -i "s|^DEMO_CLASS=.*|DEMO_CLASS=${class}|" "$env"
+    else
+        staged=$(mktemp)
+        { cat "$env"; echo "DEMO_CLASS=${class}"; } > "$staged"
+        cat "$staged" > "$env"   # preserve mode 600, same inode
+        rm -f "$staged"
+        echo "class stamped: ${class} (first start)"
+    fi
+    export DEMO_CLASS="$class"
+}
+
+function verb_start {
+    local class="$1" profile="$2" _flag="${3:-}" from_snapshot="${4:-}"
+    local restore_name
+    # Both verbs cd to the checkout at entry: the stamped
+    # DB_DOCKER_COMPOSE is checkout-relative, and so is every compose
+    # call they make (D14 step 2).
+    cd "$(dirname "$(readlink -f "$0")")/.." || die "cannot cd to checkout"
+    load_profile "$profile"
+    # Preflight: refuse only if the app is up. DB_PORT held by our own
+    # compose is the state we must proceed through; a stranger on it
+    # fails loudly at compose up.
+    if verb_app_port_listening; then
+        die "Profile '${profile}' app is already up (HTTP_PORT" \
+            "${HTTP_PORT} listening). Nothing to start."
+    fi
+    # Cross-class refusal needs a stamp, and a stamp exists only after
+    # a first start (D14). Absent = first start, unconstrained.
+    if [[ -n "${DEMO_CLASS:-}" ]] && [[ "$DEMO_CLASS" != "$class" ]]; then
+        local others
+        if [[ "$class" == "e-demo" ]]; then others="demo"; else others="e-demo"; fi
+        die "Profile '${profile}' is a ${DEMO_CLASS} (stamped in" \
+            "profile.env); use '${others} start ${profile}'." \
+            "Class changes go through stop + profile delete + recreate."
+    fi
+    # Vacuum check BEFORE the verb's own mkdir -p / compose up —
+    # either materializes the bind source and would make every start
+    # look live (D16).
+    local vacuum=t
+    if [[ -d "$PGDATA_DIR" ]]; then
+        vacuum=""
+        echo "volume wins: live pgdata present"
+    fi
+    # mkdir -p (mode 700, host user) — never let docker create the
+    # bind source as root (verified uid pattern, D16).
+    mkdir -m 700 -p "$PGDATA_DIR"
+    chown "$PG_UID:$PG_GID" "$PGDATA_DIR" 2>/dev/null || true
+    echo "Starting PostgreSQL (compose up)"
+    compose up -d \
+        || die "compose up failed (is port ${DB_PORT} held by a stranger?)."
+    # pg_isready pinned: exec -T (no TTY) and -U "$DB_USER" — never
+    # wait_for_postgres, whose branches are exec -it / -U postgres
+    # (both wrong under a profile; D14 step 2).
+    local waited=0
+    until compose exec -T "$DB_SERVICE" pg_isready -U "$DB_USER" \
+            &>/dev/null; do
+        if (( waited >= 60 )); then
+            die "PostgreSQL did not become ready in 60s."
+        fi
+        sleep 2; waited=$(( waited + 2 ))
+    done
+    # Restore: only into a vacuum, unless --from (D16).
+    if [[ -n "$from_snapshot" ]]; then
+        if [[ ! -f "${SNAPSHOT_DIR}/${from_snapshot}.dump" ]]; then
+            die "Snapshot '${from_snapshot}' not found" \
+                "(--from fails hard; degrade-to-empty is defaults only)."
+        fi
+        echo "restoring over live data: ${from_snapshot}"
+        snapshot_restore "$from_snapshot" "stg:${profile}"
+    elif [[ -n "$vacuum" ]]; then
+        # Class default. e-demo → stg-p-golden; demo → stg-p-last.
+        # Call site 5 consumes $restore_name as-is, so BOTH branches
+        # must carry the stg- prefix (a half-renamed branch leaves
+        # e-demo looking for <p>-golden.dump after the migration and
+        # silently bootstrapping empty on every resume). A missing
+        # slot degrades to an empty start with a warning — the
+        # bootstrap case (D14/D16), not an error.
+        if [[ "$class" == "e-demo" ]]; then
+            restore_name="stg-${profile}-golden"
+        else
+            restore_name="stg-${profile}-last"
+        fi
+        if [[ -f "${SNAPSHOT_DIR}/${restore_name}.dump" ]]; then
+            echo "restoring into vacuum: ${restore_name}"
+            snapshot_restore "$restore_name" "stg:${profile}"
+        else
+            echo "warning: no snapshot '${restore_name}'; empty start" \
+                 "(bootstrap). Seed via the admin UI, then" \
+                 "'$SCRIPT_NAME snapshot save ${restore_name} stg:${profile}'."
+        fi
+    fi
+    stamp_demo_class "$profile" "$class"
+    render_init_sql
+    # init.sql with errors suppressed — load-bearing after a restore
+    # (CREATE TABLE without IF NOT EXISTS over a restored schema);
+    # do NOT "fix" the suppression (D16 don't-unify).
+    psql -h "$DB_HOST" -p "$DB_PORT" -d "$DB_NAME" -U "$DB_USER" \
+         -f "$DB_INIT_SQL" &>/dev/null || true
+    sudo systemctl enable --now "dataui@${profile}"
+    echo
+    echo "Unit dataui@${profile} enabled and started."
+    echo "  HTTP:  http://127.0.0.1:${HTTP_PORT}"
+    echo "  Swank: 127.0.0.1:${SWANK_PORT} (passenger; connect freely)"
+    echo "  Cold first start compiles the system — watch:" \
+         "journalctl -u dataui@${profile} -f"
+}
+
+function verb_stop {
+    # One teardown under both verb names, class-blind (D16: the class
+    # taxonomy lives on start only).
+    local profile="$1"
+    cd "$(dirname "$(readlink -f "$0")")/.." || die "cannot cd to checkout"
+    load_profile "$profile"
+    # Already stopped = the environment is gone (no container, no
+    # pgdata): report, exit 0, no rewrite (D14). A disabled unit with
+    # pgdata present (dump-failure abort) falls through and completes
+    # the teardown — a retry, never a re-enable.
+    if [[ ! -d "$PGDATA_DIR" ]] && ! verb_profile_container_up; then
+        echo "Profile '${profile}' is already stopped" \
+             "(no container, no pgdata)."
+        return 0
+    fi
+    # 1. disable -- now: no reboot resurrection; frees the ports
+    #    profile delete refuses against. Postgres stays up (no
+    #    ExecStop; compose untouched by systemctl).
+    sudo systemctl disable --now "dataui@${profile}" 2>/dev/null || true
+    # 2. p-last refresh BEFORE any further teardown, atomically over
+    #    the triple (snapshot_save_pair). A failed dump aborts here with
+    #    the previous p-last intact — a pause is never left without a
+    #    resume copy (risk 26). The app is ALWAYS down at this point;
+    #    an unreachable /api/info skips the confirm quietly (the
+    #    wrapper's stg branch) — the pause must not look like a fault.
+    snapshot_save_pair "stg-${profile}-last" "stg:${profile}"
+    # 3. compose down --volumes, then a VERIFIED rm -rf of pgdata —
+    #    the bind mount survives compose down, and only the explicit
+    #    removal creates the vacuum the next start restores into.
+    compose down --remove-orphans --volumes &>/dev/null || true
+    rm -rf "$PGDATA_DIR"
+    if [[ -d "$PGDATA_DIR" ]]; then
+        die "pgdata survived rm -rf (${PGDATA_DIR}); half-deleted is" \
+            "neither vacuum nor live data — resolve by hand."
+    fi
+    # HAProxy is deliberately untouched (D14): the domain stays
+    # claimed, the stopped demo serves 503s, its checks flap — honest.
+    echo "Stopped '${profile}': unit disabled, p-last refreshed," \
+         "environment torn down."
+    echo "Profile, exposure, and snapshots intact; resume with the" \
+         "start verb."
+}
+
+function verb_reset {
+    # On-demand golden reset through the nightly's own machinery
+    # (Phase 7). No args (e-demo only) = the enabled set via
+    # dataui-reset.service — the same run the 04:10 timer makes,
+    # journald as the log of record. Explicit names bypass the
+    # enabled check, any class (D13 grungy-day; e.g.
+    # 'demo reset modelbank'). The ops reset script is reinstalled
+    # from the checkout before running when the installed copy is
+    # stale: the timer executes the /usr/local/lib copy, and a stale
+    # copy (e.g. after a CLI change like Snapshot 2) is exactly how
+    # "unit left stopped" mornings happen. Validation precedes the
+    # heal so error paths stay side-effect-free.
+    local class="$1"; shift
+    local repo_ops="ops/petting-zoo-reset.sh"
+    local installed_ops="/usr/local/lib/data-ui/petting-zoo-reset.sh"
+    local p
+    if (( $# == 0 )) && [[ "$class" != "e-demo" ]]; then
+        die "${class} profiles are never in the nightly set — name" \
+            "one, e.g. '$SCRIPT_NAME demo reset modelbank'."
+    fi
+    for p in "$@"; do
+        valid_profile_name "$p"
+    done
+    cd "$(dirname "$(readlink -f "$0")")/.." || die "cannot cd to checkout"
+    [[ -f "$repo_ops" ]] || die "No ${repo_ops} in the checkout."
+    if ! cmp -s "$repo_ops" "$installed_ops"; then
+        sudo install -D -m 755 "$repo_ops" "$installed_ops" \
+            || die "Reinstalling ${installed_ops} failed (sudo?)."
+        echo "Reinstalled ${installed_ops} (was stale or missing)."
+    fi
+    if (( $# == 0 )); then
+        echo "Running the nightly set on demand; blocks until done."
+        if ! sudo systemctl start dataui-reset.service; then
+            journalctl -u dataui-reset.service -n 15 --no-pager >&2 || true
+            die "dataui-reset.service failed — journal tail above."
+        fi
+        echo "Nightly reset complete."
+        echo "Log of record: journalctl -u dataui-reset.service"
+    else
+        sudo "$installed_ops" "$@" \
+            || die "Reset failed: $* (the ops script printed why)."
+        echo "Reset complete: $*"
+    fi
+}
+
+function demo_verb {
+    local class="$1"; shift
+    local action="$1" profile="$2" flag="${3:-}" snap="${4:-}"
+    if [[ "$action" == "reset" ]]; then
+        # reset takes any number of profiles (zero = the nightly
+        # set); the start/stop arg shape and --from do not apply.
+        verb_reset "$class" "${@:2}"
+        return
+    fi
+    [[ -n "$profile" ]] \
+        || die "Usage: $SCRIPT_NAME ${class} {start|stop|reset} <profile>" \
+               "[--from <snapshot>]"
+    if [[ -n "$flag" && "$flag" != "--from" ]]; then
+        die "Unknown option '${flag}' (only --from <snapshot>)."
+    fi
+    case "$action" in
+        start) verb_start "$class" "$profile" "$flag" "$snap" ;;
+        stop)  verb_stop "$profile" ;;
+        *) die "Usage: $SCRIPT_NAME ${class} {start|stop|reset} <profile>" \
+               "[--from <snapshot>]" ;;
+    esac
 }
 
 case "$ACTION" in
@@ -1739,20 +2653,42 @@ case "$ACTION" in
         fi
         start_psql
         ;;
-    create-profile)
-        create_profile "$2" "$3"
+    e-demo)
+        demo_verb e-demo "${@:2}"
         ;;
-    delete-profile)
-        delete_profile "$2"
+    demo)
+        demo_verb demo "${@:2}"
         ;;
-    list-profiles)
-        show_profiles
-        ;;
-    expose-profile)
-        expose_profile "$2"
-        ;;
-    unexpose-profile)
-        unexpose_profile "$2"
+    profile)
+        sub="${2:-}"
+        case "$sub" in
+            create)
+                create_profile "$3" "$4"
+                ;;
+            delete)
+                delete_profile "$3"
+                ;;
+            list)
+                show_profiles
+                ;;
+            expose)
+                expose_profile "$3"
+                ;;
+            unexpose)
+                unexpose_profile "$3"
+                ;;
+            *)
+                echo "Usage: $SCRIPT_NAME profile {create|delete|list|expose|unexpose} ..."
+                echo
+                echo "Manage host profiles (locally-run instances)."
+                echo "  create <model> [profile] Create a host profile"
+                echo "  delete <profile>         Delete a host profile"
+                echo "  list                     List host profiles and status"
+                echo "  expose <profile>         Route the domain via HAProxy"
+                echo "  unexpose <profile>       Remove the HAProxy exposure"
+                exit 1
+                ;;
+        esac
         ;;
     tests)
         export_test_environment
@@ -1814,47 +2750,62 @@ case "$ACTION" in
         sub="${2:-}"
         case "$sub" in
             save)
-                if [[ -n "${3:-}" ]]; then
-                    resolve_snapshot_profile "$3"
-                    snapshot_save "$3"
-                else
-                    export_repl_environment
-                    render_init_sql
-                    snapshot_save
-                fi
+                [[ -n "${3:-}" && -n "${4:-}" ]] \
+                    || die "snapshot save needs a name and a source address: '$SCRIPT_NAME snapshot save <name> <src-address>' (e.g. books-1 dev:books, stg-books-golden stg:books)." \
+                           "Legal address shapes: dev:<model>, stg:<profile>."
+                [[ -z "${5:-}" ]] \
+                    || die "snapshot save takes exactly two arguments (name, source address)."
+                snapshot_save_pair "$3" "$4"
                 ;;
             restore)
-                if [[ -n "${3:-}" ]]; then
-                    resolve_snapshot_profile "$3"
-                    snapshot_restore "$3"
-                else
-                    export_repl_environment
-                    render_init_sql
-                    snapshot_restore
-                fi
+                [[ -n "${3:-}" && -n "${4:-}" ]] \
+                    || die "snapshot restore needs a name and a destination address: '$SCRIPT_NAME snapshot restore <name> <dst-address>' (e.g. books-1 stg:books, stg-books-golden dev:books)." \
+                           "Legal address shapes: dev:<model>, stg:<profile>."
+                [[ -z "${5:-}" ]] \
+                    || die "snapshot restore takes exactly two arguments (name, destination address)."
+                snapshot_restore "$3" "$4"
                 ;;
             list)
+                [[ -z "${3:-}" ]] \
+                    || die "snapshot list takes no arguments."
                 snapshot_list
                 ;;
             drop)
+                [[ -n "${3:-}" ]] \
+                    || die "snapshot drop needs a snapshot name: '$SCRIPT_NAME snapshot drop <name>'."
+                [[ -z "${4:-}" ]] \
+                    || die "snapshot drop takes exactly one argument (the snapshot name)."
                 snapshot_drop "$3"
                 ;;
+            migrate)
+                [[ -z "${3:-}" ]] \
+                    || die "snapshot migrate takes no arguments (one-time maintenance verb; idempotent)."
+                snapshot_migrate
+                ;;
             *)
-                echo "Usage: $SCRIPT_NAME snapshot {save|restore|list|drop} [name]"
-                echo
-                echo "Save or restore the database for model switching."
-                echo "  save [name]    Save current DB state"
-                echo "  restore [name] Restore a saved snapshot"
-                echo "  list           List available snapshots"
-                echo "  drop [name]    Delete a snapshot"
-                echo
-                echo "If [name] is omitted, defaults to the currently-loaded"
-                echo "model name (e.g. 'modelbank'). Use a suffix for multiple"
-                echo "snapshots: modelbank-1, modelbank-2, etc. Names resolve"
-                echo "a host profile when present under data-ui-host/."
-                echo "Snapshots include the files tree (DOCUMENT_ROOT) as"
-                echo "<name>.files.tar.gz when present; restore swaps it back"
-                echo "in after the database."
+                cat >&2 <<SNAPUSAGE
+Usage: $SCRIPT_NAME snapshot {save|restore|list|drop|migrate} ...
+
+Save or restore a snapshot between explicit environments.
+
+    save <name> <src-address>      e.g. books-1 dev:books
+    restore <name> <dst-address>   e.g. books-1 stg:books
+    list                           shared pool; names + provenance
+    drop <name>                    removes .dump + .files.tar.gz + .meta
+    migrate                        one-time: rename legacy slots,
+                                   stub .meta (idempotent)
+
+Addresses are <qualifier>:<name>, both tokens mandatory on save /
+restore — no defaults, no unqualified fallback. Qualifiers: dev
+(built-in 5444 REPL, asserting the loaded model: dev:books), stg
+(host profile: stg:books). The one-arg muscle-memory forms are hard
+errors; the message names both legal shapes.
+
+FORCE=1 meanings: skip the delete/profile confirmations, and the
+one escape on 'save' when dev:'s /api/info is unreachable. It
+NEVER overrides a model mismatch, and the restore-unreachable skip
+needs no FORCE at all.
+SNAPUSAGE
                 exit 1
                 ;;
         esac

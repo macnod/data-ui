@@ -19,7 +19,7 @@
           :ui (:label "Item" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
-          :column t :not-null t :unique t)
+          :column t :not-null t :unique t :sortable t)
         :tags
         (:type :list
           :ui (:label "Tags" :widget :checkbox-list)

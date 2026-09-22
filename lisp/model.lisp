@@ -17,7 +17,7 @@ DOMAIN already passed the :domain validation; no re-check here."
 
 (defparameter *top-level-keys*
   '(:title :name :version :domain :domain-stg :repl :guest-allowed
-    :api-roles :landing-page :new-roles))
+    :guest-auto :api-roles :landing-page :new-roles))
 
 (defun parse-number (s)
   ":private: Parses S into a number. Returns the number upon success, or NIL if
@@ -161,6 +161,11 @@ returns S. If S is not a string or a number, this function returns NIL."
 (defun rbac-add-user (type-key data user &key roles)
   (declare (ignore type-key))
   (let ((all-roles (add-to-list roles "settings")))
+    ;; FR-11 belt: guard non-REST callers that reach rbac-add-user
+    ;; directly with ai-user / deployer in the membership list. The
+    ;; REST create path is already closed upstream by be-insert's
+    ;; unfiltered valid-user-roles (holder check, admin exempt).
+    (valid-admin-only-user-roles user all-roles)
     (pl:pdebug :in "rbac-add-user" :user user
       :roles roles :all-roles all-roles)
     (a:add-user *rbac*
@@ -545,12 +550,13 @@ the quoted plist."
               (error (e) (err (format nil "~a" e))))))))))
 
 (defun deploy-model-write-file (model-plist package-root)
-  ":private: Write MODEL-PLIST to models/<name>-<timestamp>.lisp.
-Returns the relative file path (for the deploy script) and the model name."
+  ":private: Write MODEL-PLIST to models/local/<name>.lisp (stable
+name, overwrite on re-deploy; the directory is gitignored — FR-9:
+VIP-deployed models never enter git history). Returns the relative
+file path (for the deploy script) and the model name."
   (let* ((model-name (or (getf model-plist :name) "model"))
-          (timestamp (dt:current-unix-time))
-          (filename (format nil "~a-~a.lisp" model-name timestamp))
-          (models-dir (merge-pathnames "models/" package-root))
+          (filename (format nil "~a.lisp" model-name))
+          (models-dir (merge-pathnames "models/local/" package-root))
           (model-path (merge-pathnames filename models-dir))
           (model-string (with-output-to-string (s)
                           (write-char #\' s)
@@ -558,7 +564,7 @@ Returns the relative file path (for the deploy script) and the model name."
     (ensure-directories-exist models-dir)
     (with-open-file (out model-path :direction :output :if-exists :supersede)
       (write-string model-string out))
-    (values (format nil "models/~a" filename) model-name model-path)))
+    (values (format nil "models/local/~a" filename) model-name model-path)))
 
 (defun deploy-model-git-commit (model-path model-name repo-root)
   ":private: Stage and commit the model file so the tree is clean
@@ -571,17 +577,25 @@ for deploy."
     :input nil :directory repo-root))
 
 (defun deploy-model-run-script (package-root model-name)
-  ":private: Run scripts/data-ui deploy <model-name>. Returns (values
-stdout stderr exit-code).  Does not signal on non-zero exit — the caller
-inspects exit-code and stderr."
+  ":private: Run scripts/data-ui deploy <model-name> with MODEL_FILE
+pointing at the local model (FR-9: the script compiles the file
+directly; no git commit, no canonical models/<name>.lisp). Returns
+(values stdout stderr exit-code).  Does not signal on non-zero exit —
+the caller inspects exit-code and stderr."
   (let ((script-path (namestring
                        (merge-pathnames "scripts/data-ui" package-root)))
-         (repo-root (namestring package-root)))
+         (repo-root (namestring package-root))
+         (model-file (namestring
+                       (merge-pathnames
+                         (format nil "models/local/~a.lisp" model-name)
+                         package-root))))
     (uiop:run-program (list script-path "deploy" model-name)
       :input nil
       :output :string :error-output :string
       :ignore-error-status t
-      :directory repo-root)))
+      :directory repo-root
+      :environment (cons (format nil "MODEL_FILE=~a" model-file)
+                       (sb-unix::posix-environ)))))
 
 (defun deploy-model-record-secret (model-name model-domain user)
   ":private: After a successful deploy, read the generated admin password from
@@ -605,17 +619,15 @@ can see it in the UI."
         :status "failed to record secret"))))
 
 (defun deploy-model-async (model-plist set-status package-root user)
-  ":private: Worker body for the deploy-model hook. Writes the model file,
-commits it, runs the deploy script, records the admin password in the :secrets
+  ":private: Worker body for the deploy-model hook. Writes the model file
+(no git commit — FR-9 keeps VIP models out of history), runs the deploy
+script with MODEL_FILE, records the admin password in the :secrets
 table, and updates status.  Wraps everything in a handler-case so errors become
 'failed: <message>' rather than silent thread death."
   (handler-case
     (multiple-value-bind (model-file model-name model-path)
       (deploy-model-write-file model-plist package-root)
-      (declare (ignore model-file))
-      (deploy-model-git-commit
-        model-path model-name
-        (namestring package-root))
+      (declare (ignore model-file model-path))
       (multiple-value-bind (stdout stderr exit-code)
         (deploy-model-run-script package-root model-name)
         (declare (ignore stdout))
@@ -644,28 +656,40 @@ table, and updates status.  Wraps everything in a handler-case so errors become
 ;;
 ;; Reads model text from a field (param :field), validates it in-process via
 ;; validate-model, then spawns a worker thread that writes the model to
-;; models/<name>-<timestamp>.lisp, commits it, and shells out to
-;; scripts/data-ui deploy with MODEL_FILE set.  Validation failures produce
-;; an immediate "failed: <message>" without spawning a subprocess.
+;; models/local/<name>.lisp and shells out to scripts/data-ui deploy with
+;; MODEL_FILE set (FR-9; no git commit — VIP models stay out of history).
+;; Requires the "deployer" role (FR-7); the check precedes validation and
+;; produces an immediate "failed: deployer role required" without spawning
+;; a subprocess.
 (register-hook :deploy-model :action
   '(:field :keyword)
   (lambda (&key field)
     (lambda (type-key field-key record user
               &key roles status-field set-status)
-      (declare (ignore type-key field-key roles status-field))
-      (let ((result (validate-deploy-model-text (getf record field))))
-        (if (getf result :error)
-          (progn
-            (pl:pinfo :in "deploy-model"
-              :status "failed" :reason (getf result :error))
-            (list :status "failed" :message (getf result :error)))
-          (let ((model-plist (getf result :ok)))
-            (sb-thread:make-thread
-              (lambda ()
-                (deploy-model-async
-                  model-plist set-status *package-root* user))
-              :name "data-ui-deploy-model")
-            (list :async t :message "Deploy started")))))))
+      (declare (ignore type-key field-key status-field))
+      (block hook
+        ;; Role check: must have deployer role (FR-7). Checked first,
+        ;; before validate-deploy-model-text, mirroring :generate-model
+        ;; so a role failure is a blanket deny regardless of the text.
+        (unless (member "deployer" roles :test #'equal)
+          (pl:pinfo :in "deploy-model"
+            :status "failed" :reason "deployer role required")
+          (return-from hook
+            (list :status "failed"
+              :message "deployer role required")))
+        (let ((result (validate-deploy-model-text (getf record field))))
+          (if (getf result :error)
+            (progn
+              (pl:pinfo :in "deploy-model"
+                :status "failed" :reason (getf result :error))
+              (list :status "failed" :message (getf result :error)))
+            (let ((model-plist (getf result :ok)))
+              (sb-thread:make-thread
+                (lambda ()
+                  (deploy-model-async
+                    model-plist set-status *package-root* user))
+                :name "data-ui-deploy-model")
+              (list :async t :message "Deploy started"))))))))
 
 (defvar *generate-model-llm-override* nil
   ":private: When non-nil, generate-model-llm-call calls this function instead
@@ -1170,7 +1194,7 @@ index even without :unique t).  Returns ACTION-FORM."
        :pre-delete ,#'remove-user-setting-rows
        :views (:main (:tables (:users :role-users :roles))
                 :roles (:tables (:roles)))
-       :fields (:name (:type :text :identity t
+       :fields (:name (:type :text :identity t :sortable t
                         :source (:view :main :column :name :agg :first)
                         :ui (:label "Username" :widget :textbox)
                         :validations (:required :user-name)
@@ -1181,7 +1205,7 @@ index even without :unique t).  Returns ACTION-FORM."
                              :ui (:label "Password" :widget :password)
                              :validations (:required :password)
                              :column t :not-null t)
-                 :email (:type :text
+                 :email (:type :text :sortable t
                           :default "no-email"
                           :force-sql-name "email"
                           :source (:view :main :column :email :agg :first)
@@ -1230,7 +1254,7 @@ index even without :unique t).  Returns ACTION-FORM."
        :delete ,#'rbac-remove-permission
        :display t
        :type-roles ("logged-in" "permission-creator")
-       :fields (:name (:type :text :identity t
+       :fields (:name (:type :text :identity t :sortable t :searchable t
                         :ui (:label "Permission" :widget :textbox)
                         :source (:view :main :column :name :agg :first)
                         :column t :not-null t :unique t))
@@ -1247,10 +1271,10 @@ index even without :unique t).  Returns ACTION-FORM."
        :type-roles ("logged-in" "role-creator")
        :views (:main (:tables (:roles :role-permissions :permissions))
                 :permissions (:tables (:permissions)))
-       :fields (:name (:type :text :identity t
+       :fields (:name (:type :text :identity t :sortable t
                         :ui (:label "Role" :widget :textbox)
                         :source (:view :main :column :name :agg :first)
-                        :column t :not-null t :unique t)
+                        :column t :not-null t :searchable t :unique t)
                  :permissions (:type :list
                                 :ui (:label "Permissions" :widget :checkbox-list)
                                 :source (:view :main
@@ -1315,7 +1339,7 @@ index even without :unique t).  Returns ACTION-FORM."
        :add-form (:fields t))
 
      :secrets
-     (:table t :built-in t
+     (:table t :built-in t 
        :base nil
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("settings")
@@ -1334,7 +1358,7 @@ index even without :unique t).  Returns ACTION-FORM."
                  :name (:type :text
                          :ui (:label "Name" :widget :textbox)
                          :source (:view :main :column :name :agg :first)
-                         :column t :not-null t)
+                         :column t :not-null t :searchable t)
                  :value (:type :text
                           :ui (:label "Value" :widget :textarea)
                           :source (:view :main :column :value :agg :first)
@@ -3907,16 +3931,25 @@ no RBAC mutation). Returns the stage-1 compiled model or signals an error."
 
 (defun resolve-model-path (file)
   "Resolve model name to a path: models/<name>.lisp, then
-models/test/<name>.lisp. Signals a report-e error if neither exists."
+models/local/<name>.lisp, then models/test/<name>.lisp. Signals a
+report-e error if none exists. The local slot (FR-9) comes before
+test so a VIP-deployed model named like a fixture (test-model,
+m2m-test) shadows it — accepted; runbook item 16. Order matters
+the other way too: canonical first, so a checked-in model always
+wins over a stale local copy of the same name."
   (let ((primary (u:join-paths *package-root* "models"
                    (format nil "~a.lisp" file)))
-         (fallback (u:join-paths *package-root* "models" "test"
-                     (format nil "~a.lisp" file))))
+        (local (u:join-paths *package-root* "models" "local"
+                 (format nil "~a.lisp" file)))
+        (fallback (u:join-paths *package-root* "models" "test"
+                   (format nil "~a.lisp" file))))
     (cond
       ((u:file-exists-p primary) primary)
+      ((u:file-exists-p local) local)
       ((u:file-exists-p fallback) fallback)
       (t (report-e "resolve-model-path"
-           "Model file ~a.lisp not found in models/ or models/test/"
+           "Model file ~a.lisp not found in models/, models/local/, ~
+            or models/test/"
            ~file)))))
 
 (defun list-models ()
@@ -4283,6 +4316,9 @@ names. Returns VALUE unchanged."
       (:guest-allowed
         (valid-top-level-value key value nil
           :required nil :predicates (list #'booleanp)))
+      (:guest-auto
+        (valid-top-level-value key value nil
+          :required nil :predicates (list #'booleanp)))
       (:api-roles
         ;; getf cannot distinguish "key present, value nil" from "key
         ;; absent" — member on the model plist detects presence so an
@@ -4308,12 +4344,21 @@ names. Returns VALUE unchanged."
     do (valid-top-level-field model k)
     unless (equal k :types)
     append (list k
-             ;; First compiler-derived top-level default: staging
-             ;; FQDN from :domain unless the author wrote one.
-             (if (and (eq k :domain-stg)
-                   (not (getf model :domain-stg)))
-               (domain-stg-from-domain (getf model :domain))
-               (getf model k)))))
+             (cond
+               ;; First compiler-derived top-level default: staging
+               ;; FQDN from :domain unless the author wrote one.
+               ((and (eq k :domain-stg)
+                  (not (getf model :domain-stg)))
+                 (domain-stg-from-domain (getf model :domain)))
+               ;; :guest-auto fills t when absent (the :domain-stg
+               ;; pattern). guest-allowed uses raw getf → nil; if
+               ;; :guest-auto did the same AND was registered as a
+               ;; JSON boolean, an omitted key would serialize as
+               ;; false and the December video would lose auto-guest.
+               ((and (eq k :guest-auto)
+                  (not (member :guest-auto model)))
+                 t)
+               (t (getf model k))))))
 
 (defun top-level-model-field (key &key
                                (top-level *top-level-settings*)
@@ -4346,6 +4391,12 @@ compiler)."
 (defun model-guest-allowed ()
   "T when the model enables passwordless guest login, NIL otherwise."
   (getf *top-level-settings* :guest-allowed))
+
+(defun model-guest-auto ()
+  "T when the frontend may auto-login as guest (default when the
+model omits :guest-auto; :guest-auto nil keeps the login page).
+Independent of :guest-allowed, which gates the guest login itself."
+  (getf *top-level-settings* :guest-auto))
 
 (defun model-api-roles ()
   "Roles required by the app-level API endpoints (types, info,

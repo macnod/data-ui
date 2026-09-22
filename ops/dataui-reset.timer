@@ -1,0 +1,21 @@
+# dataui-reset.timer — schedule for the nightly golden reset
+# (demo-apps-plan Phase 7). Source of record: ops/dataui-reset.timer
+# in the data-ui repo; install to /etc/systemd/system/ and
+# daemon-reload.
+#
+# 04:10 local (America/Los_Angeles on evo-x2 — verified 2026-09-18),
+# past the HAProxy log volume dip but before anything human.
+# Persistent=true: a window missed while the host was down fires at
+# boot, racing the dataui@ units — the reset's pre-wait handles that
+# (waits for each member's /health, compile-tolerant).
+[Unit]
+Description=Nightly Data UI golden reset at 04:10
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+AccuracySec=1m
+Unit=dataui-reset.service
+
+[Install]
+WantedBy=timers.target

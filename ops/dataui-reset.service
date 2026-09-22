@@ -1,0 +1,27 @@
+# dataui-reset.service — nightly golden reset for Data UI e-demos
+# (demo-apps-plan Phase 7, D13/D14). Source of record:
+# ops/dataui-reset.service in the data-ui repo; install to
+# /etc/systemd/system/ and daemon-reload.
+#
+# Triggered by dataui-reset.timer at 04:10 (Persistent=true: a window
+# missed while the host was down fires at boot, each member after its
+# unit reaches /health — D14). Also runs on demand:
+#   sudo systemctl start dataui-reset.service
+# Manual single-profile resets (including modelbank, the grungy-day
+# restore) go through the script directly — see ops/README.md.
+[Unit]
+Description=Data UI nightly golden reset (enabled e-demos)
+Wants=network-online.target
+After=network-online.target
+After=docker.service
+
+[Service]
+Type=oneshot
+# Belt over the script's own default (D15 risk 28): the unit runs as
+# root and runuser inherits nothing interactive; pin the state root
+# so the reset and every dataui@ unit see the same state.
+Environment=DATA_UI_STATE=/data/data-ui
+ExecStart=/usr/local/lib/data-ui/petting-zoo-reset.sh
+
+[Install]
+WantedBy=multi-user.target

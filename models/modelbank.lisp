@@ -13,8 +13,8 @@
 ;;
 ;; - Rate: Rate models and sort them by average rating.
 ;;
-;; For Deploy, currently being a member of the models-user role allows you to
-;; deploy a model.
+;; For Deploy, you must be a member of the deployer role (granted by
+;; admin only). Being a member of models-user does not allow deploying.
 ;;
 ;; For Generate, you must be a member of the ai-user role.
 ;;
@@ -31,14 +31,22 @@
    :domain-stg "modelbank.demo.data-ui.com"
    ;; WARNING: :repl must be nil in production
    :repl t
+   ;; Petting-zoo guest surface (D1): passwordless guest login; guest
+   ;; reaches the app-level endpoints via "public" in :api-roles, and
+   ;; the built-in type-roles overlays below open :users / :roles /
+   ;; :permissions to guest reads; "public" on every user-defined type
+   ;; opens the gallery itself (row visibility stays per-record).
+   :guest-allowed t
+  :guest-auto nil
+   :api-roles ("logged-in" "public")
    :landing-page :models
-   :new-roles (:ai-user ("read"))
+   :new-roles (:ai-user ("read") :deployer ("read"))
    :types
    (:directories
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :tree t :is-leaf nil :parent-type :directories :fs-backed t
-       :type-roles ("directories-user")
+       :type-roles ("directories-user" "public")
        :views (:main (:tables (:directories)))
        :fields
        (:name
@@ -54,7 +62,7 @@
      :models
      (:table t
        :create :auto :update :auto :delete :auto :display t
-       :type-roles ("models-user")
+       :type-roles ("models-user" "public")
        :default-sort (:name :asc)
        :views (:main (:tables (:models :images :ratings :users)))
        :fields
@@ -118,14 +126,14 @@
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :tree t :is-leaf t :parent-type :directories :fs-backed t
-       :type-roles ("images-user")
+       :type-roles ("models-user" "public")
        :views (:main (:tables (:images :users :models) :scope :user)
                 :users (:tables (:users) :scope :user)
                 :models (:tables (:models) :scope :user))
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "File" :widget :image)
+           :ui (:label "File" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)
@@ -161,7 +169,7 @@
      :ratings
      (:table t
        :create :auto :update :auto :delete :auto :display t
-       :type-roles ("ratings-user")
+       :type-roles ("models-user" "public")
        :views (:main (:tables (:ratings :models :users))
                 :models (:tables (:models))
                 :users (:tables (:users) :scope :user))
@@ -196,7 +204,7 @@
      :hot-models
      (:rollup t
        :grain :models
-       :type-roles ("models-user")
+       :type-roles ("models-user" "public")
        :filter ((:ratings :created-at :last-days 30))
        :views (:main (:tables (:models :ratings)))
        :list-form (:fields t)
@@ -219,7 +227,7 @@
      :top-contributors
      (:rollup t
        :grain :users
-       :type-roles ("models-user")
+       :type-roles ("models-user" "public")
        :views (:main (:tables (:users :models)))
        :list-form (:fields t)
        :fields
@@ -231,5 +239,12 @@
          (:type :integer
            :source (:view :main :table :models :column :id :agg :count)
            :sortable t
-           :ui (:label "Models"))))))
-
+           :ui (:label "Models"))))
+     ;; Petting-zoo D1 overlays: guest reads the built-in account /
+     ;; role / permission lists (tier identity stays visible; :settings
+     ;; stays structurally unreachable — guest is never granted the
+     ;; settings role). add-type-roles only inserts missing resources,
+     ;; so these must be present before the profile's first set-model.
+     :users (:type-roles ("logged-in" "public" "user-creator"))
+     :roles (:type-roles ("logged-in" "public" "role-creator"))
+     :permissions (:type-roles ("logged-in" "public" "permission-creator"))))

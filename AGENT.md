@@ -112,6 +112,24 @@ instead of the three steps manually.
 After reloading `rest.lisp`, verify `*http-server*`; if nil,
 `(stop-web-server)` before the next `set-model`.
 
+**Gotcha — 60s Eval timeout on long forms.** `eval-in-data-ui`
+times out on the Emacs side after 60s; the form keeps running in
+SBCL and its output is lost. `(run-tests)` takes ~62s. Never poll
+with sleep loops — after a timeout, probe with
+`(eval-in-data-ui "(* 2 3)")` before assuming the image is busy.
+Run long work in a thread that writes a file, then read the file:
+
+    (eval-in-data-ui "(sb-thread:make-thread (lambda ()
+      (with-open-file (s \"/tmp/data-ui-test-run.txt\"
+                     :direction :output :if-exists :supersede)
+        (let ((*standard-output* s))
+          (run-tests)
+          (format s \"~%RUN-TESTS-DONE~%\")))))")
+
+then check the file (grep `RUN-TESTS-DONE`). Short suites
+(`run-m2m-tests`, `run-backend-tests`, ...) fit the timeout
+directly.
+
 ## Running Tests
 
 Use the helpers in `tests/helpers.lisp` — never call `fiveam:run!`
@@ -214,7 +232,7 @@ children under a `**` parent; always step to `***`:
 
 - **End-to-end proven:** `scripts/data-ui deploy todos` →
   https://todo.demo.data-ui.com (k3d, HAProxy, TLS) — production.
-  Staging (host profiles + `expose-profile`, serving each model's
+  Staging (host profiles + `profile expose`, serving each model's
   `:domain-stg`, derived as `-stg` on the first DNS label of
   `:domain`) is the flagship environment during MVP: it hosts Model
   Bank and has the Deploy button.

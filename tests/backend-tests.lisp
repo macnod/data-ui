@@ -509,7 +509,11 @@ Notes:
   ;; Invalid operator
   (signals validation-error (valid-filter '(:todos :name :invalid-op "test")))
   ;; Invalid value type
-  (signals validation-error (valid-filter '(:todos :name :eq 123))))
+  (signals validation-error (valid-filter '(:todos :name :eq 123)))
+  ;; :in accepts a non-empty list of the field's atom type
+  (is (null (valid-filter '(:todos :name :in ("a" "b")))))
+  ;; :in with an empty list rejects (in () is invalid SQL)
+  (signals validation-error (valid-filter '(:todos :name :in ()))))
 
 (test valid-filters
   ;; Valid filters list (no error)
@@ -1424,6 +1428,339 @@ assignable on users. This is the path the Add form hits for :users."
     ;; Normal roles are still present
     (is-true (member "public" roles :test 'equal))
     (is-true (member "user-creator" roles :test 'equal))))
+
+;; FR-11: admin-only assignment of ai-user / deployer on :users (D12).
+;; Seed the two roles on the test-model fixture via :new-roles; the
+;; fixture has neither today.
+
+(test fr11-palette-hides-admin-only-roles-from-non-admin
+  "Non-admin :users roles palette omits ai-user / deployer."
+  (let ((user "fr11-palette-user"))
+    (th-make-user user :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (let ((roles (getf (allowed-values :users user) :roles)))
+        (is-false (member "ai-user" roles :test 'equal))
+        (is-false (member "deployer" roles :test 'equal)))
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
+
+(test fr11-palette-shows-admin-only-roles-to-admin
+  "Admin :users roles palette still lists ai-user / deployer."
+  (let ((roles (getf (allowed-values :users "admin") :roles)))
+    (is-true (member "ai-user" roles :test 'equal))
+    (is-true (member "deployer" roles :test 'equal))))
+
+(test fr11-non-admin-cannot-add-admin-only-role
+  "FR-11 the hole: non-admin be-update :users with keyword :roles
+including ai-user signals validation-error (the Edit-form path).
+Drive be-update directly as the non-admin actor; th-make-user
+bypasses every gate and is not coverage."
+  (let ((actor "fr11-actor")
+        (target "fr11-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        ;; Actor needs update on :users — user-creator's default
+        ;; permissions are create/read/update/delete.
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email")
+            actor
+            :roles '("public" "ai-user"))))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-belt-data-plist-roles
+  "Belt: non-admin be-update :users with :roles *inside* data
+including ai-user signals (the update-join-tables path)."
+  (let ((actor "fr11-belt-actor")
+        (target "fr11-belt-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (signals validation-error
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email"
+            :roles ("public" "ai-user"))
+          actor))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-create-regression-guard
+  "Create regression guard: non-admin be-insert :users with keyword
+:roles including ai-user signals — the existing valid-user-roles
+holder check. The test pins it so a future loosening fails loudly."
+  (let ((actor "fr11-create-actor"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (signals validation-error
+        (be-insert :users
+          '(:name "fr11-created" :password "password-1" :email "no-email")
+          actor
+          :roles '("public" "ai-user")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users '((:users :name :eq "fr11-created")) "admin"))))
+
+(test fr11-admin-can-add-and-strip
+  "Admin be-update :users adding ai-user succeeds, then stripping it
+also succeeds."
+  (let ((target "fr11-admin-target"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          "admin"
+          :roles '("public" "ai-user"))
+        (is-true (a:user-has-role *rbac* target "ai-user"))
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          "admin"
+          :roles '("public"))
+        (is-false (a:user-has-role *rbac* target "ai-user")))
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-non-admin-can-strip-stale-grant
+  "Non-admin stripping ai-user from a user that already has it
+succeeds (demos cannot lock a VIP in)."
+  (let ((actor "fr11-strip-actor")
+        (target "fr11-strip-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    ;; Grant via the admin-only path
+    (a:add-user-role *rbac* target "ai-user")
+    (unwind-protect
+      (progn
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          actor
+          :roles '("public"))
+        (is-false (a:user-has-role *rbac* target "ai-user")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-non-admin-keeping-role-preserves-system-roles
+  "Non-admin be-update :users *keeping* ai-user with the view-shaped
+list (what the frontend actually sends): no validation error, and the
+post-save role set keeps ai-user, re-attaches settings, and keeps
+logged-in / the exclusive intact (keep-only, D12). A no-signal-only
+assertion passes while settings silently vanishes — the role-set
+assertion is the point."
+  (let ((actor "fr11-keep-actor")
+        (target "fr11-keep-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    ;; Target holds ai-user (granted as admin) and gets settings +
+    ;; logged-in from rbac-add-user; the view strips logged-in /
+    ;; settings / the exclusive, leaving ("public" "ai-user").
+    (th-make-user target)
+    (a:add-user-role *rbac* target "ai-user")
+    (unwind-protect
+      (progn
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          actor
+          :roles '("public" "ai-user"))
+        (let ((roles (a:list-user-role-names *rbac* target)))
+          (is-true (member "ai-user" roles :test 'equal))
+          (is-true (member "settings" roles :test 'equal))
+          (is-true (member "logged-in" roles :test 'equal))
+          (is-true (member (a:exclusive-role-for target)
+                      roles :test 'equal))))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-guest-round-trip-keep-only
+  "Guest round-trip (admin actor, no gate involved): be-update :users
+on guest with guest's view-shaped list ((\"public\") — the view strips
+guest:exclusive) leaves guest's roles exactly as they were: no
+logged-in, no settings. The old unconditional add-to-list
+force-added logged-in here."
+  (let ((before (a:list-user-role-names *rbac* "guest")))
+    (be-update :users
+      '((:users :name :eq "guest"))
+      '(:name "guest" :password nil :email "no-email")
+      "admin"
+      :roles '("public"))
+    (let ((after (a:list-user-role-names *rbac* "guest")))
+      (is (equal (u:safe-sort before) (u:safe-sort after)))
+      (is-false (member "logged-in" after :test 'equal))
+      (is-false (member "settings" after :test 'equal)))))
+
+(test fr11-resource-roles-unaffected
+  "Keyword :roles on a non-:users insert is resource roles: a user
+holding ai-user can still put it on a todo row."
+  (let ((user "fr11-res-user")
+        (todo-name "fr11-res-todo"))
+    (th-make-user user :roles '("todo-users"))
+    (a:add-user-role *rbac* user "ai-user")
+    (unwind-protect
+      (let ((id (be-insert :todos
+                   `(:name ,todo-name)
+                   user
+                   :roles '("public" "ai-user"))))
+        (is-true (uuid-p id))
+        (be-delete :todos id "admin"))
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
+
+;; FR-12: protected system accounts and base roles (D17).
+
+(test fr12-non-admin-cannot-delete-admin
+  "Non-admin be-delete :users on admin signals; admin still exists."
+  (let ((actor "fr12-actor"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-delete :users '((:users :name :eq "admin")) actor))
+        (is-true (a:get-id *rbac* "users" "admin")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-non-admin-cannot-delete-guest
+  "Non-admin be-delete :users on guest signals."
+  (let ((actor "fr12-guest-actor"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-delete :users '((:users :name :eq "guest")) actor))
+        (is-true (a:get-id *rbac* "users" "guest")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-non-admin-cannot-change-admin-password-or-name
+  "Non-admin be-update :users on admin with a new :password signals
+and admin login still works with the old password; a new :name
+signals too."
+  (let ((actor "fr12-pass-actor"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            '((:users :name :eq "admin"))
+            '(:password "hacked-password-1")
+            actor))
+        (is-true (a:login *rbac* "admin" (u:getenv "ADMIN_PASSWORD")))
+        (signals validation-error
+          (be-update :users
+            '((:users :name :eq "admin"))
+            '(:name "hacked-admin")
+            actor))
+        (is-true (a:get-id *rbac* "users" "admin")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-non-admin-cannot-set-guest-roles
+  "Non-admin be-update :users on guest with keyword :roles including
+settings signals (the D1 theme leak via the form, closed from this
+side too)."
+  (let ((actor "fr12-guest-roles-actor"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (signals validation-error
+        (be-update :users
+          '((:users :name :eq "guest"))
+          '(:name "guest" :password nil :email "no-email")
+          actor
+          :roles '("public" "settings")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-protected-users-env-var
+  "PROTECTED_USERS bound to a user's name: non-admin be-update on
+that user signals; unbound, the same call succeeds. The actor needs
+creator roles on :users to reach the gate (a guest fails earlier on
+the permission check, which is not what this test pins)."
+  (let ((actor "fr12-env-actor")
+        (target "fr12-env-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (sb-posix:putenv (format nil "PROTECTED_USERS=~a" target))
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email")
+            actor))
+        (sb-posix:putenv "PROTECTED_USERS=")
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          actor))
+      (sb-posix:putenv "PROTECTED_USERS=")
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr12-non-admin-cannot-edit-public-role
+  "Non-admin be-update :roles on public adding create to
+:permissions signals; public's permission set unchanged."
+  (let ((actor "fr12-role-actor"))
+    (th-make-user actor :roles '("todo-users" "role-creator"))
+    (unwind-protect
+      (let ((before (a:list-role-permission-names *rbac* "public")))
+        (signals validation-error
+          (be-update :roles
+            '((:roles :name :eq "public"))
+            '(:permissions ("read" "create" "update" "delete"))
+            actor))
+        (is (equal before (a:list-role-permission-names *rbac* "public"))))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-non-admin-cannot-delete-logged-in
+  "Non-admin be-delete :roles on logged-in signals."
+  (let ((actor "fr12-li-actor"))
+    (th-make-user actor :roles '("todo-users" "role-creator"))
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-delete :roles '((:roles :name :eq "logged-in")) actor))
+        (is-true (a:get-id *rbac* "roles" "logged-in")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-model-declared-role-editable
+  "Non-admin be-update :roles on a model-declared role (ai-user)
+succeeds — the gate is the list, not the type."
+  (let ((actor "fr12-model-role-actor"))
+    (th-make-user actor :roles '("todo-users" "role-creator"))
+    (unwind-protect
+      (progn
+        (be-update :roles
+          '((:roles :name :eq "ai-user"))
+          '(:permissions ("read" "create" "update" "delete"))
+          actor)
+        ;; restore
+        (be-update :roles
+          '((:roles :name :eq "ai-user"))
+          '(:permissions ("read"))
+          "admin"))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-non-admin-cannot-delete-read-permission
+  "Non-admin be-delete :permissions on read signals."
+  (let ((actor "fr12-perm-actor"))
+    (th-make-user actor :roles '("todo-users" "permission-creator"))
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-delete :permissions
+            '((:permissions :name :eq "read"))
+            actor))
+        (is-true (a:get-id *rbac* "permissions" "read")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test fr12-admin-exempt
+  "Admin be-update :users on guest still succeeds (the FR-11 guest
+round-trip covers guest); here admin changes admin's own email."
+  (let ((id (a:get-id *rbac* "users" "admin")))
+    (be-update :users
+      '((:users :name :eq "admin"))
+      '(:name "admin" :password nil :email "no-email")
+      "admin")
+    (is (equal id (a:get-id *rbac* "users" "admin")))))
 
 (test allowed-values-for-field-excludes-other-users-exclusives
   "The :users :roles palette never contains another user's

@@ -1,0 +1,39 @@
+# dataui@.service — systemd template for Data UI host profiles
+# (D4/D14/D15). Source of record: ops/dataui@.service in the data-ui
+# repo; install to /etc/systemd/system/ and daemon-reload.
+#
+# One start path: the wrapper (profile-run.sh) owns everything before
+# (main) — env sourcing, compose up, init.sql — and (main) blocks
+# forever after. Swank rides the app process on SWANK_PORT
+# (loopback): a Slime client can attach and detach at will without
+# touching the lifecycle.
+[Unit]
+Description=Data UI demo profile %i
+Requires=docker.service
+After=docker.service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=macnod
+Group=macnod
+Environment=HOME=/home/macnod
+# Belt over the script's own default (D15 risk 28): root + runuser
+# inherit nothing interactive; pin the state root so the reset
+# script's runuser and any manual sudo see the same state.
+Environment=DATA_UI_STATE=/data/data-ui
+ExecStart=/usr/local/lib/data-ui/profile-run.sh %i
+Restart=always
+RestartSec=5s
+# TimeoutStartSec is deliberately NOT set: it is inert under
+# Type=simple (the start job completes at fork, so a hung wrapper is a
+# perfectly active unit). "compiling — watch journalctl" and the
+# /health poll are the real cold-start signals (risk 8).
+
+# No ExecStop: stopping the unit stops Lisp and leaves Postgres up
+# (restore needs it). Compose has no restart policy; on host reboot
+# the wrapper re-runs compose up (idempotent).
+
+[Install]
+WantedBy=multi-user.target

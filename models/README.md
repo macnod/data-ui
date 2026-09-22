@@ -28,7 +28,7 @@ test suite.
 
 Models that are exposed carry two FQDN keys: `:domain` (production,
 consumed by `deploy`) and `:domain-stg` (staging, consumed by
-`expose-profile`). Omit `:domain-stg` and the compiler derives it by
+`profile expose`). Omit `:domain-stg` and the compiler derives it by
 suffixing `-stg` onto the first DNS label of `:domain`
 (`todo.demo.data-ui.com` → `todo-stg.demo.data-ui.com`); an explicit
 value always wins. House convention: write `:domain-stg` explicitly

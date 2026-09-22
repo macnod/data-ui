@@ -1,0 +1,31 @@
+# D16: profile compose file. Written from scratch — never copy the
+# repl yaml (tests/docker-compose-pg-data-ui-repl.yaml), which carries
+# three traps: the dead POSTGRES_DATABASE key (the official image
+# reads POSTGRES_DB), the 0.0.0.0 port publish, and a named volume
+# instead of this bind.
+#
+# The database runs as the *unit user* (${PG_UID}:${PG_GID} = macnod),
+# on a mode-700 bind source owned by that uid — stop's rm -rf needs no
+# sudo (the rejected sudo rm -rf shape). POSTGRES_DB is explicit even
+# though the image defaults it to the user name: profiles work because
+# DB_NAME == DB_USER, and the default is a fact about the image, not a
+# guarantee we should lean on. The entrypoint creates role + database
+# on empty pgdata — the restore-into-a-vacuum init path (D16).
+services:
+  pg-data-ui:
+    image: postgres:16
+    container_name: ${DB_CONTAINER}
+    pull_policy: if_not_present
+    user: "${PG_UID}:${PG_GID}"
+    environment:
+      POSTGRES_USER: "$DB_USER"
+      POSTGRES_PASSWORD: "$DB_PASSWORD"
+      POSTGRES_DB: "$DB_NAME"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      # Loopback only: HAProxy and the reset target 127.0.0.1; nothing
+      # else needs it (the repl yaml's bare publish binds all
+      # interfaces).
+      - "127.0.0.1:${DB_PORT}:5432"
+    volumes:
+      - ${PGDATA_DIR}:/var/lib/postgresql/data

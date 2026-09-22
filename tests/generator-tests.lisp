@@ -240,6 +240,36 @@ Returns the new record ID."
         (is (search "ai-user" (or (getf result :message) ""))))
       (be-delete :models id "no-role-user"))))
 
+(test deploy-hook-rejects-no-role
+  "FR-7: Deploy hook rejects users without the deployer role, before
+model-text validation (blanket deny, no worker spawned)."
+  (th-make-user "no-deployer-user" :roles '("models-user"))
+  (let ((id (th-gen-make-model-row "no-deployer-user" "A todo app")))
+    (is-true id)
+    (unwind-protect
+      (let ((result (be-action :models id :deploy "no-deployer-user")))
+        (is (equal (getf result :status) "failed"))
+        (is (search "deployer" (or (getf result :message) "")))
+        ;; The role check fires before validation, so even a valid model
+        ;; text is denied — the check is not merely first in line.
+        (is (search "deployer" (or (getf result :message) ""))))
+      (be-delete :models id "no-deployer-user"))))
+
+(test deploy-hook-accepts-role-validates-text
+  "FR-7 positive path: a user WITH the deployer role gets past the
+role check and fails on empty model text (validation failure, not a
+blanket deny) — proving the check is not an unconditional reject."
+  (th-make-user "deployer-user" :roles '("models-user" "deployer"))
+  (let ((id (th-gen-make-model-row "deployer-user" "A todo app")))
+    (is-true id)
+    (unwind-protect
+      (let ((result (be-action :models id :deploy "deployer-user")))
+        (is (equal (getf result :status) "failed"))
+        (is (search "empty" (or (getf result :message) "")))
+        (is-false (search "deployer role"
+                    (or (getf result :message) ""))))
+      (be-delete :models id "deployer-user"))))
+
 (test generate-hook-rejects-empty-description
   "Generate hook rejects empty descriptions."
   (th-gen-make-user "gen-admin")

@@ -44,6 +44,41 @@
   (is (eq t (getf (top-level-settings (th-ga-model t)) :guest-allowed)))
   (is (null (getf (top-level-settings (th-ga-model nil)) :guest-allowed))))
 
+;;; FR-6: :guest-auto — same validation as :guest-allowed, but the
+;;; absent key fills t (the :domain-stg pattern), not nil.
+
+(defun th-gam-model (guest-auto)
+  "Build a minimal model plist with :guest-auto set to GUEST-AUTO
+(:absent omits the key entirely)."
+  (let ((model (list :title "GAM" :name "gam" :version "0.1"
+                 :domain "gam.test.data-ui.com"
+                 :types '(:widgets (:table t :fields (:name (:type :text)))))))
+    (unless (eq guest-auto :absent)
+      (setf (getf model :guest-auto) guest-auto))
+    model))
+
+(test guest-auto-nil-and-t-accepted
+  "nil and t both pass; the key is optional (:guest-allowed precedent)."
+  (finishes (valid-top-level-field (th-gam-model nil) :guest-auto))
+  (finishes (valid-top-level-field (th-gam-model t) :guest-auto))
+  (finishes (valid-top-level-field (th-gam-model :absent) :guest-auto)))
+
+(test guest-auto-non-boolean-signals
+  "Only booleans validate; strings, keywords, and integers signal."
+  (loop for bad in '("false" :false 0 "no")
+    do (signals error
+         (valid-top-level-field (th-gam-model bad) :guest-auto))))
+
+(test guest-auto-absent-fills-t
+  "top-level-settings fills t when :guest-auto is absent (risk 24:
+  a raw-getf default of nil would serialize as JSON false via the
+  registered boolean key and the December video would lose
+  auto-guest). Explicit nil and explicit t stay verbatim."
+  (is (eq t (getf (top-level-settings (th-gam-model :absent)) :guest-auto)))
+  (is (null (getf (top-level-settings (th-gam-model nil)) :guest-auto)))
+  (is (eq t (getf (top-level-settings (th-gam-model t)) :guest-auto))))
+
+
 ;;; ---------------------------------------------------------------------------
 ;;; Login behavior (guest-allowed-test fixture)
 ;;; ---------------------------------------------------------------------------
@@ -52,6 +87,11 @@
 ;;; password) is always present.
 
 (in-suite guest-db-suite)
+
+(test guest-auto-accessor
+  "model-guest-auto reads the compiled settings after set-model;
+  the fixture (no :guest-auto key) must default to t."
+  (is (eq t (model-guest-auto))))
 
 (defun th-ga-user-id (name)
   (a:get-id *rbac* "users" name))

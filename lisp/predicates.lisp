@@ -78,7 +78,28 @@ returns NIL."
     (type-key-p (car filter))
     (field-key-p (car filter) (cadr filter))
     (operator-key-p (caddr filter))
-    (value-type-p (car filter) (cadr filter) (cadddr filter))))
+    (filter-value-type-p (car filter) (cadr filter)
+      (caddr filter) (cadddr filter))))
+
+(defun filter-value-type-p (type-key field-key op-key value)
+  ":private: Value check for one filter tuple, the only home of the
+:in / :not-in case split. For those operators, VALUE must be a
+non-empty list (consp, so NIL / () rejects — `in ()` is invalid
+SQL) whose elements satisfy the field's atom check when the field
+is atom-typed; a :list-typed field keeps the whole-value listp
+check (tightened to consp). All other operators use the plain
+single-value check. Shared by filter-p and valid-filter so the
+predicate and the validator cannot drift."
+  (if (member op-key '(:in :not-in))
+    (let* ((field-def (u:tree-get *compiled-model*
+                        type-key :fields field-key))
+           (list-field-p (eq (getf field-def :type) :list)))
+      (and (consp value)
+        (or list-field-p
+          (every
+            (lambda (el) (value-type-p type-key field-key el))
+            value))))
+    (value-type-p type-key field-key value)))
 
 (defun value-type-p (type-key field-key value)
   ":private: Returns T if VALUE is of the correct type for FIELD-KEY in

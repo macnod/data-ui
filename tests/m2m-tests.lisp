@@ -181,3 +181,45 @@ The join DML must use :user-id, not :assignee-id."
     (is (= 1 (join-row-count "rt_item_users" item-id))
         "Should be 1 row in rt_item_users")
     (be-delete :items item-id "admin")))
+
+(test m2m-join-filter-with-sort-42p10
+  "Regression (clickable chips 0b): a join-filtered request with an
+explicit sort must not die with 42P10 (SELECT DISTINCT, ORDER BY
+expressions must appear in select list). Phase A splices the sort
+column into the page projection; the count query stays pre-splice."
+  (let ((red-id (be-insert :items
+                   '(:name "Red Item" :tags ("red"))
+                   "admin"))
+        (both-id (be-insert :items
+                    '(:name "Both Item" :tags ("red" "blue"))
+                    "admin"))
+        (green-id (be-insert :items
+                      '(:name "Green Item" :tags ("green"))
+                      "admin")))
+    (unwind-protect
+      (let* ((result (be-list :items "admin"
+                      :filters '((:tags :name :in ("red")))
+                      :sort '(:name :asc)))
+             (names (mapcar
+                      (lambda (r) (getf r :name))
+                      (getf result :records))))
+        (is (equal '("Both Item" "Red Item") names)
+          "Join filter + sort returns the tagged items, name-asc: ~a"
+          names)
+        (is (= 2 (getf result :total))
+          "Total counts distinct matching ids, not fan-out rows")
+        (let* ((desc (be-list :items "admin"
+                       :filters '((:tags :name :in ("red")))
+                       :sort '(:name :desc)))
+               (desc-names (mapcar
+                             (lambda (r) (getf r :name))
+                             (getf desc :records))))
+          (is (equal '("Red Item" "Both Item") desc-names)
+            "Request-sorted variant reverses: ~a" desc-names))
+        ;; Non-join request with sort stays on the plain path.
+        (let ((plain (be-list :items "admin" :sort '(:name :asc))))
+          (is (= 3 (getf plain :total))
+            "Unfiltered list unchanged")))
+      (be-delete :items red-id "admin")
+      (be-delete :items both-id "admin")
+      (be-delete :items green-id "admin"))))

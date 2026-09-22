@@ -4,6 +4,7 @@
   :domain "todo.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
   :repl t
+  :new-roles (:ai-user ("read") :deployer ("read"))
   :types
   (:todos
     (:table t

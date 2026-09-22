@@ -106,12 +106,19 @@ function formatNumber(
 // Each function handles one rendering context (list cell vs form).
 // Dispatch is on `widget` only.
 
+// Plain-text projection of a cell value: arrays join with ", ",
+// numbers get :precision formatting. Feeds the default cell
+// rendering, the code widget, and the one-line clamp tooltip.
+function cellText(val: any, field: Field): string {
+  return Array.isArray(val) ? val.join(', ')
+    : formatNumber(val, field)
+}
+
 function renderCellValue(
   val: any, field: Field
 ): React.ReactNode {
   const widget = field['widget'] || ''
-  const text = Array.isArray(val) ? val.join(', ')
-    : formatNumber(val, field)
+  const text = cellText(val, field)
 
   if (widget === 'code') {
     return (
@@ -131,9 +138,13 @@ function renderCellValue(
   if (widget === 'image-list') {
     const paths: string[] = Array.isArray(val) ? val : []
     if (paths.length === 0) return text || ''
+    // List cells show only the first path alphabetically (the
+    // cover shot); the lightbox still pages through all of them.
+    const sorted =
+      [...paths].sort((a, b) => a.localeCompare(b))
     return (
       <ThumbnailGrid
-        type={field.table || ''} paths={paths} size={40}
+        type={field.table || ''} paths={sorted} size={40} max={1}
       />
     )
   }
@@ -358,11 +369,15 @@ const modalLinkStyle: React.CSSProperties = {
 }
 
 function ThumbnailGrid({
-  type, paths, size
+  type, paths, size, max
 }: {
   type: string
   paths: string[]
   size?: number
+  // Render at most `max` thumbnails; the lightbox still pages
+  // through the full `paths` list (indices align because the
+  // shown thumbnails are a prefix slice).
+  max?: number
 }) {
   const [modalIndex, setModalIndex] = useState<number | null>(
     null
@@ -377,6 +392,8 @@ function ThumbnailGrid({
     filename: p.split('/').pop() || p
   }))
 
+  const shown = max != null ? paths.slice(0, max) : paths
+
   return (
     <>
       <div style={{
@@ -384,7 +401,7 @@ function ThumbnailGrid({
         flexWrap: 'wrap',
         gap: '0.5rem'
       }}>
-        {paths.map((p, i) => {
+        {shown.map((p, i) => {
           const name = p.split('/').pop() || p
           return (
             <div
@@ -501,6 +518,11 @@ function App() {
   const [type, setType] = useState('__init__')
   const [showAddForm, setShowAddForm] = useState(false)
   const [formValues, setFormValues] = useState<Record<string, any>>({})
+  // Confirmation box for :widget :password fields. Keyed by field
+  // name so multi-password forms stay independent; cleared with the
+  // rest of the form state.
+  const [passwordConfirm, setPasswordConfirm] =
+    useState<Record<string, string>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [editRecord, setEditRecord] = useState<any>(null)
   const [listError, setListError] = useState<string | null>(null)
@@ -518,6 +540,24 @@ function App() {
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Chip filters (clickable list-value chips): fieldKey -> selected
+  // values. Within a field, values union (has-any, sent as one :in
+  // row); across fields, rows AND. Empty arrays are omitted from
+  // the request (in () is invalid SQL / a 400).
+  const [listFilters, setListFilters] = useState<
+    Record<string, string[]>
+  >({})
+  // Phase 1 (hide exclusive roles): checked = append one
+  // not-like row to /api/list filters when the listed type is
+  // roles. Default on — the curated default view excludes the
+  // per-user noise roles (machine-written :exclusive suffix).
+  const [hideExclusive, setHideExclusive] = useState(true)
+  // Phase 2 (negative search): the "Not…" term, complement of the
+  // search box over the :searchable fields. Debounced exactly like
+  // searchTerm; blank sends no rows (requests stay byte-identical).
+  const [notTerm, setNotTerm] = useState('')
+  const [debouncedNotTerm, setDebouncedNotTerm] = useState('')
+  const notTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -587,7 +627,12 @@ function App() {
         // must not count as allowed.
         if (json.result['guest-allowed'] === true) {
           setGuestAllowed(true)
-          if (!sessionStorage.getItem('data-ui-skip-auto-guest')) {
+          // FR-6: auto-guest only when guest-allowed === true AND
+          // guest-auto !== false (strict, same [] pitfall).
+          // "Continue as guest" stays gated on guest-allowed alone.
+          const guestAuto = json.result['guest-auto']
+          if (guestAuto !== false
+              && !sessionStorage.getItem('data-ui-skip-auto-guest')) {
             await loginAsGuest()
           }
         }
@@ -595,6 +640,12 @@ function App() {
       .catch(() => {})
     return () => { cancelled = true }
   }, [])
+
+  // Keep the browser title bar in sync with the app title (the
+  // model's name), not the static "Data UI" from index.html.
+  useEffect(() => {
+    document.title = title
+  }, [title])
 
   const handleContinueAsGuest = async () => {
     sessionStorage.removeItem('data-ui-skip-auto-guest')
@@ -633,6 +684,44 @@ function App() {
     }
     if (debouncedSearch) {
       url += `&search=${encodeURIComponent(debouncedSearch)}`
+    }
+    // Chip filters: one [table, column, "in", values] row per field
+    // with a non-empty selection. The table comes from list-form
+    // field meta (field.table), NOT the state key — chores
+    // :completed-by must send "users", and the state key would 404
+    // in parse-type. The column is the M2M display column ("name"),
+    // which is what parse-field resolves in the compiled model.
+    {
+      const form = data?.result?.['list-form'] || {}
+      const rows = Object.entries(listFilters)
+        .filter(([, values]) => values.length > 0)
+        .map(([fieldKey, values]) => [
+          form[fieldKey]?.table || fieldKey, 'name', 'in', values
+        ])
+      // Phase 1: hide the per-user exclusive roles (name suffix
+      // :exclusive, trigger-enforced — same signal the backend's
+      // exclusive-role-p reads). Case-sensitive not-like is exact
+      // here: the suffix is machine-written lowercase.
+      if (type === 'roles' && hideExclusive) {
+        rows.push(['roles', 'name', 'not-like', '%:exclusive'])
+      }
+      // Phase 2: one not-ilike row per searchable field — the
+      // complement of search's OR-ILIKE group (rows AND together).
+      // Same list-form meta guard as the chips: field.table is not
+      // consulted (searchable fields are the type's own base
+      // columns), and the resetListQuery clears on type change so
+      // the stale-form window sends nothing.
+      if (debouncedNotTerm) {
+        for (const [fieldKey, f] of Object.entries(form)) {
+          if (f.searchable === true) {
+            rows.push([type, fieldKey, 'not-ilike',
+                       `%${debouncedNotTerm}%`])
+          }
+        }
+      }
+      if (rows.length > 0) {
+        url += `&filters=${encodeURIComponent(JSON.stringify(rows))}`
+      }
     }
     try {
       const res = await apiFetch(url)
@@ -693,7 +782,11 @@ function App() {
     defaultSortRef.current = null
     setSearchTerm('')
     setDebouncedSearch('')
+    setNotTerm('')
+    setDebouncedNotTerm('')
+    setListFilters({})
     if (searchTimer.current) clearTimeout(searchTimer.current)
+    if (notTimer.current) clearTimeout(notTimer.current)
     setCurrentPage(1)
     setSelectedIds([])
   }
@@ -711,6 +804,7 @@ function App() {
     setShowAddForm(false)
     setEditRecord(null)
     setFormValues({})
+    setPasswordConfirm({})
     setListError(null)
     resetListQuery()
   }
@@ -731,6 +825,35 @@ function App() {
       setCurrentPage(1)
       setSelectedIds([])
     }, 300)
+  }
+
+  // Phase 2: "Not…" input handler — a copy of handleListSearch on
+  // the not-term state. Same 300ms debounce, trim, page 1, clear
+  // selection contract (the result set changes).
+  const handleListNot = (query: string) => {
+    setNotTerm(query)
+    if (notTimer.current) clearTimeout(notTimer.current)
+    notTimer.current = setTimeout(() => {
+      setDebouncedNotTerm(query.trim())
+      setCurrentPage(1)
+      setSelectedIds([])
+    }, 300)
+  }
+
+  // Toggle one chip value in the field's selection (union within
+  // the field; refetch flows through the useEffect dep on
+  // listFilters). Any toggle restarts the result set: page 1,
+  // selection cleared — same contract as search and sort changes.
+  const toggleChipFilter = (fieldKey: string, value: string) => {
+    setListFilters(prev => {
+      const cur = prev[fieldKey] || []
+      const next = cur.includes(value)
+        ? cur.filter(v => v !== value)
+        : [...cur, value]
+      return { ...prev, [fieldKey]: next }
+    })
+    setCurrentPage(1)
+    setSelectedIds([])
   }
 
   const switchViewMode = (mode: ViewMode) => {
@@ -784,6 +907,7 @@ function App() {
     setEditRecord(null)
     setShowAddForm(false)
     setFormValues({})
+    setPasswordConfirm({})
   }
 
   // Return to the landing page (used by settings Submit/Cancel).
@@ -900,6 +1024,21 @@ function App() {
     const formDef = isEditMode
       ? data!.result['update-form'] || {}
       : data!.result['add-form'] || {}
+
+    // Password confirmation gate: every :widget :password field on
+    // the form must match its confirmation box before anything is
+    // sent (covers both the JSON and file-upload paths below).
+    for (const f of Object.keys(formDef)) {
+      if (formDef[f]['widget'] !== 'password') continue
+      const pw = formValues[f] || ''
+      const confirm = passwordConfirm[f] || ''
+      if (pw === '' && confirm === '') continue
+      if (pw !== confirm) {
+        alert(`Password entries for "${formDef[f].label}" do not match`)
+        return
+      }
+    }
+
     const fileField = Object.keys(formDef).find(f => formDef[f]['widget'] === 'file')
     const fileValue = fileField ? formValues[fileField] : null
 
@@ -1108,7 +1247,8 @@ function App() {
   useEffect(() => {
     if (!loggedIn || type === '__init__') return
     fetchList()
-  }, [loggedIn, type, sortField, sortDir, debouncedSearch, currentPage])
+  }, [loggedIn, type, sortField, sortDir, debouncedSearch,
+      debouncedNotTerm, currentPage, listFilters, hideExclusive])
 
   // Clear the row selection whenever the page changes (button
   // navigation or the post-delete clamp inside fetchList), so
@@ -1344,6 +1484,29 @@ function App() {
     data.result['add-form'] ? Object.keys(data.result['add-form']) : []
   const records = data.result.records
 
+  // Chip eligibility: checkbox-list fields whose source table differs
+  // from the listed type. fe-fields always sets `table` (falls back
+  // to the type key), so the synthetic Roles column on non-base types
+  // carries the listed type's key and is excluded here; users.roles
+  // (table "roles" ≠ "users") is a real join and qualifies.
+  const chipFieldMeta: Record<string, { table: string, label: string }> = {}
+  for (const f of listFields) {
+    const fld = data.result['list-form'][f]
+    if (fld['widget'] === 'checkbox-list'
+        && fld.table && fld.table !== type) {
+      chipFieldMeta[f] = { table: fld.table, label: fld.label }
+    }
+  }
+  const hasChipFields = Object.keys(chipFieldMeta).length > 0
+  const hasSearchable =
+    Object.values(data.result['list-form'])
+      .some(f => f.searchable === true)
+  // "Any filter active" is some values array with length > 0, not
+  // Object.keys(listFilters).length — clearing the last chip leaves
+  // { field: [] } in state, which the key count would still report.
+  const anyFilterActive =
+    Object.values(listFilters).some(vals => vals.length > 0)
+
   return (
     <div>
       <div style={{ position: 'relative' }}>
@@ -1450,24 +1613,95 @@ function App() {
         </div>
       )}
 
-      {!(showAddForm || isEditMode) &&
-        Object.values(data.result['list-form']).some(f => f.searchable === true) && (
-        <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          <input
-            type="text"
-            placeholder="Search…"
-            value={searchTerm}
-            onChange={e => handleListSearch(e.target.value)}
-            style={{ flex: '0 1 20rem', padding: '0.35rem 0.5rem' }}
-          />
-          {searchTerm && (
+      {!(showAddForm || isEditMode) && (hasSearchable || hasChipFields) && (
+        <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {hasSearchable && (
+            <>
+              <input
+                type="text"
+                placeholder="Search…"
+                value={searchTerm}
+                onChange={e => handleListSearch(e.target.value)}
+                style={{ flex: '0 1 20rem', padding: '0.35rem 0.5rem' }}
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => handleListSearch('')}
+                  title="Clear search"
+                  style={{ padding: '0.25rem 0.5rem' }}
+                >
+                  ×
+                </button>
+              )}
+              {/* Phase 2: negative search. Placeholder documents the
+                  wire truth: filter like/ilike values are raw SQL
+                  patterns (% and _ act as wildcards; the operator
+                  path has no ESCAPE clause). */}
+              <input
+                type="text"
+                placeholder="Not… (wildcards: % and _)"
+                value={notTerm}
+                onChange={e => handleListNot(e.target.value)}
+                style={{ flex: '0 1 20rem', padding: '0.35rem 0.5rem' }}
+              />
+              {notTerm && (
+                <button
+                  type="button"
+                  onClick={() => handleListNot('')}
+                  title="Clear not-search"
+                  style={{ padding: '0.25rem 0.5rem' }}
+                >
+                  ×
+                </button>
+              )}
+            </>
+          )}
+          {/* Phase 1: hide-exclusive view preference, roles list
+              only. Inline with the search box, ahead of the chips —
+              chips are data filters the user built; this curates
+              the default view. */}
+          {type === 'roles' && (
+            <label style={{ whiteSpace: 'nowrap' }}>
+              <input
+                type="checkbox"
+                checked={hideExclusive}
+                onChange={e => {
+                  setHideExclusive(e.target.checked)
+                  setCurrentPage(1)
+                  setSelectedIds([])
+                }}
+              />
+              {' '}Hide exclusive
+            </label>
+          )}
+          {Object.entries(listFilters)
+            .filter(([, values]) => values.length > 0)
+            .map(([fieldKey, values]) =>
+              values.map(v => (
+                <span key={`${fieldKey}:${v}`} className="chip chip-active">
+                  {chipFieldMeta[fieldKey]
+                    ? `${chipFieldMeta[fieldKey].label}: ` : ''}{v}
+                  <button
+                    type="button"
+                    className="chip-x"
+                    title="Remove filter"
+                    onClick={() => toggleChipFilter(fieldKey, v)}
+                  >×</button>
+                </span>
+              ))
+            )}
+          {anyFilterActive && (
             <button
               type="button"
-              onClick={() => handleListSearch('')}
-              title="Clear search"
+              onClick={() => {
+                setListFilters({})
+                setCurrentPage(1)
+                setSelectedIds([])
+              }}
               style={{ padding: '0.25rem 0.5rem' }}
             >
-              ×
+              Clear filters
             </button>
           )}
         </div>
@@ -1575,17 +1809,57 @@ function App() {
             }
 
             if (fieldMeta['widget'] === 'password') {
+              const pw = formValues[f] || ''
+              const confirm = passwordConfirm[f] || ''
+              const touched =
+                pw !== '' || confirm !== ''
+              const mismatched =
+                touched && pw !== confirm
+              const matchHint = !touched ? '' : mismatched
+                ? ' — entries do not match'
+                : ' — entries match'
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
                   <input
                     type="password"
                     autoComplete="new-password"
-                    value={formValues[f] || ''}
+                    placeholder={isEditMode
+                      ? 'Leave blank to keep current password'
+                      : ''}
+                    value={pw}
                     onChange={e =>
                       setFormValues({ ...formValues, [f]: e.target.value })
                     }
+                  /><br />
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder="Confirm password"
+                    style={{
+                      marginTop: '0.25rem',
+                      ...(touched
+                        ? { borderColor: mismatched
+                            ? 'var(--error, red)'
+                            : 'var(--success, green)' }
+                        : {})
+                    }}
+                    value={confirm}
+                    onChange={e =>
+                      setPasswordConfirm({
+                        ...passwordConfirm, [f]: e.target.value
+                      })
+                    }
                   />
+                  <span style={{
+                    marginLeft: '0.5rem',
+                    fontSize: '0.85em',
+                    color: mismatched
+                      ? 'var(--error, red)'
+                      : 'var(--muted, gray)'
+                  }}>
+                    {matchHint}
+                  </span>
                 </div>
               )
             }
@@ -1787,9 +2061,52 @@ function App() {
               )}
               {listFields.map(f => {
                 const field = data.result['list-form'][f]
+                // Global one-line rule: text cells clamp to one
+                // line with an ellipsis; the full value rides
+                // along as the hover tooltip. Media cells and chip
+                // cells keep their own layout (chips wrap).
+                const widget = field['widget'] || ''
+                const isMedia =
+                  widget === 'image' || widget === 'image-list'
+                const isChipCell = f in chipFieldMeta
+                const clamp = !(isMedia || isChipCell)
+                const cellStyle: React.CSSProperties | undefined =
+                  clamp ? {
+                    maxWidth: '22rem',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  } : undefined
+                const tip =
+                  clamp ? cellText(rec[f], field) : ''
                 return (
-                  <td key={f}>
-                    {renderCellValue(rec[f], field)}
+                  <td
+                    key={f} style={cellStyle}
+                    title={tip || undefined}
+                  >
+                    {isChipCell && Array.isArray(rec[f])
+                      ? (
+                        <span className="chip-cell">
+                          {(rec[f] as string[]).map(v => {
+                            const active =
+                              (listFilters[f] || []).includes(v)
+                            return (
+                              <button
+                                key={v}
+                                type="button"
+                                className={active
+                                  ? 'chip chip-active' : 'chip'}
+                                title={active
+                                  ? `Remove filter: ${v}`
+                                  : `Filter by ${v}`}
+                                onClick={() =>
+                                  toggleChipFilter(f, String(v))}
+                              >{String(v)}</button>
+                            )
+                          })}
+                        </span>
+                      )
+                      : renderCellValue(rec[f], field)}
                   </td>
                 )
               })}

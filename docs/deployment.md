@@ -235,7 +235,7 @@ The environment is a property of the *launch path*, never stored in the
 model:
 
 - `scripts/data-ui repl` (no profile) → development
-- `scripts/data-ui repl <profile>` → staging; `expose-profile` is a
+- `scripts/data-ui repl <profile>` → staging; `profile expose` is a
   visibility toggle, not part of the definition
 - `scripts/data-ui deploy <model>` → production (also the Deploy
   button, once production supports it — post-MVP)
@@ -251,7 +251,14 @@ instance has its own database by construction:
 Convention: one instance per model per environment; a second copy in
 the same environment is a new model. Data: development is volatile
 (snapshots only); staging and production are persistent — staging is
-*not* disposable. During the MVP, staging is the flagship environment:
+*not* disposable. The admin password is static in development
+(`admin / admin-password-1`, by convention — see
+[docs/snapshots.md](snapshots.md)) and generated per instance in
+staging (`profile.env`) and production (cluster secrets). Snapshot
+restore re-stamps the destination's own admin password hash, so a
+restored database always answers to its environment's password (see
+[docs/snapshots.md](snapshots.md) → Password re-stamping). During the
+MVP, staging is the flagship environment:
 it hosts Model Bank and has the Deploy button, which production lacks.
 Staging does not mirror production's substrate (host process vs k8s);
 passing staging is not a substrate guarantee. An environment is not a
@@ -261,7 +268,7 @@ instance runs.
 ### `:domain-stg`
 
 The model's `:domain` remains the canonical production FQDN, used by
-`deploy`. Staging exposure (`expose-profile`) reads `:domain-stg`;
+`deploy`. Staging exposure (`profile expose`) reads `:domain-stg`;
 when the author omits it, the compiler derives it by suffixing `-stg`
 onto the first DNS label of `:domain` (`todo.demo.data-ui.com` →
 `todo-stg.demo.data-ui.com`). An explicit `:domain-stg` always wins;
@@ -346,6 +353,13 @@ A war story, so you don't repeat it: the very first end-to-end deploy
 valid, much head-scratching: the operator was logging in with the *old*
 admin password from a previous instance's secrets. If your freshly
 deployed app rejects you, read the password again, slowly.
+
+### Password re-stamping on snapshot restore
+
+The snapshot machinery (dev + staging profiles) re-stamps the
+destination's own admin password hash after every restore, so the
+env and the database never disagree there. The Kubernetes deploy
+path has no snapshot restore; its secrets flow (above) applies.
 
 ### Password format trivia
 
@@ -441,16 +455,16 @@ the map entry, **validates the whole config** (`haproxy -c` across the
 main file and conf.d), and only then reloads. If validation fails,
 nothing is reloaded and the old routing keeps working.
 
-Locally-run host profiles (`scripts/data-ui expose-profile`) use the
+Locally-run host profiles (`scripts/data-ui profile expose`) use the
 same machinery with a different backend name:
 `dataui-profile-<name>` points at `127.0.0.1:<HTTP_PORT>` on the host
 instead of a k3d NodePort (the model `:name` values `profile` and
 `profile-*` are reserved so the two can never collide). One domain,
-one backend: `expose-profile` refuses a map line owned by a deployed
+one backend: `profile expose` refuses a map line owned by a deployed
 instance, and a deploy refuses a map line owned by a profile
 exposure — neither stops the other side's pods; `delete` (undeploy)
-first, then `expose-profile`. `unexpose-profile` (and
-`delete-profile`) remove the exposure.
+first, then `profile expose`. `profile unexpose` (and
+`profile delete`) remove the exposure.
 
 One subtlety, learned in production (where else): `systemctl reload
 haproxy` re-execs the master process *with its original command line*.
@@ -581,10 +595,14 @@ Work from the inside out; each rung isolates one layer:
     # 3. Does HAProxy route it? (full path: TLS, map, backend)
     curl https://todo.demo.data-ui.com/health # expect: OK
 
-    # 4. Is the API alive end to end?
+    # 4. Does login work? (POST the real admin password; see Secrets)
     curl -s -X POST https://todo.demo.data-ui.com/api/login \
       -H 'Content-Type: application/json' \
       -d '{"username":"admin","password":"<see Secrets section>"}'
+
+    # 5. Login still 401s? Read the Secrets section again — a deploy
+    #    never rewrites admin credentials, so the password is exactly
+    #    what the cluster Secret says.
 
 If (2) works and (3) doesn't, it's HAProxy: check
 `/etc/haproxy/data-ui.map` for the domain, `/etc/haproxy/conf.d/` for
