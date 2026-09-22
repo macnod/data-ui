@@ -26,6 +26,11 @@ keys `total` and `sort`.
 | `sort` | no | — | `"field:asc"` / `"field:desc"`; direction defaults to `asc`; field must be `:sortable t` |
 | `search` | no | — | Free-text term, ILIKE against `:searchable t` fields; trimmed; blank ignored; clamped to 200 chars |
 
+**Filter operators** (lowercase in JSON): `eq`, `ne`, `gt`, `lt`,
+`gte`, `lte`, `like`, `ilike`, `not-like`, `not-ilike`, `in`,
+`not-in`. Filters may target a joined table's fields (the example
+above targets the `tags` joiner through the listed type).
+
 **Response** (in addition to `records`, forms, `allowed-values`,
 permission flags): `total` (always present — pre-paging count of
 matching records; may exceed the number of returned records) and

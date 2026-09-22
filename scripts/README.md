@@ -191,8 +191,9 @@ Compose visible. Useful for diagnosing failures.
 
 #### `compile`
 
-Compiles the system (RBAC + Data UI) without starting a database or
-running tests. Verifies that the code loads cleanly.
+Compiles the system (loads `:rbac` and the Data UI test file) without
+starting a database or running tests. Verifies that the code loads
+cleanly.
 
 **Example:**
 
@@ -224,8 +225,8 @@ internally by the deploy pipeline, but can be called directly.
 
 **Example:**
 
-    scripts/data-ui field title
-    scripts/data-ui field name
+    scripts/data-ui field todos title
+    scripts/data-ui field todos name
 
 #### `deploy`
 
@@ -244,8 +245,7 @@ Set `DRY_RUN=1` to generate manifests without deploying — useful for
 verifying template changes.
 
 Deployment state (rendered manifests, `ports.lock`, per-instance
-secrets) lives outside the repo in
-`~/.local/state/data-ui-deploy/`.
+secrets) lives outside the repo in `/data/data-ui/deploy/`.
 
 **Examples:**
 
@@ -450,6 +450,25 @@ reinstall are one atomic change before the 04:10 timer can fire
 
 Displays the built-in help text.
 
+#### `e-demo` / `demo`
+
+Demo lifecycle verbs for host profiles. `e-demo` is the *ephemeral*
+class (data is disposable, included in the 04:10 nightly golden
+reset); `demo` is the persistent class (no nightly reset; the golden
+stays manual-only).
+
+- `e-demo start <profile> [--from <snapshot>]` — start (optionally
+  seeding from a named snapshot instead of the golden)
+- `e-demo stop <profile>` — teardown; refreshes the `stg-<p>-last`
+  snapshot first
+- `e-demo reset [profile...]` — nightly golden reset on demand: no
+  args = every enabled e-demo; explicit profiles bypass the enabled
+  check
+- `demo start|stop|reset` — same verbs for the persistent class
+
+Both drive the `dataui@<profile>` systemd units. See
+[Host profiles](#host-profiles) and `docs/snapshots.md`.
+
 ### Host profiles
 
 Named local instances live under `/data/data-ui/profiles/` (the
@@ -487,12 +506,13 @@ Optional keys:
 
 Per-profile runtime files live beside `profile.env`:
 
-- `repl.log`, `start.log`, `fifo`
+- `repl.log` (`LOG_FILE` default; the systemd unit wrapper unsets it,
+  so demo units log to journald instead)
 - `files/` (`DOCUMENT_ROOT`)
 - `temp/` (`FS_TEMP_DIRECTORY`)
 
-Host-wide files (`tests-run.log`, later `ports.lock`) stay at the
-root of `data-ui-host/`. Local file data does not live under
+`ports.lock` (deploy-side port cache) lives under
+`/data/data-ui/deploy/`. Local file data does not live under
 `~/k3d/volumes/`; that tree is for cluster PVs.
 
 Postgres data for a named profile lives in the bind-mounted
@@ -574,14 +594,15 @@ private remote retains full development history.
 
 1. Verifies the current branch is `master`
 2. Checks for uncommitted changes
-3. Compares `HEAD` against `public/master`; exits if there is nothing
+3. Fetches both remotes and merges incoming `private/master` and
+   `public/master` work into `master` (nothing is missed)
+4. Backs up `master` to `private` with a plain push (local `master`
+   is never reset and `private` is never force-pushed)
+5. Compares `HEAD` against `public/master`; exits if there is nothing
    to publish
-4. Counts the commits to be squashed
-5. Soft-resets to `public/master`, then creates a single new commit
-   with the provided message
-6. Pushes to `public`
-7. Force-pushes the squashed history to `private` (so both remotes
-   agree on `master`)
+6. Counts the commits to be squashed, then builds the squash with
+   `git commit-tree` (master itself is untouched)
+7. Pushes the squashed history to `public`
 
 ### Examples
 

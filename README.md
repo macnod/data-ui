@@ -14,7 +14,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
 Data UI compiles a small model into a complete, RBAC-backed application — database, API, React frontend, Kubernetes deployment — in one command.
 
-- **Evaluating as an investor or partner?** [The Big Idea](#the-big-idea) → [Current Status](#current-status-july-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
+- **Evaluating as an investor or partner?** [The Big Idea](#the-big-idea) → [Current Status](#current-status-september-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
 - **Need an application built?** Client engagements open after the MVP (target: December 2026). Early conversations welcome: [Contact](#contact).
 - **Engineer, or evaluating the tech?** Read top to bottom; the meat starts at [Overview](#overview) and the [Example Model](#example-model).
 
@@ -34,7 +34,7 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 - [API Approach](#api-approach)
 - [Development](#development)
 - [Deployment](#deployment)
-- [Current Status (July 2026)](#current-status-july-2026)
+- [Current Status (September 2026)](#current-status-september-2026)
 - [Road to MVP](#road-to-mvp)
 - [Goals & Vision](#goals--vision)
 - [Competitive Landscape](docs/competitive-landscape.md)
@@ -52,7 +52,7 @@ Building solid, evolving, RBAC-heavy collaborative applications requires holding
 
 Data UI lets you express the **entire** application as a small, reviewable artifact that fits comfortably in the body of an email, and **guarantees** that the expansion of that artifact into a running system is correct. You describe your application (entities, relationships, UI hints, etc.) once. The compiler produces the database, the API, the RBAC enforcement, the frontend, and the deployment, deterministically, with no per-type boilerplate and no hidden permission bugs.
 
-Change the model, recompile, and everything updates consistently. The model is the DNA of the application. At less than a page of code for many applications, that DNA is tiny compared to the many thousands of lines that would otherwise be needed to describe such an application. The napkin-sized to-do model is 57 lines; a Java team matching what it produces would need to write an estimated ~20,000 lines of production artifacts. The walkthrough: [57 vs ~20k](docs/57-vs-20k.org).
+Change the model, recompile, and everything updates consistently. The model is the DNA of the application. At less than a page of code for many applications, that DNA is tiny compared to the many thousands of lines that would otherwise be needed to describe such an application. The napkin-sized to-do model is ~57 lines; a Java team matching what it produces would need to write an estimated ~20,000 lines of production artifacts. The walkthrough: [57 vs ~20k](docs/57-vs-20k.org).
 
 
 ## The Thesis in Six Lines
@@ -133,7 +133,18 @@ That the power of Common Lisp is invisible to most working programmers is itself
 
 ## Example Model
 
-This example matches `models/todos.lisp`. Each file in the `models/` directory holds a bare model plist (no `defparameter` and no wrapping variable). The top-level keys (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:landing-page`) carry the model's identity, and `:types` holds the type definitions. Load the model with `(set-model "todos")`, pass just the file name, with no path and no `.lisp` extension. Prefer `:repl nil` in production (see [Deployment](#deployment)).
+This example is abbreviated from `models/todos.lisp` (which also sets
+`:domain-stg`, `:guest-allowed t`, `:guest-auto nil`, `:api-roles`,
+`:default-sort`, `:sortable` / `:searchable` on fields, `"public"` in
+`:type-roles`, and `:type-roles` overlays on the built-in `:users` /
+`:roles` / `:permissions` types). Each file in the `models/` directory
+holds a bare model plist (no `defparameter` and no wrapping variable).
+The top-level keys (`:title`, `:name`, `:version`, `:domain`,
+`:domain-stg`, `:repl`, `:guest-allowed`, `:guest-auto`, `:api-roles`,
+`:landing-page`, `:new-roles`) carry the model's identity, and `:types`
+holds the type definitions. Load the model with `(set-model "todos")`,
+pass just the file name, with no path and no `.lisp` extension. Prefer
+`:repl nil` in production (see [Deployment](#deployment)).
 
 ```lisp
 (:title "To Do List"
@@ -153,15 +164,9 @@ This example matches `models/todos.lisp`. Each file in the `models/` directory h
       (:name
         (:type :text :identity t
           :ui (:label "To Do" :widget :textbox)
-          :validations (:required (:max-length :max 19))
+          :validations (:required (:max-length :max 80))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
-        :points
-        (:type :integer :default 0
-          :ui (:label "Points" :widget :textbox)
-          :validations (:required)
-          :source (:view :main :column :points :agg :first)
-          :column t :not-null t)
         :done
         (:type :boolean :default :false
           :ui (:label "Done" :widget :checkbox)
@@ -213,7 +218,7 @@ This single definition aims to give you:
 
 The full RBAC system (`:users`, `:roles`, `:permissions`, `:resources`, and associated join tables) is automatically included from `*base-model*`. A user settings table is also included.
 
-What that 57-line model produces, and why a matching Java application is estimated at ~20,000 lines: [57 vs ~20k](docs/57-vs-20k.org).
+What that ~57-line model produces, and why a matching Java application is estimated at ~20,000 lines: [57 vs ~20k](docs/57-vs-20k.org).
 
 ### Example Compilation Results
 
@@ -230,7 +235,6 @@ create table if not exists rt_todos (
     created_at timestamp not null default now(),
     updated_at timestamp not null default now(),
     todo_name text not null unique,
-    todo_points integer not null default 0,
     todo_done boolean not null default 'false'
 )
 "
@@ -262,7 +266,6 @@ select
   rt_todos.created_at     rt_todos_created_at,
   rt_todos.updated_at     rt_todos_updated_at,
   rt_todos.todo_name      rt_todos_todo_name,
-  rt_todos.todo_points    rt_todos_todo_points,
   rt_todos.todo_done      rt_todos_todo_done,
   rt_todo_tags.id         rt_todo_tags_id,
   rt_todo_tags.created_at rt_todo_tags_created_at,
@@ -279,16 +282,16 @@ from rt_todos
    :ALIASES
    (:TODOS
     (:ID :RT-TODOS-ID :CREATED-AT :RT-TODOS-CREATED-AT :UPDATED-AT
-     :RT-TODOS-UPDATED-AT :NAME :RT-TODOS-TODO-NAME :POINTS
-     :RT-TODOS-TODO-POINTS :DONE :RT-TODOS-TODO-DONE)
+     :RT-TODOS-UPDATED-AT :NAME :RT-TODOS-TODO-NAME
+     :DONE :RT-TODOS-TODO-DONE)
     :TAGS
     (:ID :RT-TAGS-ID :CREATED-AT :RT-TAGS-CREATED-AT :UPDATED-AT
      :RT-TAGS-UPDATED-AT :NAME :RT-TAGS-TAG-NAME))
    :COLUMNS
    (:TODOS
     (:ID "rt_todos.id" :CREATED-AT "rt_todos.created_at" :UPDATED-AT
-     "rt_todos.updated_at" :NAME "rt_todos.todo_name" :POINTS
-     "rt_todos.todo_points" :DONE "rt_todos.todo_done")
+     "rt_todos.updated_at" :NAME "rt_todos.todo_name"
+     :DONE "rt_todos.todo_done")
     :TAGS
     (:ID "rt_tags.id" :CREATED-AT "rt_tags.created_at" :UPDATED-AT
      "rt_tags.updated_at" :NAME "rt_tags.tag_name")))
@@ -352,8 +355,9 @@ For a detailed comparison of Data UI's approach against existing tools, see [Com
 - `:scope :user` on a field's `:source` to filter aggregated field values to the current user (e.g. "my rating")
 - `:identity t` marks a field as the natural key used for write-through lookups and unique indexes
 - `:write-to` declares related-table upserts from a field write (e.g. rating → ratings row); non-transactional in MVP
-- `:ui` hints (`:label`, `:widget`, `:read-only`, `:precision`) for frontend rendering
+- `:ui` hints (`:label`, `:widget`, `:read-only`, `:precision`, `:options`) for frontend rendering
 - `:widget` values: `:textbox`, `:textarea`, `:code`, `:stars`, `:select`, `:checkbox`, `:checkbox-list`, `:file`, `:hidden`, `:password`, `:button`, `:image`, `:image-list`
+- `:options` with `:widget :select` for static dropdowns (the stored value is the option string)
 - `:read-only t` on `:ui` renders a field's display variant instead of an editor (boolean flag, not a widget value)
 - `:button` field type with `:action`: clickable control on the update form that runs a registry action hook; compiler synthesizes a companion `:<field>-status` column
 - `:validations` common validation names or parameterized registry entries that validate form/field data
@@ -365,12 +369,17 @@ For a detailed comparison of Data UI's approach against existing tools, see [Com
 - `:user-setting t` (type-level) to mark per-user settings types; auto-sets `:suppress-roles t` and derives category `:settings` if omitted
 - `:suppress-roles t` (type-level) to suppress the injected `roles` field in forms
 - `:category` (type-level) to place a type in the selector: `:user`, `:settings` (Settings tab), or `:system`. Author key, not reserved to built-ins
-- `:type-roles` to declare which roles can access a type
+- `:type-roles` to declare which roles can access a type (also overrides defaults on built-in types)
+- `:sortable t` / `:searchable t` on a field to enable list sorting (clickable headers) and free-text search (ILIKE)
+- `:default-sort` (type-level) to declare the sort used when a request sends none
+- `:rollup t` + `:grain` for read-only analytical types (SQL `GROUP BY` aggregates, no physical table)
+- `:compose` to build a stored field value from other fields server-side (e.g. full name from parts)
 - `:landing-page` (top-level) to declare which type the frontend shows on load (resolved per-user via `be-landing-page`)
+- `:guest-allowed` / `:guest-auto` / `:api-roles` (top-level) for passwordless guest login and app-level endpoint gating
 - `:force-sql-name` to override the generated SQL column name
 - `:auto` for create/update/delete → generated SQL (or override with your own function)
 - Lifecycle hooks (`:pre-create`, `:post-create`, `:pre-update`, `:post-update`, `:pre-delete`, `:post-delete`) via registry entries (raw functions are internal base-model only)
-- Action hooks on `:button` fields (e.g. `:deploy-model`) via the same registry
+- Action hooks on `:button` fields (e.g. `:deploy-model`, `:generate-model`) via the same registry
 - Non-base tables get an `rt_` prefix to avoid name collisions with RBAC tables
 
 Full model vocabulary: [docs/model-reference.md](docs/model-reference.md).
@@ -471,7 +480,9 @@ All endpoints stay **generic**, no per-type handler generation needed:
 - `POST /api/upload` → file upload (multipart, returns `file-token`)
 - `POST /api/validate-field`, `/api/validate-form` → per-field and per-form validation
 - `GET /api/types`, `/api/info` → schema and metadata (`/api/types` returns a `:category` per type: `:system`, `:settings`, or `:user`; authors set `:category` or it is derived)
-- `POST /api/login`, `/api/refresh` → JWT auth (access + refresh tokens)
+- `GET /api/public-info` → unauthenticated app title + guest-login flags (login screen)
+- `GET /api/css-variables` → theme variables from the user's settings row
+- `POST /api/login`, `/api/refresh` → JWT auth (access + refresh tokens; `/api/login` also serves the passwordless guest path when the model sets `:guest-allowed t`)
 - `GET /api/file` → file serving (with token auth)
 - `GET /health` → health check
 
@@ -541,20 +552,23 @@ The full story, every step, every file, where the admin password lives, how cert
 Instances run in one of three *environments* — development (`scripts/data-ui repl`), staging (`repl <profile>`, exposed via the model's `:domain-stg`), or production (`deploy`, which serves `:domain`). Tiers are product offerings; environments are where an instance runs. See [docs/deployment.md](docs/deployment.md) → Environments.
 
 
-## Current Status (July 2026)
+## Current Status (September 2026)
 
 The project is in active development, and the core claim is now demonstrated end to end:
 
-- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model was deployed to production on a k3d cluster with a single command (July 2026); the public demo is being rebuilt around the successor model.
+- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model was deployed to production on a k3d cluster with a single command (July 2026); the public demo now runs as staged demo apps (see below).
 - Full CRUD operations work via the backend, REST API, and frontend React code, across **all** types, both the built-in RBAC types (users, roles, permissions, resources, etc.) and user-defined types.
-- JWT-based authentication (access + refresh tokens) protects the API.
+- JWT-based authentication (access + refresh tokens) protects the API, including the passwordless **guest login** path (`:guest-allowed t`, `:guest-auto`, `:api-roles`).
 - **Scoping** is implemented at both the view level and the field level. View-level `:scope :user` filters `be-list` results to records owned by the current user. Field-level scoping (`:scope :user` on a field's `:source`) filters aggregated field values to the current user (e.g. "my rating" on Model Bank). It does not control field visibility or editability in the UI.
 - **Write-through** (`:write-to` + `:identity t`) is implemented: related- table upserts run from `be-insert` / `be-update` (best-effort, non- transactional). Used by Model Bank ratings. Some edge cases (e.g. clear-to-NULL) remain open.
-- **Action hooks** (`:button` fields + `:action`, `POST /api/actions`, companion status column, sync/async protocol) are implemented. The `:deploy-model` registry entry powers Model Bank deploy-from-record.
-- **Model features in active use** (exercised by `models/modelbank.lisp`): tree-structured types with filesystem backing (`:tree`, `:is-leaf`, `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated fields (`:autofill :user`), per-user settings types (`:user-setting`), write-through ratings (`:write-to`, `:identity`), action buttons (`:button`, `:action`), and UI hints for code blocks, images, image lists, and star ratings (`:widget :stars`).
+- **Action hooks** (`:button` fields + `:action`, `POST /api/actions`, companion status column, sync/async protocol) are implemented. The `:deploy-model` registry entry powers Model Bank deploy-from-record (role-gated to `deployer`, writes to `models/local/`); `:generate-model` calls an LLM to author a model from a description (role-gated to `ai-user`).
+- **List UX**: clickable column sorting (`:sortable t`), free-text search with negative terms (`:searchable t`, "Not…" box), `:default-sort`, filter chips on M2M checkbox values, pagination driven by `total`.
+- **Rollup types** (`:rollup t` + `:grain`): read-only analytical types served from `GROUP BY` SQL (e.g. books-by-rating).
+- **Model features in active use** (exercised by `models/modelbank.lisp` and `models/books.lisp`): tree-structured types with filesystem backing (`:tree`, `:is-leaf`, `:parent-type`, `:fs-backed`), path fields (`:path`), auto-populated fields (`:autofill :user`), per-user settings types (`:user-setting`), write-through ratings (`:write-to`, `:identity`), action buttons (`:button`, `:action`), `:compose` server-side field composition, static selects (`:ui :options`), and UI hints for code blocks, images, image lists, and star ratings (`:widget :stars`).
 - File handling: uploading, listing, and deleting files and directories works end-to-end (uploads use a two-phase flow: `multipart/form-data` POST to `/api/upload`, then a JSON `/api/insert` carrying the returned `file-token`). File **update** is not yet implemented and may be deferred past the MVP.
-- React frontend: log in, navigate as a user, perform CRUD with RBAC enforcement, manage roles, upload and preview images (thumbnail grids with modal/lightbox), inline edit mode, action buttons on update forms. The UI works but needs polish; this is a current focus.
-- Tests for compilation, predicates, backend, REST, scoping, and actions are in `tests/` (FiveAM): `predicate-tests.lisp`, `backend-tests.lisp`, `rest-tests.lisp`, `scoping-tests.lisp`, `action-tests.lisp`, plus `helpers.lisp` and `model-template.lisp`. One view-level scoping behavioral test remains flaky / TODO.
+- React frontend: log in (including guest), navigate as a user, perform CRUD with RBAC enforcement, manage roles, upload and preview images (thumbnail grids with modal/lightbox), inline edit mode, action buttons on update forms. The UI works but needs polish; this is a current focus.
+- **Ops tooling** around the engine: environments (development / staging / production) with host profiles exposed at each model's `:domain-stg`; `e-demo` / `demo` systemd-managed demo lifecycles with nightly golden resets; a shared **snapshot pool** (`scripts/data-ui snapshot save|restore|list|drop|migrate`) for capturing and moving database + file state between environments.
+- Tests: `tests/` holds 30+ FiveAM suites (compilation, predicates, backend, REST, scoping, actions, hooks, rollups, M2M, compose, search/sort, guest/API-roles, generator, and more — see `data-ui.asd`). One view-level scoping behavioral test remains flaky / TODO.
 
 Model compilation, SQL generation for tables/views/triggers, RBAC integration, validation, CRUD, write-through, action hooks, and Kubernetes deployment are implemented and exercised. Work continues on Model Bank completion, write-through edge cases, UI refinement, and additional example models.
 

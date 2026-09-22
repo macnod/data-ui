@@ -65,9 +65,9 @@ On the deploy host (or any machine with ssh access to it; see
 
 That's it. The output ends with:
 
-    Deployed To Do List todo-0.1-6d8f586.
+    Deployed To Do List todos-0.1-6d8f586.
       Domain:   https://todo.demo.data-ui.com
-      NodePort: http://172.18.0.2:30300
+      NodePort: http://172.18.0.2:30303
       Swank:    kubectl -n dataui-todos port-forward deploy/dataui-todos 4005:4005
 
 Open the domain, log in as `admin` with the password from
@@ -90,7 +90,7 @@ authoritative reference; this is the guided tour.
 
 ### 1. Compile the model (the gate)
 
-    compile_default_model
+    compile_model
 
 Before anything ships, the model in `models/<model-name>.lisp` must
 compile. The script starts a *throwaway* PostgreSQL container (its own
@@ -114,17 +114,17 @@ The script asks the model for its `:name`, `:title`, `:version`,
 
 | Fact         | Example                                              |
 |--------------|------------------------------------------------------|
-| TAG          | `todo-0.1-6d8f586`                                   |
-| IMAGE        | `macnod/data-ui:todo-0.1-6d8f586`                    |
+| TAG          | `todos-0.1-6d8f586`                                   |
+| IMAGE        | `macnod/data-ui:todos-0.1-6d8f586`                    |
 | NAMESPACE    | `dataui-todos`                                        |
-| RELEASE_NAME | `To Do List todo-0.1-6d8f586`                        |
-| OUT_DIR      | `~/.local/state/data-ui-deploy/todo/releases/0.1-6d8f586` |
+| RELEASE_NAME | `To Do List todos-0.1-6d8f586`                        |
+| OUT_DIR      | `/data/data-ui/deploy/todos/releases/0.1-6d8f586` |
 
 ### 3. Tag the release
 
     create_deploy_tag
 
-An annotated git tag (`todo-0.1-6d8f586`) is created at HEAD. If the tag
+An annotated git tag (`todos-0.1-6d8f586`) is created at HEAD. If the tag
 already exists *and points at HEAD*, it is reused (re-deploying the same
 commit is fine). If it exists and points elsewhere, the deploy aborts:
 a tag must never silently change meaning.
@@ -133,11 +133,12 @@ a tag must never silently change meaning.
 
     assign_node_port
 
-Each instance gets a stable NodePort (starting at 30300). The assignment
-is cached in `~/.local/state/data-ui-deploy/ports.lock`, but the cache is
+Each instance gets a stable NodePort (starting at 30303; 30300–30302
+are reserved for k3d's published loopback hops). The assignment
+is cached in `/data/data-ui/deploy/ports.lock`, but the cache is
 not the source of truth; the *cluster* is. If the lock file is missing,
 the port is recovered from the live Service. Only when neither exists is
-a new port assigned (lowest free port ≥ 30300, checked against both the
+a new port assigned (lowest free port ≥ 30303, checked against both the
 lock file and every NodePort in the cluster).
 
 ### 5. Ensure instance secrets
@@ -211,7 +212,7 @@ Worth repeating with the actual flow drawn out:
 
     models/<model-name>.lisp
         :name "todos" ──────────┬─→ namespace  dataui-todos
-        :version "0.1" ────────┼─→ tag        todo-0.1-<git-hash>
+        :version "0.1" ────────┼─→ tag        todos-0.1-<git-hash>
         :domain "todo.demo..." ┼─→ HAProxy map entry + backend
         :repl t ───────────────┴─→ Swank port in the manifest (or not)
 
@@ -234,9 +235,12 @@ ad-hoc "local"/"deployed" phrasing are retired in favor of these.
 The environment is a property of the *launch path*, never stored in the
 model:
 
-- `scripts/data-ui repl` (no profile) → development
-- `scripts/data-ui repl <profile>` → staging; `profile expose` is a
-  visibility toggle, not part of the definition
+- `scripts/data-ui repl` (no profile) → development (throwaway 5444
+  database)
+- `scripts/data-ui repl <profile>` / `e-demo start <profile>` /
+  `demo start <profile>` → staging (profiles run under systemd units
+  via the e-demo / demo verbs); `profile expose` is a visibility
+  toggle, not part of the definition
 - `scripts/data-ui deploy <model>` → production (also the Deploy
   button, once production supports it — post-MVP)
 
@@ -283,11 +287,11 @@ zone or certificate is involved.
 ## Deployment State: Where Things Live
 
 Deployment state lives **outside the repository**, in
-`~/.local/state/data-ui-deploy/` on the deploy host:
+`/data/data-ui/deploy/` on the deploy host:
 
-    ~/.local/state/data-ui-deploy/
+    /data/data-ui/deploy/
     ├── ports.lock                      # name env port, one per line
-    └── todo/
+    └── todos/
         ├── secrets.env                 # instance credentials (0600)
         └── releases/
             ├── 0.1-c13571a/            # every release's manifests, kept
@@ -320,7 +324,7 @@ Three layers, three lifetimes:
 | Layer                          | Lives                         | Survives                  |
 |--------------------------------|-------------------------------|---------------------------|
 | Source (model, templates)      | git repo                      | everything                |
-| Deploy state (secrets, ports)  | `~/.local/state/data-ui-deploy` | cluster recreation      |
+| Deploy state (secrets, ports)  | `/data/data-ui/deploy` | cluster recreation      |
 | App data (database, files)     | `/data/k8s/data-ui`           | cluster deletion          |
 
 ## Secrets, and How to Get the Admin Password
@@ -335,7 +339,7 @@ Each instance has exactly three secrets, generated once at first deploy:
 
 The easy way (on the deploy host):
 
-    grep ADMIN_PASSWORD ~/.local/state/data-ui-deploy/todo/secrets.env
+    grep ADMIN_PASSWORD /data/data-ui/deploy/todos/secrets.env
 
 The canonical way (works even if the secrets file is gone, from any
 machine with cluster access):
@@ -443,11 +447,14 @@ existing `default_backend` line.
         mode http
         option forwardfor
         option httpchk GET /health
-        server dataui-todos 172.18.0.2:30300 check inter 2000 rise 2 fall 3
+        server dataui-todos 172.18.0.2:30303 check inter 2000 rise 2 fall 3
 
 That points at the k3d node's IP and the instance's NodePort, with an
 active health check against the same `/health` endpoint the Kubernetes
-probes use. The `conf.d` directory is enabled via `EXTRAOPTS` in
+probes use. (`assign_backend_target` prefers the k3d-published loopback
+hop `127.0.0.1:<NodePort+1000>` when it answers — e.g. `127.0.0.1:31303`
+— and falls back to the node's bridge IP only when no mapping responds.)
+The `conf.d` directory is enabled via `EXTRAOPTS` in
 `/etc/default/haproxy` (also a one-time, idempotent step).
 
 On every deploy, the script: installs/updates the backend file, upserts
@@ -552,7 +559,9 @@ Configuration knobs (environment variables, all with defaults):
 |-------------------|----------------------------------|-------------------------------|
 | `DEPLOY_HOST`     | `evo-x2`                         | ssh destination & hostname    |
 | `DEPLOY_CHECKOUT` | `$HOME/deploy/data-ui`           | deploy clone location         |
-| `DEPLOY_STATE_DIR`| `~/.local/state/data-ui-deploy`  | state directory               |
+| `DEPLOY_STATE_DIR`| `/data/data-ui/deploy`           | state directory               |
+| `DATA_UI_STATE`   | `/data/data-ui`                  | root for deploy state         |
+| `MODEL_FILE`      | `models/<name>.lisp`             | override model path (VIP deploys) |
 | `K3D_CLUSTER`     | `evo-x2`                         | k3d cluster name              |
 | `DRY_RUN`         | (unset)                          | stop after rendering manifests|
 
@@ -590,7 +599,7 @@ Work from the inside out; each rung isolates one layer:
     kubectl -n dataui-todos get pods
 
     # 2. Does the app answer inside the cluster? (NodePort, bypasses HAProxy)
-    curl http://<node-ip>:30300/health        # expect: OK
+    curl http://<node-ip>:30303/health        # expect: OK
 
     # 3. Does HAProxy route it? (full path: TLS, map, backend)
     curl https://todo.demo.data-ui.com/health # expect: OK
@@ -636,6 +645,12 @@ exits (`--disable-debugger`), so the evidence is always in `--previous`.
   the context to 44 GB. `.dockerignore` excludes `*.log` now, but
   entropy never sleeps.
 
+### Rate limiting
+
+`scripts/data-ui traffic` reports the HAProxy per-IP rate-limit
+counters (stick-table in the https frontend) and flags clients near or
+over the limits. It needs sudo for the HAProxy admin socket.
+
 ## Starting Over: the Clean-Slate Procedure
 
 The fast path: delete the whole instance with one command:
@@ -661,10 +676,10 @@ steps 1–3 are enough for a clean redeploy of the same instance):
 
     # 3. Wipe the instance's data on the host (root-owned; same path
     #    on host and node via the /data/k8s bind)
-    sudo rm -rf /data/k8s/data-ui/todo-demo
+    sudo rm -rf /data/k8s/data-ui/todos-demo
 
     # 4. Optional: drop cached secrets to get fresh credentials
-    rm ~/.local/state/data-ui-deploy/todo/secrets.env
+    rm /data/data-ui/deploy/todos/secrets.env
 
     # 5. Deploy
     scripts/data-ui deploy todos

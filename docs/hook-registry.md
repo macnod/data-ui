@@ -81,7 +81,7 @@ on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks`
 
 | Arg | Meaning |
 |-----|---------|
-| `roles` | Reserved on the contract; **`be-action` does not pass it today** (always default/`nil`). Do not rely on it in MVP hooks. |
+| `roles` | List of the acting user's role names, passed by `be-action`. Load-bearing for the shipped admin-only hooks (`:deploy-model` requires `"deployer"`, `:generate-model` requires `"ai-user"`). |
 | `status-field` | Keyword of the companion status column (e.g. `:deploy-status`) |
 | `set-status` | `(lambda (message) ...)`; sole way for hooks to write status |
 
@@ -231,7 +231,7 @@ Call sites:
 | Function | Slots invoked |
 |----------|--------------|
 | `be-insert` | `:pre-create` (before validation & write), `:post-create` (after write, with `:id new-id`) |
-| `be-insert-internal` | `:post-create` (after write, with `:id new-id`) |
+| `be-insert-internal` | `:pre-create` (before validation & write), `:post-create` (after write, with `:id new-id`) |
 | `be-update` | `:pre-update` (before validation & write), `:post-update` (after write-through) |
 | `be-delete` | `:pre-delete` (before write), `:post-delete` (after write) |
 
@@ -322,7 +322,9 @@ function is stored on the compiled field definition as `:compiled-hook`.
 - `:type :button`: no storage column.
 - `:action`: a single registry form `(:keyword args...)`.
 - `:action` is valid **only** on `:type :button` (compile-time error otherwise).
-- `:ui` must include `:widget :button`.
+- `:ui` should include `:widget :button` so the frontend renders a
+  control (the compiler does not enforce it; a missing widget defaults
+  to `:textbox`).
 
 ### Status field (auto-synthesized)
 
@@ -371,7 +373,8 @@ REST endpoint: `POST /api/actions` with `{"type", "id", "field"}`.
 
 | Name | Parameters | Behavior |
 |------|------------|----------|
-| `:deploy-model` | `:field` (keyword) | Reads model text from the record's `:field`, validates in-process via `validate-model`. On validation failure returns `(:status "failed" :message …)` immediately (no worker). On success spawns an async worker that writes the model file, commits, shells out to `scripts/data-ui deploy`, and records the admin password in `:secrets`. Returns `(:async t :message "Deploy started")`. |
+| `:deploy-model` | `:field` (keyword) | Requires the `"deployer"` role (else `(:status "failed" :message "deployer role required")` before anything else). Reads model text from the record's `:field`, validates in-process via `validate-model`. On validation failure returns `(:status "failed" :message …)` immediately (no worker). On success spawns an async worker that writes the model to `models/local/<name>.lisp` (no git commit — VIP models stay out of history), shells out to `scripts/data-ui deploy` with `MODEL_FILE` pointing at that file, and records the admin password in `:secrets`. Returns `(:async t :message "Deploy started")`. |
+| `:generate-model` | `:description-field` (keyword), `:model-field` (keyword) | Requires the `"ai-user"` role and a non-empty description in `:description-field`. Reads LLM config (base URL, model, API key) from the admin `llm-config` secret; spawns an async worker that calls the LLM (system prompt = `docs/model-reference.md`; OpenAI- and Anthropic/GLM-style responses supported), cleans the response, validates it via `validate-model`, and writes it into the record's `:model-field`. Returns `(:async t :message "Generation started")`. |
 | `:spawn` | `:close` (plist), `:clear` (list) | Closes the record the button sits on and inserts a fresh successor (template→instance completion). Sync. See below. |
 
 #### `:spawn`

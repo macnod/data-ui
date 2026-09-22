@@ -72,10 +72,11 @@ Conventions (`models/README.md`):
 | File | Role |
 |------|------|
 | `models/<name>.lisp` | Named application model |
+| `models/local/<name>.lisp` | Locally deployed (VIP) model; gitignored, shadows same-named test fixture |
 | `models/test/<name>.lisp` | Test fixture; do not change unless changing tests |
 
-`(set-model "<name>")` tries `models/<name>.lisp` first, then falls back
-to `models/test/<name>.lisp`.
+`(set-model "<name>")` tries `models/<name>.lisp` first, then
+`models/local/<name>.lisp`, then falls back to `models/test/<name>.lisp`.
 
 Because the form starts with a quote, Lisp can `read` it. That is useful for
 paren-balance checks; it is not how the compiler is invoked.
@@ -86,7 +87,7 @@ paren-balance checks; it is not how the compiler is invoked.
 
 Recognized keys: `*top-level-keys*` =
 `(:title :name :version :domain :domain-stg :repl :guest-allowed
-:api-roles :landing-page :new-roles)`.
+:guest-auto :api-roles :landing-page :new-roles)`.
 
 `:types` is required alongside those settings but is handled separately by
 `compile-model`. Any other root key is ignored by `top-level-settings`.
@@ -100,6 +101,7 @@ Recognized keys: `*top-level-keys*` =
 | `:domain-stg` | no (default: `-stg` suffixed onto the first DNS label of `:domain`) | FQDN-like string | staging exposure (`profile expose`); must differ from `:domain`; requires `:domain` when written explicitly |
 | `:repl` | no (default `nil`) | boolean | Swank port iff `t`; **nil in production** |
 | `:guest-allowed` | no (default `nil`) | boolean | passwordless guest login via `/api/login`; see [Guest login](#guest-login) |
+| `:guest-auto` | no (default `t`) | boolean | whether the frontend may auto-login as guest without showing the login page (only meaningful with `:guest-allowed t`; `nil` keeps the login page as the first screen). Served as a JSON boolean by `/api/public-info` |
 | `:api-roles` | no (default `("logged-in")`) | non-empty list of role-name strings, no duplicates | app-level REST endpoints; see [API roles](#api-roles) |
 | `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-base type the user can access |
 | `:new-roles` | no | plist: role-name keyword → non-empty list of permission strings | `ensure-declared-roles` at `set-model` time |
@@ -272,9 +274,9 @@ declared permission list wins over the full-CRUD default that
 `:type-roles` would otherwise grant.
 
 Reserved role names (`"admin"`, `"settings"`, `"logged-in"`, `"public"`,
-`"user-creator"`, `"role-creator"`, `"permission-creator"`, anything ending
-`:exclusive` or prefixed `admin:` / `guest:`) are compile errors: they
-already exist or carry rbac semantics of their own.
+`"guest"`, `"user-creator"`, `"role-creator"`, `"permission-creator"`,
+anything ending `:exclusive` or prefixed `admin:` / `guest:`) are compile
+errors: they already exist or carry rbac semantics of their own.
 
 ### Guest login (`:guest-allowed`)
 
@@ -437,7 +439,7 @@ request-time one (`:like` / `:in` never appear here):
 
 | Family | Operators | Rules |
 |--------|-----------|-------|
-| Discrete (boolean / text / integer / uuid) | `:eq`, `:ne` | value is a real literal matching the column type; booleans are Lisp `t`/`nil` |
+| Discrete (boolean / text / integer / real / uuid) | `:eq`, `:ne` | value is a real literal matching the column type (any number for real columns); booleans are Lisp `t`/`nil`; password columns count as text |
 | Rolling date (timestamp) | `:last-days` | integer `1..1825`; `ratings.created_at >= NOW() - INTERVAL 'n days'` |
 | Calendar date (timestamp) | `:calendar` | value `:month` only (the value slot is the extension point) |
 
@@ -453,7 +455,8 @@ on the path grain → F bind into every real measure (`FILTER`), never a global
 `:parent-type`, lifecycle slots, `:write-to`, `:create` / `:update` /
 `:delete`, `:add-form` / `:update-form` (even nil), extra views beyond
 `:main`, author `:id`, `:column t`, `:button` fields, `:suppress-roles nil`,
-and on fields: `:action`, `:validations`, `:compose`, `:autofill`,
+type-level `:user-setting` / `:is-joiner` / `:built-in`, and on fields:
+`:action`, `:validations`, `:compose-string`, `:compose`, `:autofill`,
 `:source-all`, `:write-to`, `:join-table`, `:target`, `:identity t`.
 `:grain` or `:filter` on a non-rollup type is also a compile error.
 
@@ -553,9 +556,18 @@ execution path; the compiled type declaration does.
 | `:offset` | `0` | Records to skip |
 | `:sort` | `nil` | `(:field :asc)` or `(:field :desc)`; direction optional (defaults `:asc`); `nil` = no requested sort |
 | `:search` | `nil` | Free-text string, ILIKE-matched against the type's `:searchable t` fields |
+| `:form` | `list-form` | Form key to render (`:list-form` / `:update-form` / `:add-form`) |
+| `:filters` | `nil` | List of `(type-key field-key operator value)` 4-tuples (see below); a bare UUID string is also accepted (single-record fetch) |
+
+**Filter operators** (`operator-sql`): `:eq :ne :gt :lt :gte :lte :like
+:ilike :not-like :not-ilike :in :not-in`. `:in` / `:not-in` take a
+non-empty list of the field's atom type. A filter row may target a joined
+table's field (including a join-table field); that pulls the join into
+Phase A (`SELECT DISTINCT id … JOIN …`).
 
 ```lisp
-(be-list :todos "admin" :limit 20 :offset 40 :sort '(:points :desc))
+(be-list :todos "admin" :limit 20 :offset 40 :sort '(:name :desc)
+         :filters '((:todos :done :eq :false)))
 ```
 
 ### `/api/list` query parameters
@@ -663,7 +675,7 @@ Under `:fields`, each entry is `field-key` → plist (except joiner
 | `:path` | marks the FS path field on fs-backed types (at most one per type) |
 | `:action` | **only** on `:type :button`; single action hook form |
 | `:sortable` | `t` → field is eligible for `ORDER BY` in list queries (clickable header). Base (non-rollup) types: only valid on `:column t` fields; compiler emits a sort index when no covering index exists. Rollup types only: the `:column t` rule is relaxed — pass-throughs and `:sum` / `:count` / `:avg` measures are legal; `:list` / `:distinct` measures are a compile error. On a hybrid (regular type with aggregated fields) `:sortable t` on a Phase B measure stays a compile error |
-| `:searchable` | `t` → column is included in free-text `:search` (ILIKE OR-group in Phase A). Only valid on `:type :text` base columns without `:target`. Independent of `:sortable`. Distinct from type-level `:search-sql` (write-through identity lookup). Serialized as a JSON boolean (`true`/`false`, never `[]`). Base `:users` marks `:name` and `:email` searchable. See [List queries](#list-queries-paging-sort-search) |
+| `:searchable` | `t` → column is included in free-text `:search` (ILIKE OR-group in Phase A). Only valid on `:type :text` base columns without `:target`. Independent of `:sortable`. Distinct from type-level `:search-sql` (write-through identity lookup). Serialized as a JSON boolean (`true`/`false`, never `[]`). See [List queries](#list-queries-paging-sort-search) |
 | `:default-from` | `:user` → copy username when creating user-setting rows |
 | `:css-value` | `t` → included in CSS-vars API (e.g. settings `:dark-mode`) |
 | `:primary-key` | DDL primary key (injected on `:id`) |
@@ -1212,7 +1224,8 @@ inserted or updated. Used by Model Bank ratings.
 
 Rules (`write-to` in `model.lisp`):
 
-- exactly one value tag must be `:value` (the payload)
+- a `:value` tag is required (the payload); with more than one, the first
+  silently wins — write exactly one
 - every `:identity t` field on the target must appear as a key
 - compile-time validated
 
@@ -1403,7 +1416,8 @@ Lifecycle may be a single form or a list. Validation is always a list.
 
 | Name | Params | Behavior |
 |------|--------|----------|
-| `:deploy-model` | `:field` keyword | validate model text in-process; async deploy worker |
+| `:deploy-model` | `:field` keyword | deployer role required; validate model text in-process; async deploy worker (writes `models/local/`, no git commit) |
+| `:generate-model` | `:description-field`, `:model-field` keywords | ai-user role required; async LLM call writes a validated model into `:model-field` (config in the admin `llm-config` secret) |
 | `:spawn` | `:close` plist, `:clear` list | close the record + insert a fresh successor (recurring-instance pattern); sync; reserved close values `:now` / `:user` |
 
 Full contracts and per-hook detail: `docs/hook-registry.md`.
@@ -1476,13 +1490,13 @@ Always merged into every compiled model:
 
 | Type | Flags | Notes |
 |------|-------|-------|
-| `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` |
+| `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` and `:sortable t` |
 | `:resources` | base, built-in, internal | no CRUD |
-| `:permissions` | base, built-in | |
-| `:roles` | base, built-in | |
+| `:permissions` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
+| `:roles` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
 | `:role-permissions`, `:resource-roles`, `:role-users` | base, built-in, joiner, internal | |
-| `:settings` | base, built-in, user-setting | dark-mode, font-size, display-name, bio; view scope `:user` |
-| `:secrets` | built-in, not base, suppress-roles, category `:settings` | per-user secrets |
+| `:settings` | base, built-in, user-setting | dark-mode, display-name, bio; view scope `:user` |
+| `:secrets` | built-in, not base, suppress-roles, category `:settings` | per-user secrets; `:name` is `:searchable t` |
 | `:tokens` | built-in, not base, no display | internal token store |
 
 RBAC types are treated like user-defined types at the API level (e.g. assign
@@ -1533,9 +1547,12 @@ compile:
 
 **Type-level:** `:table-name`, `:create-table-sql`, `:insert-sql`,
 `:update-sql`, `:delete-sql`, `:search-sql`, compiled lifecycle function lists,
-resolved `:category` / `:internal`.
+resolved `:category` / `:internal`, `:searchable-fields` (stage 3),
+`:phase-a-shape` (`:base` or `:measure`).
 
-**View-level:** `:sql`, `:aliases`, `:columns`, normalized `:scope`.
+**View-level:** `:sql`, `:aliases`, `:columns`, normalized `:scope`,
+`:phase-a-base-sql`, `:phase-a-join-sql`; on rollups also
+`:measure-phase-a-select` / `-group-by` / `-count-select` / `-grain-where`.
 
 **Field-level:** `:name-sql`, `:type-sql`, `:create-sql`, compiled
 `:validations` (function list), `:base-field`, `:compiled-hook`,
@@ -1547,6 +1564,12 @@ resolved `:category` / `:internal`.
 ## Worked examples
 
 ### 1. Simple CRUD + M2M (todos)
+
+Abbreviated from `models/todos.lisp` (which additionally sets
+`:domain-stg`, `:guest-allowed t`, `:guest-auto nil`,
+`:api-roles`, `:default-sort`, `:sortable` / `:searchable` on fields,
+`"public"` in `:type-roles`, and D1 `:type-roles` overlays on the
+built-in `:users` / `:roles` / `:permissions`):
 
 ```lisp
 '(:title "To Do List"
@@ -1566,15 +1589,9 @@ resolved `:category` / `:internal`.
       (:name
         (:type :text :identity t
           :ui (:label "To Do" :widget :textbox)
-          :validations (:required (:max-length :max 19))
+          :validations (:required (:max-length :max 80))
           :source (:view :main :column :name :agg :first)
           :column t :not-null t :unique t)
-        :points
-        (:type :integer :default 0
-          :ui (:label "Points" :widget :textbox)
-          :validations (:required)
-          :source (:view :main :column :points :agg :first)
-          :column t :not-null t)
         :done
         (:type :boolean :default :false
           :ui (:label "Done" :widget :checkbox)
@@ -1764,7 +1781,7 @@ successors never collide on the identity index. See
 ## Quick key index
 
 **Top-level:** `:title` `:name` `:version` `:domain` `:domain-stg`
-`:repl` `:guest-allowed`
+`:repl` `:guest-allowed` `:guest-auto`
 `:api-roles` `:landing-page` `:new-roles` `:types`
 
 **Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles`
@@ -1791,4 +1808,4 @@ lifecycle slots
 **Field types:** `:text` `:password` `:real` `:integer` `:boolean` `:uuid`
 `:timestamp` `:list` `:file` `:button`
 
-**Aggs:** `:first` `:list` `:distinct` `:avg` `:sum`
+**Aggs:** `:first` `:list` `:distinct` `:count` `:avg` `:sum`

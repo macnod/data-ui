@@ -316,8 +316,9 @@ A snapshot is up to three files under `/data/data-ui/snapshots/`:
   `timestamp`, plus best-effort `model-version` read from the model
   file. Nothing in `.meta` comes from the live app.
 
-Dump and restore run inside the destination's PostgreSQL container,
-so client tools always match the server version.
+Dump and restore run inside the respective environment's PostgreSQL
+server container (the source's on `save`, the destination's on
+`restore`), so client tools always match the server version.
 
 ### Password re-stamping
 

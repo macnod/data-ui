@@ -52,19 +52,23 @@ touching the corresponding area:
 - `lisp/database.lisp` – database initialization and table creation
 - `lisp/aux.lisp` – helpers (`report-e`, `report-ve`, path utilities)
 - `lisp/plist-json.lisp`, `lisp/deployment.lisp`, `lisp/startup.lisp`,
-  `lisp/data-ui.lisp`, `lisp/data-ui-package.lisp`
+  `lisp/data-ui.lisp`, `lisp/data-ui-package.lisp`,
+  `lisp/eval-safely.lisp` – guarded eval helper (safe `eval` returning
+  output/values/error strings; never enters the debugger)
 - `models/` – example models, one per file (e.g. `todos.lisp`,
   `modelbank.lisp`, `widgets.lisp`), each a bare model plist. Load with
   `(set-model "todos")` — bare file name, no path, no `.lisp`
   extension. Test fixtures under `models/test/`; `set-model` checks
-  `models/` first, then falls back to `models/test/`. `list-models`
-  returns top-level models only.
+  `models/` first, then `models/local/` (VIP deploys, gitignored,
+  shadows same-named fixtures), then falls back to `models/test/`.
+  `list-models` returns top-level models only.
 - `web/` – React frontend (Vite + TypeScript), intentionally minimal
   and schema-driven: consumes `list-form` / `add-form` /
   `update-form`, `records`, and `allowed-values` from the API
-- `tests/` – FiveAM suites (`predicate-`, `backend-`, `rest-`,
-  `scoping-`, `action-tests.lisp`) plus `helpers.lisp` and
-  `model-template.lisp`
+- `tests/` – FiveAM suites (30+ files: `predicate-`, `backend-`,
+  `rest-`, `scoping-`, `action-`, `hook-registry-`, rollup, M2M,
+  compose, sortable/searchable, guest/api-roles, generator, ...; see
+  `data-ui.asd`) plus `helpers.lisp` and `model-template.lisp`
 
 Non-frontend code is SBCL Common Lisp, written by a human.
 
@@ -114,7 +118,8 @@ After reloading `rest.lisp`, verify `*http-server*`; if nil,
 
 **Gotcha — 60s Eval timeout on long forms.** `eval-in-data-ui`
 times out on the Emacs side after 60s; the form keeps running in
-SBCL and its output is lost. `(run-tests)` takes ~62s. Never poll
+SBCL and its output is lost. `(run-tests)` runs all 30+ suite groups
+and takes several minutes. Never poll
 with sleep loops — after a timeout, probe with
 `(eval-in-data-ui "(* 2 3)")` before assuming the image is busy.
 Run long work in a thread that writes a file, then read the file:
@@ -136,9 +141,14 @@ Use the helpers in `tests/helpers.lisp` — never call `fiveam:run!`
 directly. They handle model loading, database reset, and suite
 selection.
 
-- `(run-tests)` — backend, predicates, scoping, hook registry,
-  lifecycle, and action suites, via `with-model` on the `test-model`
-  fixture (resets the database and loads the model automatically)
+- `(run-tests)` — all suite groups (backend, predicates, scoping,
+  hook registry, lifecycle, actions, secrets, widgets, M2M, rollups,
+  compose, sortable/searchable, guest, API-roles, generator, and
+  more). Each group runs `with-model` on its **own fixture**
+  (`test-model`, `m2m-test`, `modelbank-test`, `spawn-test`,
+  `measure-rollup-test`, ...) — see `run-tests` in `helpers.lisp` for
+  the full list. Resets the database and loads the fixture per group.
+  Takes several minutes — use the background-thread pattern above.
 - `(run-action-tests)` — action hook suite (buttons, `be-action`,
   status transitions, in-progress guard, permissions, form exclusions)
 - `(run-scoping-tests)` — scoping suite on the `modelbank-test`
@@ -228,27 +238,31 @@ children under a `**` parent; always step to `***`:
   lightbox; the `:table` key tells the frontend which type to use for
   `/api/file` URLs.
 
-## Status Digest (June 2026)
+## Status Digest (September 2026)
 
 - **End-to-end proven:** `scripts/data-ui deploy todos` →
   https://todo.demo.data-ui.com (k3d, HAProxy, TLS) — production.
   Staging (host profiles + `profile expose`, serving each model's
   `:domain-stg`, derived as `-stg` on the first DNS label of
   `:domain`) is the flagship environment during MVP: it hosts Model
-  Bank and has the Deploy button.
-- Full CRUD on all types (built-in RBAC types included); JWT auth;
-  view-level and field-level scoping; write-through core path; action
-  hooks; rollups (Phase A); file upload / list / delete (two-phase
-  upload: `multipart` to `/api/upload`, then JSON `/api/insert` with
-  the `file-token`).
+  Bank and has the Deploy button. Demo apps run as systemd units via
+  the `e-demo` / `demo` verbs with nightly golden resets
+  (`scripts/data-ui`, `ops/`).
+- Full CRUD on all types (built-in RBAC types included); JWT auth
+  (plus guest login via `:guest-allowed` / `:guest-auto` /
+  `:api-roles`); view-level and field-level scoping; write-through
+  core path; action hooks (`:deploy-model`, `:generate-model`,
+  `:spawn`); rollups (Phase A); file upload / list / delete
+  (two-phase upload: `multipart` to `/api/upload`, then JSON
+  `/api/insert` with the `file-token`).
 - Frontend: type selector with categories, dynamic lists / forms,
-  inline edit, sortable columns, debounced search, pagination driven
-  by `total`, rollup boards, role management, image lightbox.
+  inline edit, sortable columns, debounced search with negative
+  ("Not…") terms, filter chips, pagination driven by `total`, rollup
+  lists (server-side sortable measures), role management, image
+  lightbox.
 - Known gaps: `:agg` fields on regular types are not sortable (use a
   rollup); file update unimplemented; one flaky scoping test; UI
-  polish pending; frontend shows as logged-in after failed token
-  refresh, and "No records" covers both empty and failed requests
-  (good first UI tasks).
+  polish pending.
 - Full catalog: README → Current Status; `docs/model-reference.md` →
   Known gaps and gotchas.
 

@@ -18,8 +18,6 @@ Contents:
 - `dataui-reset.service` + `dataui-reset.timer` →
   `/etc/systemd/system/` — the 04:10 schedule (Persistent=true
   boot catch-up) and the on-demand `systemctl start` path.
-- `demote-vips.sh` → `/usr/local/lib/data-ui/` — bulk VIP demotion
-  (D13).
 
 Install (from the checkout root):
 

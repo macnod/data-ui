@@ -12,14 +12,19 @@ By convention, each model file is named after the model it defines
 - **Top level** — real example models (`todos`, `modelbank`, `parts`,
   `file-server`, etc.). These are the models shown by `list-models` and
   used by the deploy pipeline.
+- **`local/`** — locally deployed (VIP) models, written by the
+  `:deploy-model` hook; gitignored. Shadows a same-named `test/`
+  fixture.
 - **`test/`** — test fixtures (`test-model`, `m2m-test`,
-  `nullable-fk-test`, `static-select-test`, `modelbank-test`). Do not
-  change these unless you are changing the test suite.
+  `nullable-fk-test`, `static-select-test`, `modelbank-test`, and many
+  more — see the directory). Do not change these unless you are
+  changing the test suite.
 
 ## Model resolution
 
-`(set-model "<name>")` tries `models/<name>.lisp` first, then falls back
-to `models/test/<name>.lisp`. Top-level wins on name collision.
+`(set-model "<name>")` tries `models/<name>.lisp` first, then
+`models/local/<name>.lisp`, then falls back to `models/test/<name>.lisp`.
+Top level wins on name collision.
 
 `modelbank-test.lisp` under `test/` is the copy used by the generator
 test suite.
