@@ -92,13 +92,29 @@ if git diff --quiet "$PUBLIC_TIP" master; then
   exit 0
 fi
 
+# Range for bullets/count: only what's new since the last publish.
+# Squashes are minted with commit-tree and share no ancestry with
+# master's fine-grained commits, so "$PUBLIC_TIP..master" would
+# re-list the entire history every publish. The public tip's tree
+# is exactly master's tree at last-publish time, so anchor on the
+# newest master commit carrying that tree instead.
+PUBLIC_TREE=$(git rev-parse "$PUBLIC_TIP^{tree}")
+RANGE_START=$(git log --format='%H %T' master \
+                | awk -v t="$PUBLIC_TREE" '$2 == t {print $1; exit}') || true
+if [ -n "$RANGE_START" ]; then
+  RANGE="$RANGE_START..master"
+else
+  RANGE="master"
+  echo "No master commit matches public tip's tree; listing all."
+fi
+
 # Count fine-grained commits folded into this squash
-COUNT=$(git rev-list --count "$PUBLIC_TIP..master")
+COUNT=$(git rev-list --count --no-merges "$RANGE")
 echo "Squashing $COUNT commit(s) into one."
 
 # Collect their subjects for the squash message body (merge commits
 # skipped — they're plumbing, not content)
-BULLETS=$(git log --no-merges --format='- %s' "$PUBLIC_TIP..master")
+BULLETS=$(git log --no-merges --format='- %s' "$RANGE")
 
 # Build the squash commit without moving master: same tree as
 # master, parent = current public tip, so the push fast-forwards.
