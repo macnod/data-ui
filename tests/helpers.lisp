@@ -428,6 +428,25 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
          (incf new-author-count))
     finally (return new-author-count)))
 
+(defun th-seed-books-model-genres (books-directory)
+  (loop with existing-genres = (mapcar
+                                  (lambda (g) (getf g :name))
+                                  (getf
+                                    (be-list :genres "admin" :limit 1000)
+                                    :records))
+    with books-path = (u:join-paths books-directory "books.lisp")
+    with books = (with-open-file (in books-path) (cadr (read in)))
+    and new-genre-count = 0
+    for book in books
+    for genres = (getf book :genres)
+    do (loop for genre in genres
+         unless (u:has existing-genres genre) do
+         (be-insert :genres `(:name ,genre) "admin"
+           :roles '("public" "books-user"))
+         (push genre existing-genres)
+         (incf new-genre-count))
+    finally (return new-genre-count)))
+
 (defun th-seed-books-model-books (books-directory)
   (loop with existing-books = (mapcar
                                 (lambda (b) (getf b :title))
@@ -441,7 +460,7 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
     with ten-years-ago = (- (get-universal-time) ten-years)
     for book in books
     for title = (getf book :title)
-    for genre = (getf book :genre)
+    for genres = (getf book :genres)
     for description = (getf book :description)
     for isbn = (getf book :isbn)
     for authors = (getf book :authors)
@@ -451,7 +470,7 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
     unless (u:has existing-books title) do
     (be-insert :books
       `(:title ,title
-         :genre ,genre
+         :genres ,genres
          :description ,description
          :isbn ,isbn
          :authors ,authors
@@ -504,6 +523,7 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
 (defun th-seed-books-model (books-directory)
   (th-seed-books-model-users books-directory)
   (th-seed-books-model-authors books-directory)
+  (th-seed-books-model-genres books-directory)
   (th-seed-books-model-books books-directory)
   (th-seed-books-model-covers books-directory)
   (th-seed-books-model-user-ratings books-directory))

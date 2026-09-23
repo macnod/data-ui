@@ -28,8 +28,12 @@ keys `total` and `sort`.
 
 **Filter operators** (lowercase in JSON): `eq`, `ne`, `gt`, `lt`,
 `gte`, `lte`, `like`, `ilike`, `not-like`, `not-ilike`, `in`,
-`not-in`. Filters may target a joined table's fields (the example
-above targets the `tags` joiner through the listed type).
+`not-in`, `has-all`. Filters may target a joined table's fields (the
+example above targets the `tags` joiner through the listed type).
+`has-all` is field-scoped instead — the row is
+`[listedType, m2mFieldKey, "has-all", values]` — and targets the
+listed type's M2M list field (the field must declare `:join-table`);
+values AND: the record must have all of them (`in` stays has-any).
 
 **Response** (in addition to `records`, forms, `allowed-values`,
 permission flags): `total` (always present — pre-paging count of

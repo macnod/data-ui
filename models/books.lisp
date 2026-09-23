@@ -19,24 +19,26 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("books-user" "public")
-      :views (:main (:tables (:books :book-authors :authors :my-ratings :covers))
-               :authors (:tables (:authors)))
+      :views (:main (:tables (:books :book-authors :authors :book-genres :genres :my-ratings :covers))
+               :authors (:tables (:authors))
+               :genres (:tables (:genres)))
       :fields
       (:covers
         (:type :list
           :ui (:label "Cover" :widget :image-list)
           :source (:view :main :table :covers :column :name :agg :distinct))
         :title
-        (:type :text :identity t :sortable t :searchable t
+        (:type :text :sortable t :searchable t :identity t
           :ui (:label "Title" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :title :agg :first)
           :column t :not-null t :unique t)
-        :genre
-        (:type :text :searchable t :sortable t
-          :ui (:label "Genre" :widget :textbox)
-          :source (:view :main :column :genre :agg :first)
-          :column t :not-null nil :unique nil)
+        :genres
+        (:type :list
+          :ui (:label "Genre" :widget :checkbox-list)
+          :source (:view :main :table :genres :column :name :agg :distinct)
+          :source-all (:view :genres :table :genres :column :name :agg :list)
+          :join-table :book-genres)
         :isbn
         (:type :text :searchable t :sortable t
           :ui (:label "ISBN" :widget :textbox)
@@ -70,13 +72,37 @@
           :source-all (:view :authors :table :authors :column :name :agg :list)
           :join-table :book-authors)
         :published
-        (:type :timestamp
+        (:type :timestamp :sortable t
           :ui (:label "Published")
           :source (:view :main :table :books :column :published :agg :first)
           :column t))
-      :list-form (:fields (:covers :title :isbn :description :average-rating :authors :published))
+      :list-form (:fields (:covers :title :isbn :description :genres
+                            :average-rating :authors :published))
       :update-form (:fields t)
-      :add-form (:fields (:title :isbn :description :rating :authors :published)))
+      :add-form (:fields (:title :isbn :description :genres :rating :authors
+                           :published)))
+
+    :genres
+    (:table t
+      :create :auto :update :auto :delete :auto :display t
+      :type-roles ("books-user" "public")
+      :views (:main (:tables (:genres)))
+      :fields
+      (:name
+        (:type :text :identity t :searchable t :sortable t
+          :ui (:label "Genre" :widget :textbox)
+          :validations (:required)
+          :source (:view :main :column :name :agg :first)
+          :column t :not-null t :unique t))
+      :list-form (:fields t)
+      :update-form (:fields t)
+      :add-form (:fields t))
+
+    :book-genres
+    (:table t :is-joiner t :internal t
+      :fields
+      (:reference (:target :books)
+        :reference (:target :genres)))
 
     :authors
     (:table t

@@ -183,7 +183,7 @@ function ImagePreview({
   path: string
 }) {
   const [open, setOpen] = useState(false)
-  const name = path.split('/').pop() || path
+  const name = basename(path)
   const src = fileUrl(type, path)
 
   return (
@@ -206,7 +206,7 @@ function ImagePreview({
       />
       {open && (
         <ImageModal
-          images={[{ src, filename: name }]}
+          images={[{ src, filename: name, caption: path }]}
           index={0}
           onClose={() => setOpen(false)}
           onNavigate={() => {}}
@@ -215,6 +215,18 @@ function ImagePreview({
     </>
   )
 }
+
+// Mirrors *widgets* in lisp/model.lisp. The compiler rejects
+// unknown widgets and injects :widget :textbox when :widget is
+// missing, so a widget string outside this set means
+// frontend/backend vocabulary drift — fail loudly here instead
+// of silently rendering a text input. '' stays a text input
+// (the compiler's own default rule for a missing :widget).
+const WIDGET_VOCABULARY = new Set([
+  'textbox', 'textarea', 'code', 'stars', 'checkbox', 'checkbox-list',
+  'select', 'file', 'password', 'button', 'hidden', 'image',
+  'image-list'
+])
 
 function renderFormField(
   field: Field, value: any,
@@ -233,16 +245,41 @@ function renderFormField(
     )
   }
 
+  if (widget === 'textbox' || widget === '') {
+    return (
+      <input
+        type="text"
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        style={{ width: '80ch', maxWidth: '100%' }}
+      />
+    )
+  }
+
+  // Widget present but no branch above caught it. Known =
+  // routing bug (branch added to the form, not here); unknown =
+  // backend vocabulary grew without the frontend.
+  const known = WIDGET_VOCABULARY.has(widget)
+  console.error(
+    known
+      ? `renderFormField: no branch for known widget "${widget}"`
+      : `renderFormField: unknown widget "${widget}" ` +
+        `(not in the compiled vocabulary)`)
   return (
-    <input
-      type="text"
-      value={value || ''}
-      onChange={e => onChange(e.target.value)}
-    />
+    <span style={{ color: 'var(--error-bright)' }}>
+      {known ? 'Unhandled' : 'Unknown'} widget: {widget}
+    </span>
   )
 }
 
 // --- Image helpers ---
+
+// Stored image values are full paths; the basename is the
+// display/download name (alt text, download suggestion), the full
+// path is the lightbox caption.
+function basename(path: string): string {
+  return path.split('/').pop() || path
+}
 
 function fileUrl(type: string, path: string): string {
   const token = getAccessToken()
@@ -254,14 +291,12 @@ function fileUrl(type: string, path: string): string {
 function ImageModal({
   images, index, onClose, onNavigate
 }: {
-  images: { src: string; filename: string }[]
+  images: { src: string; filename: string; caption?: string }[]
   index: number
   onClose: () => void
   onNavigate: (index: number) => void
 }) {
   const current = images[index]
-  const hasPrev = images.length > 1
-  const hasNext = images.length > 1
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -295,39 +330,48 @@ function ImageModal({
         cursor: 'pointer'
       }}
     >
+      {/* Pinned near the top of the overlay so its position is
+          independent of the image height. */}
       <div style={{
+        position: 'absolute',
+        top: '1rem',
+        left: '50%',
+        transform: 'translateX(-50%)',
         display: 'flex',
         gap: '1rem',
-        marginBottom: '1rem',
         alignItems: 'center',
         cursor: 'default'
       }}>
-        <button
-          type="button"
-          onClick={e => {
-            e.stopPropagation()
-            onNavigate(
-              (index - 1 + images.length) % images.length
-            )
-          }}
-          disabled={!hasPrev}
-        >
-          ‹ Prev
-        </button>
+        {images.length > 1 && (
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation()
+              onNavigate(
+                (index - 1 + images.length) % images.length
+              )
+            }}
+          >
+            ‹ Prev
+          </button>
+        )}
         <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
           {index + 1} / {images.length}
         </span>
-        <button
-          type="button"
-          onClick={e => {
-            e.stopPropagation()
-            onNavigate((index + 1) % images.length)
-          }}
-          disabled={!hasNext}
-        >
-          Next ›
-        </button>
-        <span style={{ width: '1rem' }} />
+        {images.length > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={e => {
+                e.stopPropagation()
+                onNavigate((index + 1) % images.length)
+              }}
+            >
+              Next ›
+            </button>
+            <span style={{ width: '1rem' }} />
+          </>
+        )}
         <a
           href={current.src}
           download={current.filename}
@@ -347,6 +391,26 @@ function ImageModal({
         </a>
         <button type="button" onClick={onClose}>Close</button>
       </div>
+      {/* Caption strip: the image's full stored path (the
+          disambiguator for same-named files). `filename` stays the
+          basename for download/alt; this slot is the hook point for
+          the Post MVP authored-caption layer. */}
+      {current.caption && (
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            marginTop: '0.5rem',
+            color: 'var(--muted)',
+            fontSize: '0.9rem',
+            cursor: 'default',
+            textAlign: 'center',
+            maxWidth: '90vw',
+            overflowWrap: 'anywhere'
+          }}
+        >
+          {current.caption}
+        </div>
+      )}
       <img
         src={current.src}
         alt={current.filename}
@@ -389,7 +453,8 @@ function ThumbnailGrid({
 
   const modalImages = paths.map(p => ({
     src: fileUrl(type, p),
-    filename: p.split('/').pop() || p
+    filename: basename(p),
+    caption: p
   }))
 
   const shown = max != null ? paths.slice(0, max) : paths
@@ -402,7 +467,7 @@ function ThumbnailGrid({
         gap: '0.5rem'
       }}>
         {shown.map((p, i) => {
-          const name = p.split('/').pop() || p
+          const name = basename(p)
           return (
             <div
               key={p}
@@ -685,18 +750,17 @@ function App() {
     if (debouncedSearch) {
       url += `&search=${encodeURIComponent(debouncedSearch)}`
     }
-    // Chip filters: one [table, column, "in", values] row per field
-    // with a non-empty selection. The table comes from list-form
-    // field meta (field.table), NOT the state key — chores
-    // :completed-by must send "users", and the state key would 404
-    // in parse-type. The column is the M2M display column ("name"),
-    // which is what parse-field resolves in the compiled model.
+    // Chip filters: one [type, fieldKey, "has-all", values] row per
+    // chip-eligible field with a non-empty selection. has-all is the
+    // field-scoped shape — first element is the listed type, second
+    // the M2M field key — so additive chip clicks only ever narrow
+    // (AND within a field). has-any stays available to direct API
+    // consumers via "in".
     {
-      const form = data?.result?.['list-form'] || {}
       const rows = Object.entries(listFilters)
         .filter(([, values]) => values.length > 0)
         .map(([fieldKey, values]) => [
-          form[fieldKey]?.table || fieldKey, 'name', 'in', values
+          type, fieldKey, 'has-all', values
         ])
       // Phase 1: hide the per-user exclusive roles (name suffix
       // :exclusive, trigger-enforced — same signal the backend's
@@ -707,11 +771,12 @@ function App() {
       }
       // Phase 2: one not-ilike row per searchable field — the
       // complement of search's OR-ILIKE group (rows AND together).
-      // Same list-form meta guard as the chips: field.table is not
-      // consulted (searchable fields are the type's own base
-      // columns), and the resetListQuery clears on type change so
-      // the stale-form window sends nothing.
+      // Same list-form meta guard as the chips: searchable fields
+      // are the type's own base columns, and the resetListQuery
+      // clears on type change so the stale-form window sends
+      // nothing.
       if (debouncedNotTerm) {
+        const form = data?.result?.['list-form'] || {}
         for (const [fieldKey, f] of Object.entries(form)) {
           if (f.searchable === true) {
             rows.push([type, fieldKey, 'not-ilike',

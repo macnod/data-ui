@@ -76,6 +76,7 @@
   (is-true (operator-key-p :lte))
   (is-true (operator-key-p :in))
   (is-true (operator-key-p :not-in))
+  (is-true (operator-key-p :has-all))
   (is-false (operator-key-p :non-existent))
   (is-false (operator-key-p nil))
   (is-false (operator-key-p "eq"))
@@ -86,6 +87,13 @@
   (is-true (filter-p '(:users :roles :in '("admin" "editor"))))
   (is-true (filter-p '(:todos :name :in ("chores" "errands"))))
   (is-true (filter-p '(:todos :name :not-in ("chores"))))
+  ;; :has-all is shape-only here (chips 0a doctrine): the
+  ;; :join-table semantic gate lives in valid-filter, so these
+  ;; accept even on non-M2M fields.
+  (is-true (filter-p '(:todos :tags :has-all ("a" "b"))))
+  (is-true (filter-p '(:todos :name :has-all ("a"))))
+  (is-false (filter-p '(:todos :tags :has-all ())))
+  (is-false (filter-p '(:todos :tags :has-all nil)))
   (is-false (filter-p '(:todos :name :in ())))
   (is-false (filter-p '(:todos :name :in nil)))
   (is-false (filter-p '(:todos :name :in ("chores" 5))))

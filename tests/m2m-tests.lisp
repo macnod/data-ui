@@ -223,3 +223,101 @@ column into the page projection; the count query stays pre-splice."
       (be-delete :items red-id "admin")
       (be-delete :items both-id "admin")
       (be-delete :items green-id "admin"))))
+
+(test m2m-has-all-intersection
+  "The :has-all operator (field-scoped tuple shape) narrows to the
+intersection: only records carrying every listed value on the M2M
+field match. Contrast with :in (has-any union), which grows."
+  (let ((red-id (be-insert :items
+                   '(:name "Red Item" :tags ("red"))
+                   "admin"))
+        (both-id (be-insert :items
+                    '(:name "Both Item" :tags ("red" "blue"))
+                    "admin"))
+        (green-id (be-insert :items
+                      '(:name "Green Item" :tags ("green"))
+                      "admin")))
+    (unwind-protect
+      (progn
+        ;; Two values: only the both-tagged item matches.
+        (let* ((result (be-list :items "admin"
+                        :filters
+                        '((:items :tags :has-all ("red" "blue")))))
+               (names (mapcar (lambda (r) (getf r :name))
+                        (getf result :records))))
+          (is (equal '("Both Item") names)
+            ":has-all intersects: ~a" names)
+          (is (= 1 (getf result :total))
+            ":has-all total counts distinct matching ids"))
+        ;; Three values: empty intersection is a legal query.
+        (let ((none (be-list :items "admin"
+                      :filters
+                      '((:items :tags :has-all ("red" "blue" "green"))))))
+          (is (zerop (getf none :total))
+            "Empty intersection returns zero, not an error"))
+        ;; Single value equals single-value :in (same set).
+        (let* ((in-one (be-list :items "admin"
+                        :filters '((:items :tags :has-all ("green")))))
+               (names (mapcar (lambda (r) (getf r :name))
+                        (getf in-one :records))))
+          (is (equal '("Green Item") names)
+            "Single-value :has-all behaves like :in: ~a" names)))
+      (be-delete :items red-id "admin")
+      (be-delete :items both-id "admin")
+      (be-delete :items green-id "admin"))))
+
+(test m2m-has-all-with-sort-and-second-field
+  ":has-all keeps the plain Phase A base SQL (no join required),
+so sort composes without the 42P10 splice, and a second M2M field
+(:assignees, joiner :item-users) filters through its own joiner."
+  (let ((a-id (be-insert :items
+                 '(:name "A Item"
+                   :tags ("red" "blue")
+                   :assignees ("admin"))
+                 "admin"))
+        (b-id (be-insert :items
+                 '(:name "B Item"
+                   :tags ("red" "blue")
+                   :assignees ("admin" "guest"))
+                 "admin"))
+        (c-id (be-insert :items
+                 '(:name "C Item" :tags ("green"))
+                 "admin")))
+    (unwind-protect
+      (progn
+        ;; Sort while :has-all-filtered: runs on the plain path.
+        (let* ((result (be-list :items "admin"
+                        :filters
+                        '((:items :tags :has-all ("red" "blue")))
+                        :sort '(:name :desc)))
+               (names (mapcar (lambda (r) (getf r :name))
+                        (getf result :records))))
+          (is (equal '("B Item" "A Item") names)
+            ":has-all + sort returns both-tagged items, name-desc: ~a"
+            names)
+          (is (= 2 (getf result :total))))
+        ;; Second M2M field with two values narrows to B only.
+        (let* ((result (be-list :items "admin"
+                        :filters
+                        '((:items :assignees :has-all
+                           ("admin" "guest")))))
+               (names (mapcar (lambda (r) (getf r :name))
+                        (getf result :records))))
+          (is (equal '("B Item") names)
+            ":has-all on :assignees intersects through its own ~
+             joiner: ~a" names))
+        ;; Two fields at once: tags AND assignees both intersect.
+        ;; No explicit sort, so Phase A orders by id (random UUIDs)
+        ;; — compare the sorted name set, not the raw order.
+        (let* ((result (be-list :items "admin"
+                        :filters
+                        '((:items :tags :has-all ("red" "blue"))
+                          (:items :assignees :has-all ("admin")))))
+               (names (u:safe-sort
+                        (mapcar (lambda (r) (getf r :name))
+                          (getf result :records)))))
+          (is (equal '("A Item" "B Item") names)
+            "Two :has-all fields AND together: ~a" names)))
+      (be-delete :items a-id "admin")
+      (be-delete :items b-id "admin")
+      (be-delete :items c-id "admin"))))

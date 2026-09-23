@@ -131,8 +131,13 @@
                 :users (:tables (:users) :scope :user)
                 :models (:tables (:models) :scope :user))
        :fields
-       (:name
-         (:type :text :identity t :path t
+       (:image
+         (:type :text
+           :ui (:label "Image" :widget :image)
+           :source (:view :main :column :name :agg :first)
+           :column nil)
+         :name
+         (:type :text :identity t :path t :sortable t :searchable t
            :ui (:label "File" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)

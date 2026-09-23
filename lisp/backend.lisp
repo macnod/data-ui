@@ -152,6 +152,71 @@ exceeds the placeholder's integer portion by 1."
     for max = index then (if (> index max) index max)
     finally (return (1+ (or max 0)))))
 
+(defun has-all-exists-fragment (joiner-table value-table grain-fk
+                                 value-fk display-column grain-table
+                                 index)
+  ":private: One correlated EXISTS subquery for a :has-all VALUE —
+the record must join a row whose display column equals the value.
+See has-all-conditions."
+  (format nil "exists (select 1 from ~a j ~
+               join ~a v on v.id = j.~a ~
+               where j.~a = ~a.id and v.~a = $~d)"
+    joiner-table
+    value-table value-fk
+    grain-fk grain-table
+    (subseq display-column (1+ (position #\. display-column
+                                 :from-end t)))
+    index))
+
+(defun has-all-conditions (table-key field-key values index)
+  ":private: EXISTS fragments + bind values for one :has-all filter
+tuple (LISTED-TYPE FIELD-KEY :HAS-ALL VALUES). Returns
+(values conditions params): one correlated EXISTS per value through
+the field's :join-table, ANDed by add-where-clause. The grain FK is
+the joiner reference targeting TABLE-KEY; the value FK targets the
+field's :source :table; the display column is the compiled
+:source :column-name (already stage-2 resolved)."
+  (let* ((m *compiled-model*)
+         (field-def (u:tree-get m table-key :fields field-key))
+         (joiner-key (getf field-def :join-table))
+         (value-table-key (u:tree-get field-def :source :table)))
+    (unless (and joiner-key value-table-key)
+      (report-ve "has-all-conditions"
+        "Field ~s on ~s does not resolve to a join table." ~field-key
+        ~table-key))
+    (labels
+      ((fk-name (target-key)
+        "FK :name-sql of the joiner reference targeting TARGET-KEY."
+        (loop for fk in (u:plist-keys
+                          (u:tree-get m joiner-key :fields))
+              for def = (u:tree-get m joiner-key :fields fk)
+              when (eq (getf def :target) target-key)
+              do (return (getf def :name-sql))
+              finally
+              (report-ve "has-all-conditions"
+                "Joiner ~s has no reference targeting ~s." ~joiner-key
+                ~target-key))))
+      (let* ((grain-fk (fk-name table-key))
+             (value-fk (fk-name value-table-key))
+             (grain-table (u:tree-get m table-key :table-name))
+             (value-table (u:tree-get m value-table-key :table-name))
+             (display-column
+               (let ((column-name
+                       (u:tree-get field-def :source :column-name)))
+                 (unless column-name
+                   (report-ve "has-all-conditions"
+                     "Field ~s on ~s has no display column."
+                     ~field-key ~table-key))
+                 column-name))
+             (joiner-table (u:tree-get m joiner-key :table-name)))
+        (values
+          (loop for value in values
+            for i from index
+            collect
+            (has-all-exists-fragment joiner-table value-table
+              grain-fk value-fk display-column grain-table i))
+          values)))))
+
 (defun add-where-clause (sql filters user)
   ":private: Given SQL and FILTERS, this function extends the SQL with a where
 clause that includes placeholders and returns a list of the SQL plus the values
@@ -172,18 +237,43 @@ for the placeholders."
                   :op-key op-key
                   :value value
                   :alias alias)
-      for placeholders = (if (member op-key '(:in :not-in))
-                           (format nil "(~{~a~^, ~})"
-                             (placeholders value :start-at index))
-                           (format nil "$~d" index))
-      collect (if (member op-key '(:in :not-in))
-               (mapcar
-                 (lambda (v)
-                   (db-value table-key field-key user v))
-                 value)
-               (db-value table-key field-key user value))
+      for has-all-p = (eq op-key :has-all)
+      for exists-result = (when has-all-p
+                            (multiple-value-list
+                              (has-all-conditions table-key field-key
+                                value index)))
+      for has-all-fragments = (car exists-result)
+      for has-all-values = (cadr exists-result)
+      for placeholders = (cond
+                           ((member op-key '(:in :not-in))
+                             (format nil "(~{~a~^, ~})"
+                               (placeholders value :start-at index)))
+                           (has-all-p
+                             (format nil "(~{~a~^~%    and ~})"
+                               has-all-fragments))
+                           (t (format nil "$~d" index)))
+      collect (cond
+                ((member op-key '(:in :not-in))
+                  (mapcar
+                    (lambda (v)
+                      (db-value table-key field-key user v))
+                    value))
+                ;; :has-all: EXISTS fragments bind display-column
+                ;; atoms directly (identity text columns by
+                ;; construction), one param per value — exactly the
+                ;; :in element contract. NOTE: :has-all reaching
+                ;; be-update / be-delete through this WHERE builder
+                ;; works mechanically but is untested (REST sends
+                ;; bare UUIDs there).
+                (has-all-p has-all-values)
+                (t (db-value table-key field-key user value)))
         into values
-      collect (format nil "~a ~a ~a" alias op placeholders)
+      ;; The :has-all condition is the parenthesized EXISTS group
+      ;; alone — a standalone boolean expression, not the
+      ;; "alias op value" shape the other operators produce.
+      collect (if has-all-p
+                placeholders
+                (format nil "~a ~a ~a" alias op placeholders))
       into conditions
       finally
       (let ((where (format nil "~a~%where~%  ~{~a~^~%  and ~}~%"
@@ -1608,6 +1698,17 @@ FILTER."
         ~field-key ~type-key))
     (unless (operator-key-p op-key)
       (report-ve "valid-filter" "Invalid operator key ~s." ~op-key))
+    ;; :has-all semantics: the tuple is field-scoped (listed type +
+    ;; M2M field key), so the field must carry a :join-table. Shape
+    ;; alone (filter-p) still accepts it — do not tighten the
+    ;; predicate (chips 0a doctrine: shape in the predicate,
+    ;; semantics in the validator).
+    (when (eq op-key :has-all)
+      (unless (u:tree-get *compiled-model* type-key :fields field-key
+                :join-table)
+        (report-ve "valid-filter"
+          ":has-all targets an M2M list field: ~s on ~s has no ~
+           :join-table." ~field-key ~type-key)))
     (unless (field-type-key-p
               (u:tree-get *compiled-model* type-key :fields field-key :type))
       (report-ve "valid-filter" "Invalid field type key for field ~s ~s ~s."
@@ -2560,14 +2661,14 @@ WHERE on a joined table."
           (let* ((index (+ start-at (length params)))
                  (op (operator-sql op-key))
                  (placeholders
-                   (if (member op-key '(:in :not-in))
+                   (if (member op-key '(:in :not-in :has-all))
                      (format nil "(~{~a~^, ~})"
                        (placeholders value :start-at index))
                      (format nil "$~d" index))))
             (push (format nil "~a ~a ~a" column op placeholders)
               conditions)
             (setf params (append params
-                          (if (member op-key '(:in :not-in))
+                          (if (member op-key '(:in :not-in :has-all))
                             (mapcar
                               (lambda (v)
                                 (db-value type-key field-key user v))

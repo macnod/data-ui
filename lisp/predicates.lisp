@@ -15,6 +15,10 @@
     (:not-ilike "not ilike")
     (:in "in")
     (:not-in "not in")
+    ;; :has-all is never emitted as SQL text — add-where-clause
+    ;; builds one correlated EXISTS per value for it. Inert entry
+    ;; so operator-key-p (and the REST operator parser) accept it.
+    (:has-all "has-all")
     (otherwise (error "Unsupported operator ~a" operator-key))))
 
 (defun uuid-p (s)
@@ -90,7 +94,7 @@ is atom-typed; a :list-typed field keeps the whole-value listp
 check (tightened to consp). All other operators use the plain
 single-value check. Shared by filter-p and valid-filter so the
 predicate and the validator cannot drift."
-  (if (member op-key '(:in :not-in))
+  (if (member op-key '(:in :not-in :has-all))
     (let* ((field-def (u:tree-get *compiled-model*
                         type-key :fields field-key))
            (list-field-p (eq (getf field-def :type) :list)))

@@ -513,7 +513,14 @@ Notes:
   ;; :in accepts a non-empty list of the field's atom type
   (is (null (valid-filter '(:todos :name :in ("a" "b")))))
   ;; :in with an empty list rejects (in () is invalid SQL)
-  (signals validation-error (valid-filter '(:todos :name :in ()))))
+  (signals validation-error (valid-filter '(:todos :name :in ())))
+  ;; :has-all accepts the M2M list field (todos :tags carries
+  ;; :join-table :todo-tags in the test-model fixture)
+  (is (null (valid-filter '(:todos :tags :has-all ("a" "b")))))
+  ;; :has-all on a non-M2M field rejects (no :join-table)
+  (signals validation-error (valid-filter '(:todos :name :has-all ("a"))))
+  ;; :has-all with an empty list rejects (same shape as :in)
+  (signals validation-error (valid-filter '(:todos :tags :has-all ()))))
 
 (test valid-filters
   ;; Valid filters list (no error)

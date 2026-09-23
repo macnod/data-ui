@@ -1067,6 +1067,90 @@ column name. Surfaced in =models/parts.lisp=.
 =lisp/backend.lisp= — =be-update= currently runs even when nothing
 changed. Should short-circuit.
 
+** DONE Document adding a new field (outside of repo)          :docs:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+Write up the recipe for adding a new field to a type. The
+write-up deliberately lives outside the repo (personal notes),
+not in =docs/=.
+
+** DONE Pin the location of the images navigator      :frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+The image lightbox's navigator (Prev / Next, counter, Download,
+Open in new tab, Close) is pinned near the top of the overlay via
+absolute positioning, so its location is independent of the
+rendered image's height — it no longer shifts between images.
+
+** DONE Image caption strip in the lightbox (full path) :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+MVP slice of [[file:/home/macnod/workbench/captions-plan.org][captions-plan.org]] (rev 3). Every lightbox now
+shows a caption strip under the nav controls; the caption is the
+image's *full stored path* — disambiguating same-named files in
+different directories. Frontend-only (=web/src/App.tsx=); no
+model, compiler, or backend change.
+
+- New =caption?: string= slot on =ImageModal='s element type.
+  The strip renders when =current.caption= is truthy (defensive
+  guard; MVP call sites always supply it): plain =--muted= text,
+  no interactions, =stopPropagation= on click so it never closes
+  the modal.
+- =ThumbnailGrid='s =modalImages= map now emits =caption: p=
+  (full path) alongside =filename: basename(p)= — covers list-cell
+  =:image= and =:image-list=, both of which render through it.
+- =ImagePreview= (edit-form =:image=) passes =caption: path=;
+  its =name= derivation switched to the shared helper.
+- New =basename()= helper replaces the three inline
+  =split('/').pop()= derivations (ThumbnailGrid's map + thumb
+  labels, ImagePreview) — one place states the rule.
+- =filename= stays the basename: it feeds =download={…}= and the
+  alt text; a full path in a browser download suggestion is
+  browser-squishy.
+
+Authored =:ui (:caption <field>)= captions are Post MVP (see
+"=:ui (:caption <field>)= authored image captions"); the =caption=
+slot is the hook point that layer will fill.
+
+** DONE Widen the =:textbox= widget's field            :frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+Plain text inputs in the Add/Edit forms rendered at the browser
+default (~20 characters). The text branch of =renderFormField=
+(=web/src/App.tsx=) now sets =width: '80ch', maxWidth: '100%'= —
+4× the default, font-relative like the default itself, and
+clamped to the form width on narrow screens. Add and Edit forms
+share the render path, so both widen; =textarea= / =:code= were
+already 100%.
+
+** DONE Frontend error on unknown widget                    :frontend:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+The compiler guarantees every widget string comes from =*widgets*=
+(=valid-widget-value= rejects unknown values; =finalize-ui=
+injects =:textbox= when =:widget= is missing), so a widget the
+frontend doesn't recognize means vocabulary drift, not user
+error. =renderFormField= now has an explicit =textbox= / =''=
+branch and a =WIDGET_VOCABULARY= set mirroring =*widgets*=; a
+widget that falls through renders a red "Unknown widget" marker
+plus a =console.error= instead of silently rendering a text
+input. The error distinguishes unknown (backend vocabulary grew
+without the frontend) from unhandled (frontend routing bug).
+Inline error rather than a throw — no React error boundary
+exists, and the failure is per-field. Scope: editable-form path
+only; list cells and read-only fields keep their lenient
+defaults.
+
 * MVP Now
 ** DONE Move todo list into repo                           :maintenance:mvp:
 :PROPERTIES:
@@ -3045,6 +3129,48 @@ verification. Loopback branch itself is untestable until a
 recreate publishes 31303 (k3d cannot add =-p= live) — the probe
 logic is the same verbatim copy already proven in jina-kube.
 
+** DONE Has-all chip filtering (AND within a field)   :backend:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+Implemented per the plan (has-all-plan.org), no deviations:
+- predicates.lisp: inert =operator-sql= =:has-all= entry (never
+  emitted as SQL text — accepted so =operator-key-p= and the REST
+  operator parser take it); =filter-value-type-p= =(:in :not-in
+  :has-all)= member list (same non-empty-cons value contract).
+- backend.lisp: =valid-filter= gates =:has-all= on =:join-table=
+  (report-ve); =has-all-conditions= + =has-all-exists-fragment=
+  build one correlated =EXISTS= per value through the field's
+  joiner (FKs resolved from compiled =:target= fields, display
+  column from =:source :column-name=); =add-where-clause= arm
+  emits the parenthesized EXISTS group, values bound element-wise
+  like =:in=. =measure-request-grain-filters= =:has-all= arm added
+  for completeness (rollups still reject non-grain filters).
+- Frontend =App.tsx=: chip rows now send =[type, fieldKey,
+  "has-all", values]=; the =field.table= wire mapping and the
+  hardcoded ="name"= column are gone (the not-ilike Phase-2 rows
+  read list-form meta locally now). Built with =npm run build=.
+- =:users :roles= carries =:join-table :role-users= (live probe,
+  Step 0.2 open branch resolved) — users Roles chips send
+  =has-all= like every other chip-eligible field; no =fe-fields=
+  meta-flag contingency was needed.
+- docs/rest.md operator list updated.
+- Tests: predicate =filter-p= / =operator-key-p= =:has-all=
+  cases; backend =valid-filter= accept (todos =:tags=) / reject
+  (non-M2M, empty list); m2m suite =m2m-has-all-intersection= /
+  =m2m-has-all-with-sort-and-second-field= (intersection
+  semantics, empty intersection, single-value-equals-=:in=, sort
+  compose, second joiner, two fields AND).
+- =(run-tests)=: 1788/1788 checks pass across 31 groups. Live
+  REST smoke on restarted =dataui@books= / =@todos= / =@modelbank=
+  units: co-author pair narrows to 1, roles =has-all=, sort +
+  search + chip compose, =:in= untouched, non-M2M field 400s.
+
+Files: =lisp/predicates.lisp=, =lisp/backend.lisp=,
+=tests/predicate-tests.lisp=, =tests/backend-tests.lisp=,
+=tests/m2m-tests.lisp=, =docs/rest.md=, =web/src/App.tsx=.
+
 * MVP Backlog
 ** DONE Sign in as guest                   :frontend:backend:compiler:model:
 :PROPERTIES:
@@ -3858,6 +3984,44 @@ clicking is impractical.
 :CREATED:  [2026-09-19 Sat]
 :END:
 Data UI creates a web site from a model, and deploys the web site, even including a domain name and TLS. However, that web site doesn't include instructions. Data UI should also compile instructions for using the web site. Those instructions, and other information about the web site should be available via some kind of help menu.
+** TODO =:ui (:caption <field>)= authored image captions :compiler:backend:frontend:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:END:
+Authored captions on image widgets: a =:caption= subkey on =:ui=
+naming a sibling field; the lightbox shows that value instead of the
+filename-path fallback (the MVP caption strip). Full reviewed design
+preserved in [[file:/home/macnod/workbench/captions-plan.org][captions-plan.org]] ("Preserved design" section). Two halves:
+
+- *Compiler reference-validation* (small): =valid-caption-value= in
+  the =valid-options-value= family. Keyword-only; must name a field
+  in the *raw author* field keys of the enclosing type plist (pre
+  =add-default-fields=, pre status synthesis — order-independent,
+  rejects =:caption :id=). =report-e= names type, field, bad
+  reference. No nil normalization (=add-to-plist= masks nil via
+  =(or ...)=). =fe-fields= already delivers =:ui= flat — no backend
+  change for delivery.
+- *Frontend consumer* (small): =:widget :image= + same-record scalar
+  sibling (the covers-row shape), list cells and edit forms; silent
+  omission when unavailable. Thread =rec= into =renderCellValue= /
+  =renderReadOnlyField=.
+
+Gallery captions (=:image-list=) are the real blocker and the named
+consumer (Model Bank =:images=): =aggregate-values= collapses each
+field independently (=:list= drops nulls, =:distinct= dedupes), so a
+caption sibling yields a second collapsed list with no shared row
+index — post-hoc index pairing pairs unrelated values. Needs backend
+delivery of row-aligned ={name, caption}= pairs from join rows
+*before* aggregation. Requires a =:caption= column on the images
+type as well (a model change).
+
+Tests when implemented: =agg-distinct= inline-mini-model pattern for
+negatives (message search, never =equal= — =report-e= suffixes a
+Guru Meditation Number); retention probe via =u:tree-get
+*compiled-model*= inside =with-model=; new fixture
+=models/test/captions-test.lisp=; =run-caption-tests= added to the
+=run-tests= alist.
+
 * Scratch
 * Conf
 #+begin_src org
