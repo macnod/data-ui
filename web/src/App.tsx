@@ -542,8 +542,13 @@ function renderReadOnlyField(
   }
 
   if (widget === 'stars') {
+    // Array-valued stars (write-through rating on Model Bank comes
+    // back as [] for a raterless viewer) collapse to the single
+    // value; empty renders the em dash, not a zero-star row.
     const num = typeof value === 'number' ? value
-      : value ? Number(value) : null
+      : Array.isArray(value)
+        ? value.length > 0 ? Number(value[0]) : null
+        : value ? Number(value) : null
     if (num == null || isNaN(num))
       return <div style={{ color: 'var(--muted-2)' }}>—</div>
     return <StarRating value={num} />
@@ -554,6 +559,28 @@ function renderReadOnlyField(
     return (
       <div style={{ padding: '0.3rem 0' }}>
         {isTrue ? '\u2713' : ''}
+      </div>
+    )
+  }
+
+  // code / textarea read-only: plain-text projection, but
+  // pre-wrap so newlines survive — a collapsed blob is
+  // unreadable for model source. code adds the monospace
+  // styling its edit twin carries.
+  if (widget === 'code' || widget === 'textarea') {
+    const text = Array.isArray(value) ? value.join(', ')
+      : formatNumber(value, field)
+    return (
+      <div style={{
+        padding: '0.3rem 0',
+        color: 'var(--label)',
+        minHeight: '1.2em',
+        whiteSpace: 'pre-wrap',
+        ...(widget === 'code'
+          ? { fontFamily: 'monospace', fontSize: '0.95em' }
+          : {})
+      }}>
+        {text || '—'}
       </div>
     )
   }
@@ -590,6 +617,10 @@ function App() {
     useState<Record<string, string>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [editRecord, setEditRecord] = useState<any>(null)
+  // Read-only record view: the open editRecord renders through
+  // the read-only field branches instead of inputs. Set by
+  // openEditForm(record, true); cleared everywhere editRecord is.
+  const [formViewing, setFormViewing] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const [title, setTitle] = useState('Data UI')
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
@@ -718,6 +749,17 @@ function App() {
   }
 
   const isEditMode = !!editRecord
+  // View mode: an open record rendered read-only (no Update /
+  // Delete / action buttons) — for users who can read a type
+  // but not update it, and for editors who just want to look.
+  const isViewMode = !!editRecord && formViewing
+  // The form an open record form reads from. Rollup types emit
+  // no update-form, so a view-mode form (and its /api/item
+  // fetch) falls back to list-form, whose field meta carries
+  // widget / table / precision for read-only rendering.
+  const viewFormName =
+    data?.result?.['update-form'] ? 'update-form' : 'list-form'
+  const openFormName = isViewMode ? viewFormName : 'update-form'
 
   // Total comes from the last successful fetch envelope; do not
   // derive it from records.length (wrong on any page past 1).
@@ -868,6 +910,7 @@ function App() {
     setData(null)
     setShowAddForm(false)
     setEditRecord(null)
+    setFormViewing(false)
     setFormValues({})
     setPasswordConfirm({})
     setListError(null)
@@ -878,6 +921,7 @@ function App() {
     setType(newType)
     setShowAddForm(false)
     setEditRecord(null)
+    setFormViewing(false)
     setFormValues({})
     resetListQuery()
   }
@@ -925,6 +969,7 @@ function App() {
     setViewMode(mode)
     setShowAddForm(false)
     setEditRecord(null)
+    setFormViewing(false)
     setFormValues({})
     resetListQuery()
     // Select first type in the new mode
@@ -940,14 +985,18 @@ function App() {
     }
   }
 
-  const openEditForm = async (record: any) => {
-    // Fetch the full record from /api/item with update-form so that
-    // fields absent from list-form (e.g. deploy-status, my-rating)
-    // are populated correctly in the edit form.
+  const openEditForm = async (record: any, viewing = false) => {
+    // Fetch the full record from /api/item so that fields absent
+    // from the form we already hold (e.g. deploy-status,
+    // my-rating) are populated correctly in the open form.
+    // Edit mode reads update-form; view mode uses it too, except
+    // on rollup types (no update-form) where it falls back to
+    // list-form.
+    const formName = viewing ? viewFormName : 'update-form'
     let fullRecord = record
     try {
       const res = await apiFetch(
-        `/api/item?type=${type}&id=${record.id}&form=update-form`
+        `/api/item?type=${type}&id=${record.id}&form=${formName}`
       )
       if (res.ok) {
         const json = await res.json()
@@ -957,9 +1006,11 @@ function App() {
       // Fall back to list record on error
     }
     setEditRecord(fullRecord)
+    setFormViewing(viewing)
     // Filter out the current user's own exclusive role from the
     // roles — it's injected automatically by the backend and should
-    // never appear as a manual checkbox or be sent back.
+    // never appear as a manual checkbox or be sent back. Harmless
+    // in view mode (roles render as comma-joined text).
     const myExclusive = `${loggedInUser}:exclusive`
     const cleanRoles = (fullRecord.roles || []).filter(
       (r: string) => r !== myExclusive
@@ -970,6 +1021,7 @@ function App() {
 
   const closeForm = () => {
     setEditRecord(null)
+    setFormViewing(false)
     setShowAddForm(false)
     setFormValues({})
     setPasswordConfirm({})
@@ -1084,6 +1136,9 @@ function App() {
   }
 
   const submitForm = async () => {
+    // View mode has no submit control; this guard is insurance
+    // against future wiring mistakes.
+    if (formViewing) return
     // Find file field if present. Rollup types emit no add/update
     // forms (read-only), so the form lookup is guarded.
     const formDef = isEditMode
@@ -1368,7 +1423,7 @@ function App() {
       try {
         const res = await apiFetch(
           `/api/item?type=${type}&id=${editRecordId}` +
-          `&form=update-form`
+          `&form=${openFormName}`
         )
         if (!res.ok) return
         const json = await res.json()
@@ -1412,9 +1467,13 @@ function App() {
     if (isEditMode) return
     // Only auto-open the edit form for single-record settings types
     // (e.g. user preferences). Multi-record types like secrets should
-    // display as a normal list.
+    // display as a normal list. Read-only users get the view form —
+    // an Update button that can only fail is worse than none.
     if (data.result.records.length > 1) return
-    openEditForm(data.result.records[0])
+    openEditForm(
+      data.result.records[0],
+      data.result.update !== true
+    )
   }, [data, viewMode, type])
 
   if (!loggedIn) {
@@ -1660,6 +1719,7 @@ function App() {
             <button onClick={() => {
               setShowAddForm(true)
               setEditRecord(null)
+              setFormViewing(false)
               const typeRoles = data.result['type-roles'] || []
               if (typeRoles.length > 0) {
                 setFormValues({ roles: [...typeRoles] })
@@ -1774,24 +1834,49 @@ function App() {
 
       {(showAddForm || isEditMode) && (
         <form style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
-          <h3>{isEditMode ? 'Edit' : 'Add'} {data.result['type-key']}</h3>
+          <h3>{isViewMode ? 'View' : isEditMode ? 'Edit' : 'Add'} {data.result['type-key']}</h3>
 
           <div style={{ marginBottom: '1rem' }}>
-            <button type="button" onClick={submitForm}>
-              {isEditMode ? 'Update' : 'Submit'}
-            </button>
-            <button type="button" onClick={handleCancel} style={{ marginLeft: '0.5rem' }}>
-              Cancel
+            {!isViewMode && (
+              <button type="button" onClick={submitForm}>
+                {isEditMode ? 'Update' : 'Submit'}
+              </button>
+            )}
+            <button
+              type="button" onClick={handleCancel}
+              style={{ marginLeft: isViewMode ? '0' : '0.5rem' }}
+            >
+              {isViewMode ? 'Close' : 'Cancel'}
             </button>
           </div>
 
           {(isEditMode
-            ? Object.keys(data.result['update-form'] || {})
+            ? Object.keys(data.result[openFormName] || {})
             : addFields).map(f => {
             const fieldMeta = isEditMode
-              ? (data.result['update-form'] || {})[f]
+              ? (data.result[openFormName] || {})[f]
               : (data.result['add-form'] || {})[f]
             const allowed = data.result['allowed-values']?.[f] || []
+            // View mode renders every field read-only; password,
+            // file, and button fields are skipped first — nothing
+            // about them is displayable (a view-mode status
+            // companion renders through its own read-only
+            // branch).
+            if (isViewMode) {
+              const w = fieldMeta['widget'] || ''
+              if (w === 'password' || w === 'file' || w === 'button'
+                  || w === 'hidden') {
+                return null
+              }
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  {renderReadOnlyField(
+                    fieldMeta, formValues[f]
+                  )}
+                </div>
+              )
+            }
             const isCheckboxList = fieldMeta['widget'] === 'checkbox-list'
             const isCheckbox = fieldMeta['widget'] === 'checkbox'
 
@@ -2041,12 +2126,21 @@ function App() {
             )
           })}
 
-          <button type="button" onClick={submitForm}>
-            {isEditMode ? 'Update' : 'Submit'}
-          </button>
-          <button type="button" onClick={handleCancel} style={{ marginLeft: '0.5rem' }}>
-            Cancel
-          </button>
+          {!isViewMode && (
+            <>
+              <button type="button" onClick={submitForm}>
+                {isEditMode ? 'Update' : 'Submit'}
+              </button>
+              <button type="button" onClick={handleCancel} style={{ marginLeft: '0.5rem' }}>
+                Cancel
+              </button>
+            </>
+          )}
+          {isViewMode && (
+            <button type="button" onClick={handleCancel}>
+              Close
+            </button>
+          )}
         </form>
       )}
 
@@ -2056,9 +2150,11 @@ function App() {
             {data.result.delete && (
               <th style={{ width: '40px', textAlign: 'center', color: 'var(--error-bright)' }}>✕</th>
             )}
-            {data.result.update && (
-              <th style={{ width: '60px' }}></th>
-            )}
+            {/* Actions: view for anyone who can read the type,
+                edit beside it when the list flags update. Icon-only
+                links carry title/aria-label (house style: header
+                buttons, delete column, pagination). */}
+            <th style={{ width: '60px' }}></th>
             {listFields.map(f => {
               const field = data.result['list-form'][f]
               if (field.sortable === true) {
@@ -2119,11 +2215,29 @@ function App() {
                   />
                 </td>
               )}
-              {data.result.update && (
-                <td>
-                  <button onClick={() => openEditForm(rec)}>Edit</button>
-                </td>
-              )}
+              <td>
+                <a
+                  href="#" title="View" aria-label="View"
+                  style={{ textDecoration: 'none' }}
+                  onClick={e => {
+                    e.preventDefault()
+                    openEditForm(rec, true)
+                  }}
+                >👁</a>
+                {data.result.update && (
+                  <>
+                    {' '}
+                    <a
+                      href="#" title="Edit" aria-label="Edit"
+                      style={{ textDecoration: 'none' }}
+                      onClick={e => {
+                        e.preventDefault()
+                        openEditForm(rec)
+                      }}
+                    >✏️</a>
+                  </>
+                )}
+              </td>
               {listFields.map(f => {
                 const field = data.result['list-form'][f]
                 // Global one-line rule: text cells clamp to one

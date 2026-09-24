@@ -20,7 +20,7 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("todo-users" "public")
-      :default-sort (:name :asc)
+      :default-sort (:done :asc)
       :views (:main (:tables (:todos :todo-tags :tags))
                :tags (:tables (:tags)))
       :fields

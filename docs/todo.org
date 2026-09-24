@@ -2781,6 +2781,257 @@ Browser-level smoke of the checkbox / Not… box still pending
 Donnie's eyeball (curl-level wire semantics proven by the probe;
 the UI build is current).
 
+** DONE =:in= / =:not-in= filters reject list values (validation gate) :backend:valdn:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-21 Mon]
+:COMPLETED: [2026-09-21 Sun]
+:END:
+An =:in= filter whose VALUE is a list 400s before any SQL runs:
+=valid-filter= (backend.lisp) hands the whole value to
+=value-type-p=, which tests it against the field's /atom/ type. So
+=/api/list?type=todos&filters=[["tags","name","in",
+["chores","errands"]]]= fails with "Expected a value of type
+:TEXT" even though =add-where-clause= already builds
+=in ($1, $2)= placeholders and Phase A join-pushdown handles the
+joined table. It works today only by accident when the field
+itself is =:type :list= (=listp= test passes any list), e.g.
+=[["users","roles","in",[...]]]= — the case the predicate suite
+already asserts.
+
+Fix in =valid-filter=: for =:in= / =:not-in=, accept a /non-empty/
+list whose every element satisfies =value-type-p= (an empty list
+would render =in ()= — invalid SQL; keep that a 400). Mirror the
+same special case in =filter-p= (predicates.lisp) so the
+predicate and the validator cannot drift.
+
+Scope note: =add-where-clause= calls =(db-value ...)= on the
+whole list and flattens the result into bind params. Text fields
+pass through unchanged; numeric fields would feed the list to
+=parse-number= — map =db-value= element-wise in the =:in= branch,
+or scope the fix to text fields and document the gap.
+
+Consumer: "Clickable list-value chips" (above) — unlocks has-any
+multi-select chips. Donnie approved =:in= multi-select 2026-09-21;
+implemented as Step 0a of
+[[file:~/workbench/clickable-checkbox-chips-plan.org][clickable-checkbox-chips-plan.org]]
+(also fix the downstream Phase A 42P10 there, Step 0b — this item
+alone does not ship chips).
+
+DONE 2026-09-21 as Step 0a of the chips item (see its summary):
+shared =filter-value-type-p= in predicates.lisp behind both
+=filter-p= and =valid-filter=, split error message, element-wise
+=db-value= in =add-where-clause=, =docs/rest.md= =:in= line,
+predicate + backend test extensions. =:not-in= became legal at
+the validation layer with no UI (plan out-of-scope).
+
+** DONE Post-recreate deploy addressing: loopback, not bridge IP :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-12 Sat]
+:COMPLETED: [2026-09-13 Sun]
+:END:
+After the k3d recreate (~/workbench/k8s-to-ssd2-plan.org, Risks
+"Post-recreate data-ui deploy"), the first =scripts/data-ui
+deploy= reintroduces exactly the drift class that plan kills:
+
+1. With the reserved-set guard in =assign_node_port= (folded in
+   step 2 of that plan), the scan hands out =30303= — but the
+   create block publishes no =-p= for =31303=, so the deploy has
+   no loopback hop.
+2. =deploy/templates/haproxy-backend.cfg.tpl= renders
+   ={{NODE_IP}}:{{NODE_PORT}}= with the node InternalIP
+   (=scripts/data-ui= ~1242) — a =172.18.*= *target* in
+   =conf.d=, which the plan's acceptance grep forbids.
+   jina-kube and monitor-host already prefer
+   =127.0.0.1:<nodePort+1000>= with a bridge fallback; data-ui
+   has no such logic.
+
+Design decision needed, then implement: reserve a data-ui
+NodePort (e.g. =30303=), publish =31303= at the next recreate,
+pin the Service, and render the loopback address in the template
+(mirroring the =ensure_node_port= consumers) — or keep
+per-instance scans and render whatever mapping exists. Until
+this lands, the post-recreate smoke deploy carries a bridge-IP
+target and an unmapped NodePort. Note: =require_clean_tree=
+means the k8s-to-ssd2 step-2/3 edits must be committed before
+that deploy runs.
+
+*** Context from the 2026-09-13 smoke deploy (todos, post-recreate)
+
+Both landmines fired exactly as predicted; the deploy itself was
+otherwise green (SSD paths, host mkdir+chown, PV bindings, API
+insert/list/delete round-trip, record survived pod reschedule):
+
+1. =assign_node_port= handed out =30303= (guard working:
+   skipped 30300 jina, 30301 reserved, 30302 grafana). No
+   =-p 31303= exists.
+2. =conf.d/dataui-todos.cfg= rendered
+   =server dataui-todos 172.18.0.2:30303= — works only because
+   the recreate happened to re-land the server on =.2= of the
+   same subnet. That's the drift class, live again.
+
+Resolution shape (settles the "decision" above — no single-port
+pin needed):
+
+- *Render-side (the real fix, no recreate required):* in
+  =deploy()=, after =assign_node_port= and before
+  =generate_manifests=, probe
+  =curl -m2 http://127.0.0.1:$((NODE_PORT+1000))/= and set
+  =NODE_TARGET= — loopback when it answers,
+  =${NODE_IP}:${NODE_PORT}= fallback otherwise (copy of
+  jina-kube =render_snippet= / monitor-host:~250; any HTTP
+  response counts, connection refused = fallback). Wire the
+  placeholder into =render_template= (scripts/data-ui ~1052):
+  add =-e "s|{{NODE_TARGET}}|${NODE_TARGET}|g"= next to the
+  ={{NODE_IP}}= / ={{NODE_PORT}}= lines. Template changes: swap
+  the server line + comment. Correct on any
+  cluster; until a port is published, behavior is unchanged
+  (fallback = today's snippet).
+- *Port block (one line, next recreate only):* docker =-p=
+  accepts ranges —
+  =-p 127.0.0.1:31303-31312:30303-31312@server:0= covers ten
+  future instances in one flag. Scans already start at 30303;
+  pinned ports + reserved-set guards mean nothing else takes
+  them, so no reserved-set changes are needed. Multi-instance is
+  why a single reserved port was the wrong frame.
+- *Instance fix-up:* snippets render at deploy time only.
+  Existing =conf.d= entries keep their bridge target until
+  redeployed (or hand-edit + reload — did /not/ do this for
+  todos; its =172.18.0.2:30303= is live by choice, not
+  accident).
+
+Size: ~15 script lines + template tweak, well under an hour with
+a todos redeploy as the verification.
+
+Related: =~/r/k3d-tools/nodeport.sh= (2026-09-13) centralizes this
+exact logic for the manager scripts (jina-kube / monitor-host
+source it; reserved set derived from docker residue). data-ui
+cannot source it — deploy clone must stay self-contained — so when
+implementing, either copy =k3d_backend_target='s probe verbatim
+into =scripts/data-ui=, or keep the inline 10-line scan for ports
+and only take the probe. If adopting the block-owner pattern,
+=k3d_reserved_ports 30303:30312= in the lib shows the
+exclusion shape for an inline portblock equivalent.
+
+Summary (2026-09-13): Implemented the resolution shape above,
+exactly as written. =scripts/data-ui=: new =assign_backend_target=
+(probe copied verbatim from =k3d_backend_target=; any HTTP response
+counts, curl exit status decides) called in =deploy()= right after
+=assign_node_port=; =render_template= gained a ={{NODE_TARGET}}=
+substitution; =deploy()='s closing =NodePort:= echo line still
+prints the raw =${NODE_IP}:${NODE_PORT}= (diagnostic, unchanged
+from the plan). =deploy/templates/haproxy-backend.cfg.tpl=: server
+line now renders ={{NODE_TARGET}}=; header comment explains
+loopback-hop vs bridge fallback. =~/workbench/k8s-to-ssd2-plan.org=:
+create block gained
+=-p 127.0.0.1:31303-31312:30303-30312@server:0= with rationale
+(one range flag, ten instances, no reserved-set changes — ports
+stay offerable to data-ui only); next recreate makes every
+=data-ui deploy= render loopback. No other files touched; no Lisp
+changed. Verified: bash -n clean; both probe branches live (probe
+31300 answers → =127.0.0.1:31300=, 31303 refused → bridge
+fallback); =DRY_RUN=1 deploy todos= reuses NodePort 30303 and
+renders =server dataui-todos 172.18.0.2:30303= — the bridge
+fallback, byte-identical behavior to the live =conf.d= snippet
+until the range is published at next recreate. Full non-DRY redeploy
+deferred: =require_clean_tree= would abort on these unstaged edits;
+Donnie commits first, then a plain =deploy todos= is the
+verification. Loopback branch itself is untestable until a
+recreate publishes 31303 (k3d cannot add =-p= live) — the probe
+logic is the same verbatim copy already proven in jina-kube.
+
+** DONE Has-all chip filtering (AND within a field)   :backend:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-23 Wed]
+:END:
+Implemented per the plan (has-all-plan.org), no deviations:
+- predicates.lisp: inert =operator-sql= =:has-all= entry (never
+  emitted as SQL text — accepted so =operator-key-p= and the REST
+  operator parser take it); =filter-value-type-p= =(:in :not-in
+  :has-all)= member list (same non-empty-cons value contract).
+- backend.lisp: =valid-filter= gates =:has-all= on =:join-table=
+  (report-ve); =has-all-conditions= + =has-all-exists-fragment=
+  build one correlated =EXISTS= per value through the field's
+  joiner (FKs resolved from compiled =:target= fields, display
+  column from =:source :column-name=); =add-where-clause= arm
+  emits the parenthesized EXISTS group, values bound element-wise
+  like =:in=. =measure-request-grain-filters= =:has-all= arm added
+  for completeness (rollups still reject non-grain filters).
+- Frontend =App.tsx=: chip rows now send =[type, fieldKey,
+  "has-all", values]=; the =field.table= wire mapping and the
+  hardcoded ="name"= column are gone (the not-ilike Phase-2 rows
+  read list-form meta locally now). Built with =npm run build=.
+- =:users :roles= carries =:join-table :role-users= (live probe,
+  Step 0.2 open branch resolved) — users Roles chips send
+  =has-all= like every other chip-eligible field; no =fe-fields=
+  meta-flag contingency was needed.
+- docs/rest.md operator list updated.
+- Tests: predicate =filter-p= / =operator-key-p= =:has-all=
+  cases; backend =valid-filter= accept (todos =:tags=) / reject
+  (non-M2M, empty list); m2m suite =m2m-has-all-intersection= /
+  =m2m-has-all-with-sort-and-second-field= (intersection
+  semantics, empty intersection, single-value-equals-=:in=, sort
+  compose, second joiner, two fields AND).
+- =(run-tests)=: 1788/1788 checks pass across 31 groups. Live
+  REST smoke on restarted =dataui@books= / =@todos= / =@modelbank=
+  units: co-author pair narrows to 1, roles =has-all=, sort +
+  search + chip compose, =:in= untouched, non-M2M field 400s.
+
+Files: =lisp/predicates.lisp=, =lisp/backend.lisp=,
+=tests/predicate-tests.lisp=, =tests/backend-tests.lisp=,
+=tests/m2m-tests.lisp=, =docs/rest.md=, =web/src/App.tsx=.
+
+** DONE Read-only record view form                    :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-23 Wed]
+:COMPLETED: [2026-09-24 Thu]
+:END:
+Implemented per [[file:~/workbench/view-record-plan.org][view-record-plan.org]] — frontend-only, =web/src/App.tsx= (2026-09-24):
+
+- =formViewing= state: =openEditForm(record, viewing)= sets it
+  alongside =editRecord=; every =setEditRecord(= reset site clears
+  it (=closeForm=, =changeType=, =switchViewMode=,
+  =resetSessionState=, the Add button handler). =submitForm= has a
+  defensive =if (formViewing) return=.
+- View mode renders every field through =renderReadOnlyField=
+  (image grids + lightbox, static stars, formatted text);
+  =password= / =file= / =button= / =hidden= fields are skipped
+  (nothing displayable). Status companions render through their
+  own read-only branch.
+- New =code= / =textarea= read-only branches with =pre-wrap=
+  (monospace for =code=) — newlines survive, modelbank's =:model=
+  is the point. Blast radius on existing read-only fields of those
+  shapes: empty (no demo model had one).
+- Stars read-only handles array values (write-through rating as
+  =[]= for a raterless viewer) — renders the em dash, not NaN.
+- Action column: eye (👁 View, always) + pencil (✏️ Edit, gated on
+  =data.result.update=), both icon links with =title= / =aria-label=
+  and no row-click handler (cell text stays selectable). The
+  column header is now unconditional — guests gain it.
+- Form chrome in view mode: heading =View {type-key}=, a single
+  Close button top and bottom (reuses =handleCancel=; settings
+  mode returns to landing).
+- Settings auto-open routes on =data.result.update= — read-only
+  users get the view form, not a doomed Update button.
+- Rollup fallback: when the list payload has no =update-form=
+  (rollup types), the view form reads =list-form= field meta.
+  Note: =/api/item= is 400 on rollup types server-side ("only
+  list reads supported"), so the view form falls back to the list
+  record — populated, minus nothing the list already carried. The
+  3s status poll mirrors the same form choice.
+
+=web/dist= rebuilt (index-BaxhfZNq.js); demo units
+=dataui@modelbank= / =@books= / =@todos= restarted and serving it;
+verified live on https://modelbank.demo.data-ui.com as guest
+(eye link, model source with newlines via =/api/item=, 12 images,
+guest flags all false, no pencil). No Lisp changes; no API
+changes. Deviation from plan: none material — the rollup fallback
+quietly degrades to the list record because =/api/item= rejects
+rollups; noted above.
+
+Plan: [[file:~/workbench/view-record-plan.org][view-record-plan.org]] (complete [2026-09-23 Wed]; awaiting
+go-ahead).
+
 ** TODO Broken format string in =validate-new-directory= error :backend:bug:mvp:
 :PROPERTIES:
 :CREATED: [2026-09-18 Fri]
@@ -2961,49 +3212,6 @@ Instead of "Model is required" or something like that, we get:
 "Invalid value type for field :IMAGES :MODEL. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-f02]"
 Model Bank demo polish.
 
-** DONE =:in= / =:not-in= filters reject list values (validation gate) :backend:valdn:mvp:
-:PROPERTIES:
-:CREATED: [2026-09-21 Mon]
-:COMPLETED: [2026-09-21 Sun]
-:END:
-An =:in= filter whose VALUE is a list 400s before any SQL runs:
-=valid-filter= (backend.lisp) hands the whole value to
-=value-type-p=, which tests it against the field's /atom/ type. So
-=/api/list?type=todos&filters=[["tags","name","in",
-["chores","errands"]]]= fails with "Expected a value of type
-:TEXT" even though =add-where-clause= already builds
-=in ($1, $2)= placeholders and Phase A join-pushdown handles the
-joined table. It works today only by accident when the field
-itself is =:type :list= (=listp= test passes any list), e.g.
-=[["users","roles","in",[...]]]= — the case the predicate suite
-already asserts.
-
-Fix in =valid-filter=: for =:in= / =:not-in=, accept a /non-empty/
-list whose every element satisfies =value-type-p= (an empty list
-would render =in ()= — invalid SQL; keep that a 400). Mirror the
-same special case in =filter-p= (predicates.lisp) so the
-predicate and the validator cannot drift.
-
-Scope note: =add-where-clause= calls =(db-value ...)= on the
-whole list and flattens the result into bind params. Text fields
-pass through unchanged; numeric fields would feed the list to
-=parse-number= — map =db-value= element-wise in the =:in= branch,
-or scope the fix to text fields and document the gap.
-
-Consumer: "Clickable list-value chips" (above) — unlocks has-any
-multi-select chips. Donnie approved =:in= multi-select 2026-09-21;
-implemented as Step 0a of
-[[file:~/workbench/clickable-checkbox-chips-plan.org][clickable-checkbox-chips-plan.org]]
-(also fix the downstream Phase A 42P10 there, Step 0b — this item
-alone does not ship chips).
-
-DONE 2026-09-21 as Step 0a of the chips item (see its summary):
-shared =filter-value-type-p= in predicates.lisp behind both
-=filter-p= and =valid-filter=, split error message, element-wise
-=db-value= in =add-where-clause=, =docs/rest.md= =:in= line,
-predicate + backend test extensions. =:not-in= became legal at
-the validation layer with no UI (plan out-of-scope).
-
 ** TODO 30-second demo video                                      :docs:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -3013,163 +3221,6 @@ Nothing → model → deployed app. Deadline: end of December 2026.
 **When to shoot:** mid-to-late December — after polish and the features
 that should appear on camera (search/filtering, sort, static drop-downs,
 boolean list checkmarks, UI polish, etc.).
-
-** DONE Post-recreate deploy addressing: loopback, not bridge IP :scripts:mvp:
-:PROPERTIES:
-:CREATED: [2026-09-12 Sat]
-:COMPLETED: [2026-09-13 Sun]
-:END:
-After the k3d recreate (~/workbench/k8s-to-ssd2-plan.org, Risks
-"Post-recreate data-ui deploy"), the first =scripts/data-ui
-deploy= reintroduces exactly the drift class that plan kills:
-
-1. With the reserved-set guard in =assign_node_port= (folded in
-   step 2 of that plan), the scan hands out =30303= — but the
-   create block publishes no =-p= for =31303=, so the deploy has
-   no loopback hop.
-2. =deploy/templates/haproxy-backend.cfg.tpl= renders
-   ={{NODE_IP}}:{{NODE_PORT}}= with the node InternalIP
-   (=scripts/data-ui= ~1242) — a =172.18.*= *target* in
-   =conf.d=, which the plan's acceptance grep forbids.
-   jina-kube and monitor-host already prefer
-   =127.0.0.1:<nodePort+1000>= with a bridge fallback; data-ui
-   has no such logic.
-
-Design decision needed, then implement: reserve a data-ui
-NodePort (e.g. =30303=), publish =31303= at the next recreate,
-pin the Service, and render the loopback address in the template
-(mirroring the =ensure_node_port= consumers) — or keep
-per-instance scans and render whatever mapping exists. Until
-this lands, the post-recreate smoke deploy carries a bridge-IP
-target and an unmapped NodePort. Note: =require_clean_tree=
-means the k8s-to-ssd2 step-2/3 edits must be committed before
-that deploy runs.
-
-*** Context from the 2026-09-13 smoke deploy (todos, post-recreate)
-
-Both landmines fired exactly as predicted; the deploy itself was
-otherwise green (SSD paths, host mkdir+chown, PV bindings, API
-insert/list/delete round-trip, record survived pod reschedule):
-
-1. =assign_node_port= handed out =30303= (guard working:
-   skipped 30300 jina, 30301 reserved, 30302 grafana). No
-   =-p 31303= exists.
-2. =conf.d/dataui-todos.cfg= rendered
-   =server dataui-todos 172.18.0.2:30303= — works only because
-   the recreate happened to re-land the server on =.2= of the
-   same subnet. That's the drift class, live again.
-
-Resolution shape (settles the "decision" above — no single-port
-pin needed):
-
-- *Render-side (the real fix, no recreate required):* in
-  =deploy()=, after =assign_node_port= and before
-  =generate_manifests=, probe
-  =curl -m2 http://127.0.0.1:$((NODE_PORT+1000))/= and set
-  =NODE_TARGET= — loopback when it answers,
-  =${NODE_IP}:${NODE_PORT}= fallback otherwise (copy of
-  jina-kube =render_snippet= / monitor-host:~250; any HTTP
-  response counts, connection refused = fallback). Wire the
-  placeholder into =render_template= (scripts/data-ui ~1052):
-  add =-e "s|{{NODE_TARGET}}|${NODE_TARGET}|g"= next to the
-  ={{NODE_IP}}= / ={{NODE_PORT}}= lines. Template changes: swap
-  the server line + comment. Correct on any
-  cluster; until a port is published, behavior is unchanged
-  (fallback = today's snippet).
-- *Port block (one line, next recreate only):* docker =-p=
-  accepts ranges —
-  =-p 127.0.0.1:31303-31312:30303-31312@server:0= covers ten
-  future instances in one flag. Scans already start at 30303;
-  pinned ports + reserved-set guards mean nothing else takes
-  them, so no reserved-set changes are needed. Multi-instance is
-  why a single reserved port was the wrong frame.
-- *Instance fix-up:* snippets render at deploy time only.
-  Existing =conf.d= entries keep their bridge target until
-  redeployed (or hand-edit + reload — did /not/ do this for
-  todos; its =172.18.0.2:30303= is live by choice, not
-  accident).
-
-Size: ~15 script lines + template tweak, well under an hour with
-a todos redeploy as the verification.
-
-Related: =~/r/k3d-tools/nodeport.sh= (2026-09-13) centralizes this
-exact logic for the manager scripts (jina-kube / monitor-host
-source it; reserved set derived from docker residue). data-ui
-cannot source it — deploy clone must stay self-contained — so when
-implementing, either copy =k3d_backend_target='s probe verbatim
-into =scripts/data-ui=, or keep the inline 10-line scan for ports
-and only take the probe. If adopting the block-owner pattern,
-=k3d_reserved_ports 30303:30312= in the lib shows the
-exclusion shape for an inline portblock equivalent.
-
-Summary (2026-09-13): Implemented the resolution shape above,
-exactly as written. =scripts/data-ui=: new =assign_backend_target=
-(probe copied verbatim from =k3d_backend_target=; any HTTP response
-counts, curl exit status decides) called in =deploy()= right after
-=assign_node_port=; =render_template= gained a ={{NODE_TARGET}}=
-substitution; =deploy()='s closing =NodePort:= echo line still
-prints the raw =${NODE_IP}:${NODE_PORT}= (diagnostic, unchanged
-from the plan). =deploy/templates/haproxy-backend.cfg.tpl=: server
-line now renders ={{NODE_TARGET}}=; header comment explains
-loopback-hop vs bridge fallback. =~/workbench/k8s-to-ssd2-plan.org=:
-create block gained
-=-p 127.0.0.1:31303-31312:30303-30312@server:0= with rationale
-(one range flag, ten instances, no reserved-set changes — ports
-stay offerable to data-ui only); next recreate makes every
-=data-ui deploy= render loopback. No other files touched; no Lisp
-changed. Verified: bash -n clean; both probe branches live (probe
-31300 answers → =127.0.0.1:31300=, 31303 refused → bridge
-fallback); =DRY_RUN=1 deploy todos= reuses NodePort 30303 and
-renders =server dataui-todos 172.18.0.2:30303= — the bridge
-fallback, byte-identical behavior to the live =conf.d= snippet
-until the range is published at next recreate. Full non-DRY redeploy
-deferred: =require_clean_tree= would abort on these unstaged edits;
-Donnie commits first, then a plain =deploy todos= is the
-verification. Loopback branch itself is untestable until a
-recreate publishes 31303 (k3d cannot add =-p= live) — the probe
-logic is the same verbatim copy already proven in jina-kube.
-
-** DONE Has-all chip filtering (AND within a field)   :backend:frontend:mvp:
-:PROPERTIES:
-:CREATED: [2026-09-23 Wed]
-:COMPLETED: [2026-09-23 Wed]
-:END:
-Implemented per the plan (has-all-plan.org), no deviations:
-- predicates.lisp: inert =operator-sql= =:has-all= entry (never
-  emitted as SQL text — accepted so =operator-key-p= and the REST
-  operator parser take it); =filter-value-type-p= =(:in :not-in
-  :has-all)= member list (same non-empty-cons value contract).
-- backend.lisp: =valid-filter= gates =:has-all= on =:join-table=
-  (report-ve); =has-all-conditions= + =has-all-exists-fragment=
-  build one correlated =EXISTS= per value through the field's
-  joiner (FKs resolved from compiled =:target= fields, display
-  column from =:source :column-name=); =add-where-clause= arm
-  emits the parenthesized EXISTS group, values bound element-wise
-  like =:in=. =measure-request-grain-filters= =:has-all= arm added
-  for completeness (rollups still reject non-grain filters).
-- Frontend =App.tsx=: chip rows now send =[type, fieldKey,
-  "has-all", values]=; the =field.table= wire mapping and the
-  hardcoded ="name"= column are gone (the not-ilike Phase-2 rows
-  read list-form meta locally now). Built with =npm run build=.
-- =:users :roles= carries =:join-table :role-users= (live probe,
-  Step 0.2 open branch resolved) — users Roles chips send
-  =has-all= like every other chip-eligible field; no =fe-fields=
-  meta-flag contingency was needed.
-- docs/rest.md operator list updated.
-- Tests: predicate =filter-p= / =operator-key-p= =:has-all=
-  cases; backend =valid-filter= accept (todos =:tags=) / reject
-  (non-M2M, empty list); m2m suite =m2m-has-all-intersection= /
-  =m2m-has-all-with-sort-and-second-field= (intersection
-  semantics, empty intersection, single-value-equals-=:in=, sort
-  compose, second joiner, two fields AND).
-- =(run-tests)=: 1788/1788 checks pass across 31 groups. Live
-  REST smoke on restarted =dataui@books= / =@todos= / =@modelbank=
-  units: co-author pair narrows to 1, roles =has-all=, sort +
-  search + chip compose, =:in= untouched, non-M2M field 400s.
-
-Files: =lisp/predicates.lisp=, =lisp/backend.lisp=,
-=tests/predicate-tests.lisp=, =tests/backend-tests.lisp=,
-=tests/m2m-tests.lisp=, =docs/rest.md=, =web/src/App.tsx=.
 
 * MVP Backlog
 ** DONE Sign in as guest                   :frontend:backend:compiler:model:

@@ -14,13 +14,14 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
 Data UI compiles a small model into a complete, RBAC-backed application — database, API, React frontend, Kubernetes deployment — in one command.
 
-- **Evaluating as an investor or partner?** [The Big Idea](#the-big-idea) → [Current Status](#current-status-september-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
+- **Evaluating as an investor or partner?** [Live demos](#live-demos) → [The Big Idea](#the-big-idea) → [Current Status](#current-status-september-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
 - **Need an application built?** Client engagements open after the MVP (target: December 2026). Early conversations welcome: [Contact](#contact).
 - **Engineer, or evaluating the tech?** Read top to bottom; the meat starts at [Overview](#overview) and the [Example Model](#example-model).
 
 ## Table of Contents
 
 - [Start Here](#start-here)
+- [Live Demos](#live-demos)
 - [The Big Idea](#the-big-idea)
 - [The Thesis in Six Lines](#the-thesis-in-six-lines)
 - [Why AI Needs Data UI](#why-ai-needs-data-ui)
@@ -44,6 +45,20 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 - [Related Repositories](#related-repositories)
 - [Contact](#contact)
 - [License](#license)
+
+
+## Live Demos
+
+Three applications compiled from models in this repo, running now.
+
+- [To Do List](https://todo-stg.demo.data-ui.com/) — the napkin-sized model from [Example Model](#example-model), compiled and deployed. Log in as `demos` / `TryDataUI2026!` to add, edit, and tag items.
+- [Books & Authors](https://books-stg.demo.data-ui.com/) — relationships, cover images, and a rating rollup. Same login: `demos` / `TryDataUI2026!`.
+
+Both reset to a known state every morning at 04:10 (US Pacific). Anything you change is gone by then; that is the point of a shared demo.
+
+- [Model Bank](https://modelbank.demo.data-ui.com/) — a gallery of models, with ownership, images, and ratings. Log in as `guest` (no password); it is read-only. Write access, including the Generate and Deploy buttons, is available on request: [Contact](#contact).
+
+The `demos` password is public by design. The apps are sandboxed, reset nightly, and can be taken offline in under a minute.
 
 
 ## The Big Idea
@@ -556,7 +571,7 @@ Instances run in one of three *environments* — development (`scripts/data-ui r
 
 The project is in active development, and the core claim is now demonstrated end to end:
 
-- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model was deployed to production on a k3d cluster with a single command (July 2026); the public demo now runs as staged demo apps (see below).
+- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model was deployed to production on a k3d cluster with a single command (July 2026). The public demos now run as staged apps on their own domains — see [Live Demos](#live-demos).
 - Full CRUD operations work via the backend, REST API, and frontend React code, across **all** types, both the built-in RBAC types (users, roles, permissions, resources, etc.) and user-defined types.
 - JWT-based authentication (access + refresh tokens) protects the API, including the passwordless **guest login** path (`:guest-allowed t`, `:guest-auto`, `:api-roles`).
 - **Scoping** is implemented at both the view level and the field level. View-level `:scope :user` filters `be-list` results to records owned by the current user. Field-level scoping (`:scope :user` on a field's `:source`) filters aggregated field values to the current user (e.g. "my rating" on Model Bank). It does not control field visibility or editability in the UI.

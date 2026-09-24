@@ -2267,14 +2267,18 @@ function snapshot_list {
     # The shared pool: names + provenance from .meta (annotated, never
     # resolved). A missing .meta prints (no .meta) — hand-named and
     # orphan dumps stay legal, and silent empty provenance looks like
-    # a bug.
+    # a bug. Neat columns: two passes — collect and measure (name and
+    # size-group widths), then printf %-*s. Timestamp is fixed-width
+    # and provenance is last, so neither needs measuring.
     if [[ ! -d "$SNAPSHOT_DIR" ]] \
        || [[ -z "$(ls -A "$SNAPSHOT_DIR" 2>/dev/null)" ]]; then
         echo "No snapshots found in ${SNAPSHOT_DIR}"
         return
     fi
-    echo "Snapshots in ${SNAPSHOT_DIR}:"
-    local f base size files provenance model version source
+    local f base size files provenance model version source ts ts_re sgroup
+    local -a names sizes stamps provs
+    local name_w=0 size_w=0 i
+    ts_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
     for f in "$SNAPSHOT_DIR"/*.dump; do
         [[ -f "$f" ]] || continue
         base=$(basename "$f" .dump)
@@ -2284,13 +2288,35 @@ function snapshot_list {
         model="$(meta_read "$base" model)"
         version="$(meta_read "$base" model-version)"
         source="$(meta_read "$base" source-address)"
+        # UTC stamp: the .meta save time when it parses; else the
+        # .dump's mtime (covers meta-less orphans and migrated
+        # stubs, whose stamp is the literal "migrated").
+        ts="$(meta_read "$base" timestamp)"
+        if [[ ! "$ts" =~ $ts_re ]]; then
+            ts="$(date -u -r "$f" +%Y-%m-%dT%H:%M:%SZ)"
+        fi
         if [[ -f "$(meta_path "$base")" ]]; then
-            provenance="${source:-?}, model ${model:-?}"
-            [[ -n "$version" ]] && provenance+=" v${version}"
+            # The source address already names the model; only the
+            # version rides the provenance.
+            provenance="${source:-?}"
+            [[ -n "$version" ]] && provenance+=", v${version}"
         else
             provenance="(no .meta)"
         fi
-        echo "  ${base}  (${size}${files})  ${provenance}"
+        sgroup="(${size}${files})"
+        names+=("$base")
+        sizes+=("$sgroup")
+        stamps+=("$ts")
+        provs+=("$provenance")
+        if (( ${#base} > name_w )); then name_w=${#base}; fi
+        if (( ${#sgroup} > size_w )); then size_w=${#sgroup}; fi
+    done
+    echo "Snapshots in ${SNAPSHOT_DIR}:"
+    for i in "${!names[@]}"; do
+        printf '  %-*s  %-*s  %s  %s\n' \
+            "$name_w" "${names[$i]}" \
+            "$size_w" "${sizes[$i]}" \
+            "${stamps[$i]}" "${provs[$i]}"
     done
 }
 
@@ -2790,7 +2816,7 @@ Save or restore a snapshot between explicit environments.
 
     save <name> <src-address>      e.g. books-1 dev:books
     restore <name> <dst-address>   e.g. books-1 stg:books
-    list                           shared pool; names + provenance
+    list                           shared pool; names + provenance + timestamp
     drop <name>                    removes .dump + .files.tar.gz + .meta
     migrate                        one-time: rename legacy slots,
                                    stub .meta (idempotent)
