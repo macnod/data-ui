@@ -2630,7 +2630,7 @@ in "Role-gated Deploy button" (post-MVP polish).
 
 *** TODO Placeholder demo video
 Job-search stand-in only; make clear the MVP is not out until
-end of December 2026. Not the real MVP video.
+December 31, 2026. Not the real MVP video.
 
 ** DONE Books: book-ratings rollup board                    :model:mvp:
 :PROPERTIES:
@@ -3216,7 +3216,7 @@ Model Bank demo polish.
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
-Nothing → model → deployed app. Deadline: end of December 2026.
+Nothing → model → deployed app. Deadline: December 31, 2026.
 
 **When to shoot:** mid-to-late December — after polish and the features
 that should appear on camera (search/filtering, sort, static drop-downs,

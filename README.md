@@ -15,7 +15,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 Data UI compiles a small model into a complete, RBAC-backed application — database, API, React frontend, Kubernetes deployment — in one command.
 
 - **Evaluating as an investor or partner?** [Live demos](#live-demos) → [The Big Idea](#the-big-idea) → [Current Status](#current-status-september-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
-- **Need an application built?** Client engagements open after the MVP (target: December 2026). Early conversations welcome: [Contact](#contact).
+- **Need an application built?** Client engagements open after the MVP (target: December 31, 2026). Early conversations welcome: [Contact](#contact).
 - **Engineer, or evaluating the tech?** Read top to bottom; the meat starts at [Overview](#overview) and the [Example Model](#example-model).
 
 ## Table of Contents
@@ -23,7 +23,6 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 - [Start Here](#start-here)
 - [Live Demos](#live-demos)
 - [The Big Idea](#the-big-idea)
-- [The Thesis in Six Lines](#the-thesis-in-six-lines)
 - [Why AI Needs Data UI](#why-ai-needs-data-ui)
 - [Overview](#overview)
 - [Core Philosophy](#core-philosophy)
@@ -49,6 +48,8 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 
 ## Live Demos
 
+These are working deployments of the engine, not the finished product. MVP target is December 31, 2026 — see [Road to MVP](#road-to-mvp).
+
 Three applications compiled from models in this repo, running now.
 
 - [To Do List](https://todo-stg.demo.data-ui.com/) — the napkin-sized model from [Example Model](#example-model), compiled and deployed. Log in as `demos` / `TryDataUI2026!` to add, edit, and tag items.
@@ -70,26 +71,11 @@ Data UI lets you express the **entire** application as a small, reviewable artif
 Change the model, recompile, and everything updates consistently. The model is the DNA of the application. At less than a page of code for many applications, that DNA is tiny compared to the many thousands of lines that would otherwise be needed to describe such an application. The napkin-sized to-do model is ~57 lines; a Java team matching what it produces would need to write an estimated ~20,000 lines of production artifacts. The walkthrough: [57 vs ~20k](docs/57-vs-20k.org).
 
 
-## The Thesis in Six Lines
-
-> The 40,000-line application is dead. The 40-line model that compiles into one just won.
-
-> Change one file. Recompile. Every schema, every endpoint, every permission check, every UI form updates together, because they were never separate things.
-
-> An application that once required a team, a quarter, and a budget now fits in the body of an email and deploys in one command.
-
-> Before Data UI: "We'll need a backend engineer, a frontend engineer, a DevOps person, and six weeks." After Data UI: "I just sent you the model."
-
-> You don't maintain a Data UI application. You maintain a 40-line description, and the running system is a pure function of that description. The concept of "maintenance" as we know it just disappeared.
-
-> Data UI is the only product that lets an AI effectively author complete, UI-administrable, row-level RBAC applications. AI can now ship production applications. Not suggest code. Not draft migrations. Ship. The missing piece was never the AI. It was the invariant engine that lets the AI's output be trusted.
-
-
 ## Why AI Needs Data UI
 
 The bottleneck in building this class of application is not code generation. A modern AI can emit plausible code all day. The bottleneck is **specification compression and invariant enforcement**.
 
-An AI is good at producing a 40-line model. It is bad at producing a 40,000-line application whose permissions remain globally consistent as the application evolves, because it pattern-matches locally and drifts globally, it has no enforcement mechanism. A smarter model does not close this gap; it just drifts more eloquently.
+An AI is good at producing a model a hundredth the size of the application. It is bad at producing the application itself, whose permissions must remain globally consistent as the application evolves, because it pattern-matches locally and drifts globally, it has no enforcement mechanism. A smarter model does not close this gap; it just drifts more eloquently.
 
 Data UI closes the gap by reducing the dimensionality of the thing that has to be gotten right. With Data UI, the AI operates in the regime where it is strong (producing a small, structured model) and the compiler handles the regime where the AI is weak (expanding that model into a system with globally consistent RBAC and relational integrity).
 
@@ -111,8 +97,7 @@ Data UI is a Common Lisp system that takes a simple nested plist model and **com
 - Generic, model-driven backend functions and API endpoints
 - UI hints for dynamic React forms and lists
 - Per-field and per-form data validation endpoints
-- View-level and field-level scoping (`:scope :user`) for per-user data
-  filtering
+- View-level and field-level scoping (`:scope :user`) for per-user data filtering
 - Tree-structured types with filesystem backing (directories, file storage)
 - Complete React frontend
 - Kubernetes manifests for deployment
@@ -148,18 +133,7 @@ That the power of Common Lisp is invisible to most working programmers is itself
 
 ## Example Model
 
-This example is abbreviated from `models/todos.lisp` (which also sets
-`:domain-stg`, `:guest-allowed t`, `:guest-auto nil`, `:api-roles`,
-`:default-sort`, `:sortable` / `:searchable` on fields, `"public"` in
-`:type-roles`, and `:type-roles` overlays on the built-in `:users` /
-`:roles` / `:permissions` types). Each file in the `models/` directory
-holds a bare model plist (no `defparameter` and no wrapping variable).
-The top-level keys (`:title`, `:name`, `:version`, `:domain`,
-`:domain-stg`, `:repl`, `:guest-allowed`, `:guest-auto`, `:api-roles`,
-`:landing-page`, `:new-roles`) carry the model's identity, and `:types`
-holds the type definitions. Load the model with `(set-model "todos")`,
-pass just the file name, with no path and no `.lisp` extension. Prefer
-`:repl nil` in production (see [Deployment](#deployment)).
+This example is abbreviated from `models/todos.lisp` (which also sets `:domain-stg`, `:guest-allowed t`, `:guest-auto nil`, `:api-roles`, `:default-sort`, `:sortable` / `:searchable` on fields, `"public"` in `:type-roles`, and `:type-roles` overlays on the built-in `:users` / `:roles` / `:permissions` types). Each file in the `models/` directory holds a bare model plist (no `defparameter` and no wrapping variable). The top-level keys (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:guest-allowed`, `:guest-auto`, `:api-roles`, `:landing-page`, `:new-roles`) carry the model's identity, and `:types` holds the type definitions. Load the model with `(set-model "todos")`, pass just the file name, with no path and no `.lisp` extension. Prefer `:repl nil` in production (see [Deployment](#deployment)).
 
 ```lisp
 (:title "To Do List"
@@ -397,8 +371,7 @@ For a detailed comparison of Data UI's approach against existing tools, see [Com
 - Action hooks on `:button` fields (e.g. `:deploy-model`, `:generate-model`) via the same registry
 - Non-base tables get an `rt_` prefix to avoid name collisions with RBAC tables
 
-Full model vocabulary: [docs/model-reference.md](docs/model-reference.md).
-Hook contracts and builtins: [docs/hook-registry.md](docs/hook-registry.md).
+Full model vocabulary: [docs/model-reference.md](docs/model-reference.md). Hook contracts and builtins: [docs/hook-registry.md](docs/hook-registry.md).
 
 
 ## Hooks and the Registry
@@ -479,8 +452,7 @@ The parameter schema does triple duty:
 
 - it **validates** data-only models in the hosted tier,
 - it generates the **no-code UI** palette for choosing and configuring hooks, and
-- it serves as the **function-calling spec** an AI uses to select and parameterize
-  a hook.
+- it serves as the **function-calling spec** an AI uses to select and parameterize a hook.
 
 This is the mechanism that makes the model AI-consumable: an AI does not write hooks, it picks registry entries and fills parameters. The Lisp lives in the registry; the model author, human or AI, writes only data.
 
@@ -506,33 +478,24 @@ React (or any frontend) fetches items with their schema and renders forms/lists 
 
 ## Development
 
-For full reference on the `scripts/data-ui` and `scripts/publish-data-ui`
-commands, see [scripts/README.md](scripts/README.md).
+For full reference on the `scripts/data-ui` and `scripts/publish-data-ui` commands, see [scripts/README.md](scripts/README.md).
 
 - Start a repl-environment terminal
 
     cd data-ui
     scripts/data-ui repl
 
-- Connect Slime to the Data UI Swank server.
-  - In Emacs: `M-x slime-connect RET localhost RET 4010`
-    - Host: localhost
-    - Port: 4010, or whatever the repl-environment terminal says
-- Compile a model
-  - In Slime: `(set-model "todos")`
-  - Optionally, run tests with: `(run-tests)`
+- Connect Slime to the Data UI Swank server. - In Emacs: `M-x slime-connect RET localhost RET 4010` - Host: localhost - Port: 4010, or whatever the repl-environment terminal says
+- Compile a model - In Slime: `(set-model "todos")` - Optionally, run tests with: `(run-tests)`
 - Build the frontend (one-time, or after frontend changes)
 
       cd data-ui/web
       npm install
       npm run build
 
-- Start the web server
-  - In Slime: `(start-web-server)`
-  - The server serves both the API and the frontend
+- Start the web server - In Slime: `(start-web-server)` - The server serves both the API and the frontend
 
-- Navigate to http://localhost:8081 or whatever the repl-environment terminal
-  says
+- Navigate to http://localhost:8081 or whatever the repl-environment terminal says
 
 ## Deployment
 
@@ -600,12 +563,12 @@ See `lisp/model.lisp` for the current `*base-model*` and the `models/` directory
 
 ## Road to MVP
 
-**Target: a complete MVP by the end of December 2026, including a 30-second video that goes from nothing, no database, no code, to a deployed, working application.**
+**Target: a complete MVP by December 31, 2026, including a 30-second video that goes from nothing, no database, no code, to a deployed, working application.**
 
 Odds of hitting the date: **strong.** The reasoning, plainly:
 
 - The riskiest milestones are already behind us. The compiler, RBAC integration, generic API, write-through, and, as of July, the entire deployment pipeline are working in production. These were the make-or-break items; everything that could have invalidated the core thesis has instead confirmed it.
-- What remains is effort-bounded, not research-bounded: finishing Model Bank (the fitness function), hardening write-through edge cases, UI polish, and the video itself. None of it requires solving an open problem; five months remain for work measured in weeks.
+- What remains is effort-bounded, not research-bounded: finishing Model Bank (the fitness function), hardening write-through edge cases, UI polish, and the video itself. None of it requires solving an open problem; the remaining work is measured in weeks.
 - The main schedule risks are scope creep and polish perfectionism. The mitigations are written down: file update may ship after MVP, **transactions and rollback are explicitly post-MVP** (hooks and write-through are not atomic with the primary write today), and the UI bar is "clean and demo-ready," not "design award." Frontend polish is deliberately sequenced after compiler/backend capability work because frontend changes are cheaper.
 
 **Model Bank is the priority function.** The MVP must prove that real, non-trivial applications can be built on Data UI significantly faster than any alternative, and the way to prove that is to build one. Model Bank (a model-sharing application with relationships, ownership, image association, and ratings) is that application. Gaps surfaced by building Model Bank are, by definition, the highest-priority work.
@@ -632,7 +595,7 @@ For custom logic and external integrations, Data UI provides typed hooks that re
 
 The result is a tool that lets technical users, small teams, and AI agents build reliable, RBAC-protected collaborative applications much faster and with greater long-term maintainability than traditional development or existing low-code platforms.
 
-**MVP target: December 2026.** A minimal but production-capable system that delivers a complete RBAC-protected application (database, React frontend, and Kubernetes deployment) from a small model in under 30 minutes. The MVP ships with a 30-second video that goes from nothing to a deployed app. The deployment pipeline, historically the riskiest part of such a promise, is already working in production; see [Road to MVP](#road-to-mvp).
+**MVP target: December 31, 2026.** A minimal but production-capable system that delivers a complete RBAC-protected application (database, React frontend, and Kubernetes deployment) from a small model in under 30 minutes. The MVP ships with a 30-second video that goes from nothing to a deployed app. The deployment pipeline, historically the riskiest part of such a promise, is already working in production; see [Road to MVP](#road-to-mvp).
 
 After the MVP, planned work includes a hosted service with JSON/YAML model input and AI prompts, a curated hook registry as the AI-and-no-code escape hatch, the marketplace described below, and professional support services.
 
@@ -667,7 +630,7 @@ After the MVP, to fund continued development and provide additional value to use
 - The production-grade Marketplace
 - Professional support, SLAs, and custom development services for clients
 
-If you're building internal tools or client apps and want help, feel free to reach out; engagements begin after the MVP (December 2026).
+If you're building internal tools or client apps and want help, feel free to reach out; engagements begin after the MVP (December 31, 2026).
 
 Contributions and feedback are very welcome; this is still early stage!
 
@@ -681,7 +644,7 @@ Contributions and feedback are very welcome; this is still early stage!
 
 ## Contact
 
-Donnie Cameron - macnod@gmail.com - [Sinister Code](https://sinistercode.com) - [LinkedIn](https://linkedin.com/in/macnod)
+Donnie Cameron — macnod@gmail.com — [Contact](https://sinistercode.com/public/donnie/contact)
 
 
 ## License

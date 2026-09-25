@@ -602,10 +602,6 @@ function renderReadOnlyField(
 function App() {
   const [data, setData] = useState<ListResponse | null>(null)
   const [types, setTypes] = useState<TypeInfo[]>([])
-  // True once the login-time /api/types fetch has settled (even to
-  // an empty list). Distinguishes "still resolving" from "this user
-  // can see no types at all" for the header label.
-  const [typesLoaded, setTypesLoaded] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('app')
   const [type, setType] = useState('__init__')
   const [showAddForm, setShowAddForm] = useState(false)
@@ -774,14 +770,6 @@ function App() {
     : viewMode === 'settings' ? settingsTypes
     : userTypes
 
-  // Header shows the selected type name, except before any type is
-  // selected: blank while the type list is still resolving on login,
-  // "No Access" once it has resolved and the user can see no types
-  // (e.g. guest). Never render the __init__ sentinel.
-  const headerLabel = type !== '__init__' ? type
-    : typesLoaded ? 'No Access'
-    : ''
-
   const fetchList = async (): Promise<ListResponse | null> => {
     setListError(null)
     const offset = (currentPage - 1) * PAGE_SIZE
@@ -906,7 +894,6 @@ function App() {
     setViewMode('app')
     setType('__init__')
     setTypes([])
-    setTypesLoaded(false)
     setData(null)
     setShowAddForm(false)
     setEditRecord(null)
@@ -1017,6 +1004,13 @@ function App() {
     )
     setFormValues({ ...fullRecord, roles: cleanRoles })
     setShowAddForm(false)
+    // The form renders at the top of the page, above the table.
+    // Without this, clicking Edit/View on a row near the bottom
+    // leaves the viewport scrolled down — the form is open but
+    // off-screen. openEditForm is async (the /api/item fetch
+    // above), so React has already re-rendered and mounted the
+    // form by the time we get here.
+    window.scrollTo(0, 0)
   }
 
   const closeForm = () => {
@@ -1087,6 +1081,17 @@ function App() {
     } catch (e) {
       setLoginError('Network error')
     }
+  }
+
+  // Hover-blur for the login screen's buttons: Firefox's
+  // saved-login dropdown is browser chrome that drops below the
+  // focused input — right over the Login button — and the first
+  // click while it is open is consumed dismissing it. Blurring
+  // the focused input on button hover closes the popup before
+  // mousedown, so the click lands.
+  const handleLoginButtonHover = () => {
+    const el = document.activeElement
+    if (el instanceof HTMLInputElement) el.blur()
   }
 
   const handleLogout = () => {
@@ -1326,7 +1331,6 @@ function App() {
             ? 'user' : t.category
         }))
       setTypes(typeInfos)
-      setTypesLoaded(true)
       const t = info.result?.['title']
       if (t) setTitle(String(t))
       const lp = info.result?.['landing-page']
@@ -1360,7 +1364,6 @@ function App() {
       // else: no types at all; leave __init__ (empty app)
     }).catch(() => {
       setTypes([])
-      setTypesLoaded(true)
     })
   }, [loggedIn])
 
@@ -1500,11 +1503,16 @@ function App() {
             onChange={e => setPassword(e.target.value)}
             style={{ width: '100%', marginBottom: 12 }}
           />
-          <button type="submit" style={{ width: '100%' }}>Login</button>
+          <button
+            type="submit"
+            onMouseEnter={handleLoginButtonHover}
+            style={{ width: '100%' }}
+          >Login</button>
         </form>
         {guestAllowed && (
           <button
             onClick={handleContinueAsGuest}
+            onMouseEnter={handleLoginButtonHover}
             style={{ width: '100%', marginTop: 8 }}
           >
             Continue as guest
@@ -1527,54 +1535,70 @@ function App() {
               {title}
             </a>
           </h1>
-          <div style={{
-            position: 'absolute',
-            left: '50%',
-            top: '50%',
-            transform: 'translate(-50%, -50%)',
-            fontSize: '1.1rem',
-            fontWeight: 'bold'
-          }}>
-            {headerLabel}
-          </div>
           <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {/* View switcher: Home/Admin/user (Settings) select
+                viewMode (Home via returnToLanding); the username
+                button doubles as Settings. Not the type tab row. */}
             <button
               onClick={() => returnToLanding()}
+              aria-current={viewMode === 'app' ? 'true' : undefined}
               style={{
+                fontSize: '1.1rem',
                 fontWeight: viewMode === 'app' ? 'bold' : 'normal',
-                background: viewMode === 'app' ? 'var(--hover-bg)' : ''
+                border: 'none',
+                background: 'transparent',
+                borderBottom: viewMode === 'app'
+                  ? '3px solid var(--tab-border)'
+                  : '3px solid transparent'
               }}
             >
               🏠 Home
             </button>
-            {settingsTypes.length > 0 && (
-              <button
-                onClick={() => switchViewMode('settings')}
-                style={{
-                  fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
-                  background: viewMode === 'settings' ? 'var(--hover-bg)' : ''
-                }}
-              >
-                ⚙ Settings
-              </button>
-            )}
             {systemTypes.length > 0 && (
               <button
                 onClick={() => switchViewMode('admin')}
+                aria-current={viewMode === 'admin' ? 'true' : undefined}
                 style={{
+                  fontSize: '1.1rem',
                   fontWeight: viewMode === 'admin' ? 'bold' : 'normal',
-                  background: viewMode === 'admin' ? 'var(--hover-bg)' : ''
+                  border: 'none',
+                  background: 'transparent',
+                  borderBottom: viewMode === 'admin'
+                    ? '3px solid var(--tab-border)'
+                    : '3px solid transparent'
                 }}
               >
                 🔧 Admin
               </button>
             )}
-            <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
+            {settingsTypes.length > 0 ? (
+              <button
+                onClick={() => switchViewMode('settings')}
+                aria-current={viewMode === 'settings' ? 'true' : undefined}
+                style={{
+                  fontSize: '1.1rem',
+                  fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
+                  border: 'none',
+                  background: 'transparent',
+                  borderBottom: viewMode === 'settings'
+                    ? '3px solid var(--tab-border)'
+                    : '3px solid transparent'
+                }}
+              >
+                👤 {loggedInUser}
+              </button>
+            ) : (
+              <span style={{ fontSize: '1.1rem' }}>{loggedInUser}</span>
+            )}
             <button
               onClick={handleLogout}
-              style={{}}
+              style={{
+                fontSize: '1.1rem',
+                border: 'none',
+                background: 'transparent'
+              }}
             >
-              Logout
+              ⏏ Logout
             </button>
           </div>
         </div>
@@ -1642,54 +1666,70 @@ function App() {
             {title}
           </a>
         </h1>
-        <div style={{
-          position: 'absolute',
-          left: '50%',
-          top: '50%',
-          transform: 'translate(-50%, -50%)',
-          fontSize: '1.1rem',
-          fontWeight: 'bold'
-        }}>
-          {headerLabel}
-        </div>
         <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {/* View switcher: Home/Admin/user (Settings) select
+              viewMode (Home via returnToLanding); the username
+              button doubles as Settings. Not the type tab row. */}
           <button
             onClick={() => returnToLanding()}
+            aria-current={viewMode === 'app' ? 'true' : undefined}
             style={{
+              fontSize: '1.1rem',
               fontWeight: viewMode === 'app' ? 'bold' : 'normal',
-              background: viewMode === 'app' ? 'var(--hover-bg)' : ''
+              border: 'none',
+              background: 'transparent',
+              borderBottom: viewMode === 'app'
+                ? '3px solid var(--tab-border)'
+                : '3px solid transparent'
             }}
           >
             🏠 Home
           </button>
-          {settingsTypes.length > 0 && (
-            <button
-              onClick={() => switchViewMode('settings')}
-              style={{
-                fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
-                background: viewMode === 'settings' ? 'var(--hover-bg)' : ''
-              }}
-            >
-              ⚙ Settings
-            </button>
-          )}
           {systemTypes.length > 0 && (
             <button
               onClick={() => switchViewMode('admin')}
+              aria-current={viewMode === 'admin' ? 'true' : undefined}
               style={{
+                fontSize: '1.1rem',
                 fontWeight: viewMode === 'admin' ? 'bold' : 'normal',
-                background: viewMode === 'admin' ? 'var(--hover-bg)' : ''
+                border: 'none',
+                background: 'transparent',
+                borderBottom: viewMode === 'admin'
+                  ? '3px solid var(--tab-border)'
+                  : '3px solid transparent'
               }}
             >
               🔧 Admin
             </button>
           )}
-          <span style={{ fontSize: '0.9rem' }}>{loggedInUser}</span>
+          {settingsTypes.length > 0 ? (
+            <button
+              onClick={() => switchViewMode('settings')}
+              aria-current={viewMode === 'settings' ? 'true' : undefined}
+              style={{
+                fontSize: '1.1rem',
+                fontWeight: viewMode === 'settings' ? 'bold' : 'normal',
+                border: 'none',
+                background: 'transparent',
+                borderBottom: viewMode === 'settings'
+                  ? '3px solid var(--tab-border)'
+                  : '3px solid transparent'
+              }}
+            >
+              👤 {loggedInUser}
+            </button>
+          ) : (
+            <span style={{ fontSize: '1.1rem' }}>{loggedInUser}</span>
+          )}
           <button
             onClick={handleLogout}
-            style={{}}
+            style={{
+              fontSize: '1.1rem',
+              border: 'none',
+              background: 'transparent'
+            }}
           >
-            Logout
+            ⏏ Logout
           </button>
         </div>
       </div>

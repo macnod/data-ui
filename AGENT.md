@@ -220,6 +220,11 @@ children under a `**` parent; always step to `***`:
 
 ## Working with the Frontend
 
+- Terminology: the Home / Settings / Admin buttons in the top-right
+  header are the **view switcher** (they select `viewMode` via
+  `switchViewMode`; Home calls `returnToLanding`). Distinct from the
+  type tab row below the header, which picks a type within the
+  current view.
 - Build: `npm install && npm run build` in `web/`. Hunchentoot serves
   `web/dist/`; there is no dev server. **Without `npm run build`,
   frontend changes are invisible** (it runs `tsc`, then `vite build`).
@@ -268,8 +273,7 @@ children under a `**` parent; always step to `***`:
 
 ## Current Focus (MVP)
 
-Deadline: complete MVP, including the demo video, by end of December
-2026.
+Deadline: complete MVP, including the demo video, by December 31, 2026.
 
 **Model Bank is the priority function** — the MVP's fitness function.
 Gaps surfaced by building it are, by definition, the highest-priority

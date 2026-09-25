@@ -1,13 +1,10 @@
 # Model Accessors: Retention Notes
 
-These function families in `lisp/model.lisp` have **no in-codebase callers** but
-are intentionally retained. Do not remove them in dead-code sweeps.
+These function families in `lisp/model.lisp` have **no in-codebase callers** but are intentionally retained. Do not remove them in dead-code sweeps.
 
 ## `model-*-for`: Debugging / REPL Accessors
 
-Convenience wrappers around `u:tree-get` on `*compiled-model*`. They exist for
-REPL inspection and ad-hoc debugging: printing a type's compiled definition,
-inspecting generated SQL, checking field attributes, etc.
+Convenience wrappers around `u:tree-get` on `*compiled-model*`. They exist for REPL inspection and ad-hoc debugging: printing a type's compiled definition, inspecting generated SQL, checking field attributes, etc.
 
 | Function | Purpose |
 |---|---|
@@ -34,9 +31,7 @@ Example REPL usage:
 
 ## `model-` Top-Level Accessors: Used by Deployment Scripts
 
-These read top-level model metadata (`:name`, `:title`, `:version`, `:domain`,
-`:domain-stg`, `:repl`) from `*top-level-settings*` (populated during
-`set-model`). They are used at runtime by deployment tooling.
+These read top-level model metadata (`:name`, `:title`, `:version`, `:domain`, `:domain-stg`, `:repl`) from `*top-level-settings*` (populated during `set-model`). They are used at runtime by deployment tooling.
 
 | Function | Model Key |
 |---|---|
@@ -47,10 +42,7 @@ These read top-level model metadata (`:name`, `:title`, `:version`, `:domain`,
 | `model-domain-stg` | `:domain-stg` (explicit or compiler-derived from `:domain`) |
 | `model-repl` | `:repl` (defaults to nil) |
 
-The `scripts/data-ui` deploy script reads the same fields from the raw model
-file *before* the system is loaded (via `get_model_field` →
-`top-level-model-field`), but these Lisp accessors serve the equivalent purpose
-at runtime. Example from `scripts/data-ui`:
+The `scripts/data-ui` deploy script reads the same fields from the raw model file *before* the system is loaded (via `get_model_field` → `top-level-model-field`), but these Lisp accessors serve the equivalent purpose at runtime. Example from `scripts/data-ui`:
 
 ```bash
 function gather_deploy_facts {
