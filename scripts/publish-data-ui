@@ -21,11 +21,39 @@
 
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: publish-data-ui [--prefer-private] ["commit message"]
+
+Publish the current master tree to public/master as a single squashed
+commit, keeping fine-grained history intact on master and private/master.
+Flag and message may be given in either order.
+
+Options:
+  --prefer-private
+      When merging public/master, keep master's tree wholesale
+      ("git merge -s ours") — never conflicts. Use when nobody else
+      pushes to public/master. Omit it to merge PR-merged work from
+      public normally.
+
+Arguments:
+  "commit message"
+      Optional squash commit subject; defaults to "Update".
+
+Flow: fetch both remotes, merge any incoming private work, back up
+fine-grained master to private, then push one squash commit (same tree
+as master, parent = public tip) to public. Local master is never reset
+and private is never force-pushed, so fine-grained commits always
+survive. Safe to re-run after any failure.
+EOF
+}
+
 PREFER_PRIVATE=no
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --prefer-private) PREFER_PRIVATE=yes ;;
+    -h|--help) usage; exit 0 ;;
     *) ARGS+=("$arg") ;;
   esac
 done

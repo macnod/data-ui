@@ -3432,7 +3432,7 @@ t, and USER to exist."
       (a:with-rbac (*rbac*)
         (a:rbac-query (list sql value id))))))
 
-(defun be-action (type-key id field-key user)
+(defun be-action (type-key id field-key user &optional (data nil data-p))
   ":public: Execute the action hook(s) attached to FIELD-KEY (a :button field)
 on the record ID of TYPE-KEY.
 
@@ -3440,6 +3440,11 @@ Sets the companion status field to \"running\", invokes each compiled action
 hook with the unified contract, then transitions to \"complete\" (sync success)
 or \"failed: <reason>\" (sync error).  Async hooks (:async t in the result)
 leave status at \"running\" for a worker to complete.
+
+DATA, when supplied, is the form values the user typed into the edit form
+(a plist of field-key → value, forwarded from /api/actions' :data).  Hooks
+that need typed input (e.g. :change-password) read it as the :data keyword;
+hooks that don't simply ignore it.  An absent DATA is forwarded as nil.
 
 Returns a plist:
   (:status \"complete\" :message <hook-message-or-nil>)
@@ -3501,7 +3506,8 @@ Signals a validation error if:
                                type-key field-key record user
                                :roles roles
                                :status-field status-field
-                               :set-status set-status)))
+                               :set-status set-status
+                               :data (when data-p data))))
                 (cond
                   ;; Async: worker owns status via set-status
                   ((and (listp result) (getf result :async))

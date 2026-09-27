@@ -224,8 +224,8 @@ function ImagePreview({
 // (the compiler's own default rule for a missing :widget).
 const WIDGET_VOCABULARY = new Set([
   'textbox', 'textarea', 'code', 'stars', 'checkbox', 'checkbox-list',
-  'select', 'file', 'password', 'button', 'hidden', 'image',
-  'image-list'
+  'select', 'file', 'password-new', 'password-read', 'button', 'hidden',
+  'image', 'image-list'
 ])
 
 function renderFormField(
@@ -606,9 +606,11 @@ function App() {
   const [type, setType] = useState('__init__')
   const [showAddForm, setShowAddForm] = useState(false)
   const [formValues, setFormValues] = useState<Record<string, any>>({})
-  // Confirmation box for :widget :password fields. Keyed by field
-  // name so multi-password forms stay independent; cleared with the
-  // rest of the form state.
+  // Confirmation box for :widget :password-new fields. Keyed by
+  // field name so multi-password forms stay independent; cleared
+  // with the rest of the form state. (:password-read never
+  // confirms — it collects an existing secret, it does not set
+  // one.)
   const [passwordConfirm, setPasswordConfirm] =
     useState<Record<string, string>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -650,6 +652,11 @@ function App() {
   const [notTerm, setNotTerm] = useState('')
   const [debouncedNotTerm, setDebouncedNotTerm] = useState('')
   const notTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Terminal button statuses (complete / failed: … / idle) are
+  // stale the moment their form is closed; openEditForm blanks them
+  // on the next open. Set for the single re-open handleAction does
+  // right after a press, so the just-earned status still shows.
+  const preserveStatusOnOpenRef = useRef(false)
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -910,6 +917,7 @@ function App() {
     setEditRecord(null)
     setFormViewing(false)
     setFormValues({})
+    setPasswordConfirm({})
     resetListQuery()
   }
 
@@ -958,6 +966,7 @@ function App() {
     setEditRecord(null)
     setFormViewing(false)
     setFormValues({})
+    setPasswordConfirm({})
     resetListQuery()
     // Select first type in the new mode
     if (mode === 'app') {
@@ -992,6 +1001,27 @@ function App() {
     } catch {
       // Fall back to list record on error
     }
+    // A terminal status written by an earlier action is stale on
+    // every fresh open (row Edit/View, the settings auto-open) —
+    // clear it so the form never greets the user with an old
+    // "complete". Kept when this open is the post-action re-open
+    // (handleAction set the ref) or when a worker is still
+    // running. Display-only: the blank lives in editRecord /
+    // formValues and never reaches the server (submit drops
+    // empty-string fields).
+    const keepStatus = preserveStatusOnOpenRef.current
+    preserveStatusOnOpenRef.current = false
+    if (!keepStatus) {
+      const cleared: Record<string, any> = { ...fullRecord }
+      for (const k of Object.keys(cleared)) {
+        if (k.endsWith('-status')
+            && typeof cleared[k] === 'string'
+            && !cleared[k].startsWith('running')) {
+          cleared[k] = ''
+        }
+      }
+      fullRecord = cleared
+    }
     setEditRecord(fullRecord)
     setFormViewing(viewing)
     // Filter out the current user's own exclusive role from the
@@ -1003,6 +1033,9 @@ function App() {
       (r: string) => r !== myExclusive
     )
     setFormValues({ ...fullRecord, roles: cleanRoles })
+    // Fresh form session: a confirm value typed into an earlier,
+    // abandoned form must not leak into this form's password gate.
+    setPasswordConfirm({})
     setShowAddForm(false)
     // The form renders at the top of the page, above the table.
     // Without this, clicking Edit/View on a row near the bottom
@@ -1110,6 +1143,41 @@ function App() {
   const handleAction = async (fieldKey: string) => {
     if (!editRecord) return
     const id = editRecord.id
+    // Edit-form field metadata for the open form (update-form when
+    // editing; add-form never renders buttons, but the lookup is
+    // guarded anyway).
+    const formDef = isEditMode
+      ? data!.result['update-form'] || {}
+      : data!.result['add-form'] || {}
+    // Password confirmation gate: the same loop submitForm runs.
+    // Without it the confirm boxes are decorative on the one path
+    // that actually changes a password (e.g. :change-password).
+    for (const f of Object.keys(formDef)) {
+      if (formDef[f]['widget'] !== 'password-new') continue
+      const pw = typeof formValues[f] === 'string'
+        ? formValues[f] : ''
+      const confirm = passwordConfirm[f] || ''
+      if (pw === '' && confirm === '') continue
+      if (pw !== confirm) {
+        alert(`Password entries for "${formDef[f].label}" do not match`)
+        return
+      }
+    }
+    // Form values for hooks that read typed input (e.g. :change-password
+    // reads :current-password / :new-password). Whitelist: string-valued
+    // fields the form schema knows (password-new, password-read,
+    // textbox, textarea, select, code), with untouched passwords
+    // normalized to '' — never the raw formValues spread (File
+    // objects, array-valued roles, and status companions are not
+    // JSON-representable form data).
+    const actionData: Record<string, string> = {}
+    for (const f of Object.keys(formDef)) {
+      const w = formDef[f]['widget']
+      if (!['password-new', 'password-read', 'textbox', 'textarea',
+            'select', 'code'].includes(w)) continue
+      const v = formValues[f]
+      actionData[f] = (typeof v === 'string') ? v : ''
+    }
     setPendingActions(prev => new Set(prev).add(fieldKey))
     try {
       const res = await apiFetch('/api/actions', {
@@ -1117,7 +1185,8 @@ function App() {
         body: JSON.stringify({
           type,
           id,
-          field: fieldKey
+          field: fieldKey,
+          data: actionData
         })
       })
       if (!res.ok) {
@@ -1128,6 +1197,9 @@ function App() {
       // key can move the row off the current page, so the row must
       // not be looked up in the current page's records.
       await fetchList()
+      // This re-open keeps terminal statuses: the user just pressed
+      // the button and earned the "complete" / "failed: …" feedback.
+      preserveStatusOnOpenRef.current = true
       openEditForm({ id })
     } catch {
       alert('Network error during action')
@@ -1150,12 +1222,17 @@ function App() {
       ? data!.result['update-form'] || {}
       : data!.result['add-form'] || {}
 
-    // Password confirmation gate: every :widget :password field on
-    // the form must match its confirmation box before anything is
-    // sent (covers both the JSON and file-upload paths below).
+    // Password confirmation gate: every :widget :password-new field
+    // on the form must match its confirmation box before anything
+    // is sent (covers both the JSON and file-upload paths below).
     for (const f of Object.keys(formDef)) {
-      if (formDef[f]['widget'] !== 'password') continue
-      const pw = formValues[f] || ''
+      if (formDef[f]['widget'] !== 'password-new') continue
+      // An untouched edit-form password arrives from the backend
+      // as [] (the JSON form of nil), which is truthy and !== '' —
+      // normalize non-strings to '' so blank means "keep current
+      // password" (see the matching normalization in the render).
+      const pw = typeof formValues[f] === 'string'
+        ? formValues[f] : ''
       const confirm = passwordConfirm[f] || ''
       if (pw === '' && confirm === '') continue
       if (pw !== confirm) {
@@ -1904,7 +1981,8 @@ function App() {
             // branch).
             if (isViewMode) {
               const w = fieldMeta['widget'] || ''
-              if (w === 'password' || w === 'file' || w === 'button'
+              if (w === 'password-new' || w === 'password-read'
+                  || w === 'file' || w === 'button'
                   || w === 'hidden') {
                 return null
               }
@@ -1998,8 +2076,12 @@ function App() {
               )
             }
 
-            if (fieldMeta['widget'] === 'password') {
-              const pw = formValues[f] || ''
+            if (fieldMeta['widget'] === 'password-new') {
+              // Same [] normalization as the submit gate: an
+              // untouched edit-form password arrives as [] (JSON
+              // nil) and must read as blank, not as a mismatch.
+              const pw = typeof formValues[f] === 'string'
+                ? formValues[f] : ''
               const confirm = passwordConfirm[f] || ''
               const touched =
                 pw !== '' || confirm !== ''
@@ -2050,6 +2132,28 @@ function App() {
                   }}>
                     {matchHint}
                   </span>
+                </div>
+              )
+            }
+
+            if (fieldMeta['widget'] === 'password-read') {
+              // Collect an existing secret (e.g. settings
+              // Current Password for :change-password): one
+              // masked box, no confirm, no blank-keeps placeholder,
+              // autoComplete="current-password" so browsers offer
+              // saved credentials, not generation.
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    value={typeof formValues[f] === 'string'
+                      ? formValues[f] : ''}
+                    onChange={e =>
+                      setFormValues({ ...formValues, [f]: e.target.value })
+                    }
+                  />
                 </div>
               )
             }

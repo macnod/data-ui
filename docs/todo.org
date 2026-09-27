@@ -4,6 +4,42 @@
 #+TAGS: frontend(f) backend(b) compiler(c) testing(t) docs(d) maintenance(a) polish(p) valdn(v) mvp(x) bug(g) model(m) utility(u) ai(i) scripts(s)
 
 * Done
+** DONE Dev =repl= teardown now removes the database volume  :scripts:bug:
+:PROPERTIES:
+:CREATED: [2026-09-25 Fri]
+:COMPLETED: [2026-09-25 Fri]
+:END:
+Symptom: exit Slime, restart =scripts/data-ui repl=, connect,
+=(set-model "todos")= → database error 42703 =column
+settings.setting_change_password_status does not exist=. The dev
+database outlived the REPL: =stop_database_quietly= ran =compose
+down= without =--volumes=, so the named volume
+=pg-data-ui-repl-pgdata= survived with a pre-change-password
+schema; on restart =init-database= saw the admin user and skipped
+=initialize-tables=, and current code queried a column the old
+table never had. The usage text ("throwaway 5444 database") and
+=docs/deployment.md= ("development is volatile") promised the
+opposite of what the code did.
+
+Fix: =stop_database_quietly= now runs =compose down --volumes=.
+Every caller's database is throwaway by design (repl 5444, test
+5445, deploy compile 5446); a fresh volume means =initialize-tables=
+always runs, so the schema always matches the code just loaded.
+Safe by construction for host profiles: they never pass through
+this function (=ops/profile-run.sh= owns their lifecycle), and
+their pgdata is a bind mount that =--volumes= does not touch
+anyway. The old comment's stated reason ("primary durability for
+host instances") predates the D16 profile split and no longer
+described any caller.
+
+Also updated: =docs/deployment.md= (compile step "container and
+its volume are destroyed"; environments entry says the dev
+database is wiped at REPL exit), =scripts/README.md= (=repl= and
+=db= note the wipe and the bind-mount carve-out). Consequence to
+remember: development data survives only in snapshots — save
+before exiting the REPL.
+
+** DONE Users search 400 + JSON boolean hole              :bug:frontend:backend:
 ** DONE Users search 400 + JSON boolean hole              :bug:frontend:backend:
 :PROPERTIES:
 :CREATED: [2026-08-08 Sat]
@@ -3032,6 +3068,182 @@ rollups; noted above.
 Plan: [[file:~/workbench/view-record-plan.org][view-record-plan.org]] (complete [2026-09-23 Wed]; awaiting
 go-ahead).
 
+** DONE Self-service password change (=:change-password= action hook)  :backend:model:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-25 Fri]
+:COMPLETED: [2026-09-25 Fri]
+:END:
+A logged-in user without =user-creator= has no way to change
+their own password: =logged-in= grants read only on =:users=, so
+no Edit link, and =be-update= rejects with "does not have update
+permission". The only workaround today is an admin/user-creator
+editing the user row. Capability gap for every app.
+
+Plan: [[file:~/workbench/change-password-plan.org][change-password-plan.org]]. Summary:
+
+- Built-in =:change-password= action hook hosted on the built-in
+  =:settings= type (every user holds the settings role; guest
+  deliberately does not).
+- New no-column =:current-password= / =:new-password= fields plus
+  a =:button= field on =:settings= in =*base-model*=; the
+  synthesized status companion gives result feedback and the
+  in-progress guard for free.
+- One contract extension: the action payload carries form values
+  (=data=) — today =handleAction= POSTs only ={type, id, field}=
+  and =be-action= re-reads the record with passwords blanked, so
+  no hook can see typed input. =be-action= forwards =:data= as a
+  new hook keyword.
+- Hook gates: own-row check (settings rows are not record-scoped
+  — =:scope :user= is list-only), old-password verification via
+  =a:login=, new-password validation via =a:valid-password-p=;
+  write via =be-update= on =:users= as "admin" (the =:tokens=
+  carve-out precedent), reusing the sanctioned hash/salt/blank
+  path pinned by =be-update-base-type-path=.
+- Write-through to =:users= was evaluated and rejected: identity
+  resolution cannot match (text =user_name= vs UUID tags → silent
+  no-op), and if forced it would bind every =:users= column,
+  lack blank-password preservation, and bypass target permissions.
+
+Note: settings table gains a =setting_change_password_status= column in
+every deployment — existing DBs need ALTER or reset
+(non-idempotent init is the known gap).
+
+Implemented [2026-09-25 Fri] per the plan, no deviations:
+
+- =lisp/model.lisp=: settings fields + button in =*base-model*=
+  (=:add-form= narrowed to the real fields — buttons never ship
+  there anyway and =:create nil= means no Add path ever renders);
+  =:change-password= hook registered (own-row by username display
+  value, blank/nil/absent =:data= treated as missing — the
+  frontend normalizes untouched boxes to ="=); =\&allow-other-keys=
+  on the three shipped action hooks (=be-action= now forwards
+  =:data= unconditionally). One addition beyond the plan:
+  =compile-field= injects a trivial =:agg :first= self-source on
+  no-column fields without a =:source= — without it the settings
+  record re-read in =be-action= crashed with "Invalid aggregation
+  NIL" (=view-result-values= aggregates every form field).
+- =lisp/backend.lisp=: =be-action= takes optional =data= and
+  forwards it as =:data=.
+- =lisp/rest.lisp=: =/api/actions= parses =:data= from the body;
+  docstring updated.
+- =web/src/App.tsx=: =handleAction= runs the same password
+  confirm-match gate as =submitForm= and posts a whitelisted
+  =data= payload (string-valued password/textbox/textarea/select/
+  code fields only; untouched passwords as ="=) — never the raw
+  =formValues= spread.
+- =tests/change-password-tests.lisp= (new, 9 tests / 42 checks:
+  happy path, status transitions, wrong current, blank/absent
+  fields, invalid new, own-row guard, no-persistence on plain
+  Save, roles survive the elevated write, in-progress guard) +
+  =run-change-password-tests= in =tests/helpers.lisp=, registered
+  in =data-ui.asd= and =run-tests=. =tests/action-tests.lisp=:
+  =\&allow-other-keys= on the three test hooks.
+- Docs: =hook-registry.md= (action contract gains =:data=,
+  =:change-password= entry), =rest.md= (=data= payload),
+  =model-reference.md= (=:settings= row).
+
+Tests green: change-password 42/42, action 20/20, backend 556,
+widget 47, secrets 30, lifecycle 28, form-fields 40, hook-registry,
+m2m, agg-distinct, spawn, update-permission, scoping, generator —
+all Fail: 0. Frontend rebuilt (=npm run build=). Existing DBs need
+=alter table settings add column setting_change_password_status
+text not null default 'idle';= (or a reset); dev =hard-reset=
+covers it.
+Known warts accepted per plan (misleading "leave blank" placeholder
+on no-column password fields; redundant confirm box on
+Current Password); no token invalidation on change (MVP).
+
+** DONE Split password widgets: =:password-new= / :password-read :compiler:frontend:docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-09-25 Fri]
+:COMPLETED: [2026-09-25 Fri]
+:END:
+Implemented 2026-09-25 per the plan
+(password-widgets-plan.org), no deviations. =:widget :password=
+split by intent: =:password-new= (masked + confirm +
+blank-keeps-current + =autoComplete="new-password"=) for
+stored secrets; =:password-read= (single masked box, no
+confirm, no placeholder, =autoComplete="current-password"=)
+for typing an existing secret. Old =:password= abolished —
+=valid-widget-value= fails the compile on strays (verified
+live: scratch model with a stray =:password= signals "Unknown
+:widget :PASSWORD" and enumerates the new vocabulary).
+
+- =lisp/model.lisp=: =*widgets*= now =:password-new=
+  =:password-read= (replacing =:password=); =:users= =:password=
+  → =:password-new=; =:settings= =:current-password= →
+  =:password-read=, =:new-password= → =:password-new=. Also
+  fixed a latent format-args bug in =valid-widget-value=
+  (=:~{~a~^, ~=}= list was passed but never reached =format= —
+  argument after =~widget= was consumed as the =report-e=
+  "args" terminator; now =~*widgets*=).
+- =web/src/App.tsx=: =WIDGET_VOCABULARY= both names; render
+  branch keeps =password-new= verbatim (two boxes) and adds
+  =password-read= (one box, =current-password= autocomplete);
+  both submit gates and =handleAction= confirm gate match
+  ='password-new'=; =handleAction= =data= whitelist includes
+  ='password-read'=; view-mode skip list adds it (nothing to
+  display — no-column, value always nil); comments updated.
+- =tests/searchable-tests.lisp=: "Secret" fixture →
+  =:password-new=. =tests/change-password-tests.lisp=: new
+  =change-password-widget-assignments= test asserts the three
+  compiled widgets (a misassignment compiles clean and keeps
+  hook tests green, so the assertion is the only guard).
+- Docs: =model-reference.md= (=:widget= table row, two widget
+  semantics bullets, abolished-values entry, =:settings=
+  base-type row), =hook-registry.md= =:change-password= row
+  names the widgets; inference backlog item's =:password=
+  line now → =:password-new=.
+- Frontend rebuilt (=npm run build=). Full =run-tests= (after
+  fix): 1832 checks / 32 groups, 0 fail. Live smoke via
+  =/api/list=: settings update-form =current-password=
+  =password-read= / =new-password= =password-new=; users
+  add-form =password= =password-new=; =:change-password= via
+  =/api/actions= wrong-current → "Current password is
+  incorrect", correct → =complete= and the new password logs
+  in. No schema change: DDL untouched (verified by plan
+  analysis; =:ui= never enters =create-sql=).
+
+First =run-tests= (1834 checks, 0 fail) ran before the
+=format= fix; the fix only changes the error *message* path
+(no behavior change on valid models), and the rerun above is
+post-fix.
+
+** TODO Hide =logged-in= from assignable-role palettes :backend:frontend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-09-25 Fri]
+:END:
+The =logged-in= role must never be offered as an option when
+assigning roles. It is automatically granted to every user except
+=guest= (verified live [2026-09-25]: a fresh =be-insert :users=
+comes back holding ="logged-in"=, its =name:exclusive=,
+="public"=, ="settings"=), so offering it is at best noise and at
+worst the false impression that it is toggleable.
+
+Two palette paths still list it for admin (verified live):
+
+- =(selectable-roles :todos "admin")= — the =:roles= palette on
+  /every non-base type/ (resource-role assignment), admin branch.
+  =system-exclusives= in =selectable-roles= (lisp/backend.lisp)
+  lacks ="logged-in"=.
+- The =:roles= list of the =:roles= type itself (Admin view):
+  =allowed-values= → =be-list-column :roles :name= — no filtering
+  on that path at all.
+
+Already clean (do not duplicate; DONE 2026-08-09 "logged-in role
+should be not be shown in Add form" + the exclusives follow-ups):
+=:users= =:roles= via =allowed-values-for-field=, the users list
+Roles column via =add-roles-to-view= (both strip ="logged-in"=),
+and the write path re-attaches it on save (=update-roles=
+=reattach= list).
+
+Fix shape: add ="logged-in"= to =system-exclusives= (covers both
+=selectable-roles= branches); decide and note whether the =:roles=
+type's own =:roles= list counts as "assigning roles to a user" —
+it names a role's resource permissions, not user membership, so
+display there may be legitimate. Frontend needs nothing: App.tsx
+renders the palette the backend sends.
+
 ** TODO Broken format string in =validate-new-directory= error :backend:bug:mvp:
 :PROPERTIES:
 :CREATED: [2026-09-18 Fri]
@@ -3195,7 +3407,7 @@ field shape when the author omits =:widget= (beyond the blunt
 Intended inferences (explicit =:widget= always wins):
 
 - =:type :boolean= and no widget → =:checkbox=
-- =:type :password= and no widget → =:password=
+- =:type :password= and no widget → =:password-new=
 - =:type :file= and no widget → =:file=
 - =:type :list= with =:join-table= and/or =:source-all= and no widget
   → =:checkbox-list= or =:select= (pick one rule and document it)

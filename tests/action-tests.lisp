@@ -7,7 +7,7 @@
 (register-hook :test-sync :action
   nil (lambda ()
         (lambda (type-key field-key record user
-                 &key roles status-field set-status)
+                 &key roles status-field set-status &allow-other-keys)
           (declare (ignore type-key field-key record user
                            roles status-field set-status))
           nil)))
@@ -15,7 +15,7 @@
 (register-hook :test-async :action
   nil (lambda ()
         (lambda (type-key field-key record user
-                 &key roles status-field set-status)
+                 &key roles status-field set-status &allow-other-keys)
           (declare (ignore type-key field-key record user
                            roles status-field set-status))
           (list :async t :message "Async started"))))
@@ -23,7 +23,7 @@
 (register-hook :test-error :action
   nil (lambda ()
         (lambda (type-key field-key record user
-                 &key roles status-field set-status)
+                 &key roles status-field set-status &allow-other-keys)
           (declare (ignore type-key field-key record user
                            roles status-field set-status))
           (error "Deliberate test failure"))))

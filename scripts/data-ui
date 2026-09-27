@@ -1178,9 +1178,16 @@ function stop_database {
 }
 
 function stop_database_quietly {
-    # Retain project volumes (primary durability for host instances).
-    echo "Stopping and removing database container"
-    compose down &>/dev/null
+    # Remove container and its volumes: every caller's database is
+    # throwaway by design (repl 5444, test 5445, deploy compile 5446).
+    # A fresh volume means no admin user, so initialize-tables always
+    # runs and the schema always matches the code just loaded — a
+    # retained volume would resurrect an outdated schema instead.
+    # Profile instances never pass through here (ops/profile-run.sh
+    # owns their lifecycle, and their pgdata is a bind mount that
+    # --volumes does not touch anyway).
+    echo "Stopping and removing database container and volumes"
+    compose down --volumes &>/dev/null
 }
 
 function export_repl_environment {

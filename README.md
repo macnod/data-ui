@@ -50,16 +50,16 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 
 These are working deployments of the engine, not the finished product. MVP target is December 31, 2026 — see [Road to MVP](#road-to-mvp).
 
-Three applications compiled from models in this repo, running now.
+Three applications compiled from models in this repo, running now. Any of them accepts `guest` with no password (read-only). To watch RBAC working end to end, follow the stories in [Demo Walkthroughs](docs/demos.md).
 
-- [To Do List](https://todo-stg.demo.data-ui.com/) — the napkin-sized model from [Example Model](#example-model), compiled and deployed. Log in as `demos` / `TryDataUI2026!` to add, edit, and tag items.
-- [Books & Authors](https://books-stg.demo.data-ui.com/) — relationships, cover images, and a rating rollup. Same login: `demos` / `TryDataUI2026!`.
+- [To Do List](https://todo-stg.demo.data-ui.com/): the napkin-sized model from [Example Model](#example-model), compiled and deployed. Log in as `demos` / `TryDataUI2026!` to add, edit, and tag items. Not-done items tagged `mvp` and `frontend` stay hidden until you log in as `alice` (same password).
+- [Books & Authors](https://books-stg.demo.data-ui.com/): relationships, cover images, and a rating rollup. Same login: `demos` / `TryDataUI2026!` — but books in both genres `Nonfiction` and `Self-Help` need the `new-books` role (`alice` and `bob` have it).
 
 Both reset to a known state every morning at 04:10 (US Pacific). Anything you change is gone by then; that is the point of a shared demo.
 
 - [Model Bank](https://modelbank.demo.data-ui.com/) — a gallery of models, with ownership, images, and ratings. Log in as `guest` (no password); it is read-only. Write access, including the Generate and Deploy buttons, is available on request: [Contact](#contact).
 
-The `demos` password is public by design. The apps are sandboxed, reset nightly, and can be taken offline in under a minute.
+The `demos` password is public by design. The apps are sandboxed and can be taken offline in under a minute.
 
 
 ## The Big Idea

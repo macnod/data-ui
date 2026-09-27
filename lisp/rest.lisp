@@ -1061,7 +1061,8 @@ similar to the following example:
     {
       \"type\": \"models\",
       \"id\": \"<record-uuid>\",
-      \"field\": \"deploy\"
+      \"field\": \"deploy\",
+      \"data\": {\"current-password\": \"\", \"new-password\": \"\"}
     }
 
 The 'type' field is required and identifies the type in the model.
@@ -1070,6 +1071,11 @@ The 'id' field is required and identifies the target record by UUID.
 
 The 'field' field is required and must name a :button field that has a compiled
 action hook.
+
+The optional 'data' field is an object of form-field names to the values the
+user typed on the edit form (string-valued fields only).  It is forwarded to
+the action hook as its :data keyword; hooks that need typed input (e.g.
+:change-password) read it, other hooks ignore it.
 
 The response will be a JSON object with the following structure:
 
@@ -1092,6 +1098,7 @@ POST /api/actions"
           (type (getf tree :type))
           (id (getf tree :id))
           (field (getf tree :field))
+          (data (getf tree :data))
           (type-key (parse-type type))
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
@@ -1102,7 +1109,7 @@ POST /api/actions"
                             "Parameter 'field' must be a string."
                             :field field))))
           (result (handler-case
-                    (be-action type-key id field-key user)
+                    (be-action type-key id field-key user data)
                     (validation-error (e)
                       (abort-bad-request
                        e :type type :id id :field field :user user))

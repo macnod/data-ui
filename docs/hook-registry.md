@@ -51,7 +51,7 @@ All six lifecycle slots are compiled at model-compile time into function lists o
 
 ```
 (lambda (type-key field-key record user
-         &key roles status-field set-status)
+         &key roles status-field set-status data)
   → nil | plist)
 ```
 
@@ -64,9 +64,11 @@ All six lifecycle slots are compiled at model-compile time into function lists o
 | `roles` | List of the acting user's role names, passed by `be-action`. Load-bearing for the shipped admin-only hooks (`:deploy-model` requires `"deployer"`, `:generate-model` requires `"ai-user"`). |
 | `status-field` | Keyword of the companion status column (e.g. `:deploy-status`) |
 | `set-status` | `(lambda (message) ...)`; sole way for hooks to write status |
+| `data` | Plist of the string-valued form fields the user typed on the edit form (`/api/actions` `data` object). Hooks that need typed input read it (e.g. `:change-password`); others ignore it. Absent payload → nil. |
 
+- Hooks written before `:data` existed still work: author hooks should include `&allow-other-keys` in their lambda lists (the shipped hooks do), and `be-action` only forwards `:data` when the caller supplied it.
 - **Status protocol:** the framework sets `"running"` before calling the hook. For sync hooks (no `:async t`), the framework auto-sets `"complete"` on success or `"failed: <message>"` on error. For async hooks, the worker must call `set-status` with a terminal value.
-- **Never call** `be-update` or direct SQL from inside an action hook to write status; use `set-status` only.
+- **Never call** `be-update` or direct SQL from inside an action hook to write status; use `set-status` only. (Writing *other* records — e.g. `:change-password`'s elevated `be-update` on the user row — is fine.)
 
 Action hooks are compiled at model-compile time and stored on the compiled field definition as `:compiled-hook`. The runtime calls them via `be-action`; no registry lookup occurs at runtime.
 
@@ -293,11 +295,11 @@ Buttons appear on the **update form only**. `fe-fields` excludes `:button` field
 2. Checks type-level `update` permission + record-level access.
 3. Reads current status; rejects if `"running"` (in-progress guard).
 4. Sets status to `"running"` via `be-set-field-value`.
-5. Calls the hook with the action contract.
+5. Calls the hook with the action contract, passing `:data` (the posted form values) when the caller supplied it.
 6. Sync success → sets `"complete"`. Sync error → sets `"failed: <msg>"`. (A result plist with `:status "failed"` is also treated as sync failure.)
 7. Async (`:async t` in result) → returns immediately; worker sets terminal status via `set-status`.
 
-REST endpoint: `POST /api/actions` with `{"type", "id", "field"}`.
+REST endpoint: `POST /api/actions` with `{"type", "id", "field"}` and an optional `data` object of form values.
 
 ### Registered Action Hooks
 
@@ -306,6 +308,7 @@ REST endpoint: `POST /api/actions` with `{"type", "id", "field"}`.
 | `:deploy-model` | `:field` (keyword) | Requires the `"deployer"` role (else `(:status "failed" :message "deployer role required")` before anything else). Reads model text from the record's `:field`, validates in-process via `validate-model`. On validation failure returns `(:status "failed" :message …)` immediately (no worker). On success spawns an async worker that writes the model to `models/local/<name>.lisp` (no git commit — VIP models stay out of history), shells out to `scripts/data-ui deploy` with `MODEL_FILE` pointing at that file, and records the admin password in `:secrets`. Returns `(:async t :message "Deploy started")`. |
 | `:generate-model` | `:description-field` (keyword), `:model-field` (keyword) | Requires the `"ai-user"` role and a non-empty description in `:description-field`. Reads LLM config (base URL, model, API key) from the admin `llm-config` secret; spawns an async worker that calls the LLM (system prompt = `docs/model-reference.md`; OpenAI- and Anthropic/GLM-style responses supported), cleans the response, validates it via `validate-model`, and writes it into the record's `:model-field`. Returns `(:async t :message "Generation started")`. |
 | `:spawn` | `:close` (plist), `:clear` (list) | Closes the record the button sits on and inserts a fresh successor (template→instance completion). Sync. See below. |
+| `:change-password` | none | Self-service password change, hosted on the built-in `:settings` type (every user holds the `settings` role; guest deliberately does not). The form fields it reads: `:current-password` renders `:widget :password-read` (type an existing secret) and `:new-password` renders `:widget :password-new` (set a stored secret, with confirmation box). Reads `:current-password` / `:new-password` from `:data` (the posted form values); blank, nil, or absent → `(:status "failed" :message "Current and new password are required")`. Gates: own-row check (`record.user` display name = acting user; settings rows are not record-scoped), old-password verification via `a:login`, new-password validation via `a:valid-password-p`. Writes via `be-update` on `:users` as `"admin"` (the `:tokens` carve-out precedent), reusing the canonical hash/salt/blank-keep path — the hook never hashes itself, so an admin-reset variant later cannot silently salt with the wrong user. Sync. The `:current-password` / `:new-password` fields on `:settings` are no-column form fields: a plain Save can never persist them; only the button changes a password. Known limitation (MVP): no token/session invalidation on password change. |
 
 #### `:spawn`
 

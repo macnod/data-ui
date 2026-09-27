@@ -30,7 +30,10 @@ and auto `set-model` when `MODEL_NAME` is set.
 
 Connect to the REPL from Emacs using `M-x slime-connect` (or your
 preferred Slime client) on the reported Swank port. When you exit the
-REPL, the database container is stopped automatically.
+REPL, the database container **and its volume** are removed
+automatically: the next `repl` starts from an empty database, so the
+schema always matches the code just loaded. Development data survives
+only in snapshots.
 
 **Examples:**
 
@@ -44,7 +47,9 @@ interactive `psql` session. Useful for manual database inspection.
 
 Without `[profile]`, uses the same built-in dev defaults as `repl`
 and does not create a profile. With `[profile]`, uses that profile's
-database settings.
+database settings. On exit the container is removed with `--volumes`:
+the dev database is throwaway (wiped), while a profile's `pgdata/` is
+bind-mounted and never touched by `--volumes`.
 
 **Examples:**
 

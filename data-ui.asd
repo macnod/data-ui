@@ -61,4 +61,5 @@
                 (:file "guest-tests")
                 (:file "api-roles-tests")
                 (:file "type-roles-override-tests")
-                (:file "domain-stg-tests")))))
+                (:file "domain-stg-tests")
+                (:file "change-password-tests")))))

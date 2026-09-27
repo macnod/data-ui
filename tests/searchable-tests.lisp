@@ -78,7 +78,7 @@ qualified column names."
     (searchable-compile
       (cons :secret
         '(:type :password :column t :searchable t
-           :ui (:label "Secret" :widget :password)
+           :ui (:label "Secret" :widget :password-new)
            :source (:view :main :column :secret :agg :first))))))
 
 (test searchable-rejects-target

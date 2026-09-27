@@ -605,6 +605,16 @@ tests against both test-model and modelbank-test."
     (explain! results)
     (when collect results)))
 
+(defun run-change-password-tests (&optional collect)
+  ":change-password action hook tests (base model, test-model fixture).
+The hook registers at model.lisp load; the :settings type change is in
+*base-model*, present in every model context."
+  (let ((results
+          (with-model "test-model" nil
+            (run 'change-password-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-secrets-tests (&optional collect)
   "Run secrets type tests."
   (let ((results
@@ -944,6 +954,7 @@ groups."
                    ("hook-registry"  . run-hook-registry-tests)
                    ("lifecycle"      . run-lifecycle-tests)
                    ("action"         . run-action-tests)
+                   ("change-password" . run-change-password-tests)
                    ("secrets"        . run-secrets-tests)
                    ("widget"         . run-widget-tests)
                    ("m2m"            . run-m2m-tests)

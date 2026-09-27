@@ -69,7 +69,7 @@ Requirements:
 
     compile_model
 
-Before anything ships, the model in `models/<model-name>.lisp` must compile. The script starts a *throwaway* PostgreSQL container (its own container name and port 5446, so it never collides with your dev REPL database on 5444 or the test database on 5445), initializes the schema, and runs the compilation phase of `set-model` (validation, SQL generation, lambda compilation) against it. Then the container is destroyed.
+Before anything ships, the model in `models/<model-name>.lisp` must compile. The script starts a *throwaway* PostgreSQL container (its own container name and port 5446, so it never collides with your dev REPL database on 5444 or the test database on 5445), initializes the schema, and runs the compilation phase of `set-model` (validation, SQL generation, lambda compilation) against it. Then the container and its volume are destroyed.
 
 If the model doesn't compile, the deploy dies right here, before a tag, an image, or a manifest exists. A broken model never gets anywhere near the cluster.
 
@@ -159,7 +159,7 @@ An *environment* is where a running instance lives. There are three: **developme
 
 The environment is a property of the *launch path*, never stored in the model:
 
-- `scripts/data-ui repl` (no profile) → development (throwaway 5444 database)
+- `scripts/data-ui repl` (no profile) → development (throwaway 5444 database: the container and its volume are removed when the REPL exits, so the schema always matches the code just loaded)
 - `scripts/data-ui repl <profile>` / `e-demo start <profile>` / `demo start <profile>` → staging (profiles run under systemd units via the e-demo / demo verbs); `profile expose` is a visibility toggle, not part of the definition
 - `scripts/data-ui deploy <model>` → production (also the Deploy button, once production supports it — post-MVP)
 

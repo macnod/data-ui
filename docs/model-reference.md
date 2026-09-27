@@ -579,7 +579,7 @@ The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys 
 | Subkey | Values / meaning |
 |--------|------------------|
 | `:label` | display label string (auto-generated from field key if omitted) |
-| `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:stars` \| `:select` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
+| `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:stars` \| `:select` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password-new` \| `:password-read` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
 | `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
@@ -598,7 +598,8 @@ Widget semantics:
   - **Static**: options from `:options` (a list of non-empty strings). Requires `:ui (:widget :select :options (...))`. No `:target` or `:join-table`. The stored value is the option string itself. See `models/test/static-select-test.lisp` for an example.
   - A bare `:widget :select` with neither `:options` nor `:target` is a compile error (empty dropdowns are not a valid mode).
 - `:file`: file input + two-phase upload
-- `:password`: masked password input
+- `:password-new`: masked input + confirmation box for creating / replacing a stored secret; on edit forms an untouched (blank) value means "keep current password"; `autoComplete="new-password"`
+- `:password-read`: single masked box for typing an *existing* secret that is not stored by this form (e.g. settings Current Password); no confirmation, no placeholder, `autoComplete="current-password"`
 - `:button`: action button (update form only)
 - `:hidden`: omitted from form entirely
 - `:image`: display thumbnail (always read-only for MVP)
@@ -620,6 +621,7 @@ Abolished keys and values (compile-time errors if present):
 - `:form-control`: rejected name; never shipped
 - `:line` as a widget value: use `:textbox`
 - `:text` as a widget value: use `:textarea`
+- `:password` as a widget value: split by intent — `:password-new` to create/replace a stored secret, `:password-read` to collect an existing one (the field *type* `:type :password` is untouched)
 - `:read-only` as a widget value: use `:read-only t` boolean flag
 
 Notes:
@@ -1164,7 +1166,7 @@ Always merged into every compiled model:
 | `:permissions` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
 | `:roles` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
 | `:role-permissions`, `:resource-roles`, `:role-users` | base, built-in, joiner, internal | |
-| `:settings` | base, built-in, user-setting | dark-mode, display-name, bio; view scope `:user` |
+| `:settings` | base, built-in, user-setting | dark-mode, display-name, bio; view scope `:user`; no-column `:current-password` (`:widget :password-read`) / `:new-password` (`:widget :password-new`) + `:change-password` button (self-service password change — see `docs/hook-registry.md` → `:change-password`; the password fields never persist via a normal Save) |
 | `:secrets` | built-in, not base, suppress-roles, category `:settings` | per-user secrets; `:name` is `:searchable t` |
 | `:tokens` | built-in, not base, no display | internal token store |
 

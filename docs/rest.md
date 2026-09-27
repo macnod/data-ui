@@ -86,6 +86,13 @@ Execute an action hook on a `:button` field (update form only).
 
 **Body:** ```json {"type": "models", "id": "<record-uuid>", "field": "deploy"} ```
 
+Optional `data` object: the string-valued form fields the user typed on the edit form (the frontend whitelists password/textbox/textarea/select/code values). Forwarded to the hook as its `:data` keyword; hooks that need typed input (e.g. the built-in `:change-password` on `:settings`) read it, other hooks ignore it. Example:
+
+```json
+{"type": "settings", "id": "<settings-uuid>", "field": "change-password",
+ "data": {"current-password": "old-pass", "new-password": "new-pass-9"}}
+```
+
 Returns sync result (`complete` / `failed`) or async acceptance.
 
 ## File handling

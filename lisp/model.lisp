@@ -665,7 +665,7 @@ table, and updates status.  Wraps everything in a handler-case so errors become
   '(:field :keyword)
   (lambda (&key field)
     (lambda (type-key field-key record user
-              &key roles status-field set-status)
+              &key roles status-field set-status &allow-other-keys)
       (declare (ignore type-key field-key status-field))
       (block hook
         ;; Role check: must have deployer role (FR-7). Checked first,
@@ -925,7 +925,7 @@ silent thread death."
   '(:description-field :keyword :model-field :keyword)
   (lambda (&key description-field model-field)
     (lambda (type-key field-key record user
-              &key roles status-field set-status)
+              &key roles status-field set-status &allow-other-keys)
       (declare (ignore type-key field-key status-field))
       (block hook
         ;; Role check: must have ai-user role
@@ -1143,7 +1143,7 @@ index even without :unique t).  Returns ACTION-FORM."
       (report-ve "spawn-hook-factory"
         ":spawn requires :clear as a non-empty list of field keys."))
     (lambda (type-key field-key record user
-              &key roles status-field set-status)
+              &key roles status-field set-status &allow-other-keys)
       (declare (ignore field-key roles status-field set-status))
       ;; Close first: the old row becomes history.  A later insert failure
       ;; leaves it closed with no successor; the button is re-runnable (no
@@ -1167,11 +1167,90 @@ index even without :unique t).  Returns ACTION-FORM."
 ;; END Register hook :spawn
 ;;
 
+;;
+;; BEGIN Register hook :change-password (self-service password change)
+;;
+;; Hosted on the built-in :settings type (every app user holds the
+;; "settings" role; guest deliberately does not — the D1 theme-leak
+;; decision).  The :current-password / :new-password fields on
+;; :settings are no-column form fields: they render on the update
+;; form, ride the action payload as :data, and are skipped by
+;; valid-data / validate-fields / local-values-for-update, so a plain
+;; Save can never persist them.  Only the button changes a password.
+;;
+
+(defun change-password-blank-p (value)
+  ":private: T when VALUE is not a non-empty string.  The frontend
+normalizes untouched password boxes to \"\" (not absent) — an empty
+string is a distinct JSON value from an absent key — so the hook
+treats blank, nil, and absent alike.  Without this, a missing field
+would surface as a misleading \"Current password is incorrect\"
+from a:login on \"\"."
+  (not (and (stringp value) (plusp (length value)))))
+
+(register-hook :change-password :action
+  nil
+  (lambda ()
+    (lambda (type-key field-key record user
+             &key data &allow-other-keys)
+      (declare (ignore type-key field-key))
+      (block hook
+        ;; Own-row guard.  settings.user stores a UUID, but the record
+        ;; re-read in be-action returns the display value: :source
+        ;; (:view :users :table :users :column :name :agg :first), and
+        ;; view-result-values emits the source alias — so (getf record
+        ;; :user) is the USERNAME STRING, never the UUID.  Compare
+        ;; against USER (the username be-action already passes), not
+        ;; a:get-id.  Settings rows are not record-scoped (scope :user
+        ;; is list-only), so a settings-role user could otherwise
+        ;; reach another user's row by UUID.
+        (unless (equal (getf record :user) user)
+          (return-from hook
+            (list :status "failed"
+              :message "You may only change your own password")))
+        (let ((current (getf data :current-password))
+              (new (getf data :new-password)))
+          (cond
+            ((or (change-password-blank-p current)
+                 (change-password-blank-p new))
+              (list :status "failed"
+                :message "Current and new password are required"))
+            ;; Old-password gate: a:login returns nil on any mismatch —
+            ;; the same primitive /api/login uses.  A stolen JWT is not
+            ;; enough to take the account over.
+            ((not (a:login *rbac* user current))
+              (list :status "failed"
+                :message "Current password is incorrect"))
+            ((not (a:valid-password-p *rbac* new))
+              (list :status "failed"
+                :message "New password is not a valid password"))
+            (t
+              ;; Admin-elevated write through be-update — the canonical
+              ;; password path (hash, salt, blank-keep), the :tokens
+              ;; carve-out precedent for internal admin writes.  The
+              ;; hook does NOT hash itself: salt derivation lives in
+              ;; local-values-for-update / db-value, keyed on the
+              ;; target user's name; hashing here would become a second
+              ;; salt-derivation site and silently break an admin-reset
+              ;; variant later.  Partial data keeps record values;
+              ;; update-roles only runs when :roles is passed, which
+              ;; this call never does — the user's roles survive.
+              (be-update :users
+                (a:get-id *rbac* "users" user)
+                (list :password new)
+                "admin")
+              ;; nil → be-action sets the status column to "complete".
+              nil)))))))
+
+;;
+;; END Register hook :change-password
+;;
+
 (defparameter *forms* '(:list-form :add-form :update-form))
 
 (defparameter *widgets*
   '(:textbox :textarea :code :stars :checkbox :checkbox-list :select
-     :file :password :button :hidden :image :image-list)
+     :file :password-new :password-read :button :hidden :image :image-list)
   "Allowed values for the :widget key on a field :ui plist.")
 
 (setq *base-model*
@@ -1202,7 +1281,7 @@ index even without :unique t).  Returns ACTION-FORM."
                  :password (:type :password
                              :source (:view :main :column :password :agg :first)
                              :force-sql-name "password_hash"
-                             :ui (:label "Password" :widget :password)
+                             :ui (:label "Password" :widget :password-new)
                              :validations (:required :password)
                              :column t :not-null t)
                  :email (:type :text :sortable t
@@ -1333,10 +1412,20 @@ index even without :unique t).  Returns ACTION-FORM."
                  :bio (:type :text :default "(non specified)"
                         :ui (:label "Bio" :widget :textarea)
                         :source (:view :main :column :bio :agg :first)
-                        :column t :not-null t))
+                        :column t :not-null t)
+                 :current-password (:type :password
+                                    :ui (:label "Current Password"
+                                      :widget :password-read))
+                 :new-password (:type :password
+                                :ui (:label "New Password"
+                                  :widget :password-new))
+                 :change-password (:type :button
+                                   :ui (:label "Change Password"
+                                     :widget :button)
+                                   :action (:change-password)))
        :list-form (:fields (:user :dark-mode :display-name :bio))
        :update-form (:fields t)
-       :add-form (:fields t))
+       :add-form (:fields (:user :dark-mode :display-name :bio)))
 
      :secrets
      (:table t :built-in t 
@@ -2089,7 +2178,7 @@ report-e if any are found."
   (unless (member widget *widgets*)
     (report-e "valid-widget-value"
       "Unknown :widget ~s. Must be one of: ~{~a~^, ~}."
-      ~widget *widgets*)))
+      ~widget ~*widgets*)))
 
 (defun valid-read-only-value (ui)
   "Check that :read-only, if present, is t or nil. Signals via report-ve
@@ -2239,8 +2328,21 @@ correct there). Returns the effective :source plist."
                        :name-sql name-sql
                        :type-sql type-sql
                        :create-sql (format nil "~{~a~^ ~}" sql-parts)
-                       :source (field-source model type-key new-field-key
-                                 field-def name-key)
+                       :source (let ((source (field-source model type-key
+                                          new-field-key field-def name-key)))
+                                 ;; No-column fields without a :source
+                                 ;; (e.g. the settings :current-password /
+                                 ;; :new-password virtual form fields) get a
+                                 ;; trivial :agg :first self-source so view
+                                 ;; reads (rec / be-action) can collapse
+                                 ;; them like any other field. The value is
+                                 ;; always nil — these fields hold no data.
+                                 (if (and (not column)
+                                        (not (getf source :table))
+                                        (not (getf source :view)))
+                                   (list :view :main :table type-key
+                                     :column new-field-key :agg :first)
+                                   source))
                        :source-all (getf field-def :source-all)
                        :write-to (write-to model type-key
                                    new-field-key field-def)
