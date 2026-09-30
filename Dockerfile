@@ -47,37 +47,42 @@ RUN url="${ROSWELL_URL_PREFIX}/${ROSWELL_VERSION}/roswell_${ROSWELL_VERSION#v}-1
     && rm roswell.deb
 
 # Install SBCL
-RUN ros install "sbcl-bin/${SBCL_VERSION}" && ros use "sbcl-bin/${SBCL_VERSION}"
+# ulimit -n: BuildKit RUN processes inherit the docker daemon's
+# LimitNOFILE; when that is unlimited (systemd default on Ubuntu 26.04),
+# SBCL's startup fd sweep (close() across the whole fd space) takes
+# minutes per invocation. Clamp it to 1M — harmless, and builds run
+# ~100x faster on such hosts.
+RUN ulimit -n 1048576 && ros install "sbcl-bin/${SBCL_VERSION}" && ros use "sbcl-bin/${SBCL_VERSION}"
 
 # 3rd-party packages (any order ok, so alphabetical)
-RUN ros install babel
-RUN ros install cl-base64
-RUN ros install cl-csv
-RUN ros install cl-ppcre
-RUN ros install cl-unicode
-RUN ros install drakma
-RUN ros install fiveam
-RUN ros install hunchentoot
-RUN ros install ironclad
-RUN ros install jose
-RUN ros install mgl-pax
-RUN ros install postmodern
-RUN ros install swank
-RUN ros install trivial-utf-8
-RUN ros install uiop
-RUN ros install yason
+RUN ulimit -n 1048576 && ros install babel
+RUN ulimit -n 1048576 && ros install cl-base64
+RUN ulimit -n 1048576 && ros install cl-csv
+RUN ulimit -n 1048576 && ros install cl-ppcre
+RUN ulimit -n 1048576 && ros install cl-unicode
+RUN ulimit -n 1048576 && ros install drakma
+RUN ulimit -n 1048576 && ros install fiveam
+RUN ulimit -n 1048576 && ros install hunchentoot
+RUN ulimit -n 1048576 && ros install ironclad
+RUN ulimit -n 1048576 && ros install jose
+RUN ulimit -n 1048576 && ros install mgl-pax
+RUN ulimit -n 1048576 && ros install postmodern
+RUN ulimit -n 1048576 && ros install swank
+RUN ulimit -n 1048576 && ros install trivial-utf-8
+RUN ulimit -n 1048576 && ros install uiop
+RUN ulimit -n 1048576 && ros install yason
 
 # macnod packages (specific order important here)
-RUN ros install macnod/dc-dlist
-RUN ros install macnod/dc-ds
-RUN ros install macnod/dc-time
-RUN ros install macnod/p-log
-RUN ros install macnod/dc-eclectic
-RUN ros install macnod/rbac
+RUN ulimit -n 1048576 && ros install macnod/dc-dlist
+RUN ulimit -n 1048576 && ros install macnod/dc-ds
+RUN ulimit -n 1048576 && ros install macnod/dc-time
+RUN ulimit -n 1048576 && ros install macnod/p-log
+RUN ulimit -n 1048576 && ros install macnod/dc-eclectic
+RUN ulimit -n 1048576 && ros install macnod/rbac
 
 # data-ui package
 COPY . /root/.roswell/local-projects/data-ui/
-RUN ros run -- --eval "(ql:register-local-projects)" --quit
+RUN ulimit -n 1048576 && ros run -- --eval "(ql:register-local-projects)" --quit
 # Pre-compile at build time so container start is fast. Without this,
 # every container start recompiles the system, which is slow enough to
 # trip the liveness probe during first-boot database initialization.
@@ -86,7 +91,7 @@ RUN ros run -- --eval "(ql:register-local-projects)" --quit
 # `ros run --eval ... --quit` exits 0 even when the require aborts.
 # Likewise for data-ui.lisp's *doc-root* error: build containers have no
 # DOCUMENT_ROOT, so mkdir the defaults first and let load-time checks run.
-RUN mkdir -p /app/shared-files /app/temp-files \
+RUN ulimit -n 1048576 && mkdir -p /app/shared-files /app/temp-files \
     && ros run -- --disable-debugger \
        --eval '(setf asdf:*compile-file-failure-behaviour* :error)' \
        --eval '(handler-case (progn (require :data-ui) (uiop:quit 0)) (error (c) (format t "data-ui load failed: ~a" c) (uiop:quit 1)))' \

@@ -3393,7 +3393,8 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
     for display = (getf type-def :display)
     when (and display allowed (not internal))
     collect (list :name type-key
-                  :category (getf type-def :category))))
+                  :category (getf type-def :category)
+                  :user-setting (getf type-def :user-setting))))
 
 (defun be-landing-page (user)
   ":public: Effective landing type-key for USER, or NIL.

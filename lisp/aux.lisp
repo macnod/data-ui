@@ -196,9 +196,16 @@ returns for fields that are null."
   (if (equal value :null) nil value))
 
 (defun get-deployed-admin-password (model-name)
-  (fourth
-    (re:split
-      "\\n|="
-      (u:slurp
-        (format nil "~~/.local/state/data-ui-deploy/~a/secrets.env"
-          model-name)))))
+  ":private: ADMIN_PASSWORD from the deploy script's secrets.env for
+MODEL-NAME, or NIL when there is no such file. The path must match
+DEPLOY_STATE_DIR in scripts/data-ui (DATA_UI_STATE/deploy/<name>), which
+moved off ~/.local/state/data-ui-deploy when DATA_UI_STATE was introduced."
+  (handler-case
+    (fourth
+      (re:split
+        "\\n|="
+        (u:slurp
+          (u:join-paths
+            (u:getenv "DATA_UI_STATE" :default "/data/data-ui")
+            "deploy" model-name "secrets.env"))))
+    (file-error () nil)))

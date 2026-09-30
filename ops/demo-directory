@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# demo-directory — manage the *.demo.data-ui.com 404/directory service.
+#
+# The service is a stdlib-only Python HTTP server (demo-directory.py)
+# wired into HAProxy as the `demo404` backend. Sources live in ops/
+# of a data-ui checkout; installed copies are targets, never edited.
+#
+#   help      this text
+#   install   full install/update: script + unit + HAProxy backend
+#   update    push an edited ops/demo-directory.py live (install
+#             over /opt + restart) — the change-to-page loop
+#   status    enabled/active state, health, current demo list
+#   start     systemctl start demo-directory
+#   stop      systemctl stop demo-directory (stray hosts 503 meanwhile)
+#
+# Checkout override: DATA_UI_CHECKOUT (default ~/common-lisp/data-ui).
+set -euo pipefail
+
+SERVICE=demo-directory
+OPT_TARGET=/opt/demo-directory/demo-directory.py
+DEFAULT_CHECKOUT="$HOME/common-lisp/data-ui"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+ops_dir() {
+    local repo="${DATA_UI_CHECKOUT:-$DEFAULT_CHECKOUT}"
+    [[ -f "$repo/ops/demo-directory.py" ]] \
+        || die "no ops/demo-directory.py under $repo (set DATA_UI_CHECKOUT?)"
+    echo "$repo/ops"
+}
+
+check_syntax() {
+    python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$1" \
+        || die "syntax error in $1 — refusing to install"
+}
+
+cmd_install() {
+    local ops; ops="$(ops_dir)"
+    check_syntax "$ops/demo-directory.py"
+    sudo install -D -m 644 "$ops/demo-directory.py" "$OPT_TARGET"
+    sudo install -D -m 644 "$ops/demo-directory.service" \
+         /etc/systemd/system/demo-directory.service
+    sudo install -D -m 644 "$ops/demo404.cfg" \
+         /etc/haproxy/conf.d/demo404.cfg
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now "$SERVICE"
+    sudo haproxy -c -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d
+    sudo systemctl reload haproxy
+    echo "Installed and running: https://demo.data-ui.com/"
+}
+
+cmd_update() {
+    local ops; ops="$(ops_dir)"
+    check_syntax "$ops/demo-directory.py"
+    sudo install -D -m 644 "$ops/demo-directory.py" "$OPT_TARGET"
+    sudo systemctl restart "$SERVICE"
+    sleep 1
+    systemctl is-active --quiet "$SERVICE" || die "service not active"
+    curl -fsS --max-time 5 http://127.0.0.1:8484/health >/dev/null \
+        || die "health check failed"
+    echo "Live. Verify (uncached 404 page):"
+    echo "  curl -s https://no-such-demo.demo.data-ui.com/"
+}
+
+cmd_status() {
+    printf 'enabled: %s\n' "$(systemctl is-enabled "$SERVICE" 2>&1)"
+    printf 'active:  %s\n' "$(systemctl is-active "$SERVICE" 2>&1)"
+    if curl -fsS --max-time 5 http://127.0.0.1:8484/health >/dev/null \
+            2>&1; then
+        echo "health:  ok"
+        printf 'demos:   %s\n' "$(curl -fsS --max-time 5 \
+            -H 'Host: demo.data-ui.com' http://127.0.0.1:8484/ \
+            | grep -oE '<li><a href[^>]*>[a-z0-9-]+' | sed 's/.*>//' \
+            | tr '\n' ' ')"
+    else
+        echo "health:  FAILING (page is 503 via HAProxy)"
+    fi
+}
+
+case "${1:-help}" in
+    help)    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+    install) cmd_install ;;
+    update)  cmd_update ;;
+    status)  cmd_status ;;
+    start)   sudo systemctl start "$SERVICE" ;;
+    stop)    sudo systemctl stop "$SERVICE" ;;
+    *)       die "unknown command '$1' (try: demo-directory help)" ;;
+esac

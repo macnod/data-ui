@@ -585,10 +585,8 @@ the caller inspects exit-code and stderr."
   (let ((script-path (namestring
                        (merge-pathnames "scripts/data-ui" package-root)))
          (repo-root (namestring package-root))
-         (model-file (namestring
-                       (merge-pathnames
-                         (format nil "models/local/~a.lisp" model-name)
-                         package-root))))
+         (model-file (u:join-paths "models/local"
+                       (format nil "~a.lisp" model-name))))
     (uiop:run-program (list script-path "deploy" model-name)
       :input nil
       :output :string :error-output :string
@@ -618,6 +616,13 @@ can see it in the UI."
         :model-name model-name :error e
         :status "failed to record secret"))))
 
+(defun deploy-model-tail (msg)
+  ":private: Last 180 characters of MSG for the status column. The
+deploy script dies at the END of its output — after compiler
+warnings and per-field noise — so the head routinely hides the
+actual error."
+  (subseq msg (max 0 (- (length msg) 180))))
+
 (defun deploy-model-async (model-plist set-status package-root user)
   ":private: Worker body for the deploy-model hook. Writes the model file
 (no git commit — FR-9 keeps VIP models out of history), runs the deploy
@@ -642,15 +647,13 @@ table, and updates status.  Wraps everything in a handler-case so errors become
             (pl:pinfo :in "deploy-model-async"
               :status "failed" :reason msg)
             (funcall set-status
-              (format nil "failed: ~a"
-                (subseq msg 0 (min (length msg) 180))))))))
+              (format nil "failed: ~a" (deploy-model-tail msg))))))))
     (error (e)
       (let ((msg (format nil "~a" e)))
         (pl:pinfo :in "deploy-model-async"
           :status "failed" :reason msg)
         (funcall set-status
-          (format nil "failed: ~a"
-            (subseq msg 0 (min (length msg) 180))))))))
+          (format nil "failed: ~a" (deploy-model-tail msg))))))
 
 ;; :deploy-model — async deploy hook for Model Bank.
 ;;
@@ -694,7 +697,8 @@ table, and updates status.  Wraps everything in a handler-case so errors become
 (defvar *generate-model-llm-override* nil
   ":private: When non-nil, generate-model-llm-call calls this function instead
 of making an HTTP request.  Used by tests.  Should be a lambda accepting a
-description string and returning (:ok text) or (:error msg).")
+description string and a prior-model string (possibly nil), returning
+(:ok text) or (:error msg).")
 
 (defun admin-secret-value (name)
   ":private: Return the :value string for admin's secret named NAME. Returns NIL
@@ -742,34 +746,208 @@ Optional :temperature (default 0.3) and :max-tokens (default 16384)."
       (t (list :ok (list :url url :model model :api-key api-key
                      :temperature temperature :max-tokens max-tokens))))))
 
+(defun generate-model-user-message (description prior-model)
+  ":private: Build the user message. Order matters — the description
+rides last, as the final signal:
+
+1. The fixed instruction (return ONLY a quoted plist starting with ',
+   no fences, no explanation).
+2. When PRIOR-MODEL is non-blank, the previous model, framed as
+   advisory: the description stays authoritative; reuse structure from
+   the previous model where it still fits. Blank or absent PRIOR-MODEL
+   omits the block (erase = fresh start).
+3. The description, verbatim."
+  (let ((prior
+          (when (and prior-model
+                  (plusp (length (u:trim prior-model))))
+            (format nil "~
+The previous version of this model appears below. Produce a new ~
+complete model best satisfying the current description; reuse ~
+structure from it where it still fits.~%~%~a~%~%"
+              prior-model))))
+    (format nil "~
+Generate a Data UI model for this application description. Return ~
+ONLY a quoted Common Lisp plist starting with ', no markdown fences, ~
+no explanation.~%~a~a"
+      (or prior "") description)))
+
 (defun generate-model-build-request-json
-  (model temperature max-tokens system-prompt description)
+  (model temperature max-tokens system-prompt user-message)
   ":private: Build the OpenAI-compatible chat completions JSON body."
   (plist-to-json
     `(:model ,model
        :temperature ,temperature
        :max_tokens ,max-tokens
        :messages ((:role "system" :content ,system-prompt)
-                   (:role "user"
-                     :content ,(format nil
-                                 "Generate a Data UI model for this ~
-                                 application description. Return ONLY ~
-                                 a quoted Common Lisp plist starting ~
-                                 with ', no markdown fences, no ~
-                                 explanation.~%~%~a"
-                                 description))))
+                   (:role "user" :content ,user-message)))
     :nil-value "false"))
 
-(defun generate-model-system-prompt ()
-  ":private: Return the model reference as the LLM system prompt."
-  (u:slurp (u:join-paths *package-root* "docs/model-reference.md")))
+(defun generate-model-example-files ()
+  ":private: Paths of the top-level example models in models/, sorted.
+A direct directory walk filtered to depth one — not list-models (which
+returns bare names and excludes models/test/ by a fuzzy search over the
+path string). The depth-one rule excludes models/test/ (regression
+fixtures, not exemplars) and models/local/ (private VIP models) by
+construction. New demos ride every prompt; the generator tests pin the
+set so a new file forces a conscious token-budget re-check."
+  (u:directory-listing
+    (u:join-paths *package-root* "models")
+    :files-only t
+    :abs-filter (format nil "^~a/[^/]+\\.lisp$"
+                  (u:join-paths *package-root* "models"))))
 
-(defun generate-model-llm-call (description)
-  ":private: Call the LLM to generate a model from DESCRIPTION.
+(defun generate-model-example-block (path)
+  ":private: One example-model block: a ;; --- path --- banner followed
+by the file verbatim. NIL when the file is unreadable or empty — one
+stray file never fails a generation."
+  (let ((text (ignore-errors (u:slurp path))))
+    (when (and text (plusp (length text)))
+      (format nil ";; --- ~a ---~%~a~%" path text))))
+
+(defun generate-model-examples-prose ()
+  ":private: The framing sentence preceding the example blocks (part
+2's opening prose, under the # Examples heading).  Kept as a format
+form so the ~ line continuations fold the source lines into the
+same single-line sentence the old inline text produced."
+  (format nil "These are complete example models from this ~
+repository's models/ directory. Mirror their shape, field idiom, ~
+and scale. Do not copy their subject matter."))
+
+(defun generate-model-example-blocks ()
+  ":private: One block per example model (see generate-model-example-
+files), blank-line separated. Unreadable or empty files are skipped."
+  (format nil "~{~a~^~%~}"
+    (remove nil
+      (mapcar #'generate-model-example-block
+        (generate-model-example-files)))))
+
+(defun generate-model-examples-text ()
+  ":private: System-prompt part 2 — the # Examples heading, the
+framing prose (generate-model-examples-prose), then every example
+block (generate-model-example-blocks)."
+  (format nil "# Examples~%~%~a~%~%~a"
+    (generate-model-examples-prose)
+    (generate-model-example-blocks)))
+
+(defun generate-model-system-prompt-parts ()
+  ":private: The system prompt's two logical parts as a plist:
+:reference (docs/model-reference.md verbatim — part 1, opening with
+# Model Syntax Reference) and :examples (part 2, opening with
+# Examples; see generate-model-examples-text). Rebuilt per call —
+files are small; no cache."
+  (list :reference
+    (u:slurp (u:join-paths *package-root* "docs/model-reference.md"))
+    :examples (generate-model-examples-text)))
+
+(defun generate-model-system-prompt ()
+  ":private: System prompt for the LLM: the two parts from
+generate-model-system-prompt-parts joined — reference, blank line,
+examples. Callers needing the parts separately (the org prompt log)
+use generate-model-system-prompt-parts instead."
+  (let ((parts (generate-model-system-prompt-parts)))
+    (format nil "~a~%~a"
+      (getf parts :reference)
+      (getf parts :examples))))
+
+(defvar *generate-model-prompt-log-dir* "/data/k8s/data-ui/generate-log"
+  ":private: Directory every real :generate-model LLM call writes its
+full prompt to (one JSON file per call; see generate-model-log-prompt).
+Constant by design — a knob only on demonstrated need.")
+
+(defun sanitize-name-component (s)
+  ":private: S downcased, non-[a-z0-9-] collapsed to dashes, edges
+trimmed, capped at 60.  Record :name is author/LLM data, never path
+data.  \"\" when nothing survives."
+  (let ((clean
+          (string-trim "-"
+            (re:regex-replace-all "[^a-z0-9-]"
+              (string-downcase (format nil "~a" (or s "")))
+              "-"))))
+    (subseq clean 0 (min (length clean) 60))))
+
+(defun generate-model-prompt-log-filename (app-name record-name)
+  ":private: <app>-<record>-<timestamp>.org for a prompt-log entry —
+compact, sortable, same-second collisions across environments
+theoretically possible and accepted (log, not data; one file
+survives)."
+  (format nil "~a-~a-~a.org"
+    (sanitize-name-component app-name)
+    (sanitize-name-component record-name)
+    (re:regex-replace-all "[-:]" (dt:timestamp-string) "")))
+
+(defun org-escape-src-lines (text)
+  ":private: Prefix lines starting with *, #+, or , with a comma —
+org strips one leading comma on export / C-c ' edit, keeping those
+lines literal instead of parsing as headings or keywords.  The
+system prompt carries model-reference.md verbatim, whose markdown
+bold runs (**) would otherwise read as org headings."
+  (re:regex-replace-all "(?m)^(\\*|#\\+|,)" text ",\\1"))
+
+(defun generate-model-log-org
+  (config record-name prompt-parts user-message)
+  ":private: Render the prompt-log entry as an org-mode document:
+one level-1 heading per field (the former JSON keys, same order),
+the system prompt's two parts as level-2 children under
+* system-prompt — Model Syntax Reference (markdown src block) and
+Examples (prose + one lisp src block)."
+  (format nil "* timestamp~%~a~%~%~
+* model~%~a~%~%~
+* temperature~%~a~%~%~
+* record-name~%~a~%~%~
+* system-prompt~%~
+** Model Syntax Reference~%#+begin_src markdown~%~a~%#+end_src~%~%~
+** Examples~%~a~%#+begin_src lisp~%~a~%#+end_src~%~%~
+* user-message~%~a~%"
+    (dt:timestamp-string)
+    (getf config :model)
+    (getf config :temperature)
+    record-name
+    (org-escape-src-lines (getf prompt-parts :reference))
+    (getf prompt-parts :examples-prose)
+    (org-escape-src-lines (getf prompt-parts :example-blocks))
+    user-message))
+
+(defun generate-model-log-prompt
+  (config record-name prompt-parts user-message)
+  ":private: Write one org-mode file describing this real LLM call —
+timestamp, model, temperature, record name, full system prompt
+(structured; see generate-model-log-org) and user message — to
+*generate-model-prompt-log-dir*.  PROMPT-PARTS is the plist from
+generate-model-system-prompt-parts, plus :examples-prose /
+:example-blocks for the log's Examples section (the logger splits
+part 2 so the prose stays outside the lisp block).  The prompt
+body is user-data-class (the API key is a header and never rides
+it).  Best-effort: any failure (missing dir, read-only mount, full
+disk) logs a pdebug and returns NIL — a logging failure never
+fails Generate.  Returns the path written, or NIL."
+  (let ((path
+          (u:join-paths *generate-model-prompt-log-dir*
+            (generate-model-prompt-log-filename (model-name)
+              record-name))))
+    (handler-case
+      (progn
+        (ensure-directories-exist path)
+        (u:spew
+          (generate-model-log-org config record-name
+            (append prompt-parts
+              (list :examples-prose (generate-model-examples-prose)
+                :example-blocks (generate-model-example-blocks)))
+            user-message)
+          path)
+        path)
+      (error (e)
+        (pl:pdebug :in "generate-model-log-prompt"
+          :path path :reason (format nil "~a" e))
+        nil))))
+
+(defun generate-model-llm-call (description prior-model record-name)
+  ":private: Call the LLM to generate a model from DESCRIPTION (with
+PRIOR-MODEL as advisory context; see generate-model-user-message).
+RECORD-NAME (the Model Bank record's :name) rides only the prompt log.
 Returns (:ok model-text) or (:error message)."
   (when *generate-model-llm-override*
     (return-from generate-model-llm-call
-      (funcall *generate-model-llm-override* description)))
+      (funcall *generate-model-llm-override* description prior-model)))
   (let ((config-result (read-llm-config)))
     (if (getf config-result :error)
       (list :error (getf config-result :error))
@@ -779,11 +957,21 @@ Returns (:ok model-text) or (:error message)."
               (model (getf config :model))
               (temperature (getf config :temperature))
               (max-tokens (getf config :max-tokens))
-              (system-prompt (generate-model-system-prompt)))
+              (prompt-parts (generate-model-system-prompt-parts))
+              (system-prompt
+                (format nil "~a~%~a"
+                  (getf prompt-parts :reference)
+                  (getf prompt-parts :examples)))
+              (user-message
+                (generate-model-user-message description prior-model)))
+        ;; Prompt log: real-call path only (the override returned above),
+        ;; best-effort — a logging failure never fails Generate.
+        (generate-model-log-prompt config record-name
+          prompt-parts user-message)
         (handler-case
           (let* ((body (generate-model-build-request-json
                          model temperature max-tokens
-                         system-prompt description))
+                         system-prompt user-message))
                   (raw-response (dr:http-request url
                                   :method :post
                                   :content-type "application/json"
@@ -867,17 +1055,57 @@ RAW-TEXT.  Returns the cleaned string."
                  ;; Prompt: ~a"
       date prompt)))
 
+(defun generate-model-error-line (error)
+  ":private: One-line form of ERROR for the ;; failed: marker line:
+newlines collapse to spaces so the marker stays a single first line
+(the prefix check on the next Generate depends on that)."
+  (string-trim " "
+    (re:regex-replace-all "[\\n\\r]+" (format nil "~a" error) " ")))
+
+(defun failed-model-p (model-text)
+  ":private: T when MODEL-TEXT is nil, empty/blank, or its first line
+is a failed-attempt marker (starts with \";; failed: \").  The states in
+which a failed LLM attempt may replace the field: fresh start, or the
+field already holds a failed attempt.  A working model (any other
+first line) is never clobbered by a failure."
+  (or (null model-text)
+    (and (stringp model-text)
+      (or (zerop (length (u:trim model-text)))
+        (u:starts-with (first-line model-text) ";; failed: ")))))
+
+(defun first-line (text)
+  ":private: TEXT up to the first newline (or all of it), trimmed."
+  (subseq text 0 (min (length text)
+                  (or (position #\Newline text) (length text)))))
+
 (defun apply-generated-model-text
-  (type-key record user model-field description model-text)
+  (type-key record user model-field description model-text prior-model)
   ":private: Clean + header + validate + write model text. Returns (:ok) or
-(:error message).  Does not touch status. On validation failure, :model is left
-untouched."
+(:error message).  Does not touch status. On validation failure:
+- when PRIOR-MODEL is empty or already a failed attempt (failed-model-p),
+  the failed model is written with a \";; failed: <error>\" first line
+  (then the normal header and the cleaned body) — the error lives next
+  to the artifact that caused it;
+- when PRIOR-MODEL is a working model, the field is left untouched
+  (erase it to opt into failure capture).
+Writes go through be-set-field-value (raw column write): the failed
+text is invalid by definition, so the canonical be-update path would
+fail the very validation that just failed."
   (let* ((cleaned (clean-llm-response model-text))
           (header (generate-model-header description))
           (full-text (format nil "~a~%~a" header cleaned))
           (result (validate-deploy-model-text full-text)))
     (if (getf result :error)
-      (list :error (getf result :error))
+      (progn
+        (when (and (failed-model-p prior-model)
+                 (plusp (length (u:trim cleaned))))
+          (be-set-field-value type-key (getf record :id)
+            model-field
+            (format nil ";; failed: ~a~%~a"
+              (generate-model-error-line (getf result :error))
+              full-text)
+            user))
+        (list :error (getf result :error)))
       (progn
         (be-set-field-value type-key (getf record :id)
           model-field full-text user)
@@ -885,14 +1113,19 @@ untouched."
 
 (defun generate-model-async
   (type-key record user description-field model-field
-    description set-status)
+    description model-text set-status)
   ":private: Worker body for the generate-model hook.  Calls the LLM, cleans the
 response, validates the model, writes it to :model, and updates status.  Wraps
 everything in a handler-case so errors become 'failed: <message>' rather than
-silent thread death."
+silent thread death.  DESCRIPTION and MODEL-TEXT are the resolved (post-Step-3)
+values; RECORD is the pre-update snapshot be-action loaded — apply-generated-
+model-text needs only its :id, which the update cannot change.  Do not re-read
+the record here: that would race the status column (set-status writes it
+concurrently)."
   (handler-case
     (multiple-value-bind (llm-result)
-      (generate-model-llm-call description)
+      (generate-model-llm-call description model-text
+        (getf record :name))
       (if (getf llm-result :error)
         (funcall set-status
           (format nil "failed: ~a"
@@ -901,7 +1134,7 @@ silent thread death."
         (let ((apply-result
                 (apply-generated-model-text
                   type-key record user model-field
-                  description (getf llm-result :ok))))
+                  description (getf llm-result :ok) model-text)))
           (if (getf apply-result :error)
             (funcall set-status
               (format nil "failed: ~a"
@@ -921,20 +1154,40 @@ silent thread death."
 ;; Reads a natural-language description from a field, sends it to an LLM
 ;; (configured via admin secrets), validates the returned model plist, and
 ;; writes it to the :model field.  Async like deploy.
+;;
+;; Prompt context flows from state the user can see and edit: the system
+;; prompt carries every top-level example model from models/ verbatim
+;; (house idiom), and a non-empty :model field rides the user message as
+;; advisory prior art (erase = fresh start; see generate-model-user-
+;; message).  Before spawning the worker, the hook persists the
+;; description / model fields from the action :data payload (what the
+;; browser form holds, saved or not) via be-update, so the record always
+;; agrees with the prompt that produced its model.
 (register-hook :generate-model :action
   '(:description-field :keyword :model-field :keyword)
   (lambda (&key description-field model-field)
     (lambda (type-key field-key record user
-              &key roles status-field set-status &allow-other-keys)
-      (declare (ignore type-key field-key status-field))
+              &key roles data set-status &allow-other-keys)
+      (declare (ignore field-key))
       (block hook
         ;; Role check: must have ai-user role
         (unless (member "ai-user" roles :test #'equal)
           (return-from hook
             (list :status "failed"
               :message "ai-user role required")))
-        ;; Description must be non-empty
-        (let ((description (getf record description-field)))
+        ;; Resolve the description and model values from the action
+        ;; :data payload when present, else from the record.  The
+        ;; browser always posts both keys (handleAction sends every
+        ;; string widget); the record-only path is a programmatic
+        ;; be-action with no :data.
+        (let ((description
+                (or (getf data description-field)
+                  (getf record description-field)))
+              (model-text
+                (or (getf data model-field)
+                  (getf record model-field))))
+          ;; Description must be non-empty (the resolved value — an
+          ;; empty browser description fails fast even unsaved)
           (unless (and description (stringp description)
                     (> (length (string-trim " " description)) 0))
             (return-from hook
@@ -946,6 +1199,24 @@ silent thread death."
               (return-from hook
                 (list :status "failed"
                   :message (getf config-result :error)))))
+          ;; Persist form state before generating: when :data carries
+          ;; either field, save exactly those two fields as the acting
+          ;; user — the canonical path (validations, write-through,
+          ;; updated-at) runs as if the user had saved them.  Scoped
+          ;; deliberately: a whole-form save could fail generation on
+          ;; an unrelated blank required field and commit edits Generate
+          ;; was never asked to save.  Skipped entirely when :data is
+          ;; nil (programmatic callers keep today's behavior).  The
+          ;; stale RECORD snapshot below is correct by construction —
+          ;; only :id is read from it downstream.
+          (when (and data
+                  (or (getf data description-field)
+                    (getf data model-field)))
+            (be-update type-key (getf record :id)
+              (loop for key in (list description-field model-field)
+                    when (getf data key)
+                      appending (list key (getf data key)))
+              user))
           ;; Spawn async worker
           (let ((override *generate-model-llm-override*))
             (sb-thread:make-thread
@@ -953,7 +1224,7 @@ silent thread death."
                 (let ((*generate-model-llm-override* override))
                   (generate-model-async
                     type-key record user description-field model-field
-                    description set-status)))
+                    description model-text set-status)))
               :name "data-ui-generate-model"))
           (list :async t :message "Generation started"))))))
 

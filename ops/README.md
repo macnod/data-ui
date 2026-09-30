@@ -18,6 +18,12 @@ Contents:
 - `dataui-reset.service` + `dataui-reset.timer` →
   `/etc/systemd/system/` — the 04:10 schedule (Persistent=true
   boot catch-up) and the on-demand `systemctl start` path.
+- `demo-directory.py` → `/opt/demo-directory/` + `demo-directory.service`
+  → `/etc/systemd/system/` + `demo404.cfg` → `/etc/haproxy/conf.d/` —
+  the demo directory / 404 page for `*.demo.data-ui.com`; see
+  "How HAProxy Routing Works" in `docs/deployment.md`. Managed by the
+  `demo-directory` CLI → `/usr/local/bin/demo-directory`
+  (`install`, `update`, `status`, `start`, `stop`).
 
 Install (from the checkout root):
 
@@ -35,8 +41,11 @@ Install (from the checkout root):
          /etc/systemd/system/dataui-reset.service
     sudo install -D -m 644 ops/dataui-reset.timer \
          /etc/systemd/system/dataui-reset.timer
+    sudo install -D -m 755 ops/demo-directory \
+         /usr/local/bin/demo-directory
     sudo systemctl daemon-reload
     sudo systemctl enable --now dataui-reset.timer
+    demo-directory install   # script + unit + HAProxy backend
 
 Host state lives under `/data/data-ui` (profiles, snapshots, deploy;
 D15) — env-overridable via DATA_UI_STATE, but every context (units,

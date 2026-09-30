@@ -649,8 +649,13 @@ or delete the llm-config secret as needed, and th-gen-make-user is
 idempotent so repeated calls for the same user are safe."
   (let ((results
           (append
-            ;; Pure function tests (no model, no DB)
-            (run 'generator-pure-suite)
+            ;; Pure function tests (no model, no DB).  The three
+            ;; log tests call generate-model-log-prompt, whose
+            ;; filename embeds (model-name) — needs *a* compiled
+            ;; model, so they run in the modelbank-test context too.
+            ;; Everything else in the pure suite is model-free.
+            (with-model "modelbank-test" nil
+              (run 'generator-pure-suite))
             ;; Integration tests (single shared modelbank-test context)
             (with-model "modelbank-test" nil
               (run 'generator-integration-suite)))))

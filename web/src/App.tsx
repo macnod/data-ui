@@ -80,6 +80,10 @@ interface ListResponse {
 interface TypeInfo {
   name: string
   category: 'user' | 'system' | 'settings'
+  // True only on :user-setting types (e.g. settings) — one record
+  // per user by nature. Multi-record settings types (secrets)
+  // leave it unset.
+  userSetting?: boolean
 }
 
 type ViewMode = 'app' | 'admin' | 'settings'
@@ -1405,7 +1409,9 @@ function App() {
         (typesJson.result || []).map((t: any) => ({
           name: typeof t === 'string' ? t : t.name,
           category: typeof t === 'string'
-            ? 'user' : t.category
+            ? 'user' : t.category,
+          userSetting: typeof t === 'string'
+            ? false : !!t['user-setting']
         }))
       setTypes(typeInfos)
       const t = info.result?.['title']
@@ -1545,16 +1551,20 @@ function App() {
     if (!data?.result?.records?.length) return
     if (data.result['type-key'] !== type) return
     if (isEditMode) return
-    // Only auto-open the edit form for single-record settings types
-    // (e.g. user preferences). Multi-record types like secrets should
-    // display as a normal list. Read-only users get the view form —
-    // an Update button that can only fail is worse than none.
+    // Auto-open only for :user-setting types (one record per user
+    // by nature, e.g. preferences). Multi-record settings types
+    // like secrets display as a normal list — even when they
+    // happen to hold exactly one row. Read-only users get the
+    // view form — an Update button that can only fail is worse
+    // than none.
+    const info = types.find(t => t.name === type)
+    if (!info?.userSetting) return
     if (data.result.records.length > 1) return
     openEditForm(
       data.result.records[0],
       data.result.update !== true
     )
-  }, [data, viewMode, type])
+  }, [data, viewMode, type, types])
 
   if (!loggedIn) {
     return (

@@ -1,0 +1,17 @@
+[Unit]
+Description=Data UI demo directory (404 + list for *.demo.data-ui.com)
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/python3 /opt/demo-directory/demo-directory.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1188,6 +1188,66 @@ only; list cells and read-only fields keep their lenient
 defaults.
 
 * MVP Now
+* MVP Now
+** DONE Prompt log format and NUL fix                          :backend:mvp:ai:
+:PROPERTIES:
+:CREATED: [2026-09-27 Sun]
+:COMPLETED: [2026-09-28 Mon]
+:END:
+Follow-up to the generate-button prompt log (DONE 2026-09-27).
+Two problems, one pass:
+
+1. *NUL bytes pollute every prompt.* =u:slurp= (dc-eclectic) sized
+   its character buffer by =file-length= (bytes), then decoded;
+   with UTF-8 multibyte content the undecoded tail stayed filled
+   with NULs — 233 literal NUL characters rode every real Generate
+   call's system prompt (=plist-to-json= escapes them as
+   =\u0000=). *Fixed at the source* (2026-09-27): =u:slurp= now
+   trims to the decoded count. Data-ui's only obligation: reload
+   dc-eclectic into the live image.
+2. *Structure.* The system prompt is two logical parts (reference
+   + examples) but rode as one undifferentiated blob in both the
+   JSON body and the org log. Part 2 now opens with a level-1 =#
+   Examples= markdown heading; the org log gains two level-2
+   children under =* system-prompt= (=** Model Syntax Reference=
+   markdown block, =** Examples= prose + one lisp block).
+
+Plan: [[file:~/workbench/prompt-log-format-plan.org][prompt-log-format-plan.org]].
+
+*Summary (2026-09-28):* Implemented per plan, no deviations.
+- =lisp/model.lisp=: =generate-model-examples-prose= (framing
+  sentence, format-folded so no tilde residue), =generate-model-
+  example-blocks= (concatenated =;; ---= blocks), =generate-model-
+  examples-text= (part 2: =# Examples= heading + prose + blocks),
+  =generate-model-system-prompt-parts= (:reference / :examples);
+  =generate-model-system-prompt= survives as the joined string;
+  =generate-model-log-org= / =generate-model-log-prompt= take the
+  parts plist and render the two level-2 children (reference in a
+  markdown block, prose outside + demos in one lisp block, both
+  org-escaped — the logger regenerates prose/blocks itself so the
+  log never depends on caller-supplied extras); =generate-model-
+  llm-call= builds parts once, derives the joined body string,
+  passes parts to the logger.
+- NUL fix verified live: dc-eclectic reloaded into the running
+  image (asdf force-load hit a stale-fasl compile error; plain
+  =load= of both files worked), =(count (code-char 0)
+  (generate-model-system-prompt))= → 0. Parts lengths: reference
+  77,079 + examples 43,766 chars; joined length = sum + 1, no
+  phantom bytes.
+- Logger smoke (temp dir): six level-1 headings, two level-2
+  children, both src blocks, =grep -c -P '\x00'= → 0; cleaned up.
+- =tests/generator-tests.lisp=: log-write test asserts the two
+  level-2 headings and the lisp block; =carries-demos= asserts
+  =# Examples= and NUL-freeness; new =examples-text-shape= test.
+- =tests/helpers.lisp=: pure suite now runs inside a modelbank-test
+  context (the log tests touch =(model-name)=).
+- Pinned demo set updated for =shopping.lisp= (untracked
+  LLM-generated demo added 2026-09-27, before this work) — flagged
+  below.
+- =(run-generator-tests)=: 140/140 green.
+- Docs: deployment.md (log structure + NUL-fix note), hook-registry.md
+  and model-reference.md =:generate-model= rows.
+
 ** DONE Move todo list into repo                           :maintenance:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -3209,6 +3269,90 @@ First =run-tests= (1834 checks, 0 fail) ran before the
 (no behavior change on valid models), and the rerun above is
 post-fix.
 
+** DONE Generate: richer LLM context (examples, prior model, persistence) :mvp:ai:backend:
+:PROPERTIES:
+:CREATED: [2026-09-27 Sun]
+:COMPLETED: [2026-09-27 Sun]
+:END:
+Three changes to the =:generate-model= hook, one theme — context
+flows from state the user can see and edit:
+
+1. Every top-level =models/*.lisp= demo rides the system prompt
+   verbatim (idiom; ~35 KB atop =model-reference.md=).
+2. A non-empty =:model= field rides the user message as advisory
+   prior art (erase = fresh start).
+3. The hook =be-update=s =:description= / =:model= from the
+   action =:data= payload before generating, so browser state is
+   what gets stored and prompted.
+
+Implemented 2026-09-27 per
+[[file:~/workbench/generate-context-plan.org][generate-context-plan.org]] (no deviations):
+
+- =lisp/model.lisp=: =generate-model-example-files= (top-level
+  glob, depth-one regex — excludes =models/test/= and
+  =models/local/= by construction), =generate-model-example-
+  block= (per-file =;; --- path ---= banner, unreadable/empty
+  skipped), =generate-model-examples-text= (framing), =generate-
+  model-system-prompt= (reference + examples, rebuilt per call);
+  =generate-model-user-message= extracted (instruction, optional
+  advisory prior-model block, description last);
+  =generate-model-llm-call= now takes (description prior-model)
+  — =*generate-model-llm-override*= signature widened to match;
+  the hook resolves both fields from =:data= when present
+  (browser always posts both keys), fails fast on an empty
+  resolved description, =be-update=s exactly those two fields as
+  the acting user before spawning the worker (nil =:data=
+  programmatic callers skip the update — record-only path
+  unchanged), and passes the resolved strings to the worker.
+  Worker keeps the pre-update record snapshot (only =:id= is
+  read downstream; re-reading would race the status column).
+  System prompt ≈ 118k chars live-verified; no
+  =models/test/= leak.
+- =tests/generator-tests.lisp=: pinned demo set (10 names —
+  forces a conscious token-budget re-check when a demo lands),
+  examples-block skip on unreadable file, user-message prior
+  present/absent + ordering, system prompt carries demos and no
+  fixture blocks, Step 3 persist-with-:data / prior-model-to-LLM
+  / skip-without-:data; override call sites updated to the new
+  2-arg signature. =(run-generator-tests)=: 78 checks, 0 fail.
+- =docs/hook-registry.md= / =docs/model-reference.md=: =:generate-
+  model= rows updated (system prompt = reference + all top-level
+  =models/= demos; prior-model in user message; =:data=
+  persistence before generating).
+
+Notes:
+
+- =models/shopping.lisp= (a generated-model demo from this
+  morning's quality testing) had been trashed before this
+  session; restored from Trash to satisfy the pinned-set test
+  (it was never in git — shows as untracked; decide whether to
+  commit or re-trash it).
+- Fixture-name leak assertions use =models/test/= block-marker
+  and =bi-m2m-test=: the strings =m2m-test= / =static-select-
+  test= appear inside =model-reference.md= prose itself, so they
+  can't be asserted absent.
+- Live staging smoke (fresh/tweak/erase/regenerate quality diff)
+  still pending — needs the Model Bank staging site and a real
+  =llm-config=.
+
+Follow-up (same day, Donnie's design): failed-attempt capture in
+the =:model= field replaces the earlier embed-the-text-in-the-error
+experiment (reverted — =parse error in model text= is a one-line
+message again, 180-char status cap restored).  On validation
+failure, =apply-generated-model-text= (now taking the prior model
+value) writes the failed model with a one-line =;; failed: <error>=
+first line + normal header + cleaned body — /only/ when the field
+is empty or already starts with =;; failed: = (=failed-model-p=);
+a working model is never clobbered (erase the field to opt in).
+Writes via =be-set-field-value= (raw column write — the failed
+text is invalid, =be-update= would fail the validation that just
+failed).  Multi-line errors collapse via =generate-model-error-
+line= so the marker stays one line.  LLM-call failures (no
+artifact) remain status-only.  Bonus: the failed model + error
+line ride the prior-model block on the next Generate verbatim.
+Live-smoked all three branches (empty → capture; already-failed →
+replace; working → untouched).
+
 ** TODO Hide =logged-in= from assignable-role palettes :backend:frontend:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-09-25 Fri]
@@ -3363,6 +3507,109 @@ request. An AI-optimized reference could be denser, use shorter examples, and
 focus on the vocabulary without prose explanations. This will require many tests
 to ensure generated models remain valid. Could even be an AI-only reference that
 is best suited for AIs, even if humans can't make heads or tails of it.
+** DONE Log generate-button prompts to a shared directory :backend:mvp:ai:
+:PROPERTIES:
+:CREATED: [2026-09-27 Sun]
+:COMPLETED: [2026-09-27 Sun]
+:END:
+Each real =:generate-model= LLM call writes its full prompt
+(system + user message) as one JSON file to
+=/data/k8s/data-ui/generate-log/=, named
+=<app-name>-<record-name>-<timestamp>.json=. Written at call time
+on the real-call path only (tests stay silent), best-effort (a
+logging failure never fails Generate), unconditional (no config
+knob). =/data/k8s/= placement keeps the production extension a
+pure ops change (hostPath PV). Prompt content is user-data-class
+(API key never rides the body).
+
+Design agreed with Donnie 2026-09-27 (directory, filename shape,
+unconditional logging, origin-in-file trade-off).
+
+Plan: [[file:~/workbench/generate-prompt-plan.org][generate-prompt-plan.org]].
+
+Implemented per plan (2026-09-27):
+
+- =lisp/model.lisp=: =*generate-model-prompt-log-dir*=,
+  =sanitize-name-component=, =generate-model-prompt-log-filename=
+  (compact =dt:timestamp-string= minus separators), and
+  =generate-model-log-prompt= (org-mode format via
+  =generate-model-log-org= — one level-1 heading per field, the
+  system prompt in a =#+begin_src markdown= block with
+  =org-escape-src-lines= comma-escaping so =C-c '= edits
+  round-trip; =ensure-directories-exist= + =u:spew=,
+  =handler-case= → =pl:pdebug= + NIL — never signals).
+  =generate-model-llm-call= gained a =record-name= argument and
+  calls the logger after the override early-return, before the
+  HTTP request; =generate-model-async= passes =(getf record
+  :name)=.
+- =tests/generator-tests.lisp=: unit tests for
+  =sanitize-name-component=, the filename shape, and
+  =org-escape-src-lines=; =generate-model-log-prompt= write test
+  (temp dir via =th-gen-temp-dir=, never =/data=; asserts the
+  org headings, src block, record-name/system/user, and /not/
+  the API key); best-effort probe (dir under a file → NIL, no
+  signal); override short-circuit test (integration suite; dir
+  stays empty).  =(run-generator-tests)=: 128 checks, 0 fail.
+- =docs/hook-registry.md= / =docs/model-reference.md=:
+  =:generate-model= rows mention the prompt log.
+- =docs/deployment.md= Environments: new "Generate-button prompt
+  log" subsection (shared dir, best-effort, production =
+  hostPath PV, no env segment yet).
+
+Notes:
+
+- Format deviation from the plan (Donnie, same day): the log is
+  org-mode, not JSON — level-1 headings for the planned JSON
+  keys, system prompt in a markdown src block, filename
+  extension =.org=.  The escaping is load-bearing:
+  model-reference.md's markdown bold runs (=**=) would otherwise
+  read as org headings inside the block.
+- =models/shopping.lisp= is gone again (re-trashed after the
+  previous session's restore; never in git). The
+  pinned-demo-set test now pins the nine-model set without it
+  — that pin was updated accordingly.
+- One JSON-format file landed in the log dir from a real staging
+  Generate (20260927T202447, =glm-5.3=, 120 KB — the proof the
+  JSON path worked end-to-end); it predates the org switch and
+  is left in place.
+- Verification of no-stray-file behavior: default log dir
+  gained nothing during the test run; the direct-call smoke
+  produced a valid org file (headings, escaped src block) in a
+  temp dir, then cleaned up.
+- Out of scope per plan: environment segment (blocked on the
+  "Instance knows its environment" item), response logging,
+  retention, config knob.
+
+** TODO Instance knows its environment (dev / stg / prod)  :backend:scripts:
+:PROPERTIES:
+:CREATED: [2026-09-27 Sun]
+:END:
+A running instance cannot today determine whether it is
+development, staging, or production — nothing inside the process
+carries it; the port it binds and the domain HAProxy routes to it
+are external facts (=model-name= names the app, not the
+environment; dev and staging Model Bank are both =modelbank=).
+Surfaced by the generate-button prompt-log design (2026-09-27):
+the log origin/filename can name the app but not the environment,
+so dev and staging generations are indistinguishable in the log.
+
+Environment vocabulary of record: =docs/deployment.md= →
+"Environments" (the =:domain-stg= item, DONE 2026-09-13). This
+item gives the *instance* that vocabulary at runtime:
+
+- Source of truth is ops metadata, not introspection: an env var
+  (e.g. =DATA_UI_ENV=dev|stg|prod=) set by =profile-run.sh=
+  (host profiles → =dev=) and by the deploy script (=stg= / =prod=),
+  read once at startup into a dynamic variable, defaulting to
+  =dev= when unset (bare REPL image keeps working).
+- Surface it: =/api/info= payload, =pl:= log context, and
+  available to hook code (prompt-log origin field first consumer).
+- Decide whether an unset variable is an error in production
+  deploys (fail loud) vs defaulting quietly.
+
+Small item; do it with or just before the generate-button prompt
+logging.
+
 ** TODO More example models                                            :mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]

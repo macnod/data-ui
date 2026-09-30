@@ -1266,7 +1266,12 @@ GET /api/types"
       (mapcar
         (lambda (e)
           (list :name (format nil "~(~a~)" (getf e :name))
-                :category (getf e :category)))
+                :category (getf e :category)
+                ;; :user-setting types are single-record per user
+                ;; (e.g. settings); the frontend auto-opens their
+                ;; single record. :true/:false (not t/nil — nil
+                ;; would serialize as [], which JS reads as truthy).
+                :user-setting (if (getf e :user-setting) :true :false)))
         (be-types user)))))
 
 (h:define-easy-handler (rest-public-info

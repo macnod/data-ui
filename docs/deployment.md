@@ -16,6 +16,7 @@ This document explains everything about how Data UI deployment works: the big pi
 - [The Kubernetes Manifests](#the-kubernetes-manifests)
 - [How HAProxy Routing Works](#how-haproxy-routing-works)
 - [TLS: Certificates That Renew Themselves](#tls-certificates-that-renew-themselves)
+- [Docker Credentials: Headless Deploys](#docker-credentials-headless-deploys)
 - [Deploying From Another Machine](#deploying-from-another-machine)
 - [Dry Runs](#dry-runs)
 - [Connecting a REPL to the Live App](#connecting-a-repl-to-the-live-app)
@@ -175,6 +176,10 @@ Convention: one instance per model per environment; a second copy in the same en
 
 The model's `:domain` remains the canonical production FQDN, used by `deploy`. Staging exposure (`profile expose`) reads `:domain-stg`; when the author omits it, the compiler derives it by suffixing `-stg` onto the first DNS label of `:domain` (`todo.demo.data-ui.com` → `todo-stg.demo.data-ui.com`). An explicit `:domain-stg` always wins; it must differ from `:domain` (one HAProxy map line, one owner) and requires `:domain` when written. The deploy-button exception is modelbank: staging keeps the clean canonical URL (`modelbank.demo.data-ui.com`) and production takes the `-p` suffix — both explicit. `-stg` hosts and modelbank's two names all live under the existing `*.demo.data-ui.com` wildcard (DNS + TLS), so no new zone or certificate is involved.
 
+### Generate-button prompt log
+
+Every real `:generate-model` LLM call (the Generate button on Model Bank) writes its full prompt — system message, user message, LLM model, temperature, record name, timestamp — as one org-mode file to the shared host directory `/data/k8s/data-ui/generate-log/`, named `<app-name>-<record-name>-<timestamp>.org`. Format: one level-1 org heading per field (the former JSON keys); the `* system-prompt` heading carries two level-2 children mirroring the prompt's two parts — `** Model Syntax Reference` (`docs/model-reference.md` verbatim in a `#+begin_src markdown` block) and `** Examples` (the framing prose, then every demo in one `#+begin_src lisp` block). Both blocks are org-comma-escaped so a `C-c '` edit round-trips; in the JSON body the two parts ride one system string, with part 2 opening under a `# Examples` markdown heading. (2026-09-27: the prompt's NUL pollution — a `u:slurp` UTF-8 bug that sent ~233 literal NULs to the LLM — was fixed at the source in dc-eclectic.) Unconditional and best-effort: a logging failure (missing dir, full disk) is logged and never fails Generate; test runs using the LLM override write nothing. The API key is a header and never rides the logged body. The directory is host-level today (every host instance runs as the same user); `/data/k8s/` placement means extending it to deployed production apps later is a pure ops change — mount a hostPath PV at the same path into app pods, zero code delta. The instance cannot yet name its environment (a backlog item), so dev and staging generations are distinguished only by app + record name.
+
 ## Deployment State: Where Things Live
 
 Deployment state lives **outside the repository**, in `/data/data-ui/deploy/` on the deploy host:
@@ -272,7 +277,6 @@ HAProxy was already serving other domains on this host, so Data UI had to move i
 Three pieces:
 
 ### 1. The map file: `/etc/haproxy/data-ui.map`
-
 A plain text file mapping hostnames to backend names:
 
     todo.demo.data-ui.com dataui-todos
@@ -300,6 +304,40 @@ On every deploy, the script: installs/updates the backend file, upserts the map 
 Locally-run host profiles (`scripts/data-ui profile expose`) use the same machinery with a different backend name: `dataui-profile-<name>` points at `127.0.0.1:<HTTP_PORT>` on the host instead of a k3d NodePort (the model `:name` values `profile` and `profile-*` are reserved so the two can never collide). One domain, one backend: `profile expose` refuses a map line owned by a deployed instance, and a deploy refuses a map line owned by a profile exposure — neither stops the other side's pods; `delete` (undeploy) first, then `profile expose`. `profile unexpose` (and `profile delete`) remove the exposure.
 
 One subtlety, learned in production (where else): `systemctl reload haproxy` re-execs the master process *with its original command line*. If `EXTRAOPTS` was just modified to add `-f /etc/haproxy/conf.d`, a reload will not pick that up: the running master has never heard of conf.d, and your shiny new backend 503s while the NodePort works perfectly. The script handles this: the deploy that *first enables* conf.d does a full `systemctl restart`; every subsequent deploy does the gentler `reload`.
+
+### 4. The demo directory and the 404 page (`demo404`)
+
+Hosts under `*.demo.data-ui.com` that the map does *not* know about (typos, retired demos) used to be redirected to data-ui.com — a 301 browsers cache forever, which stranded visitors after a rename. They now get a real 404 page that names the requested host and lists the demos that *are* running. The bare apex, `demo.data-ui.com`, serves the same list as a normal 200 page — the directory.
+
+HAProxy has no CGI, so the page comes from a tiny local service, `demo-directory.service`: a stdlib-only Python HTTP server on `127.0.0.1:8484` (hardened: `DynamicUser`, `ProtectSystem=strict`), wired in as the host-owned `demo404` backend (`ops/demo404.cfg`; no `dataui-` prefix, so the profile/deploy tooling never touches it). Two `use_backend demo404` rules in the https frontend cover the apex and the unmapped-host fallthrough; everything routed by the map is unaffected.
+
+The list can never go stale: the service re-reads `/etc/haproxy/data-ui.map` on **every request**, so `profile expose` / `unexpose` and deploys are reflected instantly, with no restart. Hosts listed in the `EXCLUDE` set at the top of the script (currently `chat`, which is infrastructure, not a demo) stay routed but are never listed.
+
+It survives reboots on both sides: the unit is `enable`d (a `Wants` symlink into `multi-user.target`) with `Restart=on-failure`, and HAProxy loads `conf.d` — and with it `demo404.cfg` — at boot via the `EXTRAOPTS` line in `/etc/default/haproxy`. If the service is down anyway, unmapped hosts get a plain HAProxy 503 (backend down); mapped demos keep working.
+
+Sources live in `ops/` (`demo-directory.py`, `demo-directory.service`,
+`demo404.cfg`); the installed copies are targets, never edited in
+place. Everything is managed by the `demo-directory` CLI (source:
+`ops/demo-directory`, installed to `/usr/local/bin/demo-directory`;
+checkout override via `DATA_UI_CHECKOUT`):
+
+    # one-time: install the CLI itself, then everything else
+    sudo install -m 755 ops/demo-directory \
+         /usr/local/bin/demo-directory
+    demo-directory install    # script + unit + HAProxy backend,
+                              # enable --now, validate, reload
+    demo-directory status     # enabled/active/health/demo list
+    demo-directory start|stop
+
+#### Making a change to the page
+
+There are two copies of the script: the source (`ops/demo-directory.py` in the repo) and the installed target (`/opt/demo-directory/demo-directory.py`, the one systemd runs). Edit the repo copy, then push it live with one command:
+
+    demo-directory update
+
+It syntax-checks the script (refusing to install a broken file), installs it over the target, restarts the service (Python loaded the old code at startup), and health-checks the result. Never edit `/opt` directly — the next update would silently overwrite it.
+
+Verification: the 404 page is served `no-store`, so a bogus host shows changes instantly (`curl -s https://no-such-demo.demo.data-ui.com/`); the 200 directory page at the apex caches in a browser for 60s. If the service refuses to come up, `systemctl status demo-directory` / `journalctl -u demo-directory` show the startup line.
 
 ## TLS: Certificates That Renew Themselves
 
@@ -329,6 +367,57 @@ To rehearse the whole thing without touching the real certificate:
     sudo certbot renew --dry-run
 
 If that passes, future-you has nothing to do, ever. Past-you already did it.
+
+## Docker Credentials: Headless Deploys
+
+Deploys are triggered two ways: from a shell (interactive, you are present) and by the **Deploy button** on Model Bank, which runs the deploy script from inside the app's process — a headless systemd context with nobody watching. The second way must never depend on a human answering a prompt. One of the two prompt traps was fixed with the NOPASSWD sudoers rule for HAProxy; the other is Docker's credential helper, and it bites quietly:
+
+`~/.docker/config.json` says `"credsStore": "pass"`, so every registry operation — including the anonymous-looking pulls of `node:22-slim` and `ubuntu` inside `docker build` — consults `docker-credential-pass`, which decrypts `~/.password-store` with the user's GPG key. If gpg-agent's cache is cold, gpg pops a **pinentry dialog on the host desktop** and waits. Nobody answers (it's a guest's deploy; the dialog isn't even on their screen), the helper times out or gets a wrong passphrase, and the build dies with:
+
+    getting credentials - err: exit status 1, out: `exit status 2:
+    gpg: public key decryption failed: Bad passphrase
+    gpg: decryption failed: Bad passphrase`
+    ERROR: Docker build failed.
+
+A wrong passphrase in that dialog — typed in haste at the desktop — produces exactly this. A *correct* one only buys you gpg-agent's cache TTL; the next guest, hours later, hangs again.
+
+### The fix on this host (done, 2026-09-30)
+
+The password store now encrypts to a **dedicated passphrase-less GPG key**. Decryption never prompts, so credential lookups work in any context — cold boot, systemd, ssh, cron. The tradeoff: the store's contents are readable by anyone who can read `~/.password-store` (file permissions, not cryptography, protect them). That's acceptable here because the store holds nothing but the Docker Hub token; the protecting passphrase was guarding nearly nothing, while the prompt was breaking guest deploys entirely.
+
+What was done:
+
+    # dedicated no-passphrase key (encryption subkey, never expires)
+    gpg --batch --passphrase '' --quick-generate-key \
+        "data-ui-docker-creds (pass store, no passphrase)" default default never
+    FPR=$(gpg --list-secret-keys --with-colons "data-ui-docker-creds" \
+          | awk -F: '/^fpr:/ {print $10; exit}')
+    gpg --batch --passphrase '' --quick-add-key "$FPR" default encr never
+
+    # two stale artifacts of an old docker login (index.docker.io/v1/
+    # access-token and refresh-token subpaths) — the helper only needs
+    # the plain index.docker.io/v1/ entry
+    pass rm -f 'docker-credential-helpers/<b64>/macnod'   # x2, the stale ones
+
+    # re-encrypt the store (prompts once for the old key's passphrase)
+    pass init "$FPR"
+
+If the one-time pinentry times out during `pass init` (nobody at the keyboard), just re-run it — the .gpg-id is already updated and each retry re-encrypts what remains.
+
+### The check (run after any credential change)
+
+    # must print JSON, no dialog, no delay — even right after
+    # gpgconf --kill gpg-agent (i.e. with nothing cached)
+    gpgconf --kill gpg-agent
+    echo "https://index.docker.io/v1/" | docker-credential-pass get
+
+That kills gpg-agent first on purpose: a warm cache can mask a broken setup, which is exactly how the first button deploys passed and a later guest deploy failed.
+
+### Notes for the future
+
+- A `docker login` on this host stores the token into the `pass` store under the same no-passphrase key — nothing to redo after a re-login.
+- Prefer a **read-only, non-expiring** Docker Hub access token: the deploy pipeline only ever pulls public base images; authenticated pulls just rate-limit better. When such a token does expire, the failure mode is a 401-and-anonymous-fallback, not a prompt — still no dialogs.
+- A deploy running under some *other* user would read that user's `~/.docker/config.json`, not this one; every host that runs button deploys needs the same treatment (or a bare config with no `credsStore` at all, which is the anonymous-pull alternative and works fine for public images).
 
 ## Deploying From Another Machine
 
@@ -405,6 +494,8 @@ The app logs structured JSON lines. A crash prints a full backtrace and exits (`
 - **503 from the domain, NodePort fine:** HAProxy doesn't know the backend. Almost always the conf.d/EXTRAOPTS reload-vs-restart issue, on a host where conf.d was newly enabled.
 - **401s in the browser after a redeploy:** are you *sure* you're using the current admin password? Read [Secrets](#secrets-and-how-to-get-the-admin-password). Ask us how we know.
 - **Docker build suddenly slow:** check the build context size in the first lines of build output. A fat log file in the repo once inflated the context to 44 GB. `.dockerignore` excludes `*.log` now, but entropy never sleeps.
+- **Docker build pathologically slow (minutes per `RUN ros` step, low I/O, ~1 core CPU):** first build after the Ubuntu 26.04 upgrade (Sept 2026): BuildKit `RUN` processes inherited the daemon's `LimitNOFILE=infinity` (=2147483584), and SBCL's startup fd sweep (`close()` across the whole fd space) takes minutes at that limit — one `ros install sbcl-bin` went from ~2s to 592s. Two fixes, both in place: a systemd drop-in (`/etc/systemd/system/docker.service.d/limit-nofile.conf`, `LimitNOFILE=1048576`) and `ulimit -n 1048576 &&` prefixes on every `RUN ros …` in the Dockerfile (host-independent). Verified: same step 592s → 4s.
+- **"getting credentials ... Bad passphrase", then "Docker build failed":** Docker tried to consult the `pass` credential store and gpg prompted. Should be extinct since the store moved to a no-passphrase key — see [Docker Credentials: Headless Deploys](#docker-credentials-headless-deploys). If it returns, first suspect a new `credsStore` entry in `~/.docker/config.json` (a stray `docker login` on another host user), not the store itself.
 
 ### Rate limiting
 

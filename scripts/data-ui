@@ -1279,6 +1279,22 @@ function export_deploy_environment {
     export TEMPLATES_DIR="deploy/templates"
     export PORTS_LOCK="${DEPLOY_STATE_DIR}/ports.lock"
     export PORT_MIN=30300
+    # The deployed instance's database identity is a fixed fact of the
+    # k8s templates (POSTGRES_USER dataui; app env DB_NAME/DB_USER
+    # dataui; init container -U dataui -d dataui), not an environment
+    # knob. Pin it unconditionally: this script often runs inside a
+    # Data UI app process (the :deploy-model hook inherits its host
+    # profile's env), whose DB_NAME (e.g. modelbank) otherwise leaks
+    # into the rendered init SQL (\c modelbank) while the app container
+    # connects as dataui/dataui — the init-db container then
+    # crash-loops on a nonexistent database and the rollout times out.
+    # DB_HOST too: the deploy-time compile database publishes on
+    # loopback. (DB_PASSWORD is NOT pinned: the compile database
+    # interpolates it, and the instance password comes from
+    # ensure_instance_secrets.)
+    export DB_NAME="dataui"
+    export DB_USER="dataui"
+    export DB_HOST="127.0.0.1"
 }
 
 function model_field {

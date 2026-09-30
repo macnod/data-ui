@@ -1096,7 +1096,7 @@ Lifecycle may be a single form or a list. Validation is always a list.
 | Name | Params | Behavior |
 |------|--------|----------|
 | `:deploy-model` | `:field` keyword | deployer role required; validate model text in-process; async deploy worker (writes `models/local/`, no git commit) |
-| `:generate-model` | `:description-field`, `:model-field` keywords | ai-user role required; async LLM call writes a validated model into `:model-field` (config in the admin `llm-config` secret) |
+| `:generate-model` | `:description-field`, `:model-field` keywords | ai-user role required; system prompt = model reference + `# Examples` section with all top-level `models/` demos verbatim; non-empty `:model-field` rides the user message as prior art; persists description/model from the action `:data` before generating; async LLM call writes a validated model into `:model-field`; each real LLM call logs its full prompt (structured: reference + examples) to `/data/k8s/data-ui/generate-log/` (one org-mode file, best-effort); on validation failure the failed model + `;; failed:` error line replace the field only when it is empty or already failed (config in the admin `llm-config` secret) |
 | `:spawn` | `:close` plist, `:clear` list | close the record + insert a fresh successor (recurring-instance pattern); sync; reserved close values `:now` / `:user` |
 
 Full contracts and per-hook detail: `docs/hook-registry.md`.
