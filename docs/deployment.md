@@ -315,11 +315,7 @@ The list can never go stale: the service re-reads `/etc/haproxy/data-ui.map` on 
 
 It survives reboots on both sides: the unit is `enable`d (a `Wants` symlink into `multi-user.target`) with `Restart=on-failure`, and HAProxy loads `conf.d` — and with it `demo404.cfg` — at boot via the `EXTRAOPTS` line in `/etc/default/haproxy`. If the service is down anyway, unmapped hosts get a plain HAProxy 503 (backend down); mapped demos keep working.
 
-Sources live in `ops/` (`demo-directory.py`, `demo-directory.service`,
-`demo404.cfg`); the installed copies are targets, never edited in
-place. Everything is managed by the `demo-directory` CLI (source:
-`ops/demo-directory`, installed to `/usr/local/bin/demo-directory`;
-checkout override via `DATA_UI_CHECKOUT`):
+Sources live in `ops/` (`demo-directory.py`, `demo-directory.service`, `demo404.cfg`); the installed copies are targets, never edited in place. Everything is managed by the `demo-directory` CLI (source: `ops/demo-directory`, installed to `/usr/local/bin/demo-directory`; checkout override via `DATA_UI_CHECKOUT`):
 
     # one-time: install the CLI itself, then everything else
     sudo install -m 755 ops/demo-directory \

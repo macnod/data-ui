@@ -595,22 +595,44 @@ the caller inspects exit-code and stderr."
       :environment (cons (format nil "MODEL_FILE=~a" model-file)
                        (sb-unix::posix-environ)))))
 
+(defun deploy-model-find-secret-id (name)
+  ":private: The :id of admin's :secrets row named NAME, or NIL when
+no such row. All rows (:limit nil — the default 20 would page the
+lookup and hide a match on page 2, re-creating the duplicate-row
+bug deploy-model-record-secret upserts away). Same loop shape as
+admin-secret-value, returning the id instead of the value."
+  (loop
+    with admin-secrets = (be-list :secrets "admin"
+                          :form :update-form :limit nil)
+    with records = (getf admin-secrets :records)
+    for record in records
+    when (equal (getf record :name) name)
+    do (return (getf record :id))))
+
 (defun deploy-model-record-secret (model-name model-domain user)
-  ":private: After a successful deploy, read the generated admin password from
-the deploy state directory and insert a row into the :secrets table so the user
-can see it in the UI."
+  ":private: After a successful deploy, read the generated admin password
+from the deploy state directory and record it in the :secrets table so the
+user can see it in the UI. Upsert by name: update the existing row in
+place when found (preserving its resource uuid, role grants, and
+created-at), insert only when absent."
   (handler-case
     (let ((admin-password (get-deployed-admin-password model-name)))
       (when admin-password
-        (be-insert :secrets
-          (list :name (format nil "~a admin password" model-name)
-            :value admin-password
-            :description (format nil "Admin password for ~a"
-                           (or model-domain model-name)))
-          user
-          :roles (list "settings"))
-        (pl:pinfo :in "deploy-model-record-secret"
-          :model-name model-name :status "recorded")))
+        (let* ((name (format nil "~a admin password" model-name))
+                (data (list :value admin-password
+                         :description (format nil "Admin password for ~a"
+                                        (or model-domain model-name))))
+                (id (deploy-model-find-secret-id name)))
+          (if id
+            (be-update :secrets id data user
+              :roles (list "settings"))
+            (be-insert :secrets (list* :name name data)
+              user
+              :roles (list "settings")))
+          (pl:pinfo :in "deploy-model-record-secret"
+            :model-name model-name
+            :action (if id "updated" "inserted")
+            :status "recorded"))))
     (error (e)
       (pl:perror :in "deploy-model-record-secret"
         :model-name model-name :error e
@@ -1707,7 +1729,7 @@ from a:login on \"\"."
        :category :settings
        :views (:main (:tables (:secrets :users) :scope :user)
                 :users (:tables (:users)))
-       :fields (:user (:type :text
+       :fields (:user (:type :text :identity t
                         :force-sql-name "secret_user"
                         :ui (:label "Login" :widget :textbox :read-only t)
                         :target :users
@@ -1715,7 +1737,7 @@ from a:login on \"\"."
                         :source (:view :users :table :users
                                   :column :name :agg :first)
                         :column t :not-null t)
-                 :name (:type :text
+                 :name (:type :text :identity t
                          :ui (:label "Name" :widget :textbox)
                          :source (:view :main :column :name :agg :first)
                          :column t :not-null t :searchable t)

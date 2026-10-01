@@ -2,7 +2,7 @@
 
 A snapshot captures a Data UI environment — its database and uploaded files — as a portable artifact in one shared pool (`/data/data-ui/snapshots/`, the `DATA_UI_STATE` root). Snapshots move state between environments: audition dev data in staging, promote auditioned data to golden, or bring staging data back into dev.
 
-All commands run from the repo root via `scripts/data-ui snapshot …`. For the command reference see `scripts/README.md`; for the surrounding deployment machinery see `docs/deployment.md`.
+All commands run from the repo root via `scripts/data-ui snapshot …`. For the command reference see [cli.md](cli.md); for the surrounding deployment machinery see [deployment.md](deployment.md).
 
 ## The grammar
 

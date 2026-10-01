@@ -1458,22 +1458,29 @@ function assign_node_port {
 }
 
 function assign_backend_target {
-    # HAProxy target for the backend snippet: prefer the k3d-published
-    # loopback hop (127.0.0.1:<nodePort+1000>, stable across bridge-IP
-    # drift and cluster recreation), fall back to the node's bridge IP
-    # when no -p mapping exists for this port. Any HTTP response counts
-    # as "answers" -- we are probing routing, not content. Probe logic
-    # deliberately mirrors k3d_backend_target (~/r/k3d-tools/nodeport.sh
-    # and jina-kube's render_snippet); this script cannot source that
+    # HAProxy target for the backend snippet: fail-closed on the
+    # k3d-published loopback hop (127.0.0.1:<nodePort+1000>, stable
+    # across bridge-IP drift and cluster recreation). If the hop does
+    # not answer, die -- never fall back to the node's bridge IP:
+    # docker reassigns bridge IPs on container restart and the
+    # rendered target goes stale (the 2026-09-30 vof 503). Any HTTP
+    # response counts as "answers" -- we are probing routing, not
+    # content. The band 30303-31312 is published by the create block
+    # (verified post-recreate 2026-09-30: 13/13 PortBindings on
+    # 127.0.0.1). Twin of k3d_backend_target
+    # (~/r/k3d-tools/nodeport.sh); this script cannot source that
     # lib -- the deploy clone must stay self-contained.
     local host_port=$(( NODE_PORT + 1000 ))
     if curl -s -o /dev/null -m 2 "http://127.0.0.1:${host_port}/"; then
         NODE_TARGET="127.0.0.1:${host_port}"
         echo "HAProxy target: ${NODE_TARGET} (published loopback hop)."
     else
-        NODE_TARGET="${NODE_IP}:${NODE_PORT}"
-        echo "HAProxy target: ${NODE_TARGET} (bridge fallback; no -p" \
-             " mapping for host port ${host_port})."
+        die "loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT})" \
+            "does not answer -- refusing to render a bridge-IP target" \
+            "(fail-closed since 2026-09-30; see" \
+            "~/workbench/service-network-plan.org). Either the -p" \
+            "band is not published (recreate required) or nothing is" \
+            "listening yet (retry)."
     fi
 }
 
@@ -1813,6 +1820,20 @@ function undeploy {
             FORCE='$FORCE' scripts/data-ui delete '$MODEL_NAME'
         " || die "Remote delete failed."
         return
+    fi
+    # Model Bank deploys (FR-9) have no models/<name>.lisp -- the
+    # :deploy-model hook writes models/local/<name>.lisp -- so a
+    # bare 'delete <name>' dies on FILE-DOES-NOT-EXIST. Fall back
+    # to the local file for identity (set-model's lookup order).
+    # INTERIM: remove this block when the Undeploy Model button
+    # (MVP Backlog) lands -- it passes MODEL_FILE explicitly and
+    # delete gains a cluster-identity fallback.
+    if [[ -z "${MODEL_FILE:-}" ]] \
+       && [[ ! -f "$(model_file_path "$MODEL_NAME")" ]] \
+       && [[ -f "models/local/${MODEL_NAME}.lisp" ]]; then
+        export MODEL_FILE="models/local/${MODEL_NAME}.lisp"
+        echo "No models/${MODEL_NAME}.lisp; reading identity from"
+        echo "${MODEL_FILE} (Model Bank deploy)."
     fi
     # Identity comes from the model, exactly as in deploy.
     NAME=$(model_field name)

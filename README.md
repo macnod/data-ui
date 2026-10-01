@@ -478,7 +478,7 @@ React (or any frontend) fetches items with their schema and renders forms/lists 
 
 ## Development
 
-For full reference on the `scripts/data-ui` and `scripts/publish-data-ui` commands, see [scripts/README.md](scripts/README.md).
+For full reference on the `scripts/data-ui` and `scripts/publish-data-ui` commands, see [docs/cli.md](docs/cli.md).
 
 - Start a repl-environment terminal
 

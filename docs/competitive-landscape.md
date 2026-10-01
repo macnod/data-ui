@@ -94,9 +94,7 @@ Data UI is the only system that takes that combination — a small structured mo
 | Structured hook vocabulary        | ✅      | ❌      | ❌        | ❌          | ❌      | ❌        | ❌       |
 | Interactive development (REPL)    | ✅      | ❌      | ❌        | ❌          | ❌      | ❌        | ❌       |
 
-¹ Directus wraps an existing database; it does not compile one from a model. ² Hasura connects to an existing database. ³ GraphQL, not REST. ⁴ Admin panel only, not a custom application frontend. ⁵ Permissions must be configured separately from the data model. ⁶ Via PostgreSQL Row Level Security (manual SQL policies). ⁷ Go compiles to native code, but PocketBase has no REPL, no interactive
-development, and no homoiconicity. ⁸ These tools consume natural language prompts, not structured models.
-Output is imperative code, not a reproducible specification.
+¹ Directus wraps an existing database; it does not compile one from a model. ² Hasura connects to an existing database. ³ GraphQL, not REST. ⁴ Admin panel only, not a custom application frontend. ⁵ Permissions must be configured separately from the data model. ⁶ Via PostgreSQL Row Level Security (manual SQL policies). ⁷ Go compiles to native code, but PocketBase has no REPL, no interactive development, and no homoiconicity. ⁸ These tools consume natural language prompts, not structured models. Output is imperative code, not a reproducible specification.
 
 
 ## The Closest Competitors

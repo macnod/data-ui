@@ -11,8 +11,7 @@ Guided tours of the live applications introduced in [Live Demos](../README.md#li
 
 ## To Do List
 
-**Link:** https://todo-stg.demo.data-ui.com/
-**Login:** `demos` / `TryDataUI2026!`
+**Link:** https://todo-stg.demo.data-ui.com/ **Login:** `demos` / `TryDataUI2026!`
 
 Log in as `demos` and look around. The list is missing something: any item tagged both `mvp` and `frontend` that is not yet `Done` is invisible to you. Here's one way to see what's missing:
 
@@ -29,8 +28,7 @@ Log out and back in as `alice` (same password as `demos`) and the missing items 
 
 ## Books & Authors
 
-**Link:** https://books-stg.demo.data-ui.com/
-**Login:** `demos` / `TryDataUI2026!`
+**Link:** https://books-stg.demo.data-ui.com/ **Login:** `demos` / `TryDataUI2026!`
 
 A similar story in a different shape. As `demos` you can see most of the library, but books tagged with both genres `Nonfiction` and `Self-Help` are withheld. Those require the `new-books` role, which only `alice` and `bob` hold.
 
@@ -38,8 +36,7 @@ Log in as `alice` (same password) and the self-help shelf appears.
 
 ## Model Bank
 
-**Link:** https://modelbank.demo.data-ui.com/
-**Login:** `guest` — no password, read-only.
+**Link:** https://modelbank.demo.data-ui.com/ **Login:** `guest` — no password, read-only.
 
 A gallery of models with ownership, images, and ratings. Anything beyond `guest` — write access, including the Generate and Deploy buttons — is available on request: [contact Donnie](https://sinistercode.com/public/donnie/contact).
 

@@ -42,24 +42,7 @@
    :landing-page :models
    :new-roles (:ai-user ("read") :deployer ("read"))
    :types
-   (:directories
-     (:table t
-       :create :auto :update :auto :delete :auto :display t
-       :tree t :is-leaf nil :parent-type :directories :fs-backed t
-       :type-roles ("directories-user" "public")
-       :views (:main (:tables (:directories)))
-       :fields
-       (:name
-         (:type :text :identity t :path t
-           :ui (:label "Directory" :widget :textbox)
-           :validations (:required)
-           :source (:view :main :column :name :agg :first)
-           :column t :not-null t :unique t))
-       :list-form (:fields t)
-       :update-form (:fields t)
-       :add-form (:fields t))
-
-     :models
+   (:models
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("models-user" "public")
@@ -222,12 +205,13 @@
          (:type :integer
            :source (:view :main :table :ratings :column :id :agg :count)
            :sortable t
-           :ui (:label "Recent Ratings" :widget :stars))
+           :ui (:label "Ratings (Last 30 Days)"))
          :recent-avg
          (:type :real
            :source (:view :main :table :ratings :column :rating :agg :avg)
            :sortable t
-           :ui (:label "Recent Average" :widget :stars))))
+           :ui (:label "Ratings Average (Last 30 Days)"
+             :widget :stars))))
 
      :top-contributors
      (:rollup t
@@ -245,6 +229,24 @@
            :source (:view :main :table :models :column :id :agg :count)
            :sortable t
            :ui (:label "Models"))))
+
+     :directories
+     (:table t
+       :create :auto :update :auto :delete :auto :display t
+       :tree t :is-leaf nil :parent-type :directories :fs-backed t
+       :type-roles ("directories-user" "public")
+       :views (:main (:tables (:directories)))
+       :fields
+       (:name
+         (:type :text :identity t :path t
+           :ui (:label "Directory" :widget :textbox)
+           :validations (:required)
+           :source (:view :main :column :name :agg :first)
+           :column t :not-null t :unique t))
+       :list-form (:fields t)
+       :update-form (:fields t)
+       :add-form (:fields t))
+
      ;; Petting-zoo D1 overlays: guest reads the built-in account /
      ;; role / permission lists (tier identity stays visible; :settings
      ;; stays structurally unreachable — guest is never granted the

@@ -1390,6 +1390,8 @@ One click closes the record (close fields written to the old row, which becomes 
 
 16. **`:type-roles` override on built-in types does not revoke live grants.** `add-type-roles` only inserts missing resources, so tightening `:users` to `("admin")` on an already-initialized database leaves `"logged-in"` attached to `type-users`. Clean slate (new deploy / `reset-database`) required. Also, any type with a `:target :users` field becomes unlistable for non-admins until `allowed-values` is hardened — see [Overriding defaults on built-in types](#overriding-defaults-on-built-in-types).
 
+17. **DDL changes never reach an existing table.** `create-tables` runs table / trigger / index DDL only when the table is absent, and the first `set-model` after image start skips `reset-tables` (guarded by `*compiled-model*` being nil), so adding `:identity t` (composite unique index), `:unique t`, or new columns to a type whose table already exists in a persistent DB silently does nothing. `hard-reset` doesn't help: base tables are truncated, not dropped, and the `:force` reload nils `*compiled-model*` again. Recover by dropping the table and re-running `create-tables`, or hand-writing the DDL. Related post-MVP item: idempotent database initialization.
+
 ---
 
 ## Quick key index
