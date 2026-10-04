@@ -411,7 +411,7 @@ Every list read — `be-list` from Lisp, `GET /api/list` over HTTP — accepts t
 | `:form` | `list-form` | Form key to render (`:list-form` / `:update-form` / `:add-form`) |
 | `:filters` | `nil` | List of `(type-key field-key operator value)` 4-tuples (see below); a bare UUID string is also accepted (single-record fetch) |
 
-**Filter operators** (`operator-sql`): `:eq :ne :gt :lt :gte :lte :like :ilike :not-like :not-ilike :in :not-in`. `:in` / `:not-in` take a non-empty list of the field's atom type. A filter row may target a joined table's field (including a join-table field); that pulls the join into Phase A (`SELECT DISTINCT id … JOIN …`).
+**Filter operators** (`operator-sql`): `:eq :ne :gt :lt :gte :lte :like :ilike :not-like :not-ilike :in :not-in`. `:in` / `:not-in` take a non-empty list of the field's atom type; nil elements are rejected; `:eq` / `:ne` nil means *is [not] null* (translated to `IS NULL` / `IS NOT NULL`, no placeholder). A filter row may target a joined table's field (including a join-table field); that pulls the join into Phase A (`SELECT DISTINCT id … JOIN …`).
 
 ```lisp
 (be-list :todos "admin" :limit 20 :offset 40 :sort '(:name :desc)
@@ -574,7 +574,7 @@ For M2M list fields, the column used for options and join lookup must be the **s
 
 ### `:ui` subkeys
 
-The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). Unknown subkeys are harmless extension points.
+The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean` or a plist `(:kind :boolean [:default :true | :false])`.
 
 | Subkey | Values / meaning |
 |--------|------------------|
@@ -583,7 +583,8 @@ The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys 
 | `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
-| `:table` | **injected by `fe-fields`** from source table / type-key; used for `/api/file` URLs; do not set manually |
+| `:table` | keyword; **overwritten on the wire by `fe-fields`** from source table / type-key; used for `/api/file` URLs. Still authorable (compile-checked as a keyword) but normally left out |
+| `:filter-with` | `:boolean` or `(:kind :boolean [:default :true \| :false])`. Legal solely on a `:type :boolean` field with `:column t`; renders a three-state Any / Yes / No select on the list toolbar. Yes/No sends an `:eq` filter with the string `":true"` / `":false"` (`parse-filters` coerces these to the keywords on boolean fields). `:default` is optional — it seeds the select's initial state on first entry to the type (and Clear filters restores it); omitted means Any, and `:default :any` itself is a compile error (Any is unspellable). Wire forms: `"boolean"` vs `{"kind":"boolean","default":true}`. The default is frontend initial state only — `/api/list` without filter rows returns everything |
 
 Widget semantics:
 
@@ -759,7 +760,7 @@ Only `:fields` is meaningful under each form:
 
 A field is emitted when:
 
-1. the form includes it (`t` or explicit list; non-base `:roles` always eligible when shown)
+1. the form includes it (`t` or explicit list; non-base `:roles` always eligible when shown on `:add-form` / `:update-form` — never `:list-form`)
 2. it has `:ui :widget` (or is injected roles)
 3. widget is not `:hidden`
 4. not (`:list-form` and `:type :file`)
@@ -1135,7 +1136,7 @@ Marked `:base-field t`. Not part of author field lists.
 
 ### Roles field
 
-Non-base types without `:suppress-roles` get a synthetic `:roles` checkbox-list on forms. `allowed-values.roles` is filtered to roles the current user may assign: their own roles, "public", the type's `:type-roles`, and every other user's shareable exclusive role (point-to-point sharing).
+Non-base types without `:suppress-roles` get a synthetic `:roles` checkbox-list on the add and update forms only (view mode renders the update form); list views carry no Roles column except `:users`'s real `:roles` field. `allowed-values.roles` is filtered to roles the current user may assign: their own roles, "public", the type's `:type-roles`, and every other user's shareable exclusive role (point-to-point sharing).
 
 ### Table and column naming
 
@@ -1372,7 +1373,7 @@ One click closes the record (close fields written to the old row, which becomes 
 
 7. **Diamond join graphs**: unsupported.
 
-8. **Write-through clear-to-NULL** and **transactions**: post-MVP / open.
+8. **Write-through clear-to-NULL** and **transactions**: transactions post-MVP / open. Clear-to-NULL is now implemented for nullable scalar columns on the main write path: explicit nil on a nullable `:text` / `:integer` / `:real` / `:uuid` / `:timestamp` column writes real NULL through `db-value` (insert and update alike; the driver binds bare Lisp nil as SQL FALSE, which 22007'd timestamps and silently stored `"false"` in text). Write-through inherits it for its `:value` column only — the one value `execute-write-to` routes through `db-value` — and only when that column is one of those five types. `:boolean` nil stays false (a legitimate encoding); join-table writes have their own paths and never see the map.
 
 9. **`:source-sel`**: handled in stage-2 plumbing but unused by any model; treat as unfinished.
 

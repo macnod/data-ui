@@ -52,7 +52,50 @@ interface Field {
   'read-only'?: boolean
   sortable?: boolean
   searchable?: boolean
+  // :filter-with wire value: "boolean" (bare sugar) or the
+  // kind/default plist form {"kind":"boolean","default":true}.
+  'filter-with'?: string | { kind?: string, 'default'?: boolean }
 }
+
+// Normalize the :filter-with wire value to its kind, or null when
+// the field does not carry one. Boolean-only by design; unknown
+// kinds collapse to null (no toolbar). A future kind must extend
+// this helper, not rely on the null fallthrough.
+const filterWithKind = (
+  f: Field['filter-with']
+): string | null =>
+  f === 'boolean'
+    ? 'boolean'
+    : typeof f === 'object' && f !== null && f.kind === 'boolean'
+      ? 'boolean'
+      : null
+
+// Authored initial state for a boolean filter select: 'yes' /
+// 'no' from the plist default, null when absent (Any) or the
+// bare sugar form.
+const filterWithDefault = (
+  f: Field['filter-with']
+): 'yes' | 'no' | null =>
+  typeof f === 'object' && f !== null
+    ? f['default'] === true ? 'yes'
+      : f['default'] === false ? 'no'
+      : null
+    : null
+
+// Authored initial state for every boolean filter field on a
+// list form (fieldKey -> 'yes' | 'no'; fields with no default
+// omitted). Shared by the seeding effect and the Clear filters
+// handler — module-level so the effect can live with the other
+// effects, before the render body computes its own copy.
+const boolDefaultsOf = (
+  form: Record<string, Field> | undefined
+): Record<string, 'yes' | 'no'> =>
+  Object.fromEntries(
+    Object.entries(form || {})
+      .map(([fieldKey, f]) =>
+        [fieldKey, filterWithDefault(f['filter-with'])])
+      .filter(([, d]) => d !== null)
+  ) as Record<string, 'yes' | 'no'>
 
 interface ListResponse {
   status: string
@@ -656,6 +699,18 @@ function App() {
   const [notTerm, setNotTerm] = useState('')
   const [debouncedNotTerm, setDebouncedNotTerm] = useState('')
   const notTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // :filter-with :boolean selects: fieldKey -> 'yes' | 'no'. An
+  // absent key means Any (the no-row state; absence is what makes
+  // "active" a key count). Kept separate from listFilters (chip
+  // shape Record<string, string[]>) — do not overload it.
+  const [boolFilters, setBoolFilters] = useState<
+    Record<string, 'yes' | 'no'>
+  >({})
+  // Seeding latch for those selects: the type we last seeded the
+  // authored defaults for, or null (re-seed on next entry). Lives
+  // with the other refs so the hook order is unconditional — a
+  // hooks-order crash here blanks the page on login.
+  const boolSeededForRef = useRef<string | null>(null)
   // Terminal button statuses (complete / failed: … / idle) are
   // stale the moment their form is closed; openEditForm blanks them
   // on the next open. Set for the single re-open handleAction does
@@ -825,6 +880,22 @@ function App() {
           }
         }
       }
+      // Boolean selects (:filter-with :boolean): one :eq row per
+      // field with a Yes/No choice. The value is the string
+      // ":true" / ":false" — parse-filters coerces those to the
+      // keywords on :type :boolean fields, the only encoding
+      // value-type-p accepts. Any sends no row.
+      {
+        const form = data?.result?.['list-form'] || {}
+        for (const [fieldKey, f] of Object.entries(form)) {
+          if (filterWithKind(f['filter-with']) !== 'boolean') continue
+          const choice = boolFilters[fieldKey]
+          if (choice === 'yes' || choice === 'no') {
+            rows.push([type, fieldKey, 'eq',
+                       choice === 'yes' ? ':true' : ':false'])
+          }
+        }
+      }
       if (rows.length > 0) {
         url += `&filters=${encodeURIComponent(JSON.stringify(rows))}`
       }
@@ -891,6 +962,14 @@ function App() {
     setNotTerm('')
     setDebouncedNotTerm('')
     setListFilters({})
+    setBoolFilters({})
+    // Forget the per-type seeding so the next type (or re-entry
+    // into this one) re-seeds its authored defaults. This ref is
+    // the only thing standing between every list refetch and
+    // re-clobbering the user's filters — it must be cleared by
+    // every future {} clearer too, or the next fetch re-seeds
+    // and silently undoes the user's Any.
+    boolSeededForRef.current = null
     if (searchTimer.current) clearTimeout(searchTimer.current)
     if (notTimer.current) clearTimeout(notTimer.current)
     setCurrentPage(1)
@@ -1193,18 +1272,56 @@ function App() {
           data: actionData
         })
       })
-      if (!res.ok) {
-        alert(await errorMessage(res, 'Action failed'))
+      // Parse the body exactly once — a Response body is
+      // single-read, so the alert and the status check must share
+      // this parse.
+      let body: any = null
+      try {
+        body = await res.json()
+      } catch {
+        // A 200 whose body is not JSON is not a success; leave
+        // body null. The re-open branch below is the safe
+        // direction — never close on doubt.
       }
-      // Reload the list with the current page/sort/search, then
-      // re-open the edit form by id: an action that changes a sort
-      // key can move the row off the current page, so the row must
-      // not be looked up in the current page's records.
-      await fetchList()
-      // This re-open keeps terminal statuses: the user just pressed
-      // the button and earned the "complete" / "failed: …" feedback.
-      preserveStatusOnOpenRef.current = true
-      openEditForm({ id })
+      if (!res.ok) {
+        // 400 bodies (permissions, already-running) put the
+        // message in top-level error — the same lookup
+        // errorMessage() performs, minus the second body read.
+        alert(body?.error || 'Action failed')
+      }
+      if (res.ok && body?.result?.status === 'complete') {
+        // Sync success: the action changed the record under the
+        // form (e.g. :spawn closed it and spawned a successor).
+        // Close, don't re-open — the form would sit open on
+        // stale history and invite edits. Same shape as
+        // submitForm's success branch (close, then refresh); the
+        // order is cosmetic — closeForm only clears React state
+        // and fetchList doesn't read the form.
+        if (viewMode === 'settings') {
+          // Not awaited, and no fetchList: returnToLanding closes
+          // the form and triggers its own landing fetch
+          // (/api/info → type change → the list effect). A second
+          // fetchList here would race it.
+          returnToLanding()
+        } else {
+          closeForm()
+          await fetchList()
+        }
+      } else {
+        // HTTP error, sync "failed", async "accepted", or
+        // unparseable body: keep today's behavior. The re-opened
+        // form is where the failure message shows and where the
+        // running-status spinner / 3s poll live.
+        // Reload the list with the current page/sort/search, then
+        // re-open the edit form by id: an action that changes a
+        // sort key can move the row off the current page, so the
+        // row must not be looked up in the current page's records.
+        await fetchList()
+        // This re-open keeps terminal statuses: the user just
+        // pressed the button and earned the "failed: …" feedback.
+        preserveStatusOnOpenRef.current = true
+        openEditForm({ id })
+      }
     } catch {
       alert('Network error during action')
     } finally {
@@ -1315,9 +1432,21 @@ function App() {
       // POST 2: JSON to /api/insert with the add-form fields plus a
       // top-level file-token (sibling of type). The file field itself
       // is omitted from the metadata payload.
+      // A form writes only the fields it renders. formValues is
+      // seeded from the whole record (openEditForm), so off-form keys
+      // (e.g. the [] echo of a NULL timestamp hidden from the form)
+      // are stale echoes — drop them. hasOwnProperty, not `k in
+      // formDef`: `in` walks the prototype chain, so a field
+      // literally named toString or constructor would false-positive.
+      // On-form empty arrays (checkbox-list / image-list "clear
+      // all") still go out; empty strings stay dropped as today.
       const { roles, [fileField]: _omit, ...rest } = formValues
       const filteredRest = Object.fromEntries(
-        Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
+        Object.entries(rest).filter(
+          ([k, v]) =>
+            Object.prototype.hasOwnProperty.call(formDef, k) &&
+            (typeof v !== 'string' || v.trim() !== '')
+        )
       )
       const payload: any = { type, 'file-token': fileToken, data: filteredRest }
       if (roles) payload.roles = Array.isArray(roles) ? roles : [roles]
@@ -1336,10 +1465,20 @@ function App() {
       return
     }
 
-    // Normal (no file) path
+    // Normal (no file) path. Same form-membership rule as the
+    // file-upload POST 2 above: formValues is seeded from the whole
+    // record in edit mode, and off-form keys (e.g. the [] echo of a
+    // NULL timestamp the update form does not render) must not ride
+    // along on the update — absent keys leave their columns
+    // untouched. On-form empty arrays (checkbox-list / image-list
+    // "clear all") still go out; empty strings stay dropped.
     const { roles, ...rest } = formValues
     const filteredRest = Object.fromEntries(
-      Object.entries(rest).filter(([, v]) => typeof v !== 'string' || v.trim() !== '')
+      Object.entries(rest).filter(
+        ([k, v]) =>
+          Object.prototype.hasOwnProperty.call(formDef, k) &&
+          (typeof v !== 'string' || v.trim() !== '')
+      )
     )
     const payload: any = { type, data: filteredRest }
     if (roles) payload.roles = roles
@@ -1454,7 +1593,30 @@ function App() {
     if (!loggedIn || type === '__init__') return
     fetchList()
   }, [loggedIn, type, sortField, sortDir, debouncedSearch,
-      debouncedNotTerm, currentPage, listFilters, hideExclusive])
+      debouncedNotTerm, currentPage, listFilters, boolFilters,
+      hideExclusive])
+
+  // Seed the boolean selects' authored initial state once per type
+  // entry. The ref survives fetches; resetListQuery clears it so
+  // the next type entry seeds fresh. This ref is the only thing
+  // standing between every list refetch (sort, search, page, the
+  // seeding fetch itself) and re-clobbering the user's filters.
+  // Must live here with the other effects — an unconditional hook
+  // call — never in the post-data-guard render body.
+  useEffect(() => {
+    // Stale-form guard: on a type change the old data is still
+    // mounted when this effect first runs with the new type —
+    // seed only from the form that belongs to the requested
+    // type, or the ref would be set against the old form and the
+    // new type's defaults would never seed.
+    if (data?.result?.['type-key'] !== type) return
+    if (boolSeededForRef.current === type) return
+    boolSeededForRef.current = type
+    const defaults = boolDefaultsOf(data?.result?.['list-form'])
+    if (Object.keys(defaults).length > 0) {
+      setBoolFilters(defaults)
+    }
+  }, [data, type])
 
   // Clear the row selection whenever the page changes (button
   // navigation or the post-delete clamp inside fetchList), so
@@ -1721,9 +1883,10 @@ function App() {
 
   // Chip eligibility: checkbox-list fields whose source table differs
   // from the listed type. fe-fields always sets `table` (falls back
-  // to the type key), so the synthetic Roles column on non-base types
-  // carries the listed type's key and is excluded here; users.roles
-  // (table "roles" ≠ "users") is a real join and qualifies.
+  // to the type key); only real join fields qualify (e.g. users.roles,
+  // table "roles" ≠ "users"). The synthetic Roles column no longer
+  // reaches the list form (add/update forms only), so nothing
+  // synthetic appears here.
   const chipFieldMeta: Record<string, { table: string, label: string }> = {}
   for (const f of listFields) {
     const fld = data.result['list-form'][f]
@@ -1736,11 +1899,28 @@ function App() {
   const hasSearchable =
     Object.values(data.result['list-form'])
       .some(f => f.searchable === true)
+  // :filter-with :boolean fields on the list form. Scans the whole
+  // form (not listFields — listFields is the rendered column set
+  // and can diverge from the form the query covers); a field
+  // excluded from :list-form renders no control, intended.
+  const boolFilterFields = Object.entries(data.result['list-form'])
+    .filter(([, f]) => filterWithKind(f['filter-with']) === 'boolean')
+    .map(([fieldKey, f]) => ({ fieldKey, label: f.label }))
+  // Authored initial state for the boolean selects, same source
+  // (the whole list-form). Empty when the type declares no
+  // defaults — Clear filters then restores today's bare-Any
+  // behavior (setBoolFilters({}) equivalence). The seeding effect
+  // (with the other effects, above) computes its own copy via
+  // boolDefaultsOf.
+  const boolDefaults = boolDefaultsOf(data.result['list-form'])
   // "Any filter active" is some values array with length > 0, not
   // Object.keys(listFilters).length — clearing the last chip leaves
   // { field: [] } in state, which the key count would still report.
+  // Boolean selects count too: they are data filters under the
+  // same Clear filters button. Hide exclusive stays out of it.
   const anyFilterActive =
     Object.values(listFilters).some(vals => vals.length > 0)
+    || Object.keys(boolFilters).length > 0
 
   return (
     <div>
@@ -1865,7 +2045,8 @@ function App() {
         </div>
       )}
 
-      {!(showAddForm || isEditMode) && (hasSearchable || hasChipFields) && (
+      {!(showAddForm || isEditMode) &&
+        (hasSearchable || hasChipFields || boolFilterFields.length > 0) && (
         <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
           {hasSearchable && (
             <>
@@ -1927,6 +2108,35 @@ function App() {
               {' '}Hide exclusive
             </label>
           )}
+          {/* :filter-with :boolean selects — one per declared
+              field, labeled with the field's label. Any / Yes / No;
+              absence in boolFilters is Any. Same restart contract
+              as chips / search / sort: page 1, selection cleared. */}
+          {boolFilterFields.map(({ fieldKey, label }) => (
+            <label key={fieldKey} style={{ whiteSpace: 'nowrap' }}>
+              <select
+                value={boolFilters[fieldKey] || 'any'}
+                onChange={e => {
+                  const v = e.target.value
+                  setBoolFilters(prev => {
+                    const next = { ...prev }
+                    if (v === 'yes' || v === 'no') {
+                      next[fieldKey] = v
+                    } else {
+                      delete next[fieldKey]
+                    }
+                    return next
+                  })
+                  setCurrentPage(1)
+                  setSelectedIds([])
+                }}
+              >
+                <option value="any">{label}: Any</option>
+                <option value="yes">{label}: Yes</option>
+                <option value="no">{label}: No</option>
+              </select>
+            </label>
+          ))}
           {Object.entries(listFilters)
             .filter(([, values]) => values.length > 0)
             .map(([fieldKey, values]) =>
@@ -1948,6 +2158,10 @@ function App() {
               type="button"
               onClick={() => {
                 setListFilters({})
+                // Restore the authored initial view, not bare Any
+                // (with no defaults on the type this is {}, the
+                // previous behavior).
+                setBoolFilters(boolDefaults)
                 setCurrentPage(1)
                 setSelectedIds([])
               }}

@@ -93,7 +93,13 @@ SQL) whose elements satisfy the field's atom check when the field
 is atom-typed; a :list-typed field keeps the whole-value listp
 check (tightened to consp). All other operators use the plain
 single-value check. Shared by filter-p and valid-filter so the
-predicate and the validator cannot drift."
+predicate and the validator cannot drift.
+
+NIL / :NULL elements are rejected in the list operators even on
+nullable fields: an :eq nil means is-null (translated in
+add-where-clause), but an :in (NULL) element would bind SQL NULL
+inside in (...) and silently match nothing — a validation error,
+not a silent miss."
   (if (member op-key '(:in :not-in :has-all))
     (let* ((field-def (u:tree-get *compiled-model*
                         type-key :fields field-key))
@@ -101,7 +107,10 @@ predicate and the validator cannot drift."
       (and (consp value)
         (or list-field-p
           (every
-            (lambda (el) (value-type-p type-key field-key el))
+            (lambda (el)
+              (and (not (null el))
+                (not (equal el :null))
+                (value-type-p type-key field-key el)))
             value))))
     (value-type-p type-key field-key value)))
 

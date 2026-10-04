@@ -14,7 +14,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 - **REST endpoints** — all routes with parameters → `docs/rest.md`
 - **Deployment** — every step, traps, admin password location, TLS, troubleshooting, clean-slate recovery → `docs/deployment.md`; session-by-session history in `~/.debug/deployment-work.md`. Environments (development / staging / production, `:domain` vs `:domain-stg`) are defined in its "Environments" section — read it before any deploy / expose work.
 - **CLI verbs** — `scripts/data-ui` (repl, db, psql, profile, tests, deploy, delete, traffic, snapshot, `e-demo` / `demo`, host profiles, environment variables) and `scripts/publish-data-ui` → `docs/cli.md`. `scripts/README.md` is a stub pointing there.
-- **Lisp style and error reporting** — `u:` preference, small functions, `report-e` / `report-ve`, `valid-*` naming → `docs/lisp-style.md` (read before writing any Lisp: tests, helpers, or engine code with permission)
+- **Lisp style and error reporting** — `u:` preference, small functions, `report-e` / `report-ve`, `valid-*` naming → `docs/lisp-style.md` (read before writing any Lisp: tests, helpers, or engine code with permission). When dealing with `report-ve` (or `report-e`), read the macro documentation in `lisp/aux.lisp` first — the tilde-prefixed var-spec convention is easy to misread as a typo and both macros signal (they do not return).
 - **Dead-code decisions** — `docs/model-accessors.md` (check before removing anything that looks unused)
 - **Backlog** — `docs/todo.org`
 

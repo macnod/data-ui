@@ -378,11 +378,22 @@ validates and user exists. Otherwise, logs a message and returns NIL."
           for type-key = (parse-type type-string)
           for field-key = (parse-field type-key field-string)
           for op-key = (parse-operator op-string)
+          ;; Boolean wire format: a JSON string ":true" / ":false" on a
+          ;; :type :boolean field is coerced to the keyword — the only
+          ;; encoding value-type-p accepts. Non-boolean fields keep the
+          ;; raw string (valid-filters rejects it there, correctly).
+          for coerced-value =
+            (if (and (member value '(":true" ":false") :test #'equal)
+                     (eq (u:tree-get *compiled-model* type-key :fields
+                           field-key :type)
+                         :boolean))
+              (u:make-keyword value)
+              value)
           for filter = (append
                          (remove-if-not
                            #'identity
                            (list type-key field-key op-key))
-                         (list value))
+                         (list coerced-value))
           when (every #'identity filter)
           collect filter into good
           else collect filter into bad

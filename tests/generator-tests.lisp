@@ -153,11 +153,12 @@ Hope this helps!"))))
   "generate-model-example-files returns exactly the pinned demo set —
 a new demo lands only by updating this pin, forcing a conscious
 token-budget re-check instead of silently inflating every prompt.
-(shopping.lisp joined the set 2026-09-27: an LLM-generated demo,
-kept as a living example of generator output.)"
+(recurring.lisp and shopping.lisp left the set 2026-09-29:
+recurring's :spawn pattern folded into chores, shopping was a
+temporary demo.)"
   (is (equal
         '("books" "chores" "file-server" "gift-tracker" "modelbank"
-           "parts" "recurring" "shopping" "todos" "widgets")
+           "parts" "todos" "widgets")
         (mapcar (lambda (path)
                   (u:replace-extension (u:filename-only path) ""))
           (generate-model-example-files)))))

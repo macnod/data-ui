@@ -944,6 +944,17 @@ derived value is asserted there)."
     (explain! results)
     (when collect results)))
 
+(defun run-timestamp-null-tests (&optional collect)
+  "Clear-to-NULL on nullable scalar columns: db-value nil→:null, the
+is [not] null filter translation, and the nil-element list-filter
+rejection (the 22007 fix). Runs on the spawn-test fixture (nullable
+:completed-at timestamp, nullable :notes text)."
+  (let ((results
+          (with-model "spawn-test" nil
+            (run 'timestamp-null-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -985,7 +996,8 @@ groups."
                    ("guest"          . run-guest-tests)
                    ("api-roles"      . run-api-roles-tests)
                    ("type-roles-override" . run-type-roles-override-tests)
-                   ("domain-stg"     . run-domain-stg-tests))
+                   ("domain-stg"     . run-domain-stg-tests)
+                   ("timestamp-null" . run-timestamp-null-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

@@ -157,6 +157,238 @@ the compiled :wt type definition."
            :source (:view :main :column :f3 :agg :first)
            :column t)))))
 
+(test widget-reject-unknown-ui-key
+  "A :ui key outside *ui-keys* fails compile."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+           :ui (:labell "My Field")
+           :source (:view :main :column :f1 :agg :first)
+           :column t)))))
+
+(test widget-reject-label-keyword
+  ":label must be a string, not a keyword."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+           :ui (:label :my-field)
+           :source (:view :main :column :f1 :agg :first)
+           :column t)))))
+
+(test widget-reject-precision-string
+  ":precision must be a number, not a string."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :real
+           :ui (:precision "1")
+           :source (:view :main :column :f1 :agg :first)
+           :column t)))))
+
+(test widget-reject-table-string
+  ":table must be a keyword, not a string."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+           :ui (:table "images")
+           :source (:view :main :column :f1 :agg :first)
+           :column t)))))
+
+(test widget-filter-with-rejects-non-boolean-value
+  ":filter-with :select fails compile (only :boolean is legal)."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+           :ui (:filter-with :select)
+           :source (:view :main :column :f1 :agg :first)
+           :column t)))))
+
+(test widget-filter-with-boolean-compiles
+  ":filter-with :boolean compiles on :type :boolean with :column t, and
+the compiled :ui still carries :filter-with."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :boolean
+                  :ui (:filter-with :boolean)
+                  :source (:view :main :column :f1 :agg :first)
+                  :column t))))
+         (ui (getf (getf (getf compiled :fields) :f1) :ui)))
+    (is (eq :boolean (getf ui :filter-with)))))
+
+(test widget-filter-with-rejects-text-field
+  ":filter-with :boolean on a :type :text field fails compile."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+           :ui (:filter-with :boolean)
+           :source (:view :main :column :f1 :agg :first)
+           :column t)))))
+
+(test widget-filter-with-rejects-no-column
+  ":filter-with :boolean on a :type :boolean field without :column t
+fails compile."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+           :ui (:filter-with :boolean)
+           :source (:view :main :column :f1 :agg :first))))))
+
+(test filter-with-wire-value
+  "Boolean :eq over REST. parse-filters coerces the strings \":true\" and
+\":false\" to keywords when the field is :type :boolean, which is the only
+encoding value-type-p accepts. Runs against the live *compiled-model*
+(todos is loaded), whose :settings :dark-mode is :type :boolean with
+:column t."
+  (is (value-type-p :settings :dark-mode :true))
+  (is (equal '((:settings :dark-mode :eq :true))
+        (parse-filters
+          "[[\"settings\",\"dark-mode\",\"eq\",\":true\"]]")))
+  (finishes
+    (valid-filters
+      (parse-filters
+        "[[\"settings\",\"dark-mode\",\"eq\",\":true\"]]"))))
+
+(test widget-filter-with-plist-default-compiles
+  "The configured form (:kind :boolean :default :true) compiles on
+:type :boolean / :column t and survives verbatim into the compiled
+:ui. The default is frontend initial state only; the compiler
+stores the plist untouched."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :boolean
+                  :ui (:filter-with (:kind :boolean :default :true))
+                  :source (:view :main :column :f1 :agg :first)
+                  :column t))))
+         (ui (getf (getf (getf compiled :fields) :f1) :ui)))
+    (is (equal '(:kind :boolean :default :true)
+          (getf ui :filter-with)))))
+
+(test widget-filter-with-plist-no-default-compiles
+  "(:kind :boolean) with no :default compiles — omitted default is Any."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :boolean
+                  :ui (:filter-with (:kind :boolean))
+                  :source (:view :main :column :f1 :agg :first)
+                  :column t))))
+         (ui (getf (getf (getf compiled :fields) :f1) :ui)))
+    (is (equal '(:kind :boolean)
+          (getf ui :filter-with)))))
+
+(test widget-filter-with-rejects-default-any
+  ":default :any is a compile error — Any is the omitted default and
+is not spellable."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+             :ui (:filter-with (:kind :boolean :default :any))
+             :source (:view :main :column :f1 :agg :first)
+             :column t)))))
+
+(test widget-filter-with-rejects-default-maybe
+  ":default :maybe is a compile error — only :true / :false are legal."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+             :ui (:filter-with (:kind :boolean :default :maybe))
+             :source (:view :main :column :f1 :agg :first)
+             :column t)))))
+
+(test widget-filter-with-rejects-unknown-kind
+  "(:kind :select ...) fails compile — :select is not in
+*filter-with-kinds*."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+             :ui (:filter-with (:kind :select :default :true))
+             :source (:view :main :column :f1 :agg :first)
+             :column t)))))
+
+(test widget-filter-with-rejects-positional-form
+  "(:boolean :true) fails compile — the positional form is a
+keyword-headed plist with no :kind."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+             :ui (:filter-with (:boolean :true))
+             :source (:view :main :column :f1 :agg :first)
+             :column t)))))
+
+(test widget-filter-with-rejects-unknown-tail-key
+  "(:kind :boolean :bogus :x) fails compile — the tail key set is
+closed (:kind, :default)."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+             :ui (:filter-with (:kind :boolean :bogus :x))
+             :source (:view :main :column :f1 :agg :first)
+             :column t)))))
+
+(test widget-filter-with-plist-rejects-text-field
+  "The plist form on a :type :text field fails compile (field gate,
+new shape)."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+             :ui (:filter-with (:kind :boolean :default :false))
+             :source (:view :main :column :f1 :agg :first)
+             :column t)))))
+
+(test widget-filter-with-plist-rejects-no-column
+  "The plist form without :column t fails compile (field gate, new
+shape)."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :boolean
+             :ui (:filter-with (:kind :boolean :default :false))
+             :source (:view :main :column :f1 :agg :first))))))
+
+(test widget-filter-with-plist-wire-json
+  "Wire tripwire: the :filter-with plist rides the :ui verbatim
+passthrough. plist-to-json renders :true / :false as JSON booleans
+(plist-to-json-atom's :true / :false rule, not the quoted-string
+symbol path — the plan's quoted-string expectation was wrong; the
+frontend normalizes both) and the bare (:kind :boolean) form with
+no default key at all. Fails if anyone 'fixes' the serializer."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :boolean
+                  :ui (:filter-with (:kind :boolean :default :false))
+                  :source (:view :main :column :f1 :agg :first)
+                  :column t))
+             (cons :f2
+               '(:type :boolean
+                  :ui (:filter-with (:kind :boolean))
+                  :source (:view :main :column :f2 :agg :first)
+                  :column t))))
+         (ui-1 (getf (getf (getf compiled :fields) :f1) :ui))
+         (ui-2 (getf (getf (getf compiled :fields) :f2) :ui))
+         (json-1 (plist-to-json (list :filter-with
+                                (getf ui-1 :filter-with))))
+         (json-2 (plist-to-json (list :filter-with
+                                (getf ui-2 :filter-with)))))
+    (is (search "\"filter-with\":{\"kind\":\"boolean\",\"default\":false}"
+          json-1))
+    (is (search "{\"kind\":\"boolean\"}" json-2))
+    (is (null (search "default" json-2)))))
+
 (test widget-roles-injection-keyword
   "Roles injection uses keyword :checkbox-list, not string."
   ;; The roles field is injected by fe-fields, not compile-field,

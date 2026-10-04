@@ -6,6 +6,323 @@
 Periodically, DONE items should be moved to the [[done.org][done.org]] file, to keep this file from getting too large.
 * Done
 * MVP Now
+** DONE Update on a NULL timestamp dies with 22007 ("false") :backend:frontend:mvp:bug:model:
+:PROPERTIES:
+:CREATED: [2026-10-01 Thu]
+:COMPLETED: [2026-10-01 Thu]
+:END:
+Reported 2026-10-01 on the chores model: add a chore, edit it,
+save — "Database error 22007: invalid input syntax for type
+timestamp: \"false\"" (=chore_completed_at=, parameter $7). Root
+cause chain: NULL column → =[]= on the wire → =json-to-plist= nil
+→ =full-data= respects the explicit nil → =db-value= passed it
+through → Postmodern binds Lisp nil as SQL FALSE. Not
+chores-specific: any user-declared nullable timestamp broke the
+update path; nullable text silently stored the string "false";
+integer / real / uuid cleared-to-NULL 22P02'd the same way.
+
+Three-part fix, per [[file:~/workbench/fix-chores-plan.org][fix-chores-plan.org]] (implemented as
+planned, no deviations):
+
+1. Engine (=lisp/backend.lisp=): =db-value= maps nil → =:null=
+   (real SQL NULL) for =:text= / =:integer= / =:real= / =:uuid=
+   / =:timestamp=; =:boolean= keeps nil (legitimate false);
+   =:list= / =:password= untouched. Read-path guard in the same
+   file: nil-valued =:eq= / =:ne= filters now translate to =is
+   [not] null= with no placeholder and no collected value, in
+   both =add-where-clause= and =measure-request-grain-filters=
+   (rollup grain filters) — a nil left to bind would be
+   =col = NULL=, which never matches. =lisp/predicates.lisp=:
+   nil / =:null= /elements/ in =:in= / =:not-in= / =:has-all=
+   lists are now a validation error (an =in (NULL)= element
+   would silently match nothing; =:eq nil= stays legal — that is
+   the is-null feature).
+2. Frontend (=web/src/App.tsx=): both =submitForm= payload paths
+   filter =formValues= to keys present in =formDef=
+   (=hasOwnProperty=, not =in=): the edit form seeds values from
+   the whole /api/item record, and off-form keys (the =[]= echo
+   of a NULL timestamp) must not ride along. On-form empty
+   arrays (checkbox-list / image-list "clear all") still go out;
+   empty strings stay dropped. =npm run build= run.
+3. Chores model (=models/chores.lisp=): =completed= /
+   =completed-at= / =completed-by= off =:update-form= /
+   =:add-form= (owned by the =:complete= button's =:spawn=, the
+   single write path for closure), staying in =:list-form= as
+   history; =:sorted-at t= → =:sortable t= on =completed-at=
+   (unreal key — the list header now actually sorts the history
+   column). Behavior change confirmed by Donnie up front: the
+   Complete button is the only way to close a chore.
+
+Tests: new =tests/timestamp-null-update-tests.lisp=
+(=timestamp-null-suite=, 15 checks on the =spawn-test= fixture —
+explicit-nil update, JSON =[]= round trip, text clear-to-NULL
+not "false", insert default still fills, =:not-null= nil still
+rejected, =is [not] null= single + placeholder-alignment cases,
+nil-element =:in= rejection), registered in =data-ui.asd= with
+=run-timestamp-null-tests= in =tests/helpers.lisp= (added to
+=run-tests=). Full =run-tests=: 1 pre-existing failure only —
+the generator pinned-demo-set pin lists =shopping= / =recurring=,
+both deleted from =models/= before this work (unrelated;
+=e7b2817= removed them, the pin test was never updated).
+
+Verified live on the dev chores instance: the exact original
+failing payload (whole-record echo with ="completed-at": []= and
+="completed-by": ["admin"]=) now succeeds and preserves NULL;
+the Complete button closes the row (timestamp + completed-by
+stamped, successor spawned with notes cleared); =update-form=
+no longer offers the spawn-owned fields; repro rows cleaned up.
+Docs: =docs/model-reference.md= filter-operator paragraph (nil
+elements rejected; =:eq= / =:ne= nil is is-null) and Known gaps
+#8 (clear-to-NULL now implemented for nullable scalar columns;
+write-through inherits it for its =:value= column only).
+Reported 2026-10-01 on the chores model: add a chore, edit it, save —
+"Database error 22007: invalid input syntax for type timestamp:
+\"false\"", unnamed portal parameter $7 (=chore_completed_at=). Not
+chores-specific: any user-declared nullable timestamp breaks the
+update path. Chain: NULL column → =[]= on the wire → =json-to-plist=
+nil → =full-data= respects the explicit nil → =db-value= =:timestamp=
+passes it through → Postmodern binds Lisp nil as SQL FALSE. Insert
+survives only via its default fallback; update has none.
+
+Three-part fix: (1) =db-value= maps nil → =:null= for the scalar
+cases (=:timestamp= loud 22007 today; =:text= silently stores
+"false"); (2) App.tsx stops echoing =[]= for non-checkbox-list
+fields (the JSON form of NULL) on both submit paths; (3) the chores
+model takes =completed= / =completed-at= / =completed-by= off
+=:update-form= / =:add-form= — they are owned by the =:complete=
+=:spawn= (the single write path for closure), stay in the list as
+history; also =:sorted-at t= → =:sortable t= on =completed-at=
+(unreal key today). Model edit alone doesn't fix the 22007 (the edit
+form echoes the whole record, fields render or not).
+
+Plan: [[file:~/workbench/fix-chores-plan.org][fix-chores-plan.org]].
+** DONE =:ui= key whitelist and =:filter-with :boolean= list filter :frontend:backend:compiler:model:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-10-01 Thu]
+:COMPLETED: [2026-10-01 Thu]
+:END:
+Implemented per =~/workbench/filter-with-plan.org= (no deviations):
+
+- *Compiler* (=lisp/model.lisp=): =*ui-keys*= closed set
+  (= :label :widget :read-only :precision :options :table
+  :filter-with=); =valid-ui-keys= keeps the dead-alias hint
+  ("Use =:widget= instead.") ahead of the generic unknown-key
+  error naming the legal set. New =report-ve= value checks
+  =valid-label-value= (string), =valid-precision-value= (number,
+  no type gate), =valid-table-value= (keyword; =:table= stays
+  authorable, =fe-fields= overwrites on the wire),
+  =valid-filter-with-value= (=:boolean=), all called from
+  =finalize-ui=. =compile-field= gate (beside =:searchable=):
+  =:filter-with= requires value =:boolean=, =:type :boolean=, and
+  =:column t= (resolved =column= binding, so a =:target= field
+  fails the type check).
+- *REST* (=lisp/rest.lisp=, =parse-filters= only): the strings
+  =":true"= / =":false"= coerce to keywords when the field is
+  =:type :boolean=; non-boolean fields keep the raw string.
+  Yes/No filters now return 200 (verified live via curl:
+  total 1 each on seeded true/false todos; was 400 for every
+  encoding before).
+- *Frontend* (=web/src/App.tsx=): =filter-with?: string= on
+  =Field=; =boolFilters= state =Record<string,'yes'|'no'>=
+  (absence = Any); discovery scans the whole =list-form= (not
+  =listFields=); rows append =[type,field,"eq",":true"|":false"]=
+  in =fetchList=; one labeled Any/Yes/No =<select>= per field on
+  the toolbar (render condition gains =boolFilterFields.length >
+  0=); =resetListQuery= clears them; =anyFilterActive= and Clear
+  filters include them; =useEffect= dep added. =npm run build=
+  ran via direct =tsc= + =vite= invocations (npm binary is
+  absent on evo-x2; same commands as the =build= script).
+- *Tests* (=tests/widget-tests.lisp=): unknown =:ui= key, keyword
+  =:label=, string =:precision=, string =:table=, =:filter-with
+  :select=, =:filter-with :boolean= on =:text= / no-=:column=
+  rejected; =:filter-with :boolean= compiles and survives into
+  the compiled =:ui=; =filter-with-wire-value= tripwire
+  (=parse-filters= coercion + =valid-filters= finishes). Suite:
+  57/57 pass, =widget-all-models-compile= included (all models
+  + fixtures clear the whitelist). Sortable + searchable suites
+  re-run green (adjacent compile-field territory).
+- *Docs* (=docs/model-reference.md=): =:ui= subkeys section —
+  closed-set language, per-key value rules, =:filter-with= row,
+  =:table= rewritten (authorable keyword, overwritten on the
+  wire).
+
+Wire verified live: =fe-fields= emits
+="filter-with":"boolean"= on the =:done= field of an in-memory
+todos variant; =plist-to-json= renders the same. Browser pass
+(Verification step 5) still owed — needs a real model carrying a
+=:filter-with :boolean= field; none exists yet.
+
+Closes "Validate =:ui= hints" (that item's scope for known keys
+is now implemented; leaving its heading for Donnie to confirm and
+retire).
+
+Plan: [[file:~/workbench/filter-with-plan.org][filter-with-plan.org]].
+** DONE Remove Roles column from list views (non-base types) :backend:frontend:docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-02 Fri]
+:COMPLETED: [2026-10-02 Fri]
+:END:
+The list views of user-defined types show a Roles column that
+nobody interacts with (not sortable, not searchable, excluded from
+filter chips) — pure clutter on every list, and it ships
+resource-role names in every /api/list payload. Decision
+[2026-10-02]: Option 2, backend, scoped to =:list-form= —
+=show-roles-p= (lisp/backend.lisp) stops ignoring its =form=
+argument and returns nil for =:list-form=, so =fe-fields= no longer
+injects the synthetic =:roles= checkbox-list into the list-form
+schema and =add-roles-to-view= stops attaching roles to list
+records. Add / update / view forms keep their Roles checkbox-list;
+=allowed-values.roles= stays (the Add form seeds from it).
+=:users='s Roles column is a real M2M field, not the injection, and
+survives untouched. Downstream impact investigated and folded into
+the plan: four backend-tests assertions flip (show-roles-p list
+cases, be-rec :list-form sub-case, add-roles-to-view list carrier
+— reworked onto the update form), model-reference two-line doc
+update, App.tsx comment-only touch-up. Grok review folded: rollup
+view-mode =/api/item= also passes =:list-form= (no-op today —
+=:suppress-roles= covers it), corrected completeness claim and
+docstrings, a be-list records-lack-:roles pin. Plan approved → READY.
+
+Plan: [[file:~/workbench/roles-column-plan.org][roles-column-plan.org]].
+
+Implemented 2026-10-02 per plan, one function plus tests/docs:
+=show-roles-p= (lisp/backend.lisp) stops ignoring =form= and returns
+nil for =:list-form= (docstring added stating the rule). =fe-fields=
+no longer injects the synthetic =:roles= into list-form schema;
+=add-roles-to-view= skips the attach on list records.
+=allowed-values.roles= kept; =:users='s real M2M =:roles= field
+untouched. Backend tests: show-roles-p list cases flipped to
+=is-false=; =be-rec-includes-roles= =:list-form= sub-case inverted
+(+ docstring rewrite); =add-roles-to-view-filters-creator-exclusive=
+reworked onto =be-rec= =:update-form=; new pins =fe-fields-roles-
+form-placement= (list/add/update schema, palette, =:users=) and
+=be-list-records-lack-roles=. =docs/model-reference.md= Roles-field
+and fe-fields eligibility lines updated; App.tsx chipFieldMeta
+comment-only. Verified live on todos (schema, records, palette,
+:users) and by full =(run-tests)=: 1953 checks, 33 groups, all
+pass. No deviations.
+
+** DONE Close the edit form after a sync-complete action :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-02 Fri]
+:COMPLETED: [2026-10-02 Fri]
+:END:
+After an action button succeeds synchronously (chores Complete
+=:spawn=), =handleAction= re-opens the edit form on the same record so
+the "complete" status text shows — leaving a form open on a record the
+action just made stale. For =:spawn= the record is closed history: the
+open form invites edits to it, and the user must click Cancel to
+escape. Model Bank Deploy / Generate are the counter-case: ="accepted"=
+(async) and ="failed"= need the form to stay open (spinner, 3s poll,
+failure message).
+
+Fix: =handleAction= (App.tsx) reads =result.status= from the
+/api/actions body. ="complete"= → close the form (settings mode
+returns to landing, mirroring =submitForm=) and refresh the list;
+every other outcome (HTTP error, ="failed"=, ="accepted"=) keeps
+today's re-open. Frontend-only; the "complete" text is lost with the
+form (already ephemeral — fresh opens blank it), the list shows the
+effect instead.
+
+Plan: [[file:~/workbench/action-close-form-plan.org][action-close-form-plan.org]].
+
+Implemented 2026-10-02 per plan, frontend-only, =handleAction=
+(web/src/App.tsx) only. Body parsed once (single-read =Response=);
+the =!res.ok= alert now reads =body?.error= directly instead of
+=errorMessage='s second read. ="complete"= (HTTP 200 only) closes:
+=returnToLanding()= in settings mode (no extra =fetchList= — it
+races the landing fetch), =closeForm()= +=fetchList()= otherwise.
+Everything else — HTTP error, sync ="failed"=, async ="accepted"=,
+unparseable body — keeps today's =fetchList= + re-open (spinner,
+poll, and failure text stay). =preserveStatusOnOpenRef= untouched
+on the close path. Built (tsc + vite, dist served verified);
+wire-verified live on chores dev: POST /api/actions Complete →
+=result.status= "complete", row stamped completed/completed-at,
+successor spawned. =(run-action-tests)=: 20 checks, all pass. No
+deviations. :change-password= "complete" now silently bounces to
+Home — accepted per plan (toast is post-MVP).
+** DONE =:filter-with= initial state (kind/default grammar) :frontend:compiler:docs:mvp:model:
+:PROPERTIES:
+:CREATED: [2026-10-04 Sun]
+:COMPLETED: [2026-10-04 Sun]
+:END:
+Implemented per =~/workbench/filter-with-default.org=, no deviations
+to the grammar. The model can now seed the three-state Any / Yes / No
+select that =:filter-with :boolean= renders: bare =:boolean= stays
+(sugar, no default); the configured form is the plist
+=(:kind :boolean :default :true|:false)= with =:default= optional and
+Any unspellable (=:default :any= is a compile error).
+
+- *Compiler* (=lisp/model.lisp=): =*filter-with-kinds*= closed kind
+  set; =filter-with-kind= defensive kind extractor (never signals);
+  =valid-filter-with-value= rewritten for the two author shapes
+  (keyword sugar / plist with closed tail key set =(:kind :default)=,
+  kind membership, =:default= ∈ =(:true :false)=, missing-:kind=,
+  kind-set, unknown-tail-key, unspellable-Any reports — the positional
+  =(:boolean :true)= dies naturally as a keyword-headed plist with no
+  :kind); =compile-field= gate's first check now compares the
+  extracted kind (":filter-with kind must be :boolean"); one arm in
+  =preliminary-model-check= beside =:options= so a future kind's
+  list-valued tail never hits the generic walker error.
+- *Frontend* (=web/src/App.tsx=): =filter-with= typed
+  =string | {kind?, default?}=; =filterWithKind= / =filterWithDefault=
+  helpers (boolean-only by design; a future kind must extend, not ride
+  the null fallthrough); =boolDefaults= record computed beside
+  =boolFilterFields= (whole =list-form= scan); =boolSeededForRef= seeds
+  once per type entry (stale-form guard: only when
+  =data.result['type-key'] === type=; ref blocks re-seeding on every
+  refetch — the plan's invariant, documented at the effect);
+  =resetListQuery= clears the ref; Clear filters restores
+  =boolDefaults= (authored initial view), not bare Any. Wire: the
+  plist's =:default= arrives as a real JSON boolean
+  (={"kind":"boolean","default":false}=), so the helpers read
+  =f['default'] === true / false= — see below.
+- *Docs* (=docs/model-reference.md=): =:ui= per-key rules sentence and
+  the =:filter-with= table row carry the plist grammar, the unspellable
+  Any rule, both wire forms, and the frontend-initial-state-only
+  semantics.
+- *Tests* (=tests/widget-tests.lisp=): 10 new checks — plist
+  compiles+survives verbatim (with and without =:default=);
+  =:default :any= / =:maybe=, unknown kind, positional form, unknown
+  tail key, plist on =:type :text=, plist without =:column t= all
+  rejected; wire tripwire over =plist-to-json= (default key present
+  with the value, absent for the bare plist form). The four existing
+  =:filter-with= tests keep passing unchanged. Suite 69/69,
+  =widget-all-models-compile= included; sortable (16/16) and searchable
+  (65/65) re-run green.
+- *Chores flip* (=models/chores.lisp=): =:completed= moves to
+  =(:kind :boolean :default :false)= — entering the type lands on No
+  ("open chores"), Clear restores No.
+
+One plan deviation, in the test only: the plan asserted the wire
+=:default= renders as the quoted string ="false"=. It actually renders
+as a JSON boolean =false= — =plist-to-json-atom= maps =:true= / =:false=
+to bare =true= / =false= (the same rule =parse-json-atom= inverts). The
+frontend helpers match the real wire (==== true / false=); the wire
+tripwire asserts the boolean form and the test docstring records the
+correction. No serializer change was needed or made.
+
+Post-DONE browser-pass fix [2026-10-04]: first build blanked the
+page on login (Donnie's report). Cause: the seeding =useRef= /
+=useEffect= were placed in the render body *after* the
+=if (!loggedIn)= / =if (!data)= early returns — a Rules-of-Hooks
+violation (hook count differs between login screen and list
+render; React fatal, blank page). Fix: =boolSeededForRef= moved
+up beside the other refs, the seeding effect moved next to the
+fetchList-trigger effect (both unconditional calls), and a
+module-level =boolDefaultsOf(form)= helper feeds both the effect
+and the Clear-filters handler. The console's source-map error is
+benign (no .map in dist; Firefox fetched HTML). Rebuilt
+(index-arbPe_hb.js) and verified served on chores-stg.
+
+Verified: widget/sortable/searchable suites green; live =fe-fields=
+emits ={"kind":"boolean","default":false}= on chores =:completed=;
+=dataui@chores= restarted cleanly and chores-stg serves the new
+compiler, flipped model, and rebuilt dist — =/api/list= shows
+the object, filtered =:eq ":false"= returns 53 of 67, health OK
+through HAProxy TLS.
+
+Plan: [[file:~/workbench/filter-with-default.org][filter-with-default.org]].
 ** TODO Hide =logged-in= from assignable-role palettes :backend:frontend:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-09-25 Fri]
@@ -1136,6 +1453,64 @@ Guru Meditation Number); retention probe via =u:tree-get
 *compiled-model*= inside =with-model=; new fixture
 =models/test/captions-test.lisp=; =run-caption-tests= added to the
 =run-tests= alist.
+
+** TODO =:button= fields on =:list-form= (row-level actions) :backend:frontend:model:
+:PROPERTIES:
+:CREATED: [2026-10-04 Sun]
+:END:
+Let =:button= fields appear in list views so an action can be fired
+from a row without opening the edit form. Named consumer: chores
+=:complete= — one-click completion from the list (the =:spawn=
+pattern is the easy case: sync, =complete=, close-and-refresh maps
+cleanly to list context).
+
+*Difficulty evaluated 2026-10-04 against the live image: moderate.
+Well-scoped, no schema or protocol changes, no new =:ui= keys; but
+it touches three enforced "buttons are update-form-only"
+invariants. Roughly a focused half-day of Lisp plus a day of
+frontend.*
+
+Opt-in shape: explicit =:list-form= field list naming the button.
+Keep =:fields t= excluding buttons (base types stay safe:
+=:settings= has a =:change-password= button and deliberately omits
+it). The wire already carries form membership, so no =:ui= subkey
+is needed. Rollups can't regress (=:button= on a rollup is already
+a compile error).
+
+Backend touch points:
+- =fe-fields= (backend.lisp): the one-line exclusion clause
+  =(not (and (member form '(:list-form :add-form)) (equal
+  field-type :button)))= becomes list-form-eligible only when the
+  explicit =:fields= list names the button. =:add-form= stays
+  excluded.
+- =form-field-keys= (backend.lisp): today drops =:file= and
+  =:button= keys from record-value fetches. A listed button must
+  appear in the *schema* but never hydrate (its compiled =:source
+  :alias-key= is nil — verified live; it would aggregate to nil).
+  Surgical edit: shared by =/api/list= hydration, =rec=, and
+  =be-list-column= (allowed-values palettes) — a careless change
+  alters =/api/item= payloads too.
+- Status companion parity: =augment-update-form= auto-appends
+  =:<button>-status= to explicit update-form lists; a list-form
+  listing wants the same treatment so the FE can read row status
+  (=running= disable, failed feedback).
+- Docs: =model-reference.md= forms rules ("Buttons appear on the
+  update form only") and the =fe-fields= eligibility list; test
+  =fe-fields-excludes-button-from-list-add=
+  (=tests/action-tests.lisp=) needs a list-form-eligible sibling.
+
+Frontend (App.tsx):
+- New =:button= branch in the list cell renderer: fire a slim
+  list-action submit (type + row id + field to =/api/actions=),
+  pending state, disabled while =<field>-status= is =running=,
+  =fetchList()= on completion.
+- Do *not* reuse =handleAction= — it is coupled to the open edit
+  form (=editRecord=, =formDef=, password gate, re-open on
+  failure). A ~40-line sibling reusing =pendingActions= is
+  cleaner.
+- Async hooks (=:deploy-model=): v1 is click-refresh only; per-row
+  async status polling (the open form's 3s poller equivalent) is
+  polish on top.
 
 * Scratch
 * Conf

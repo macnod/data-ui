@@ -244,7 +244,19 @@ for the placeholders."
                                 value index)))
       for has-all-fragments = (car exists-result)
       for has-all-values = (cadr exists-result)
+      ;; nil-valued :eq / :ne → is [not] null, no placeholder and no
+      ;; collected value. Decided on the raw value before anything is
+      ;; emitted, inside the loop: placeholder numbering counts the
+      ;; values collected so far, so a translation that collected a
+      ;; stray value would desynchronize every later $N (wrong bind or
+      ;; a bind-count error). Post-db-value-fix, a nil reaching the
+      ;; :eq arm would bind :null and never match (col = NULL is not
+      ;; true in three-valued logic) — this arm makes the intent
+      ;; match the SQL. :null from the wire is the same nil.
+      for null-eq-p = (and (member op-key '(:eq :ne))
+                        (or (null value) (equal value :null)))
       for placeholders = (cond
+                           (null-eq-p nil)
                            ((member op-key '(:in :not-in))
                              (format nil "(~{~a~^, ~})"
                                (placeholders value :start-at index)))
@@ -253,6 +265,7 @@ for the placeholders."
                                has-all-fragments))
                            (t (format nil "$~d" index)))
       collect (cond
+                (null-eq-p nil)
                 ((member op-key '(:in :not-in))
                   (mapcar
                     (lambda (v)
@@ -271,9 +284,14 @@ for the placeholders."
       ;; The :has-all condition is the parenthesized EXISTS group
       ;; alone — a standalone boolean expression, not the
       ;; "alias op value" shape the other operators produce.
-      collect (if has-all-p
-                placeholders
-                (format nil "~a ~a ~a" alias op placeholders))
+      ;; The null-eq-p translation is "alias is [not] null" with
+      ;; no placeholder.
+      collect (cond
+                (has-all-p placeholders)
+                (null-eq-p
+                  (format nil "~a is ~:[not ~;~]null" alias
+                    (eq op-key :eq)))
+                (t (format nil "~a ~a ~a" alias op placeholders)))
       into conditions
       finally
       (let ((where (format nil "~a~%where~%  ~{~a~^~%  and ~}~%"
@@ -387,16 +405,28 @@ actual column in the associated table, such as fields that have a non-nil
            (resolve-reference-id type-key field-key value))
           (t
            (let ((type (getf field-def :type)))
+             ;; NIL on a nullable scalar column is a clear-to-NULL:
+             ;; map it to :null (SQL NULL). The driver binds bare NIL
+             ;; as SQL FALSE, which 22007s on timestamp and silently
+             ;; stores "false" on text. :boolean keeps NIL (a
+             ;; legitimate false encoding); :list / :password never
+             ;; reach the driver from these arms (join tables and
+             ;; password hashing have their own write paths).
              (case type
-               (:text value)
+               (:text (if (null value) :null value))
                (:password (a:password-hash user value))
-               (:real (if (numberp value) value (parse-number value)))
-               (:integer (if (numberp value) value (parse-number value)))
+               (:real (if (null value)
+                        :null
+                        (if (numberp value) value (parse-number value))))
+               (:integer (if (null value)
+                           :null
+                           (if (numberp value) value (parse-number value))))
                (:boolean (format nil "~(~a~)" value))
-               (:uuid (if (equal value :generate-uuid)
-                        (u:uuid)
-                        value))
-               (:timestamp value)
+               (:uuid (cond
+                        ((null value) :null)
+                        ((equal value :generate-uuid) (u:uuid))
+                        (t value)))
+               (:timestamp (if (null value) :null value))
                (:list value)
                (t (report-ve "db-value"
                     "Invalid value ~s for field ~s ~s with field type ~s"
@@ -666,11 +696,17 @@ user-defined types (non-:built-in), excluding \"admin\"."
     list))
 
 (defun show-roles-p (type-key form user)
-  (declare (ignore form user))
+  "Non-nil when the synthetic :roles checkbox-list belongs on FORM of
+TYPE-KEY: non-base, not :suppress-roles, and FORM is not :list-form
+(list views show no Roles column; the rollup view-mode /api/item
+fallback also passes :list-form). :users' real :roles M2M field is
+a normal field and unaffected."
+  (declare (ignore user))
   (let* ((m *compiled-model*)
           (base (u:tree-get m type-key :base))
           (suppress (u:tree-get m type-key :suppress-roles)))
-    (when (and (not base) (not suppress))
+    (when (and (not base) (not suppress)
+               (not (equal form :list-form)))
       t)))
 
 (defun fe-fields (type-key user)
@@ -2650,7 +2686,14 @@ WHERE on a joined table."
       do
       (valid-filter filter :required t)
       (destructuring-bind (table-key field-key op-key value) filter
-        (let ((column (measure-grain-column-filter type-key filter)))
+        (let ((column (measure-grain-column-filter type-key filter))
+              ;; nil :eq / :ne → is [not] null with no placeholder and
+              ;; no param appended — the same translation as
+              ;; add-where-clause; the index below counts
+              ;; (length params), so appending nothing keeps both
+              ;; sides of the numbering in sync.
+              (null-eq-p (and (member op-key '(:eq :ne))
+                            (or (null value) (equal value :null)))))
           (unless column
             (report-ve "measure-request-grain-filters"
               "Filter (~s ~s ~s ...) is not a grain-column filter on ~
@@ -2658,24 +2701,28 @@ WHERE on a joined table."
                filtered (measure fields, fact tables, and unexposed ~
                grain columns are not supported on rollups)."
               ~table-key ~field-key ~op-key ~type-key))
-          (let* ((index (+ start-at (length params)))
-                 (op (operator-sql op-key))
-                 (placeholders
-                   (if (member op-key '(:in :not-in :has-all))
-                     (format nil "(~{~a~^, ~})"
-                       (placeholders value :start-at index))
-                     (format nil "$~d" index))))
-            (push (format nil "~a ~a ~a" column op placeholders)
+          (if null-eq-p
+            (push (format nil "~a is ~:[not ~;~]null" column
+                    (eq op-key :eq))
               conditions)
-            (setf params (append params
-                          (if (member op-key '(:in :not-in :has-all))
-                            (mapcar
-                              (lambda (v)
-                                (db-value type-key field-key user v))
-                              value)
-                            (list
-                              (db-value type-key field-key user
-                                value))))))))
+            (let* ((index (+ start-at (length params)))
+                   (op (operator-sql op-key))
+                   (placeholders
+                     (if (member op-key '(:in :not-in :has-all))
+                       (format nil "(~{~a~^, ~})"
+                         (placeholders value :start-at index))
+                       (format nil "$~d" index))))
+              (push (format nil "~a ~a ~a" column op placeholders)
+                conditions)
+              (setf params (append params
+                            (if (member op-key '(:in :not-in :has-all))
+                              (mapcar
+                                (lambda (v)
+                                  (db-value type-key field-key user v))
+                                value)
+                              (list
+                                (db-value type-key field-key user
+                                  value)))))))))
       finally
       (return (values (nreverse conditions) params)))))
 

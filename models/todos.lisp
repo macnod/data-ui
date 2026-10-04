@@ -32,7 +32,7 @@
           :column t :not-null t :unique t)
         :done
         (:type :boolean :default :false :sortable t
-          :ui (:label "Done" :widget :checkbox)
+          :ui (:label "Done" :widget :checkbox :filter-with :boolean)
           :source (:view :main :column :done :agg :first)
           :column t :not-null t)
         :tags

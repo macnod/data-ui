@@ -667,9 +667,10 @@ Notes:
       (is-true (uuid-p (be-delete :tags tag-id "admin"))))))
 
 (test be-rec-includes-roles
-  "rec (used by /api/item) must include :roles in the returned record,
-  matching what list-result (used by /api/list) does. Without this, the
-  edit form shows no roles checked even though the list view shows them."
+  "rec (used by /api/item) includes :roles on the :update-form record
+  — the roles the edit/view forms seed their checkbox-list from. The
+  :list-form record carries no synthetic :roles (list views show no
+  Roles column; list records have none either)."
   (let ((test-todo-name "rec-roles-test"))
     ;; Cleanup
     (be-delete :todos `((:todos :name :eq ,test-todo-name)) "admin")
@@ -686,12 +687,12 @@ Notes:
           "rec record must include the 'public' role")
         (is-true (member "logged-in" (getf record :roles) :test 'equal)
           "rec record must include the 'logged-in' role"))
-      ;; rec with :list-form should also include roles
+      ;; rec with :list-form carries no synthetic :roles
       (let ((record (getf (be-rec todo-id "admin"
                            :form :list-form :type-key :todos)
                           :record)))
-        (is-true (member "public" (getf record :roles) :test 'equal)
-          "rec :list-form record must include the 'public' role"))
+        (is-false (getf record :roles)
+          "rec :list-form record must not include a synthetic :roles"))
       ;; Cleanup
       (is-true (uuid-p (be-delete :todos todo-id "admin"))))))
 
@@ -1866,26 +1867,54 @@ they must not be offered."
       (be-delete :users `((:users :name :eq ,user)) "admin"))))
 
 (test show-roles-p-non-admin
-  "show-roles-p returns t for non-base, non-suppressed types for any user."
+  "show-roles-p returns t for non-base, non-suppressed types on the
+  add/update forms only — nil on :list-form (list views carry no
+  Roles column)."
   (let ((user "show-roles-user"))
     (th-make-user user :roles '("todo-users"))
     (unwind-protect
       (progn
-        ;; Non-admin user sees roles on :todos
-        (is-true (show-roles-p :todos :list-form user))
+        ;; List views show no Roles column, for any user
+        (is-false (show-roles-p :todos :list-form user))
+        (is-false (show-roles-p :todos :list-form "admin"))
+        ;; Add/update forms keep the Roles checkbox-list
         (is-true (show-roles-p :todos :add-form user))
-        ;; Admin also sees roles
-        (is-true (show-roles-p :todos :list-form "admin")))
+        (is-true (show-roles-p :todos :update-form "admin")))
       ;; Cleanup
       (be-delete :users `((:users :name :eq ,user)) "admin"))))
 
 (test show-roles-p-base-types
-  "show-roles-p returns nil for base types."
+  "show-roles-p returns nil for base types, and for :list-form on
+  non-base types (the form gate: base types never had the injection;
+  non-base types stop injecting on the list view)."
   (is-false (show-roles-p :users :list-form "admin"))
-  (is-false (show-roles-p :roles :list-form "admin")))
+  (is-false (show-roles-p :roles :list-form "admin"))
+  (is-false (show-roles-p :todos :list-form "admin")))
+
+(test fe-fields-roles-form-placement
+  "The synthetic :roles field appears on the add/update form schemas
+  only — never :list-form. allowed-values keeps its :roles palette
+  (the Add form seeds from it), and :users' real :roles M2M field
+  stays in the list form."
+  ;; No synthetic roles in the list-form schema
+  (is-false (getf (getf (fe-fields :todos "admin") :list-form) :roles))
+  ;; Add and update forms keep it
+  (is-true (getf (getf (fe-fields :todos "admin") :add-form) :roles))
+  (is-true (getf (getf (fe-fields :todos "admin") :update-form) :roles))
+  ;; Palette untouched (Add form depends on it)
+  (is-true (getf (allowed-values :todos "admin") :roles))
+  ;; :users' real M2M field still listed
+  (is-true (getf (getf (fe-fields :users "admin") :list-form) :roles)))
+
+(test be-list-records-lack-roles
+  "be-list :records on a non-base type carry no synthetic :roles key
+  (the list view attaches roles to no record)."
+  (is-false (some (lambda (r) (getf r :roles))
+                  (getf (be-list :todos "admin") :records))))
 
 (test add-roles-to-view-filters-creator-exclusive
-  "add-roles-to-view filters out admin and creator's exclusive role."
+  "add-roles-to-view filters out admin and creator's exclusive role
+  (asserted on the update-form record: list records carry no roles)."
   (let ((user "filter-excl-user")
         (todo-name "filter-excl-todo"))
     (th-make-user user :roles '("todo-users"))
@@ -1895,11 +1924,9 @@ they must not be offered."
       (let* ((todo-id (be-insert :todos
                        `(:name ,todo-name) user
                        :roles '("public")))
-             (result (getf (be-list :todos user) :records))
-             (record (find-if
-                       (lambda (r)
-                         (equal (getf r :id) todo-id))
-                       result))
+             (record (getf (be-rec todo-id user
+                          :form :update-form :type-key :todos)
+                          :record))
              (roles (getf record :roles)))
         (is-true (member "public" roles :test 'equal))
         ;; Admin is filtered out

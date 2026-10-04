@@ -430,8 +430,13 @@ function create_profile {
     echo "  Admin:      admin / ${ADMIN_PASSWORD}"
     echo
     echo "Next: edit $(profile_env_path "$PROFILE_NAME") (LOG_SEVERITY=INFO),"
+    if [[ "$PROFILE_NAME" == "$MODEL_NAME" ]]; then
+        echo "  optional, for a public URL (needs sudo): $SCRIPT_NAME profile expose ${PROFILE_NAME}"
+    fi
     echo "then: $SCRIPT_NAME e-demo start ${PROFILE_NAME}   (nightly-reset class)"
     echo "  or: $SCRIPT_NAME demo start ${PROFILE_NAME}    (no-reset class)"
+    echo "e-demos: seed via the admin UI, then snapshot the golden the nightly reset restores:"
+    echo "  $SCRIPT_NAME snapshot save stg-${PROFILE_NAME}-golden stg:${PROFILE_NAME}"
 }
 
 function delete_profile {

@@ -1546,6 +1546,16 @@ from a:login on \"\"."
      :file :password-new :password-read :button :hidden :image :image-list)
   "Allowed values for the :widget key on a field :ui plist.")
 
+(defparameter *ui-keys*
+  '(:label :widget :read-only :precision :options :table :filter-with)
+  "Closed set of legal keys on a field :ui plist. An author key not in
+this list is a compile error.")
+
+(defparameter *filter-with-kinds* '(:boolean)
+  "Closed set of :filter-with kinds. Per-kind tail keys and values are
+validated in valid-filter-with-value; adding a kind means adding a
+keyword here, a tail validator there, and a frontend renderer.")
+
 (setq *base-model*
   `(:users
      (:table t :base t :built-in t
@@ -2457,14 +2467,19 @@ capitalizes each word, and joins with spaces."
             (write-char ch out)))))))
 
 (defun valid-ui-keys (ui)
-  "Check that no dead/rejected keys are present on the :ui plist. Signals via
-report-e if any are found."
+  "Reject dead :ui key aliases (with their migration hint), then reject any
+key not in *ui-keys* (the closed set). Signals via report-e."
   (loop for bad-key in '(:render-as :input-type :form-control)
     when (u:has (u:plist-keys ui) bad-key)
     do (report-e "valid-ui-keys"
          "Rejected key ~s found on :ui plist. ~
           Use :widget instead."
-         ~bad-key)))
+         ~bad-key))
+  (loop for key in (u:plist-keys ui)
+    unless (member key *ui-keys*)
+    do (report-e "valid-ui-keys"
+         "Unknown :ui key ~s. Legal keys: ~{~a~^, ~}."
+         ~key ~*ui-keys*)))
 
 (defun valid-widget-value (widget)
   "Check that WIDGET is a known widget keyword. Signals via report-e if not."
@@ -2502,6 +2517,90 @@ otherwise."
             ":options is only valid with :widget :select, got ~s"
             ~widget))))))
 
+(defun valid-label-value (ui)
+  "Check that :label, if present, is a string. Signals via report-ve
+otherwise."
+  (let ((label (getf ui :label :missing)))
+    (unless (or (eq label :missing) (stringp label))
+      (report-ve "valid-label-value"
+        ":label must be a string, got ~s."
+        ~label))))
+
+(defun valid-precision-value (ui)
+  "Check that :precision, if present, is a number (no type gate; it is a
+display hint consumed by toFixed). Signals via report-ve otherwise."
+  (let ((precision (getf ui :precision :missing)))
+    (unless (or (eq precision :missing) (numberp precision))
+      (report-ve "valid-precision-value"
+        ":precision must be a number, got ~s."
+        ~precision))))
+
+(defun valid-table-value (ui)
+  "Check that :table, if present, is a keyword. The key stays authorable even
+though fe-fields overwrites it on the wire. Signals via report-ve otherwise."
+  (let ((table (getf ui :table :missing)))
+    (unless (or (eq table :missing) (keywordp table))
+      (report-ve "valid-table-value"
+        ":table must be a keyword, got ~s."
+        ~table))))
+
+(defun filter-with-kind (filter-with)
+  "Effective kind of a :filter-with value: the value itself for the
+bare-keyword sugar, the :kind entry for the plist form, :invalid for
+anything else. Does not signal; valid-filter-with-value is the check.
+u:plistp (not bare listp) so this gate and valid-filter-with-value
+agree on what a plist is — a dotted or odd list falls to :invalid
+there instead of dying inside getf / plist-keys."
+  (cond
+    ((keywordp filter-with) filter-with)
+    ((and (u:plistp filter-with) (keywordp (getf filter-with :kind)))
+      (getf filter-with :kind))
+    (t :invalid)))
+
+(defun valid-filter-with-value (ui)
+  "Check :filter-with, if present. Two author shapes: the bare keyword
+:filter-with :boolean (sugar, no default) and the plist
+(:kind :boolean [:default :true | :false]). The tail key set is closed
+(:kind, :default); :kind must be in *filter-with-kinds*; :default is
+optional and accepts only :true / :false — Any is the omitted default
+and is not spellable. Signals via report-ve otherwise."
+  (let ((fw (getf ui :filter-with :missing)))
+    (unless (eq fw :missing)
+      (cond
+        ((keywordp fw)
+          (unless (member fw *filter-with-kinds*)
+            (report-ve "valid-filter-with-value"
+              ":filter-with ~s is not one of ~{~a~^, ~}."
+              ~fw ~*filter-with-kinds*)))
+        ((not (u:plistp fw))
+          (report-ve "valid-filter-with-value"
+            ":filter-with must be :boolean or a plist like ~
+             (:kind :boolean :default :true), got ~s."
+            ~fw))
+        (t
+          (let ((kind (getf fw :kind))
+                (default (getf fw :default :missing))
+                (legal '(:kind :default)))
+            (unless kind
+              (report-ve "valid-filter-with-value"
+                ":filter-with plist requires :kind, got ~s." ~fw))
+            (unless (member kind *filter-with-kinds*)
+              (report-ve "valid-filter-with-value"
+                ":filter-with kind ~s is not one of ~{~a~^, ~}."
+                ~kind ~*filter-with-kinds*))
+            (dolist (key (u:plist-keys fw))
+              (unless (member key legal)
+                (report-ve "valid-filter-with-value"
+                  "Unknown :filter-with key ~s. Legal keys: ~{~a~^, ~}."
+                  ~key ~legal)))
+            (unless (eq default :missing)
+              (unless (member default '(:true :false))
+                (report-ve "valid-filter-with-value"
+                  ":filter-with :default must be :true or :false ~
+                   (Any is the omitted default and not spellable); ~
+                   got ~s."
+                  ~default)))))))))
+
 (defun finalize-ui (field-key ui)
   "Compile-time gate for field :ui plists. Validates keys and widget values, then
 injects safe defaults:
@@ -2520,6 +2619,11 @@ Rejects:
   (valid-read-only-value ui)
   ;; Validate :options shape/widget if present
   (valid-options-value ui)
+  ;; Validate per-key values for the remaining checked keys
+  (valid-label-value ui)
+  (valid-precision-value ui)
+  (valid-table-value ui)
+  (valid-filter-with-value ui)
   ;; Validate widget if explicitly present
   (let ((widget (getf ui :widget)))
     (when widget
@@ -2709,6 +2813,26 @@ correct there). Returns the effective :source plist."
               ":searchable t is not valid on :target (FK) fields; ~
                field ~s of type ~s."
               ~new-field-key ~type-key)))
+        ;; :filter-with :boolean requires :type :boolean and :column t.
+        ;; The value rule itself is valid-filter-with-value's (it sees the
+        ;; plist); repeating it here names the field on a bad value.
+        (let ((filter-with (getf ui-val :filter-with)))
+          (when filter-with
+            (unless (eq (filter-with-kind filter-with) :boolean)
+              (report-e "compile-field"
+                ":filter-with kind must be :boolean; field ~s of ~
+                 type ~s has ~s."
+                ~new-field-key ~type-key ~filter-with))
+            (unless (eq field-type :boolean)
+              (report-e "compile-field"
+                ":filter-with is only valid on :type :boolean ~
+                 fields; field ~s of type ~s has :type ~s."
+                ~new-field-key ~type-key ~field-type))
+            (unless column
+              (report-e "compile-field"
+                ":filter-with requires :column t; field ~s of type ~s ~
+                 has no column."
+                ~new-field-key ~type-key))))
         (let* ((final-ui (when ui-val
                            (finalize-ui new-field-key ui-val)))
                 (final-def (if final-ui
@@ -4151,6 +4275,15 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
             (equal key :options)
             (member :ui key-path)
             (listp sdef))
+           t)
+         ((and
+            (equal key :filter-with)
+            (member :ui key-path)
+            (listp sdef))
+           ;; :filter-with plist (kind/default grammar). Shape, kind set, and
+           ;; tail values are validated in valid-filter-with-value; the walker
+           ;; must not recurse into it (a future kind's list-valued tail is not
+           ;; a plist).
            t)
          ((u:plistp sdef)
            (preliminary-model-check def (append key-path (list key))))

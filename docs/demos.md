@@ -1,11 +1,11 @@
 # Demo Walkthroughs
 
-Guided tours of the live applications introduced in [Live Demos](../README.md#live-demos). Each e-demo walkthrough logs in as an ordinary user, shows you something the model is hiding from that user, then logs in again as a user holding the role that reveals it. Same data, same compiled app — the only variable is who you are. That is RBAC working end to end, and all of it was decided by the model, not by per-user code.
+Guided tours of the live applications introduced in [Live Demos](../README.md#live-demos). Each e-demo walkthrough logs in as an ordinary user, shows you something the model is hiding from that user, then logs in again as a user holding the role that reveals it. Same data, same compiled app; the only variable is who you are. That is RBAC working end to end, and all of it was decided by the model, not by per-user code.
 
 ## Conventions
 
-- **Guest access.** Every app — e-demo or demo — accepts the login `guest` with no password. Guests are read-only.
-- **Demo users.** The e-demo apps (To Do List, Books & Authors) publish demo users with write access: `demos`, `alice`, and `bob`. All three share one public password: `TryDataUI2026!`. The roles they hold are what the stories below turn on.
+- **Guest access.** Every app, e-demo or demo, accepts the login `guest` with no password. Guests are read-only.
+- **Demo users.** The e-demo apps (To Do List, Home Chores, Books & Authors) publish demo users with write access. To Do List and Books & Authors publish `demos`, `alice`, and `bob`; Home Chores publishes `demos`, `donnie`, `tracy`, and `mel`. All share one public password: `TryDataUI2026!`. The roles they hold are what the stories below turn on.
 - **Nightly reset.** The e-demo apps reset to a known state every morning at 04:10 (US Pacific). Anything you change is gone by then; that is the point of a shared demo.
 - **On-request access.** The demo apps (currently Model Bank) are persistent. Beyond `guest`, credentials are available on request.
 
@@ -34,12 +34,25 @@ A similar story in a different shape. As `demos` you can see most of the library
 
 Log in as `alice` (same password) and the self-help shelf appears.
 
+## Home Chores
+
+**Link:** https://chores-stg.demo.data-ui.com/ **Login:** `demos` / `TryDataUI2026!` (`donnie`, `tracy`, and `mel` work too, with the same password)
+
+A different story: not hidden data, but durable history. This is the `:spawn` pattern pilot. Each chore row is an open instance; a Complete button closes it and inserts a fresh successor in one click.
+
+1. In the `chores` tab, find an open chore (Done unchecked) and click its Edit icon (pencil).
+2. Click **Complete** on the edit form. The row closes with Done checked, Completed At stamped, Completed By set to you.
+3. Back in the list, a fresh open instance of the same chore has appeared: same name, points, and tags; notes cleared. The definition persists, the instance restarts. Nothing was coded per chore; the model's `:spawn` action does it all.
+4. Open the `scoreboard` tab. The rollup sums points and counts completed chores per user; the column headers are sortable. Your completion just moved your row.
+
+The completed rows stay in the list. That is the point. History is kept, not overwritten. (Keep in mind the nightly reset: scoreboard standings reflect the golden state plus whatever visitors have done since 04:10.)
+
 ## Model Bank
 
-**Link:** https://modelbank.demo.data-ui.com/ **Login:** `guest` — no password, read-only.
+**Link:** https://modelbank.demo.data-ui.com/ **Login:** `guest`; no password, read-only.
 
-A gallery of models with ownership, images, and ratings. Anything beyond `guest` — write access, including the Generate and Deploy buttons — is available on request: [contact Donnie](https://sinistercode.com/public/donnie/contact).
+A gallery of models with ownership, images, and ratings. Anything beyond `guest` (write access, including the Generate and Deploy buttons) is available on request: [contact Donnie](https://sinistercode.com/public/donnie/contact).
 
 ---
 
-More demos are on the way; this page will grow with them.
+More demos are on the way; this page will grow with them. These demo apps work well, but Data UI is a system in motion: the MVP lands December 31, 2026.
