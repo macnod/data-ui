@@ -721,9 +721,13 @@ function load_profile {
 # A snapshot is a portable artifact in one shared pool, aimed at an
 # explicit address. Every address is <qualifier>:<name>, mandatory,
 # no unqualified fallback: stg:<profile> is a host profile, dev:<model>
-# is the built-in dev environment (the 5444 REPL) asserting its model.
-# Identity comes from the address, never from the live app.
-#
+# is the built-in dev environment (the 5444 REPL) asserting its model,
+# prd:<instance> is a k3d production deploy. Identity comes from the
+# address, never from the live app.
+
+# One string, every parse-error site + both usage texts: the next arm
+# is one edit (round-2 should-fix).
+LEGAL_ADDRESSES="dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books), prd:<instance> (e.g. prd:todos)"
 
 function valid_snapshot_name {
     # Same grammar as profile names; the colon is illegal so an
@@ -737,24 +741,24 @@ function valid_snapshot_name {
 function resolve_snapshot_address {
     # Parse and resolve an explicit <qualifier>:<name> address into the
     # shell environment (DB_CONTAINER etc.) plus ADDRESS_MODEL (the
-    # asserted model: the dev token, or the profile's MODEL_NAME — a
-    # colon-tail is a PROFILE name, never a model name) and
-    # ADDRESS_QUALIFIER. The referent is validated: dev: requires
-    # models/<model>.lisp, stg: requires profile.env.
+    # asserted model: the dev token, the profile's MODEL_NAME, or —
+    # prd — the instance name itself) and ADDRESS_QUALIFIER. The
+    # referent is validated: dev: requires models/<model>.lisp, stg:
+    # requires profile.env, prd: requires the live cluster namespace.
     local raw="$1" role="$2"
     [[ -n "$raw" ]] \
-        || die "Missing ${role} address. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+        || die "Missing ${role} address. Legal shapes: ${LEGAL_ADDRESSES}."
     [[ "$raw" != *:* ]] \
-        && die "Invalid ${role} address '${raw}': no qualifier. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+        && die "Invalid ${role} address '${raw}': no qualifier. Legal shapes: ${LEGAL_ADDRESSES}."
     [[ "$raw" != *:*:* ]] \
-        || die "Invalid ${role} address '${raw}': extra colon. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+        || die "Invalid ${role} address '${raw}': extra colon. Legal shapes: ${LEGAL_ADDRESSES}."
     local qualifier="${raw%%:*}" name="${raw#*:}"
     [[ -n "$qualifier" ]] \
-        || die "Invalid ${role} address '${raw}': empty qualifier. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+        || die "Invalid ${role} address '${raw}': empty qualifier. Legal shapes: ${LEGAL_ADDRESSES}."
     [[ -n "$name" ]] \
-        || die "Invalid ${role} address '${raw}': empty name. Legal shapes: dev:<model> (e.g. dev:books), stg:<profile> (e.g. stg:books)."
+        || die "Invalid ${role} address '${raw}': empty name. Legal shapes: ${LEGAL_ADDRESSES}."
     # Qualifiers are case-sensitive and resolved through this registry;
-    # it IS the grammar spec (cluster substrates are post-MVP arms).
+    # it IS the grammar spec.
     case "$qualifier" in
         dev)
             if [[ ! -f "$(model_file_path "$name")" ]]; then
@@ -773,19 +777,248 @@ function resolve_snapshot_address {
             load_profile "$name"
             ADDRESS_MODEL="$MODEL_NAME"
             ;;
+        prd)
+            resolve_prd_address "$name" "$role"
+            ;;
         *)
-            die "Unknown ${role} address qualifier '${qualifier}' in '${raw}'. Known qualifiers: dev, stg."
+            die "Unknown ${role} address qualifier '${qualifier}' in '${raw}'. Known qualifiers: dev, stg, prd."
             ;;
     esac
     ADDRESS_QUALIFIER="$qualifier"
     ADDRESS_NAME="$name"
 }
 
+function resolve_prd_address {
+    # prd:<name> — a k3d production deploy. The tail IS the model
+    # (equivalently the instance): namespace, deployments, and Secret
+    # are all dataui-<name> / <name>. Cluster is truth; no local file
+    # is consulted, and never secrets.env (a cache; the live Secret is
+    # the source and a stale cache would re-stamp the wrong password).
+    local name="$1" role="$2"
+    # Name grammar FIRST, before the name is interpolated into kubectl
+    # -n dataui-<name> and friends: this regex is the arm's own gate
+    # (same shape as valid_snapshot_name's, but that validates the
+    # snapshot slot name — a different argument; do not cite it).
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] \
+        || die "Invalid instance name '${name}' for ${role} address prd:${name} (must match ^[A-Za-z0-9][A-Za-z0-9_-]*$)."
+    # Checkout: model_field / get_model_field shell out to
+    # lisp/deployment.lisp via a checkout-relative path (verb_start's
+    # pattern). prd snapshot verbs therefore run from any cwd.
+    cd "$(dirname "$(readlink -f "$0")")/.." \
+        || die "cannot cd to the checkout for prd:${name}"
+    # Local-host guard: snapshots read cluster truth and host files
+    # (snapshot pool, PV hostPaths) that only exist on the deploy
+    # host. DEPLOY_HOST is exported only inside haproxy_env, so that
+    # setup must run first (round-5 correction: a guard called before
+    # it dies on an unset DEPLOY_HOST on the correct machine).
+    haproxy_env
+    require_haproxy_host "snapshot ${role} with a prd: address"
+    kubectl get ns "dataui-${name}" &>/dev/null \
+        || die "No deployed instance '${name}' for ${role} address prd:${name} (namespace dataui-${name} not found in the cluster)."
+    # NodePort, pinned from the live Service (never reconstructed);
+    # HTTP_HOST/HTTP_PORT ride the +1000 loopback hop so
+    # api_info_model works unchanged over plain HTTP.
+    local node_port
+    node_port=$(kubectl -n "dataui-${name}" get svc "dataui-${name}" \
+                    -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    [[ -n "$node_port" ]] \
+        || die "Service dataui-${name} (namespace dataui-${name}) has no NodePort for prd:${name}."
+    # Passwords — the arm owns the exports, unconditionally
+    # (environment-inheritance hazard): a dev:/stg: resolve earlier in
+    # the same shell leaves its DB_PASSWORD/ADMIN_PASSWORD/PGPASSWORD
+    # exported, and stamp_admin_password would hash the stale value
+    # into prod. get_cluster_secret is a bare pipe with no status
+    # check, so empty reads die here rather than exporting empty.
+    local ns_secret
+    for ns_secret in admin-password db-password; do
+        local key value
+        key="${ns_secret%%-*}_password"
+        NAMESPACE="dataui-${name}" NAME="$name" \
+            value=$(get_cluster_secret "$ns_secret")
+        [[ -n "$value" ]] \
+            || die "Empty '${ns_secret}' read from Secret dataui-${name}-secrets (namespace dataui-${name}) for prd:${name}; refusing to proceed with an empty password."
+        if [[ "$ns_secret" == "db-password" ]]; then
+            DB_PASSWORD="$value"
+        else
+            ADMIN_PASSWORD="$value"
+        fi
+    done
+    export DB_PASSWORD ADMIN_PASSWORD
+    export PGPASSWORD="$DB_PASSWORD"
+    # DB identity pinned by the k8s templates; the two named
+    # coordinates every prd path reads (db_exec, the prd die message).
+    # Never DB_SERVICE: compose-only, unset on the prd path.
+    export DB_NAME="dataui" DB_USER="dataui"
+    PRD_NAMESPACE="dataui-${name}"
+    PRD_PG_DEPLOY="dataui-${name}-postgres"
+    export PRD_NAMESPACE PRD_PG_DEPLOY
+    export HTTP_HOST="127.0.0.1" HTTP_PORT=$(( node_port + 1000 ))
+    # DOCUMENT_ROOT, pinned from the live files PV (cluster-is-truth;
+    # never string surgery on /data/k8s/...). No files side yet → an
+    # exported EMPTY string: "resolved; there is no files side". Every
+    # save-path consumer checks -d (false for empty), and the restore
+    # path's snapshot_restore_files skips on -z before any path
+    # arithmetic (basename ""/dirname "" are nonsense — the hole this
+    # export shape would otherwise open).
+    local pv_root
+    pv_root=$(kubectl -n "dataui-${name}" get pv \
+                  "dataui-${name}-demo-files-pv" \
+                  -o jsonpath='{.spec.hostPath.path}' 2>/dev/null)
+    if [[ -n "$pv_root" ]]; then
+        export DOCUMENT_ROOT="$pv_root"
+    else
+        export DOCUMENT_ROOT=""
+    fi
+    ADDRESS_MODEL="$name"
+}
+
 function address_slot_prefix {
     # Destination-address slot key, colon -> dash (stg:books ->
     # stg-books-golden / stg-books-last / stg-books-prerestore;
-    # dev:books -> dev-books-prerestore).
+    # dev:books -> dev-books-prerestore; prd:todos ->
+    # prd-todos-prerestore — the prd slots fall out unchanged).
     echo "${1/:/-}"
+}
+
+function prd_swap_begin {
+    # Mark the files-swap window open for the EXIT trap. The keep-aside
+    # path mirrors snapshot_restore_files' own derivation: parked old
+    # tree = newest <base>.pre-restore-<ts> beside DOCUMENT_ROOT
+    # (the ts is not knowable in advance, so it is discovered at
+    # swap-begin time — exactly when the aside is being created).
+    local base parent keep
+    [[ -z "$DOCUMENT_ROOT" ]] && return 0
+    base=$(basename "$DOCUMENT_ROOT")
+    parent=$(dirname "$DOCUMENT_ROOT")
+    keep=$(ls -1d "${parent}/${base}.pre-restore-"* 2>/dev/null | tail -1)
+    PRD_KEEP_ASIDE="${keep:-}"
+    PRD_SWAP_STARTED=1
+}
+
+function prd_swap_end {
+    # The new tree is in place: close the window (the trap must not
+    # move a keep-aside back over a good tree).
+    PRD_SWAP_STARTED=""
+    PRD_KEEP_ASIDE=""
+}
+
+function prd_app_deploy {
+    # The app Deployment name for a prd instance (dataui-<name>).
+    echo "dataui-${ADDRESS_NAME}"
+}
+
+function prd_quiesce {
+    # Scale the app to 0 and WAIT until the pod is actually gone (a
+    # Terminating pod still holds the RWO files PVC mount, and the
+    # host-side mv swap must not start while it does). Not rollout
+    # status: some kubectl versions return as soon as the spec says 0.
+    # The pod selector is exactly app=dataui-<name> (template 40;
+    # postgres pods carry app=dataui-<name>-postgres — verified on the
+    # live cluster, M1). On timeout, scale back up and die: dying with
+    # the app left at 0 and no trap installed yet would strand prod.
+    kubectl -n "$PRD_NAMESPACE" scale "deploy/$(prd_app_deploy)" \
+            --replicas=0 >/dev/null \
+        || die "could not scale ${PRD_NAMESPACE}/deploy/$(prd_app_deploy) to 0; aborting (prod untouched)."
+    local waited=0
+    while kubectl get pods -n "$PRD_NAMESPACE" \
+              -l "app=$(prd_app_deploy)" \
+              --field-selector=status.phase=Running 2>/dev/null \
+          | grep -q "$(prd_app_deploy)"; do
+        if (( waited >= 120 )); then
+            kubectl -n "$PRD_NAMESPACE" scale "deploy/$(prd_app_deploy)" \
+                    --replicas=1 >/dev/null 2>&1
+            die "app pod still Running 120s after scale-to-0; scaled back" \
+                "to 1, database untouched. Investigate: kubectl -n" \
+                "${PRD_NAMESPACE} get pods."
+        fi
+        sleep 2; waited=$(( waited + 2 ))
+    done
+}
+
+function prd_restore_trap {
+    # EXIT-trap backstop for a prd restore, installed after the
+    # scale-to-0 and disarmed before the rollback exit and before the
+    # success echo. NOT a rollback mechanism and not a set -e
+    # substitute (the script has neither): it is the backstop for
+    # signals, Ctrl-C, kill, and body dies between install and disarm
+    # (e.g. snapshot_restore_files' die on a bad tar, which is after
+    # the DB restore and wants the revive). SIGKILL is the one
+    # exception no trap can cover: under kill -9 nothing runs, the app
+    # stays at 0, and the manual revive named here is the recovery.
+    # Best-effort throughout: kubectl may be unavailable; never die.
+    [[ -n "${PRD_RESTORE_ACTIVE:-}" ]] || return 0
+    # 1. Files swap mid-flight? Put the keep-aside back BEFORE scaling:
+    #    a revive into the swap window would serve an app with no files
+    #    tree while this message talks about the database.
+    if [[ -n "${PRD_SWAP_STARTED:-}" && -n "${PRD_KEEP_ASIDE:-}" ]] \
+       && [[ -e "$PRD_KEEP_ASIDE" ]] \
+       && [[ ! -e "${PRD_RESTORE_DOCROOT:-}" ]]; then
+        mv "$PRD_KEEP_ASIDE" "$PRD_RESTORE_DOCROOT" 2>/dev/null \
+            || echo "WARNING: could not restore the parked files tree" \
+                 "${PRD_KEEP_ASIDE}; recover it by hand." >&2
+    fi
+    # 2. Staged safety temps: promote onto the slot when the schema
+    #    drop had started (the DB may be invalid; the slot is the
+    #    data-level undo), clean when it had not (DB untouched).
+    if [[ -n "${PRD_DROP_STARTED:-}" ]]; then
+        [[ -n "${PRD_SAFETY_TMP:-}" && -f "$PRD_SAFETY_TMP" ]] \
+            && mv "$PRD_SAFETY_TMP" "${SNAPSHOT_DIR}/${PRD_SLOT}.dump" 2>/dev/null
+        [[ -n "${PRD_SAFETY_META:-}" && -f "$PRD_SAFETY_META" ]] \
+            && mv "$PRD_SAFETY_META" "$(meta_path "$PRD_SLOT")" 2>/dev/null
+        [[ -n "${PRD_SAFETY_FILES:-}" && -f "$PRD_SAFETY_FILES" ]] \
+            && mv "$PRD_SAFETY_FILES" "$(snapshot_files_path "$PRD_SLOT")" 2>/dev/null
+    else
+        rm -f "${PRD_SAFETY_TMP:-}" "${PRD_SAFETY_META:-}" "${PRD_SAFETY_FILES:-}"
+    fi
+    # 3. Revive (best effort).
+    if ! kubectl -n "$PRD_NAMESPACE" scale "deploy/$(prd_app_deploy)" \
+                 --replicas=1 &>/dev/null; then
+        echo "WARNING: could not scale the app back to 1; revive" \
+             "manually: kubectl -n ${PRD_NAMESPACE} scale" \
+             "deploy/$(prd_app_deploy) --replicas=1" >&2
+    fi
+    # 4. Three facts, never an overclaim.
+    echo "prd restore aborted; scaled ${PRD_NAMESPACE}/deploy/$(prd_app_deploy) back to 1 replica (best effort)." >&2
+    if [[ -n "${PRD_RESTORE_DONE:-}" ]]; then
+        echo "The database was successfully restored; only the coda was cut short." >&2
+    elif [[ -n "${PRD_DROP_STARTED:-}" ]]; then
+        echo "The schema drop had started: the database is NOT guaranteed valid (empty, partial, or unverified rollback)." >&2
+        echo "Manual undo: $SCRIPT_NAME snapshot restore ${PRD_SLOT} prd:${ADDRESS_NAME}" >&2
+    else
+        echo "The schema drop had not started: the database is untouched." >&2
+    fi
+}
+
+function prd_revive {
+    # Scale back to 1, wait for Ready, then a bounded health predicate:
+    # HTTP 200 from GET /health on the loopback hop, 2s x 30 (60s).
+    # Any other answer — 502, 503, refused — is failure (rollout Ready
+    # means the manifest's own probe passed; the predicate is explicit
+    # because any-HTTP-answer is not success). On failure the error
+    # names the prerestore slot; the operator's undo is one more
+    # restore.
+    local slot="$1" i code
+    kubectl -n "$PRD_NAMESPACE" scale "deploy/$(prd_app_deploy)" \
+            --replicas=1 >/dev/null \
+        || { echo "ERROR: scale-to-1 failed; revive manually: kubectl -n ${PRD_NAMESPACE} scale deploy/$(prd_app_deploy) --replicas=1" >&2; return 1; }
+    if ! kubectl -n "$PRD_NAMESPACE" rollout status \
+             "deploy/$(prd_app_deploy)" --timeout=300s >/dev/null 2>&1; then
+        echo "WARNING: rollout did not report Ready within 300s;" \
+             "continuing to the health check." >&2
+    fi
+    for i in $(seq 1 30); do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -m 2 \
+                   "http://${HTTP_HOST}:${HTTP_PORT}/health" 2>/dev/null)
+        if [[ "$code" == "200" ]]; then
+            echo "App revived (HTTP 200 on /health via the loopback hop)."
+            return 0
+        fi
+        sleep 2
+    done
+    echo "ERROR: app did not answer 200 on /health within 60s of" \
+         "scale-up (last: ${code:-none})." >&2
+    echo "Recover with: $SCRIPT_NAME snapshot restore ${slot} prd:${ADDRESS_NAME}" >&2
+    return 1
 }
 
 function meta_path {
@@ -933,6 +1166,11 @@ function save_unreachable_policy {
         stg)
             echo "note: /api/info unreachable; identity taken from profile.env (already checked) — saving anyway"
             ;;
+        prd)
+            # Identity is the namespace + Secret, both already checked
+            # by the resolver; same rationale as stg:.
+            echo "note: /api/info unreachable; identity taken from the cluster (namespace + Secret, already checked) — saving anyway"
+            ;;
     esac
 }
 
@@ -992,10 +1230,25 @@ function confirm_model_for_restore {
 function require_postgres_running {
     # The die hint keys on the destination qualifier (Snapshot 2):
     # dev: is the natural restore shape (REPL down, Postgres up) and
-    # "e-demo start" is wrong advice there.
-    compose exec -T "$DB_SERVICE" pg_isready -U "$DB_USER" &>/dev/null \
-        || die "PostgreSQL (${DB_SERVICE}) is not reachable." \
-               "Start it with '$SCRIPT_NAME db' (or 'repl') first."
+    # "e-demo start" is wrong advice there. prd carries its own die
+    # message naming the postgres Deployment and a rollout-status
+    # hint — the dev advice ("db"/"repl") is compose-only nonsense
+    # on the prd path, and DB_SERVICE is unset there. pg_isready
+    # needs no -U/-d (a reachability probe), so it bypasses db_exec's
+    # appended identity on purpose.
+    if [[ "${ADDRESS_QUALIFIER:-}" == "prd" ]]; then
+        kubectl exec -i -n "$PRD_NAMESPACE" "deploy/$PRD_PG_DEPLOY" -- \
+            env PGPASSWORD="$DB_PASSWORD" pg_isready -h 127.0.0.1 \
+            &>/dev/null \
+            || die "PostgreSQL (${PRD_PG_DEPLOY} in namespace" \
+                   "${PRD_NAMESPACE}) is not reachable." \
+                   "Check: kubectl -n ${PRD_NAMESPACE} rollout status" \
+                   "deploy/${PRD_PG_DEPLOY}"
+    else
+        compose exec -T "$DB_SERVICE" pg_isready -U "$DB_USER" &>/dev/null \
+            || die "PostgreSQL (${DB_SERVICE}) is not reachable." \
+                   "Start it with '$SCRIPT_NAME db' (or 'repl') first."
+    fi
 }
 
 function preflight_ports {
@@ -1020,6 +1273,37 @@ function ensure_storage_dirs {
 
 function compose {
     docker compose -p "${DB_CONTAINER}" -f "${DB_DOCKER_COMPOSE}" "$@"
+}
+
+function db_exec {
+    # Qualified dispatcher for every database touch on the snapshot
+    # paths: compose exec -T on dev/stg (DB_SERVICE, docker compose),
+    # kubectl exec -i on prd (PRD_NAMESPACE / PRD_PG_DEPLOY from the
+    # prd resolver arm). Connection identity is appended by the
+    # dispatcher so callers pass only the verb and its flags: on prd,
+    # TCP auth with the Secret's password (the init container's
+    # mechanism, -h 127.0.0.1 + PGPASSWORD); on dev/stg, -U/-d against
+    # the compose service (missing -U made pg_dump resolve the
+    # invoking uid inside the container and die with "local user with
+    # ID 1000 does not exist"). stdin/stdout stream through
+    # kubectl exec -i exactly as they do through compose exec -T, so
+    # pg_dump -Fc to a host file and pg_restore from one need no new
+    # plumbing. -i, NEVER -t: stdin must forward without a TTY (the
+    # reset_public_schema heredoc, pg_restore -l < file, and
+    # container_pg_restore's stdin all depend on it); -t would
+    # allocate a TTY and corrupt the stream — do not add it later to
+    # make pg_isready look interactive. Never reads DB_HOST / DB_PORT:
+    # the cluster database has no host-side address. Two compose sites
+    # stay on compose deliberately (verb_start's stg pg_isready wait,
+    # wait_for_postgres): prd never reaches them.
+    if [[ "${ADDRESS_QUALIFIER:-}" == "prd" ]]; then
+        kubectl exec -i -n "$PRD_NAMESPACE" "deploy/$PRD_PG_DEPLOY" -- \
+            env PGPASSWORD="$DB_PASSWORD" "$@" \
+            -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME"
+    else
+        compose exec -T "$DB_SERVICE" "$@" \
+            -U "$DB_USER" -d "$DB_NAME"
+    fi
 }
 
 function wait_for_postgres {
@@ -1855,6 +2139,7 @@ function undeploy {
     local node="k3d-${K3D_CLUSTER}-server-0"
     local data_dir="/data/k8s/data-ui/${NAME}-${DEPLOY_ENV}"
     local state_dir="${DEPLOY_STATE_DIR}/${NAME}"
+    local farewell="prd-${NAME}-last"
     echo "About to delete instance '${NAME}' (${DEPLOY_ENV}):"
     echo "  - Kubernetes namespace ${NAMESPACE} and its PVs"
     echo "  - Application data in ${node}:${data_dir}"
@@ -1862,10 +2147,39 @@ function undeploy {
     echo "  - Deploy state in ${state_dir} (including secrets)"
     echo
     echo "This destroys the instance's database and uploaded files."
+    echo "A farewell snapshot ('${farewell}') is saved to the shared"
+    echo "snapshot pool first, and survives the delete (FORCE=1 skips it)."
     if [[ -z "$FORCE" ]]; then
         local reply
         read -r -p "Type the instance name ('${NAME}') to confirm: " reply
         [[ "$reply" == "$NAME" ]] || die "Confirmation did not match; aborting."
+    fi
+    # Farewell snapshot: the delete-side twin of the stop verb's
+    # p-last refresh. delete destroys the db and files volumes, so the
+    # last state is saved to the shared pool first, under the same
+    # -last slot shape the stg profile world uses; address-keyed names
+    # (prd-todos-last vs stg-todos-last) keep the two apart in the one
+    # flat pool. Rotating: a redeploy + re-delete of the same name
+    # overwrites it. Saved only when the namespace exists — a re-run
+    # after a partial delete has nothing to save and must not block
+    # the retry. A failed save dies with the data still intact;
+    # FORCE=1 skips the farewell entirely (the "I really mean it"
+    # lever, same as the confirmation it also skips). snapshot_save_pair
+    # resolves prd:${NAME} from cluster truth (deploy host only —
+    # delete already is, or re-execs there via ssh).
+    if [[ -n "$FORCE" ]]; then
+        echo "FORCE set; skipping the farewell snapshot (${farewell})."
+    elif kubectl get ns "$NAMESPACE" &>/dev/null; then
+        echo
+        echo "Saving farewell snapshot '${farewell}' (prd:${NAME})..."
+        snapshot_save_pair "$farewell" "prd:${NAME}"
+        echo "Farewell snapshot '${farewell}' is in the pool; it survives"
+        echo "the delete (recover into a fresh deploy with 'snapshot"
+        echo "restore ${farewell} prd:${NAME}')."
+    else
+        echo
+        echo "Namespace ${NAMESPACE} not found; no farewell snapshot to"
+        echo "save (partial-delete re-run)."
     fi
     # Every step tolerates already-deleted resources, so a delete that
     # fails partway can simply be re-run.
@@ -1907,6 +2221,8 @@ function undeploy {
     echo "Not removed (housekeeping, see docs/deployment.md):"
     echo "  - Docker images macnod/data-ui:${NAME}-* (daemon and k3d node)"
     echo "  - Git release tags ${NAME}-*"
+    echo "  - Farewell snapshot ${farewell} in the snapshot pool (drop"
+    echo "    with: $SCRIPT_NAME snapshot drop ${farewell})"
 }
 
 #
@@ -1952,25 +2268,20 @@ except Exception:
 # (SET transaction_timeout), which used to leave the schema dropped and
 # nothing restored.
 function container_pg_dump {
-    compose exec -T "$DB_SERVICE" \
-        pg_dump -U "$DB_USER" -d "$DB_NAME" \
-                --format=custom --no-owner --no-privileges
+    db_exec pg_dump --format=custom --no-owner --no-privileges
 }
 
 function container_pg_restore {
     # Reads the custom-format archive from stdin. --single-transaction
     # makes the restore atomic: a failure leaves the schema exactly as
     # it was before the restore started.
-    compose exec -T "$DB_SERVICE" \
-        pg_restore -U "$DB_USER" -d "$DB_NAME" \
-                   --no-owner --no-privileges --exit-on-error \
-                   --single-transaction
+    db_exec pg_restore --no-owner --no-privileges --exit-on-error \
+            --single-transaction
 }
 
 # Drop and recreate the public schema so a restore starts clean.
 function reset_public_schema {
-    compose exec -T "$DB_SERVICE" psql -U "$DB_USER" -d "$DB_NAME" \
-         -v ON_ERROR_STOP=1 >/dev/null <<SQL
+    db_exec psql -v ON_ERROR_STOP=1 >/dev/null <<SQL
 DROP SCHEMA public CASCADE;
 CREATE SCHEMA public;
 GRANT ALL ON SCHEMA public TO ${DB_USER};
@@ -1996,9 +2307,18 @@ function write_snapshot_meta_atomically {
         echo "model=${model}"
         echo "source-address=${src_address}"
         echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        version=$(MODEL_NAME="$model" model_field version)
-        if [[ -n "$version" && "$version" != "NIL" ]]; then
-            echo "model-version=${version}"
+        # prd-motivated but qualifier-blind: a Deploy-button instance
+        # may have no models/<model>.lisp in this checkout (it lives
+        # in the deploy clone's models/local/). No file → no
+        # model_field call → no model-version line; dev/stg always
+        # have the file, so no behavior change there. The guard lives
+        # here, not in the resolver, so verb_stop's stg-p-last refresh
+        # and every other caller get the same skip.
+        if [[ -f "models/${model}.lisp" ]]; then
+            version=$(MODEL_NAME="$model" model_field version)
+            if [[ -n "$version" && "$version" != "NIL" ]]; then
+                echo "model-version=${version}"
+            fi
         fi
     } > "$staged"
 }
@@ -2072,7 +2392,11 @@ function snapshot_save_pair {
         echo "warning: DOCUMENT_ROOT (${DOCUMENT_ROOT}) missing;" \
              "snapshot '${name}' saved DB only"
         echo "Saved snapshot '${name}':"
-        echo "  ${dpath} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+        if [[ "${ADDRESS_QUALIFIER:-}" == "prd" ]]; then
+            echo "  ${dpath} (${PRD_PG_DEPLOY}:5432/${DB_NAME})"
+        else
+            echo "  ${dpath} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+        fi
     fi
 }
 
@@ -2084,6 +2408,11 @@ function snapshot_restore {
     # notice, and the prerestore slot's own .meta. The prerestore
     # slot is derived from the DEST address (dev:books ->
     # dev-books-prerestore); the slot name alone does not imply it.
+    # prd destinations are deliberately stricter: every check that
+    # can fail runs before the scale-to-0 (never scale prod down for
+    # a typo), confirm_model_for_restore is skipped entirely (its
+    # two possible answers are both dead weight under prd), and the
+    # body is wrapped in quiesce → EXIT trap → revive.
     local name="$1" dst_address="$2"
     local path="${SNAPSHOT_DIR}/${name}.dump"
     local slot safety_tmp safety_files safety_meta
@@ -2116,16 +2445,48 @@ function snapshot_restore {
     # must not journal a warning on every nightly restore forever).
     local snap_version dest_version
     snap_version="$(meta_read "$name" model-version)"
-    dest_version=$(MODEL_NAME="$ADDRESS_MODEL" model_field version)
+    if [[ -f "models/${ADDRESS_MODEL}.lisp" ]]; then
+        dest_version=$(MODEL_NAME="$ADDRESS_MODEL" model_field version)
+    else
+        dest_version=""
+        echo "note: no models/${ADDRESS_MODEL}.lisp in this checkout" \
+             "(deployed instance); skipping the version compare" >&2
+    fi
     if [[ -n "$snap_version" && -n "$dest_version" \
           && "$dest_version" != "NIL" \
           && "$snap_version" != "$dest_version" ]]; then
         echo "warning: model version differs — snapshot '${name}' is" \
              "v${snap_version}, destination is v${dest_version}" >&2
     fi
-    confirm_model_for_restore "$ADDRESS_MODEL"
+    if [[ "$ADDRESS_QUALIFIER" != "prd" ]]; then
+        confirm_model_for_restore "$ADDRESS_MODEL"
+    fi
+    # All checks that can fail run BEFORE the prd scale-to-0:
+    # postgres reachable, then the TOC (a corrupt archive must die
+    # while prod is still up — never scale-to-0 for a typo, and never
+    # pay for a safety dump of a live prod DB first).
     require_postgres_running
     mkdir -p "$SNAPSHOT_DIR"
+    if ! db_exec pg_restore -l < "$path" >/dev/null; then
+        # Runs before any prd scale-to-0, so prod is still up here —
+        # no trap armed, nothing to disarm; die plain.
+        die "Snapshot '${name}' is not a readable archive;" \
+            "database untouched."
+    fi
+    if [[ "$ADDRESS_QUALIFIER" == "prd" ]]; then
+        echo "prd destination: scaling ${PRD_NAMESPACE}/deploy/$(prd_app_deploy) to 0 for the duration (ratified: prod downtime beats a live-app restore while there are no transactions)."
+        prd_quiesce
+        slot="$(address_slot_prefix "$dst_address")-prerestore"
+        # Trap state for prd_restore_trap (globals: the trap handler
+        # cannot see this function's locals).
+        PRD_SLOT="$slot"
+        PRD_SAFETY_TMP="" PRD_SAFETY_META="" PRD_SAFETY_FILES=""
+        PRD_DROP_STARTED="" PRD_SWAP_STARTED="" PRD_KEEP_ASIDE=""
+        PRD_RESTORE_DOCROOT="$DOCUMENT_ROOT"
+        PRD_RESTORE_DONE=""
+        PRD_RESTORE_ACTIVE=1
+        trap prd_restore_trap EXIT
+    fi
     # The pre-restore safety net is the rotating address-keyed slot
     # (dest address, colon -> dash). Stage the current DB, files tree,
     # and a fresh .meta to temp names; on failure roll back FROM temp;
@@ -2157,15 +2518,15 @@ function snapshot_restore {
                  "slot will hold DB only" >&2
         fi
     fi
-    # Read the archive TOC before dropping anything: catches truncated
-    # or corrupt snapshots while the database is still intact.
-    if ! compose exec -T "$DB_SERVICE" pg_restore -l < "$path" >/dev/null; then
-        rm -f "$safety_tmp" "$safety_files" "$safety_meta"
-        die "Snapshot '${name}' is not a readable archive;" \
-            "database untouched."
+    if [[ "$ADDRESS_QUALIFIER" == "prd" ]]; then
+        PRD_SAFETY_TMP="$safety_tmp" PRD_SAFETY_META="$safety_meta"
+        PRD_SAFETY_FILES="$safety_files"
     fi
     # Drop the entire public schema (tables, functions, triggers,
     # sequences) and recreate it so the restore is clean.
+    if [[ "$ADDRESS_QUALIFIER" == "prd" ]]; then
+        PRD_DROP_STARTED=1
+    fi
     if ! reset_public_schema; then
         rm -f "$safety_tmp" "$safety_files" "$safety_meta"
         die "Could not reset the public schema; database may be inconsistent."
@@ -2186,9 +2547,33 @@ function snapshot_restore {
                  "saved at ${SNAPSHOT_DIR}/${slot}.dump; recover" \
                  "manually." >&2
         fi
+        # prd: disarm FIRST — the trap must not scale the app back up
+        # right after the body deliberately left it down (and on the
+        # CRITICAL branch it would race a scale-up against a database
+        # the message just called recover-only-by-hand). Both message
+        # paths converge on this single exit 1, so one disarm covers
+        # both; both messages state the 0-replicas contract below.
+        if [[ "$ADDRESS_QUALIFIER" == "prd" ]]; then
+            PRD_RESTORE_ACTIVE=""
+            trap - EXIT
+            echo "The app is STILL AT 0 REPLICAS by design (a restore" \
+                 "over a possibly-bad database must not serve). Revive" \
+                 "manually with: kubectl -n ${PRD_NAMESPACE} scale" \
+                 "deploy/$(prd_app_deploy) --replicas=1" \
+                 "— or re-run the restore." >&2
+        fi
         exit 1
     fi
+    if [[ "$ADDRESS_QUALIFIER" == "prd" ]]; then
+        # Flag the swap window for the trap before the files swap
+        # starts; prd_restore_swap_done clears it once the new tree
+        # is in place.
+        prd_swap_begin
+    fi
     snapshot_restore_files "$name" || true
+    if [[ "$ADDRESS_QUALIFIER" == "prd" ]]; then
+        prd_swap_end
+    fi
     stamp_admin_password
     # Full success: rotate the staged triple onto the prerestore slot.
     mv "$safety_tmp" "${SNAPSHOT_DIR}/${slot}.dump"
@@ -2199,7 +2584,19 @@ function snapshot_restore {
     echo "Pre-restore state saved to slot '${slot}'" \
          "(rotating; overwritten by the next restore)"
     snapshot_password_notice "$name" "$dst_address" "$src_address"
-    echo "Restored snapshot '${name}' ← ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+    if [[ "$ADDRESS_QUALIFIER" == "prd" ]]; then
+        # Disarm before the revive's health predicate can fail (a
+        # failing predicate prints the slot and exits nonzero; the
+        # trap would double-revive and double-report).
+        PRD_RESTORE_DONE=1
+        trap - EXIT
+        if ! prd_revive "$slot"; then
+            exit 1
+        fi
+        echo "Restored snapshot '${name}' ← ${path} (${PRD_PG_DEPLOY}:5432/${DB_NAME})"
+    else
+        echo "Restored snapshot '${name}' ← ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
+    fi
 }
 
 function stamp_admin_password {
@@ -2218,8 +2615,7 @@ function stamp_admin_password {
     hash=$(printf '%s' "admin${ADMIN_PASSWORD}" | sha512sum | cut -c1-32)
     [[ "$hash" =~ ^[0-9a-f]{32}$ ]] \
         || die "Could not compute the admin password hash (got '${hash}'); database restored, password NOT re-stamped."
-    rows=$(compose exec -T "$DB_SERVICE" psql -U "$DB_USER" -d "$DB_NAME" \
-             -v ON_ERROR_STOP=1 -tA \
+    rows=$(db_exec psql -v ON_ERROR_STOP=1 -tA \
              -c "update users set password_hash = '${hash}', updated_at = now() where user_name = 'admin' returning id")
     if [[ -z "$rows" ]]; then
         echo "WARNING: no 'admin' user in the restored database —" \
@@ -2229,6 +2625,7 @@ function stamp_admin_password {
     local origin
     case "$ADDRESS_QUALIFIER" in
         dev) origin="the dev environment (static admin-password-1)" ;;
+        prd) origin="the ${PRD_NAMESPACE} Secret (dataui-${ADDRESS_NAME}-secrets)" ;;
         *)   origin="${ADDRESS_QUALIFIER}:${ADDRESS_NAME}'s profile.env" ;;
     esac
     echo "Admin password re-stamped to the destination's own" \
@@ -2270,6 +2667,19 @@ function snapshot_restore_files {
     fpath="$(snapshot_files_path "$name")"
     if [[ ! -f "$fpath" ]]; then
         echo "(no files side; restored database only)"
+        return
+    fi
+    # prd hole (rounds 3–4): a prd resolve exports an EMPTY
+    # DOCUMENT_ROOT when the instance has no files PV, and
+    # basename ""/dirname "" are nonsense ("", "."). A DB-only prd
+    # restore that still holds a files-side tar would otherwise die
+    # after the DB restore already succeeded. Skip before any path
+    # arithmetic; qualifier-blind because the function's other callers
+    # are exactly the "resolver guaranteed a real directory" shape
+    # that makes the hole invisible until a new arm opens it.
+    if [[ -z "$DOCUMENT_ROOT" ]]; then
+        echo "note: destination has no files side (empty DOCUMENT_ROOT);" \
+             "files tar for '${name}' left in the pool, not restored"
         return
     fi
     base=$(basename "$DOCUMENT_ROOT")
@@ -2826,16 +3236,16 @@ case "$ACTION" in
         case "$sub" in
             save)
                 [[ -n "${3:-}" && -n "${4:-}" ]] \
-                    || die "snapshot save needs a name and a source address: '$SCRIPT_NAME snapshot save <name> <src-address>' (e.g. books-1 dev:books, stg-books-golden stg:books)." \
-                           "Legal address shapes: dev:<model>, stg:<profile>."
+                    || die "snapshot save needs a name and a source address: '$SCRIPT_NAME snapshot save <name> <src-address>' (e.g. books-1 dev:books, stg-books-golden stg:books, todos-prd-1 prd:todos)." \
+                           "Legal address shapes: ${LEGAL_ADDRESSES}."
                 [[ -z "${5:-}" ]] \
                     || die "snapshot save takes exactly two arguments (name, source address)."
                 snapshot_save_pair "$3" "$4"
                 ;;
             restore)
                 [[ -n "${3:-}" && -n "${4:-}" ]] \
-                    || die "snapshot restore needs a name and a destination address: '$SCRIPT_NAME snapshot restore <name> <dst-address>' (e.g. books-1 stg:books, stg-books-golden dev:books)." \
-                           "Legal address shapes: dev:<model>, stg:<profile>."
+                    || die "snapshot restore needs a name and a destination address: '$SCRIPT_NAME snapshot restore <name> <dst-address>' (e.g. books-1 stg:books, stg-books-golden dev:books, todos-prd-1 prd:todos)." \
+                           "Legal address shapes: ${LEGAL_ADDRESSES}."
                 [[ -z "${5:-}" ]] \
                     || die "snapshot restore takes exactly two arguments (name, destination address)."
                 snapshot_restore "$3" "$4"
@@ -2873,8 +3283,11 @@ Save or restore a snapshot between explicit environments.
 Addresses are <qualifier>:<name>, both tokens mandatory on save /
 restore — no defaults, no unqualified fallback. Qualifiers: dev
 (built-in 5444 REPL, asserting the loaded model: dev:books), stg
-(host profile: stg:books). The one-arg muscle-memory forms are hard
-errors; the message names both legal shapes.
+(host profile: stg:books), prd (k3d production deploy:
+prd:todos; must run on the deploy host from a checkout — the
+verb scales the app to 0 for a restore, see docs/snapshots.md).
+The one-arg muscle-memory forms are hard errors; the message
+names the legal shapes.
 
 FORCE=1 meanings: skip the delete/profile confirmations, and the
 one escape on 'save' when dev:'s /api/info is unreachable. It

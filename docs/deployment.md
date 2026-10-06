@@ -238,7 +238,7 @@ A war story, so you don't repeat it: the very first end-to-end deploy "failed" w
 
 ### Password re-stamping on snapshot restore
 
-The snapshot machinery (dev + staging profiles) re-stamps the destination's own admin password hash after every restore, so the env and the database never disagree there. The Kubernetes deploy path has no snapshot restore; its secrets flow (above) applies.
+The snapshot machinery (dev + staging profiles, and production via `prd:` addresses) re-stamps the destination's own admin password hash after every restore, so the env and the database never disagree. For a `prd:<name>` destination the working password after a restore is the cluster Secret's `admin-password` — restore reads it live from the Secret (never the `secrets.env` cache) and re-stamps with exactly that value. See [snapshots.md](snapshots.md) → Production for the full `prd:` story (deploy-host-only, scale-to-0 restore, prerestore slot, the EXIT trap's failure modes).
 
 ### Password format trivia
 
@@ -297,7 +297,7 @@ In English: lowercase the Host header, look it up in the map; if found, route to
         option httpchk GET /health
         server dataui-todos 172.18.0.2:30303 check inter 2000 rise 2 fall 3
 
-That points at the k3d node's IP and the instance's NodePort, with an active health check against the same `/health` endpoint the Kubernetes probes use. (`assign_backend_target` prefers the k3d-published loopback hop `127.0.0.1:<NodePort+1000>` when it answers — e.g. `127.0.0.1:31303` — and falls back to the node's bridge IP only when no mapping responds.) The `conf.d` directory is enabled via `EXTRAOPTS` in `/etc/default/haproxy` (also a one-time, idempotent step).
+That points at the k3d node's IP and the instance's NodePort, with an active health check against the same `/health` endpoint the Kubernetes probes use. (`assign_backend_target` is fail-closed on the k3d-published loopback hop `127.0.0.1:<NodePort+1000>` — e.g. `127.0.0.1:31303` — since 2026-09-30: if the hop does not answer, the deploy dies rather than render a bridge-IP target that goes stale when docker reassigns node IPs.) The `conf.d` directory is enabled via `EXTRAOPTS` in `/etc/default/haproxy` (also a one-time, idempotent step).
 
 On every deploy, the script: installs/updates the backend file, upserts the map entry, **validates the whole config** (`haproxy -c` across the main file and conf.d), and only then reloads. If validation fails, nothing is reloaded and the old routing keeps working.
 
@@ -503,7 +503,7 @@ The fast path: delete the whole instance with one command:
 
     scripts/data-ui delete todos
 
-It deletes the namespace and PVs, wipes the instance's data on the host, removes the HAProxy backend and map entry, and removes the deploy state (including secrets), then prompts you to type the instance name before doing any of it (set `FORCE=1` to skip the prompt, e.g. in a deploy/record/delete rehearsal loop). Docker images and git release tags are left alone. A failed delete can simply be re-run; every step tolerates already-deleted resources.
+It deletes the namespace and PVs, wipes the instance's data on the host, removes the HAProxy backend and map entry, and removes the deploy state (including secrets), then prompts you to type the instance name before doing any of it (set `FORCE=1` to skip the prompt, e.g. in a deploy/record/delete rehearsal loop). Before destroying anything it saves a farewell snapshot of the instance's last state to the shared pool as `prd-<name>-last` (the prd twin of the stop verb's `-last` slot; `FORCE=1` skips that too, and a failed save aborts the delete with the data still intact). Docker images, git release tags, and the farewell snapshot are left alone. A failed delete can simply be re-run; every step tolerates already-deleted resources, and the re-run skips the farewell (nothing left to save).
 
 The manual equivalent, if you want to do it piecewise (or only partway; steps 1–3 are enough for a clean redeploy of the same instance):
 
@@ -523,7 +523,7 @@ The manual equivalent, if you want to do it piecewise (or only partway; steps 1�
     # 5. Deploy
     scripts/data-ui deploy todos
 
-Steps 2 and 3 are the ones people forget. A Released PV refuses to bind to a new claim, and stale postgres data under `/data/k8s/data-ui` will be happily adopted by the new instance, old password and all. (Or skip the list entirely and use `scripts/data-ui delete`, which forgets nothing.)
+Steps 2 and 3 are the ones people forget. A Released PV refuses to bind to a new claim, and stale postgres data under `/data/k8s/data-ui` will be happily adopted by the new instance, old password and all. (Or skip the list entirely and use `scripts/data-ui delete`, which forgets nothing — except the farewell snapshot it deliberately leaves in the pool.)
 
 ---
 

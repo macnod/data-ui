@@ -323,6 +323,83 @@ the object, filtered =:eq ":false"= returns 53 of 67, health OK
 through HAProxy TLS.
 
 Plan: [[file:~/workbench/filter-with-default.org][filter-with-default.org]].
+** DONE =prd:= snapshot addresses (production save/restore) :scripts:docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-05 Mon]
+:COMPLETED: [2026-10-05 Mon]
+:END:
+Extend the snapshot machinery (currently =dev:= / =stg:=) to
+production (k3d deploys): =prd:<name>= resolves from the live
+cluster (namespace =dataui-<name>=, Secret, files PV), a =db_exec=
+dispatcher routes the existing dump/restore calls through
+=kubectl exec=, and restores always scale the app to 0 and back
+(ratified: prod downtime beats live-app restore while there are
+no transactions). Slots fall out of the existing convention
+(=prd-<name>-prerestore=). Motivated by dogfooding chores in
+production (=stg:chores= is the demo), the no-transactions gap,
+demo seeding after button deploys, and preserving visitor data.
+
+Implemented per the plan (all milestones M0–M4). =scripts/data-ui=:
+=db_exec= dispatcher (compose =exec -T= on dev/stg appending
+=-U/-d=, =kubectl exec -i= into =dataui-<name>-postgres= on prd
+with =PGPASSWORD= + =-h 127.0.0.1=; never =-t=), =prd= resolver
+arm (name-grammar gate before interpolation, checkout =cd=,
+=haproxy_env= → =require_haproxy_host=, namespace/NodePort/PV
+jsonpaths from live cluster, own unconditional
+=DB_PASSWORD=/=ADMIN_PASSWORD=/=PGPASSWORD= exports from the
+Secret with empty-read dies, =PRD_NAMESPACE=/=PRD_PG_DEPLOY=
+coordinates, empty-string =DOCUMENT_ROOT= when no files PV),
+=model_field= file-existence guard inside
+=write_snapshot_meta_atomically= and the restore version compare
+(no =models/<n>.lisp= → no =model-version= line), =save=
+unreachable-prd skip, =LEGAL_ADDRESSES= consolidation across all
+parse errors + both usage texts, prd display pair
+=dataui-<name>-postgres:5432= at the two echo sites,
+=snapshot_restore_files= empty-=DOCUMENT_ROOT= skip before any
+=basename=/=dirname=, restore TOC moved ahead of the safety dump
+(all qualifiers), prd restore =confirm_model_for_restore= skipped,
+check-then-scale prelude, =prd_quiesce= (scale-to-0 + Running-pod
+wait, 2s/120s, scale-back on timeout), =prd_restore_trap= EXIT
+backstop (keep-aside restore before scale-up, drop-started fact
+reporting, slot promotion/cleanup, never overclaims database
+validity), =prd_swap_begin=/=prd_swap_end= window flags,
+=prd_revive= (rollout + HTTP-200-on-/health predicate 2s × 30),
+=stamp_admin_password= prd origin case, =require_postgres_running=
+prd branch. One mid-implementation fix beyond the plan text: the
+dispatcher appends =-U "$DB_USER" -d "$DB_NAME"= on the compose
+arm too (the plan's literal call-shape dropped them and stg saves
+died with "local user with ID 1000 does not exist" — caught by the
+M4 stg regression check). Docs: =cli.md= (third address, prd
+downtime paragraph, prd workflows), =snapshots.md= (grammar, a
+Production section, unreachable-policy rows),
+=deployment.md= (password re-stamp section rewritten; stale
+bridge-IP fallback note corrected to fail-closed).
+
+Verified end to end on =prd:todos= (substrate deployed for M0):
+save/list/drop with provenance =prd:todos=; restore + prerestore
+slot round-trip; corrupt-archive refusal leaves the app up (dies at
+TOC before scale and before safety dump); trap fires on kill
+(replicas back to 1, DB-untouched message; drop-started and
+keep-aside paths exercised via direct handler invocation — the
+restore is ~3s and external kill timing could not reliably land
+inside the window); =kill -9= leaves 0 replicas by contract.
+=prd:chores= acceptance: =chores-initial= (saved from
+=stg:chores=; M0's save had not been run — done during
+implementation) restored into a fresh =deploy chores=, login on
+https://chores.demo.data-ui.com with the cluster Secret's admin
+password, 65 demo chore records served. Environment-hygiene pass:
+a =dev:= resolve then a =prd:chores= restore in one shell — the
+arm's own exports win (login still the Secret's password). stg
+regression: =chores-initial= round-trip through =stg:chores=
+unchanged. M0 note: k3d's NodePort iptables rules only appear for
+Services that existed when kube-proxy synced — a fresh namespace
+alone leaves the published loopback hop dead, so both test deploys
+needed a placeholder Service on the NodePort before =deploy=
+passed =assign_backend_target= (host-side workaround, not a repo
+change; the todos test instance is disposable, =delete todos=
+when done).
+
+Plan: [[file:~/workbench/production-snapshots-plan.org][production-snapshots-plan.org]].
 ** TODO Hide =logged-in= from assignable-role palettes :backend:frontend:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-09-25 Fri]

@@ -18,6 +18,7 @@ Every address is `<qualifier>:<name>`, both tokens mandatory — no defaults, no
 
 - `dev:<model>` — the built-in dev environment (the 5444 REPL), asserting the loaded model. `dev:books` requires `models/books.lisp` to exist and confirms the live model.
 - `stg:<profile>` — a host profile. `stg:books` resolves through `/data/data-ui/profiles/books/profile.env`; the model is the profile's `MODEL_NAME` (the tail is a profile name, not a model name).
+- `prd:<instance>` — a k3d production deploy. `prd:todos` resolves from the live cluster (namespace `dataui-<name>`); the tail IS the model name. Runs on the deploy host only, from a checkout (the verb `cd`s to it). See [Production](#production).
 
 The second token is the SOURCE on `save` and the DESTINATION on `restore` — same position, same vocabulary, role fixed by the verb. The one-arg forms (`snapshot save books-1`, `snapshot restore books`) are hard errors that name both legal shapes. Snapshot names share the profile charset `^[A-Za-z0-9][A-Za-z0-9_-]*$` (colon illegal), so a name can never masquerade as an address.
 
@@ -105,7 +106,7 @@ What refusal looks like (each error names the legal shapes):
 
 ```sh
 scripts/data-ui snapshot restore books     # missing address
-scripts/data-ui snapshot save x prod:books # unknown qualifier
+scripts/data-ui snapshot save x dev:nosuch # unknown model / instance
 scripts/data-ui snapshot restore books-1 dev:todos   # model mismatch
 ```
 
@@ -242,7 +243,8 @@ The address-keyed slots are managed by the machinery:
 
 - `stg-<p>-golden` — the nightly reset source for e-demos (manual re-take, as in the examples above);
 - `stg-<p>-last` — refreshed automatically by the stop verbs (the state at the last deliberate pause);
-- `stg-<p>-prerestore` / `dev-<model>-prerestore` — rotated by restore (dev has no golden/last: nothing rewrites its history).
+- `stg-<p>-prerestore` / `dev-<model>-prerestore` — rotated by restore (dev has no golden/last: nothing rewrites its history);
+- `prd-<name>-last` — the delete verb's farewell snapshot, saved before the instance's volumes are destroyed (the prd twin of the stop verb's p-last; rotates if the same name is redeployed and deleted again).
 
 Names are otherwise plain, and the pool is flat. A hand-run `save` naming a slot overwrites it; a hand-run `drop` of a slot silently kills the nightly's golden (or the demo's last) — no confirmation exists. And `save books-1 stg:books` followed by `save books-1 dev:books` overwrites the first snapshot.
 
@@ -252,10 +254,31 @@ Names are otherwise plain, and the pool is flat. A hand-run `save` naming a slot
 
 - `save` + unreachable `dev:` refuses — "what am I dumping" cannot be checked — unless `FORCE=1`;
 - `save` + unreachable `stg:` skips the confirm quietly (identity is `profile.env`, already checked);
-- `restore` + unreachable (either qualifier) skips the confirm — the app-down restore is the natural shape, and the nightly reset depends on this branch.
+- `save` + unreachable `prd:` skips the confirm quietly (identity is the namespace + Secret, already checked);
+- `restore` + unreachable (either qualifier) skips the confirm — the app-down restore is the natural shape, and the nightly reset depends on this branch. Under `prd:` the confirm is skipped outright (see [Production](#production)).
 
 `FORCE=1` buys exactly one thing — the unreachable-dev save escape — plus the usual confirmation skips. It never overrides a model mismatch.
 
 ### One-time migration
 
 `snapshots migrate` renames legacy profile-keyed slots (`<p>-golden` etc.) to `stg-<p>-*` and stubs their `.meta`, idempotently per file. Run it as the state's owner (macnod, never sudo — a root-written stub blocks the next save).
+
+## Production (`prd:`)
+
+`prd:<name>` aims a snapshot at a k3d production deploy. The resolver reads everything from the cluster: the namespace `dataui-<name>` must exist, the NodePort comes from the live Service (the verb talks plain HTTP over the `127.0.0.1:<nodePort+1000>` loopback hop for `/api/info` confirms), `DB_PASSWORD` / `ADMIN_PASSWORD` come from the `dataui-<name>-secrets` Secret (never the `secrets.env` cache), and `DOCUMENT_ROOT` from the live files PV's `hostPath` (an instance with no files PV resolves to an empty `DOCUMENT_ROOT` — a DB-only snapshot, legal like any other). Database work runs via `kubectl exec -i` into the `dataui-<name>-postgres` Deployment (TCP auth with the Secret's password, the init container's mechanism), so no host-side Postgres client is needed and the client version always matches the server.
+
+Constraints:
+
+- **Deploy host only.** The verb dies with a clear message on any other machine (cluster truth and the snapshot pool live on `$DEPLOY_HOST`; there is no ssh re-exec). Run it from a checkout — the verb `cd`s to the repo root itself, like the demo verbs.
+- **A `prd:` restore takes downtime — by design.** Every check that can fail (model match, archive TOC, postgres reachable) runs *before* anything is scaled; a corrupt archive or a mismatch dies with prod still up. The restore then scales the app Deployment to 0, waits until the pod is gone (the files PVC is RWO), does the safety dump / schema drop / `--single-transaction` restore / files swap / admin re-stamp, scales back to 1, and requires HTTP 200 on `/health` before reporting success. Never a live-app restore — ratified: downtime beats it while there are no transactions.
+- **The EXIT trap bounds availability, not data validity.** Kill the process mid-restore and the trap puts back any mid-swap files tree, scales the app back to 1, and prints which state holds: drop-not-started (database untouched), drop-started (database NOT guaranteed valid — the message names the `prd-<name>-prerestore` slot as the manual undo), or restored (only the coda was cut short). `kill -9` is the one exception: nothing runs, the app stays at 0, and the manual revive is `kubectl -n dataui-<name> scale deploy/dataui-<name> --replicas=1`.
+- **The admin password is the Secret's.** Restore re-stamps from the cluster Secret's `admin-password` key, so after any restore the working login is the Secret's value (see [Admin passwords](#admin-passwords-precautions)).
+- **Slots.** `prd-<name>-prerestore` rotates exactly like the dev/stg slots. There is no `prd:` golden — no nightly reset — and the only `prd:` `-last` is the delete verb's farewell snapshot, saved to the shared pool before the instance's volumes are destroyed (rotating; `FORCE=1 delete` skips it). Nightly prd saves are a follow-up, not this machinery.
+
+Typical flow — seed a fresh deploy from a saved snapshot:
+
+```sh
+scripts/data-ui snapshot save chores-initial stg:chores
+scripts/data-ui deploy chores
+scripts/data-ui snapshot restore chores-initial prd:chores
+```

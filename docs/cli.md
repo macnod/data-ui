@@ -195,9 +195,9 @@ Deployment state (rendered manifests, `ports.lock`, per-instance secrets) lives 
 
 #### `delete`
 
-Undeploys the named model's app. Deletes the Kubernetes namespace and persistent volumes, wipes application data on the host, removes the HAProxy backend and map entry, and removes deploy state (including secrets). Asks for confirmation unless `FORCE=1` is set.
+Undeploys the named model's app. Before destroying anything, it saves a **farewell snapshot** of the instance's last state to the shared snapshot pool as `prd-<name>-last` (same `-last` slot shape as the staging stop verb; the `prd-` prefix keeps the two apart in the one flat pool, and it rotates if the same name is ever redeployed and deleted again). Then it deletes the Kubernetes namespace and persistent volumes, wipes application data on the host, removes the HAProxy backend and map entry, and removes deploy state (including secrets). Asks for confirmation unless `FORCE=1` is set.
 
-Docker images and git release tags are left in place.
+A failed farewell save aborts the delete with the data still intact — re-run with `FORCE=1` to delete without the snapshot. A re-run after a partial delete skips the farewell (nothing left to save) and proceeds. Docker images and git release tags are left in place, as is the farewell snapshot itself.
 
 **Examples:**
 
@@ -228,20 +228,22 @@ Subcommands:
 
 - `dev:<model>` — the built-in dev environment (the 5444 REPL), asserting the loaded model: `dev:books` requires `models/books.lisp` and confirms the live model via `/api/info` when reachable
 - `stg:<profile>` — a host profile: `stg:books` resolves `/data/data-ui/profiles/books/profile.env`; model identity is its `MODEL_NAME` (the colon-tail is a PROFILE name, not a model name: `stg:mybooks` may run `MODEL_NAME=todos`)
+- `prd:<instance>` — a k3d production deploy: `prd:todos` resolves from the live cluster (namespace `dataui-<name>`, its Secret, the files PV). The tail IS the model name. Must run on the deploy host (`$DEPLOY_HOST`), from a checkout (the verb `cd`s there like the demo verbs — it shells out to `lisp/deployment.lisp` for best-effort model-version reads). There is no ssh re-exec: snapshots read cluster truth and host files that only exist on the deploy host.
 
-Qualifiers are case-sensitive and resolved through a two-arm registry (`dev`, `stg`; cluster substrates are post-MVP). Snapshot names share the profile charset (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, colon illegal) — an address-shaped name (`snapshot save stg:books stg:books`) is a parse error, not a minted file.
+Qualifiers are case-sensitive and resolved through a three-arm registry (`dev`, `stg`, `prd`). Snapshot names share the profile charset (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, colon illegal) — an address-shaped name (`snapshot save stg:books stg:books`) is a parse error, not a minted file.
 
-Snapshots live in the shared pool `/data/data-ui/snapshots/` (the `DATA_UI_STATE` root; see [Host profiles](#host-profiles)). Dump and restore run inside the PostgreSQL server container (`compose exec`), so the client tools always match the server version.
+Snapshots live in the shared pool `/data/data-ui/snapshots/` (the `DATA_UI_STATE` root; see [Host profiles](#host-profiles)). Dump and restore run inside the PostgreSQL server container (`compose exec` for `dev:` / `stg:`, `kubectl exec -i` into the postgres Deployment for `prd:`), so the client tools always match the server version.
 
 **The .meta manifest:** `save` writes `<name>.meta` beside the pair — key=value lines (model, source-address, timestamp; model-version best-effort via the model file). Nothing in `.meta` comes from `/api/info`. `restore` refuses a model mismatch (`.meta.model` vs the destination address's model — never FORCE-able) and warns when both sides carry a model version and they differ. A missing `.meta` (old snapshots) warns — provenance unknown — then proceeds.
 
-**Password re-stamping:** auth rows travel with the dump; the destination's `ADMIN_PASSWORD` does not. After a successful `pg_restore`, restore unconditionally re-stamps the destination's own admin password hash (`UPDATE users SET password_hash = ... WHERE user_name = 'admin'`, the hash computed exactly as rbac's `a:password-hash` does it). The working admin password after any restore is therefore the destination's own: the static `admin-password-1` for `dev:`, the `ADMIN_PASSWORD` line in `profile.env` for `stg:`. Cross-environment restores still print a NOTICE (auth rows otherwise traveled; log in again — sessions break because the user table was swapped, and the dest `JWT_SECRET` is unchanged). A snapshot carrying a foreign admin hash — the historical residue of cross-env auditions — is neutralized by the next restore into any environment.
+**Password re-stamping:** auth rows travel with the dump; the destination's `ADMIN_PASSWORD` does not. After a successful `pg_restore`, restore unconditionally re-stamps the destination's own admin password hash (`UPDATE users SET password_hash = ... WHERE user_name = 'admin'`, the hash computed exactly as rbac's `a:password-hash` does it). The working admin password after any restore is therefore the destination's own: the static `admin-password-1` for `dev:`, the `ADMIN_PASSWORD` line in `profile.env` for `stg:`, the cluster Secret's `admin-password` key for `prd:`. Cross-environment restores still print a NOTICE (auth rows otherwise traveled; log in again — sessions break because the user table was swapped, and the dest `JWT_SECRET` is unchanged). A snapshot carrying a foreign admin hash — the historical residue of cross-env auditions — is neutralized by the next restore into any environment.
 
 **Unreachable `/api/info`:** a login 401 is never "app down" (it is the expected residue of a cross-env restore) and can never be the source of identity. Policy splits by verb:
 
 - `save` + unreachable `dev:` refuses (start the dev REPL first) unless `FORCE=1`
 - `save` + unreachable `stg:` skips the confirm quietly (identity is `profile.env`, already checked)
-- `restore` + unreachable (either qualifier) skips the confirm — the app down is the natural restore shape (the nightly reset and the stop verb's p-last refresh both depend on this branch)
+- `save` + unreachable `prd:` skips the confirm quietly (identity is the namespace + Secret, already checked)
+- `restore` + unreachable (either qualifier) skips the confirm — the app down is the natural restore shape (the nightly reset and the stop verb's p-last refresh both depend on this branch); under `prd:` the confirm is skipped outright — before the scale-to-0 it could only refuse on stale live-app state (the one thing the restore replaces), after it the app is down by design
 
 (The historical "401 with the app up" save residue — a cross-env restore leaving the DB answering to the source's password — is gone: restore re-stamps the destination's own admin hash.)
 
@@ -249,9 +251,11 @@ Snapshots live in the shared pool `/data/data-ui/snapshots/` (the `DATA_UI_STATE
 
 Restore swaps, never deletes-then-untars: extract to staging, move the old tree aside as `files.pre-restore-<timestamp>`, move the fresh one in, and delete the old copy only after the swap succeeds. An unreadable or wrong-layout tar dies with the database restored and the files left untouched. If the swap itself is interrupted between the two `mv`s, the `.pre-restore-` copy (timestamped, beside `DOCUMENT_ROOT`) recovers the previous tree by a manual `mv`. `FS_TEMP_DIRECTORY` (two-phase upload staging) is a sibling of `files/`, so staging garbage is deliberately not captured.
 
-**How restore works:** before touching anything, the restore checks the `.meta` model against the destination address, validates the snapshot as a readable archive (`pg_restore -l`), and stages a safety dump (plus the current files tree) to temp names. It then drops the entire `public` schema (tables, functions, triggers, sequences), recreates it, and loads the dump with `--single-transaction`, so a mid-restore failure leaves the schema as it was. If the restore fails, the script rolls back from the staged dump. On success the staged triple rotates onto the `<dest>-prerestore` slot (keyed on the destination address, colon → dash: `stg-books-prerestore`, `dev-books-prerestore`) — the pre-restore state is kept findable, the slot carries its own `.meta`, and it is overwritten by the next restore. On modelbank, that slot may be the only copy of the grungy state being destroyed, so copy it aside first when it matters. `save` stages the triple and moves it onto the slot names only when dump + `.meta` succeeded (a new dump beside a stale tar is a mixed state). Both commands require the destination's PostgreSQL to be running (`scripts/data-ui db` or `repl` for `dev:`, `e-demo start` / `demo start` for `stg:`).
+**How restore works:** before touching anything, the restore checks the `.meta` model against the destination address, validates the snapshot as a readable archive (`pg_restore -l`), and stages a safety dump (plus the current files tree) to temp names. It then drops the entire `public` schema (tables, functions, triggers, sequences), recreates it, and loads the dump with `--single-transaction`, so a mid-restore failure leaves the schema as it was. If the restore fails, the script rolls back from the staged dump. On success the staged triple rotates onto the `<dest>-prerestore` slot (keyed on the destination address, colon → dash: `stg-books-prerestore`, `dev-books-prerestore`, `prd-books-prerestore`) — the pre-restore state is kept findable, the slot carries its own `.meta`, and it is overwritten by the next restore. On modelbank, that slot may be the only copy of the grungy state being destroyed, so copy it aside first when it matters. `save` stages the triple and moves it onto the slot names only when dump + `.meta` succeeded (a new dump beside a stale tar is a mixed state). Both commands require the destination's PostgreSQL to be running (`scripts/data-ui db` or `repl` for `dev:`, `e-demo start` / `demo start` for `stg:`, the postgres Deployment being Ready for `prd:`).
 
-**Named slots:** slots key on the destination address — `stg-<p>-golden` (deliberate: nightly reset source for e-demos, manual grungy-day restore on modelbank), `stg-<p>-last` (automatic, refreshed by the stop verb: the state at the last deliberate pause), `stg-<p>-prerestore` / `dev-<model>-prerestore` (automatic, rotated by restore; dev has no golden/last — no nightly reset, no stop verb rewrites its history). Nothing accumulates; the dated `pre-restore-*` branch is retired. Hand-named snapshots are deliberate history. Reserved names (runbook note): a hand-run `save` naming a slot overwrites it; a hand-run `drop` of a slot silently kills the nightly's golden (or the demo class's last) — no confirmation exists; and the pool is flat, not per-address — `save books-1 stg:books` then `save books-1 dev:books` overwrites the first.
+**`prd:` restore downtime (ratified):** a `prd:` destination is deliberately stricter. Every check that can fail (model match, archive TOC, postgres reachable) runs *before* any scale, so a typo or corrupt archive dies with prod still up. Only then does the restore scale the app Deployment to 0 and wait until the pod is actually gone (the files PVC is RWO; a Terminating pod still holds the mount). The safety dump, schema drop, restore, files swap, and admin re-stamp all happen with the app down; the coda scales back to 1, waits for Ready, and requires HTTP 200 on `/health` via the loopback hop (any other answer is failure and names the prerestore slot). Never a live-app restore — prod downtime beats it while there are no transactions. An EXIT trap bounds the availability window: if the process is killed between the scale-to-0 and the revive, it restores any mid-swap files tree, scales the app back to 1, and prints an honest statement — which of the prerestore-slot-needed / drop-not-started / database-restored states holds. `kill -9` is the exception no trap covers: the app stays at 0 and the manual revive is `kubectl -n dataui-<name> scale deploy/dataui-<name> --replicas=1`.
+
+**Named slots:** slots key on the destination address — `stg-<p>-golden` (deliberate: nightly reset source for e-demos, manual grungy-day restore on modelbank), `stg-<p>-last` (automatic, refreshed by the stop verb: the state at the last deliberate pause), `stg-<p>-prerestore` / `dev-<model>-prerestore` / `prd-<name>-prerestore` (automatic, rotated by restore; dev and prd have no golden/last — no nightly reset, no stop verb rewrites their history). Nothing accumulates; the dated `pre-restore-*` branch is retired. Hand-named snapshots are deliberate history. Reserved names (runbook note): a hand-run `save` naming a slot overwrites it; a hand-run `drop` of a slot silently kills the nightly's golden (or the demo class's last) — no confirmation exists; and the pool is flat, not per-address — `save books-1 stg:books` then `save books-1 dev:books` overwrites the first.
 
 **Typical workflows:**
 
@@ -268,6 +272,18 @@ Promote auditioned data to golden:
 Staging data into dev:
 
     scripts/data-ui snapshot restore stg-books-golden dev:books
+
+Seed a production deploy from a saved snapshot:
+
+    scripts/data-ui snapshot save chores-initial stg:chores
+    scripts/data-ui deploy chores
+    scripts/data-ui snapshot restore chores-initial prd:chores
+    # then log in with the cluster Secret's admin-password
+
+Back up (and recover) a production instance:
+
+    scripts/data-ui snapshot save chores-backup prd:chores
+    scripts/data-ui snapshot restore prd-chores-prerestore prd:chores
 
 **Listing and deleting snapshots:**
 
@@ -351,7 +367,7 @@ The script reads several environment variables with hardcoded defaults. Override
 - `DATA_UI_STATE` (default: `/data/data-ui`; the root for profiles, snapshots, and deploy state)
 - `K3D_CLUSTER` (default: `evo-x2`)
 - `DRY_RUN` (set to `1` for dry-run deploys)
-- `FORCE` (set to `1` to skip the delete / profile-delete confirmations, and as the one escape when `snapshot save` hits an unreachable `dev:` `/api/info`. It NEVER overrides a snapshot model mismatch, and the restore-unreachable skip needs no FORCE.)
+- `FORCE` (set to `1` to skip the delete / profile-delete confirmations, to skip the delete verb's farewell snapshot (`prd-<name>-last`), and as the one escape when `snapshot save` hits an unreachable `dev:` `/api/info`. It NEVER overrides a snapshot model mismatch, and the restore-unreachable skip needs no FORCE.)
 
 ---
 
