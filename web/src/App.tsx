@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiFetch, setTokens, clearTokens, getAccessToken,
-         onAuthFailure } from './api'
+         onAuthFailure, onTokenRefreshed, restoreSession }
+  from './api'
 import StarRating from './StarRating'
 import CheckboxList from './CheckboxList'
+import { parseHash, canonicalize, buildUrlState,
+         urlStatesEqual, writeUrl } from './urlState'
 
 // Apply CSS-relevant settings values to the document.
 // Currently only dark-mode (boolean → toggle .dark class on body).
@@ -55,6 +58,65 @@ interface Field {
   // :filter-with wire value: "boolean" (bare sugar) or the
   // kind/default plist form {"kind":"boolean","default":true}.
   'filter-with'?: string | { kind?: string, 'default'?: boolean }
+  // :enabled-when wire value (button-only, dual-consumed): AND-
+  // composed [field, op, literal] rows. Keywords serialize as
+  // downcased strings (plist-to-json), so ops arrive as "ne" etc.
+  // Absent key means enabled.
+  'enabled-when'?: [string, string, any][]
+}
+
+// Evaluate one :enabled-when row against a record (Lisp
+// eval-condition-row's mirror; rules pinned in the shared
+// fixture tests/fixtures/enabled-when-cases.json). Fail closed:
+// absent/undefined field or null value fails the row — except
+// an empty-literal eq/ne, where the empty class (null / "")
+// answers directly (the :eq "" mirror of the :ne "" rule).
+// Type mismatch fails ordering rows and :not-in. Never throws.
+const evalEnabledRow = (
+  row: [string, string, any],
+  record: Record<string, any>
+): boolean => {
+  const [field, op, literal] = row
+  const value = record?.[field]
+  const empty = (v: any) =>
+    v === null || v === undefined || v === ''
+  if ((op === 'eq' || op === 'ne') && empty(literal)) {
+    return op === 'eq' ? empty(value) : !empty(value)
+  }
+  if (value === null || value === undefined) return false
+  switch (op) {
+    case 'eq': return isEquality(value, literal)
+    case 'ne': return !isEquality(value, literal)
+    case 'gt': return typeof value === typeof literal && value > literal
+    case 'lt': return typeof value === typeof literal && value < literal
+    case 'gte': return typeof value === typeof literal && value >= literal
+    case 'lte': return typeof value === typeof literal && value <= literal
+    case 'in': return Array.isArray(literal)
+      && literal.some(x => isEquality(value, x))
+    case 'not-in': return Array.isArray(literal)
+      && literal.some(x => typeof x === typeof value)
+      && !literal.some(x => isEquality(value, x))
+    default: return false
+  }
+}
+
+// Equality under the Lisp evaluator's equal: strict for
+// primitives (the wire never mixes 3 and "3").
+const isEquality = (a: any, b: any): boolean =>
+  typeof a === typeof b && a === b
+
+// Evaluate an :enabled-when gate: every row must hold (AND).
+// No gate (undefined) means enabled — fail-closed governs rows
+// inside a present gate, never the gate's absence. THE shared
+// evaluator for every site (edit form today; the list cell and
+// role-gating OR at the call site when those land).
+const evalEnabledWhen = (
+  rows: Field['enabled-when'],
+  record: Record<string, any> | null | undefined
+): boolean => {
+  if (!rows || rows.length === 0) return true
+  if (!record) return false
+  return rows.every(r => evalEnabledRow(r, record))
 }
 
 // Normalize the :filter-with wire value to its kind, or null when
@@ -252,8 +314,13 @@ function ImagePreview({
         }}
       />
       {open && (
+        // The inline arrows' identity churn is load-bearing: it
+        // is what keeps a future React.memo on the lightbox
+        // path from skipping the render that rebuilds image
+        // URLs after a token rotation. Do not stabilize them.
         <ImageModal
-          images={[{ src, filename: name, caption: path }]}
+          type={type}
+          paths={[path]}
           index={0}
           onClose={() => setOpen(false)}
           onNavigate={() => {}}
@@ -336,31 +403,60 @@ function fileUrl(type: string, path: string): string {
 }
 
 function ImageModal({
-  images, index, onClose, onNavigate
+  type, paths, index, onClose, onNavigate
 }: {
-  images: { src: string; filename: string; caption?: string }[]
+  type: string
+  paths: string[]
   index: number
   onClose: () => void
   onNavigate: (index: number) => void
 }) {
-  const current = images[index]
+  // Live values through refs (the fetchListRef pattern): the
+  // keyboard handler must not close over `paths` or `index` —
+  // a same-length array swap would not re-subscribe, and the
+  // handler would navigate the array from when the lightbox
+  // opened. Reading both at event time closes that class.
+  const pathsRef = useRef(paths)
+  const indexRef = useRef(index)
+  pathsRef.current = paths
+  indexRef.current = index
+
+  // Shrink guard: modalIndex outlives a refetch, so `paths`
+  // can shrink under an open modal (delete, filter, the
+  // post-action fetchList). Clamp instead of letting
+  // paths[index] go undefined and throw in the render below.
+  if (!paths || paths.length === 0) return null
+  const i = Math.min(index, paths.length - 1)
+  // Render-time fileUrl: an open lightbox must rebuild its URL
+  // (and Download / Open-in-new-tab hrefs) when the access
+  // token rotates mid-session — a pre-baked src would hold the
+  // dead token for the life of this open.
+  const currentPath = paths[i]
+  const current = {
+    src: fileUrl(type, currentPath),
+    filename: basename(currentPath),
+    caption: currentPath
+  }
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft')
-        onNavigate(
-          (index - 1 + images.length) % images.length
-        )
-      else if (e.key === 'ArrowRight')
-        onNavigate((index + 1) % images.length)
-      else if (e.key === 'Escape')
+      if (e.key === 'Escape') {
         onClose()
+        return
+      }
+      const n = pathsRef.current.length
+      if (n === 0) return
+      const cur = Math.min(indexRef.current, n - 1)
+      if (e.key === 'ArrowLeft')
+        onNavigate((cur - 1 + n) % n)
+      else if (e.key === 'ArrowRight')
+        onNavigate((cur + 1) % n)
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener(
       'keydown', handler
     )
-  }, [index, images.length, onNavigate, onClose])
+  }, [onNavigate, onClose])
 
   return (
     <div
@@ -389,13 +485,13 @@ function ImageModal({
         alignItems: 'center',
         cursor: 'default'
       }}>
-        {images.length > 1 && (
+        {paths.length > 1 && (
           <button
             type="button"
             onClick={e => {
               e.stopPropagation()
               onNavigate(
-                (index - 1 + images.length) % images.length
+                (i - 1 + paths.length) % paths.length
               )
             }}
           >
@@ -403,15 +499,15 @@ function ImageModal({
           </button>
         )}
         <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
-          {index + 1} / {images.length}
+          {i + 1} / {paths.length}
         </span>
-        {images.length > 1 && (
+        {paths.length > 1 && (
           <>
             <button
               type="button"
               onClick={e => {
                 e.stopPropagation()
-                onNavigate((index + 1) % images.length)
+                onNavigate((i + 1) % paths.length)
               }}
             >
               Next ›
@@ -498,12 +594,9 @@ function ThumbnailGrid({
   if (!paths || paths.length === 0)
     return <span style={{ color: 'var(--muted-2)' }}>—</span>
 
-  const modalImages = paths.map(p => ({
-    src: fileUrl(type, p),
-    filename: basename(p),
-    caption: p
-  }))
-
+  // The lightbox pages through the full `paths` list (indices
+  // align: the shown thumbnails are a prefix slice). It builds
+  // its own URLs at render time — no pre-baked array here.
   const shown = max != null ? paths.slice(0, max) : paths
 
   return (
@@ -548,8 +641,11 @@ function ThumbnailGrid({
         })}
       </div>
       {modalIndex !== null && (
+        // Inline arrows again: identity churn is load-bearing
+        // against memoization (see ImagePreview's call site).
         <ImageModal
-          images={modalImages}
+          type={type}
+          paths={paths}
           index={modalIndex}
           onClose={() => setModalIndex(null)}
           onNavigate={setModalIndex}
@@ -711,11 +807,32 @@ function App() {
   // with the other refs so the hook order is unconditional — a
   // hooks-order crash here blanks the page on login.
   const boolSeededForRef = useRef<string | null>(null)
+  // App state in the URL (Step 2.5): names the type whose first
+  // fetch went out without its form-dependent rows (not-ilike /
+  // bool :eq) because data did not yet belong to it — a URL
+  // re-seed assigns those fields in the same commit as setType,
+  // so the first request runs against the previous type's form
+  // (or none). The arrival effect below consumes it: one refetch
+  // when the type's form arrives. Cleared by resetListQuery
+  // alongside boolSeededForRef, and by the arrival effect itself
+  // (one-shot by construction). Never armed on the click paths —
+  // changeType / switchViewMode / returnToLanding run
+  // resetListQuery first, so wantsFormRows is false there.
+  const pendingFormRefetchRef = useRef<string | null>(null)
   // Terminal button statuses (complete / failed: … / idle) are
   // stale the moment their form is closed; openEditForm blanks them
   // on the next open. Set for the single re-open handleAction does
   // right after a press, so the just-earned status still shows.
   const preserveStatusOnOpenRef = useRef(false)
+  // Restore signal: set once by the restore effect before the
+  // /api/public-info effect's async callback runs (mount effects
+  // fire in declaration order). The public-info effect reads it
+  // inside its .then to suppress :guest-auto for a restored
+  // session. A ref, not state: both effects fire in the same
+  // commit and the flag must be readable without racing
+  // setLoggedIn. Must stay an unconditional hook up here with
+  // the other refs — a hooks-order crash blanks the page.
+  const restoredRef = useRef(false)
 
   // Auth state
   const [username, setUsername] = useState('')
@@ -735,10 +852,47 @@ function App() {
     })
   }, [])
 
+  // Restore a persisted session ("stay logged in"): seed the
+  // api module vars and flip loggedIn so the [loggedIn] data
+  // effects run exactly as after a fresh login. No preflight:
+  // a stale access token is recovered by apiFetch's 401 →
+  // refresh → retry, and a dead refresh token lands on the
+  // login screen via onAuthFailure. No cleanup: StrictMode
+  // double-invokes mount effects in dev and restoreSession is
+  // idempotent — a cleanup nulling the module vars would log
+  // the user out in dev only.
+  useEffect(() => {
+    const session = restoreSession()
+    if (session) {
+      restoredRef.current = true
+      setLoggedIn(true)
+      setLoggedInUser(session.username)
+      fetchAndApplyCssVariables()
+    }
+  }, [])
+
+  // Re-render image URLs after a silent token rotation: <img>
+  // srcs bypass apiFetch (no 401 retry), and fileUrl reads
+  // getAccessToken() at render time — the bump is what makes
+  // that render happen. Registered from a mount effect, never
+  // the render body (a render-body assignment stacks stale
+  // callbacks). Single-slot: this registration replaces any
+  // earlier one, and the cleanup restores whatever was there
+  // before us. Only the setter is taken today: nothing reads
+  // the count while nothing is memoized — the re-render itself
+  // rebuilds the URLs. If React.memo ever lands on the image
+  // path, take the value too and thread it as a prop.
+  const [, setTokenVersion] = useState(0)
+  useEffect(() => {
+    const displaced = onTokenRefreshed(
+      () => setTokenVersion(v => v + 1))
+    return () => { onTokenRefreshed(displaced) }
+  }, [])
+
   // Shared post-login path: the Login button, "Continue as guest",
   // and auto-guest all land here.
   const completeLogin = (user: string, access: string, refresh: string) => {
-    setTokens(access, refresh)
+    setTokens(access, refresh, user)
     setLoggedIn(true)
     setLoggedInUser(user)
     setUsername('')
@@ -788,8 +942,14 @@ function App() {
           // FR-6: auto-guest only when guest-allowed === true AND
           // guest-auto !== false (strict, same [] pitfall).
           // "Continue as guest" stays gated on guest-allowed alone.
+          // A restored session suppresses auto-guest (the ref is
+          // set by the restore effect before this callback runs)
+          // — restore must win, or guest login would clobber the
+          // stored session and replace the server-side refresh
+          // token.
           const guestAuto = json.result['guest-auto']
           if (guestAuto !== false
+              && !restoredRef.current
               && !sessionStorage.getItem('data-ui-skip-auto-guest')) {
             await loginAsGuest()
           }
@@ -866,13 +1026,29 @@ function App() {
         rows.push(['roles', 'name', 'not-like', '%:exclusive'])
       }
       // Phase 2: one not-ilike row per searchable field — the
-      // complement of search's OR-ILIKE group (rows AND together).
-      // Same list-form meta guard as the chips: searchable fields
-      // are the type's own base columns, and the resetListQuery
-      // clears on type change so the stale-form window sends
-      // nothing.
+      // complement of search's OR-ILIKE group (rows AND
+      // together). Form-dependent rows (this loop and the bool
+      // :eq loop below) read the *last fetched* type's form, not
+      // the requested type's — data is not a fetch-effect dep.
+      // On the click paths resetListQuery has emptied these
+      // fields, so the stale form contributes nothing; a URL
+      // re-seed (login / history listener) assigns notq / bool
+      // in the same commit as setType, so the first request
+      // would read the wrong form ({} at login, the departed
+      // type on cross-type Back — silent unfiltered list or a
+      // parse-field 404, with nothing healing it). Guard: build
+      // these rows only when data belongs to the requested type;
+      // otherwise arm the one-shot refetch (Step 2.5's arrival
+      // effect) that refires once the form arrives.
+      const formReady = data?.result?.['type-key'] === type
+      const wantsFormRows =
+        !!debouncedNotTerm || Object.keys(boolFilters).length > 0
+      if (!formReady && wantsFormRows) {
+        pendingFormRefetchRef.current = type
+      }
       if (debouncedNotTerm) {
-        const form = data?.result?.['list-form'] || {}
+        const form = formReady
+          ? data?.result?.['list-form'] || {} : {}
         for (const [fieldKey, f] of Object.entries(form)) {
           if (f.searchable === true) {
             rows.push([type, fieldKey, 'not-ilike',
@@ -884,9 +1060,11 @@ function App() {
       // field with a Yes/No choice. The value is the string
       // ":true" / ":false" — parse-filters coerces those to the
       // keywords on :type :boolean fields, the only encoding
-      // value-type-p accepts. Any sends no row.
+      // value-type-p accepts. Any sends no row. Same
+      // form-dependent guard as the not-ilike loop above.
       {
-        const form = data?.result?.['list-form'] || {}
+        const form = formReady
+          ? data?.result?.['list-form'] || {} : {}
         for (const [fieldKey, f] of Object.entries(form)) {
           if (filterWithKind(f['filter-with']) !== 'boolean') continue
           const choice = boolFilters[fieldKey]
@@ -970,6 +1148,12 @@ function App() {
     // every future {} clearer too, or the next fetch re-seeds
     // and silently undoes the user's Any.
     boolSeededForRef.current = null
+    // App state in the URL (Step 2.5): a type click between the
+    // arming fetch and the arrival must not fire a refetch for a
+    // type the user left. Cheap, and keeps the two per-type refs
+    // under one clearer (logout is covered too —
+    // resetSessionState calls this).
+    pendingFormRefetchRef.current = null
     if (searchTimer.current) clearTimeout(searchTimer.current)
     if (notTimer.current) clearTimeout(notTimer.current)
     setCurrentPage(1)
@@ -1092,14 +1276,32 @@ function App() {
     // running. Display-only: the blank lives in editRecord /
     // formValues and never reaches the server (submit drops
     // empty-string fields).
+    // Exception: a field named in some button's :enabled-when
+    // rows. evalEnabledWhen (the button render block) evaluates
+    // the gate against editRecord, so blanking a gated status
+    // would flip a gated-off button back to enabled on open —
+    // the terminal value this loop hides is exactly the state
+    // the gate keys on; for a gated button it is durable state,
+    // not stale run telemetry. Collected from the gate rows, not
+    // from button names, so a gate on another button's status
+    // companion is covered too; plain-field gates (Deploy's
+    // :model) need nothing — only *-status keys are blanked.
     const keepStatus = preserveStatusOnOpenRef.current
     preserveStatusOnOpenRef.current = false
     if (!keepStatus) {
       const cleared: Record<string, any> = { ...fullRecord }
+      const openFormMeta = data?.result?.[formName] || {}
+      const gatedFields = new Set<string>()
+      for (const f of Object.keys(openFormMeta)) {
+        const rows = openFormMeta[f]?.['enabled-when']
+        if (!rows) continue
+        for (const row of rows) gatedFields.add(row[0])
+      }
       for (const k of Object.keys(cleared)) {
         if (k.endsWith('-status')
             && typeof cleared[k] === 'string'
-            && !cleared[k].startsWith('running')) {
+            && !cleared[k].startsWith('running')
+            && !gatedFields.has(k)) {
           cleared[k] = ''
         }
       }
@@ -1556,34 +1758,120 @@ function App() {
       const t = info.result?.['title']
       if (t) setTitle(String(t))
       const lp = info.result?.['landing-page']
-      let resolved: string | null = null
-      if (lp) {
-        resolved = String(lp)
-      } else {
-        const firstUser = typeInfos.find(
-          t => t.category === 'user'
-        )
-        if (firstUser) resolved = firstUser.name
-        else if (typeInfos.length > 0)
-          resolved = typeInfos[0].name
+      // App state in the URL, Step 3: seed state ← URL. Parse
+      // the LIVE hash on every login transition (not once per
+      // mount): nothing writes the hash while logged out, so at
+      // first login the live hash IS the parked hash; at a
+      // relogin it is the last-written hash — exactly the view
+      // the previous session showed. A consume-once ref would
+      // fail the plan's own relogin test.
+      const seed = parseHash()
+      const byName = (n: string) =>
+        typeInfos.find(
+          t => t.name.toLowerCase() === n.toLowerCase())
+      const target = seed?.type ? byName(seed.type) : null
+
+      if (seed && seed.type && !target) {
+        // Shared link naming a type this user/model does not
+        // have (typo, cross-model, stale bookmark, role
+        // mismatch — /api/types returns only visible types).
+        console.warn('app-state-url: unknown or invisible type',
+                     seed.type)
       }
-      if (resolved) {
-        const target = resolved
-        setType(target)
-        // Align viewMode with the resolved type's category so a
-        // fresh login never inherits the previous session's mode
-        // (e.g. logging out of Admin used to leave the next user
-        // on the admin tab strip).
-        const cat = typeInfos.find(
-          t => t.name.toLowerCase() === target.toLowerCase()
-        )?.category
+
+      if (target && seed) {
+        setType(target.name)
         setViewMode(
-          cat === 'system' ? 'admin'
-          : cat === 'settings' ? 'settings'
-          : 'app'
-        )
+          target.category === 'system' ? 'admin'
+          : target.category === 'settings' ? 'settings'
+          : 'app')
+
+        // The canonical entry: the raw seed can carry what
+        // canonicalization drops (page=1, hide-exclusive off a
+        // non-roles type, bool={}, a values-based-empty
+        // filters) — assign from the canonical form so absent
+        // keys are really absent. target.name folds canonical
+        // case in too.
+        const c = canonicalize({ ...seed, type: target.name })
+
+        // Full assignment, not present-key merging: every query
+        // field gets exactly one write from one source — c.
+        // Absent keys assign their defaults; nothing from a
+        // previous session survives. The writer effect fires on
+        // this commit and canonical-compares against the hash
+        // the browser already shows — equal (or one corrected
+        // entry for a case-variant type), never a seed entry.
+        // Clear the debounce timers BEFORE assigning the pairs:
+        // resetListQuery's shape, generalized — a pending
+        // commit would otherwise overwrite the seeded query.
+        if (searchTimer.current) clearTimeout(searchTimer.current)
+        if (notTimer.current) clearTimeout(notTimer.current)
+        const q = c.q ?? ''
+        setSearchTerm(q); setDebouncedSearch(q)
+        const nq = c.notq ?? ''
+        setNotTerm(nq); setDebouncedNotTerm(nq)
+        setListFilters(c.filters ?? {})
+        setBoolFilters(c.bool ?? {})
+        setHideExclusive(c.hideExclusive ?? true)
+        const sf = c.sort
+          ? (c.sort.startsWith('-')
+             ? c.sort.slice(1) : c.sort)
+          : null
+        setSortField(sf)
+        setSortDir(
+          c.sort && c.sort.startsWith('-') ? 'desc' : 'asc')
+        setCurrentPage(c.page ?? 1)
+        setSelectedIds([])
+
+        // defaultSortRef is query state (resetListQuery nulls
+        // it): a stale name from the previous session's last
+        // type would steer the next sort-header click. The
+        // fetch echo re-caches it — the only writer allowed.
+        defaultSortRef.current = null
+
+        // URL bools are the explicit intent: the link author
+        // picked them, so authored defaults must not overwrite
+        // them when data arrives. Absent bool = Any: leave the
+        // latch null so authored defaults seed as usual — a
+        // link that says nothing gets the type's natural view.
+        // Checked on c, not seed — raw bool={} is truthy and
+        // would suppress the defaults.
+        if (c.bool) boolSeededForRef.current = target.name
+      } else {
+        // No seed, seed with no type at all (#/app?q=x — the q
+        // is discarded; a search without a type is not a view,
+        // and the writer never produces such an entry), or seed
+        // dropped as invalid: existing landing-page resolution,
+        // unchanged.
+        let resolved: string | null = null
+        if (lp) {
+          resolved = String(lp)
+        } else {
+          const firstUser = typeInfos.find(
+            t => t.category === 'user'
+          )
+          if (firstUser) resolved = firstUser.name
+          else if (typeInfos.length > 0)
+            resolved = typeInfos[0].name
+        }
+        if (resolved) {
+          const target = resolved
+          setType(target)
+          // Align viewMode with the resolved type's category so a
+          // fresh login never inherits the previous session's mode
+          // (e.g. logging out of Admin used to leave the next user
+          // on the admin tab strip).
+          const cat = typeInfos.find(
+            t => t.name.toLowerCase() === target.toLowerCase()
+          )?.category
+          setViewMode(
+            cat === 'system' ? 'admin'
+            : cat === 'settings' ? 'settings'
+            : 'app'
+          )
+        }
+        // else: no types at all; leave __init__ (empty app)
       }
-      // else: no types at all; leave __init__ (empty app)
     }).catch(() => {
       setTypes([])
     })
@@ -1595,6 +1883,63 @@ function App() {
   }, [loggedIn, type, sortField, sortDir, debouncedSearch,
       debouncedNotTerm, currentPage, listFilters, boolFilters,
       hideExclusive])
+
+  // App state in the URL, Step 2: mirror state → URL. Same deps
+  // as the main fetch effect above — the URL mirrors committed
+  // state, one history entry per commit (the debounce already
+  // collapses keystrokes; sort clicks, chip toggles, and page
+  // turns are single commits — do not add extra batching).
+  // viewMode is not a dep and not encoded: every view change
+  // lands in the same batch as a type change (switchViewMode
+  // sets the new category's first type, returnToLanding the
+  // landing type), so the type dep covers view switches. The
+  // guards keep the login screen and the empty-app shell from
+  // writing URLs. Echo/clamp commits write correctly (rollup
+  // default sort, clamped page — shared links reproduce the
+  // on-screen order); the canonical compare in writeUrl no-ops
+  // the agreeing ones.
+  useEffect(() => {
+    if (!loggedIn || type === '__init__') return
+    writeUrl(buildUrlState({
+      type, debouncedSearch, debouncedNotTerm,
+      listFilters, boolFilters, hideExclusive,
+      sortField, sortDir, currentPage
+    }))
+  }, [loggedIn, type, sortField, sortDir, debouncedSearch,
+      debouncedNotTerm, currentPage, listFilters, boolFilters,
+      hideExclusive])
+
+  // App state in the URL, Step 2.5: fire the one-shot refetch
+  // once data belongs to the type whose first fetch went out
+  // without its form-dependent rows (armed in fetchList).
+  // Freshness: a dep-triggered effect body is re-created every
+  // render — React runs the function from the render whose deps
+  // changed, so fetchList here is the one that closed over the
+  // data this effect observes (formReady is true on the
+  // refetch). Only a persisting callback (the 3s poll's
+  // setInterval) needs fetchListRef; calling it here would be
+  // harmless but implies a staleness that does not exist — same
+  // reason the bool-seeding effect above reads
+  // data.result['list-form'] directly.
+  useEffect(() => {
+    if (!loggedIn) return
+    // Keep the type-key compare: it is what stops a same-type
+    // commit (data already this type's) from ever arming or
+    // firing. Do NOT "simplify" it to !!data.
+    if (data?.result?.['type-key'] !== type) return
+    if (pendingFormRefetchRef.current !== type) return
+    // One-shot by construction: the ref is cleared before the
+    // refetch; the refetch's own data arrival re-runs this
+    // effect, finds the ref null, and returns. No loop, and
+    // data stays out of the main fetch effect's deps.
+    // Do NOT null the ref on the type-key bail above: the
+    // mismatched run is this effect's normal first run (the
+    // departed type's data is still mounted in the commit that
+    // armed it); nulling there wipes it in the commit that
+    // armed it and the refetch never fires.
+    pendingFormRefetchRef.current = null
+    fetchList()
+  }, [data, type])
 
   // Seed the boolean selects' authored initial state once per type
   // entry. The ref survives fetches; resetListQuery clears it so
@@ -1617,6 +1962,157 @@ function App() {
       setBoolFilters(defaults)
     }
   }, [data, type])
+
+  // App state in the URL, Step 4: the history listener
+  // (back / forward). The writer above mirrors state → URL on
+  // commit; this mirrors URL → state on history navigation.
+  // Both events, one idempotent handler (hash-only navigation
+  // is delivered as hashchange in some browsers, popstate in
+  // others, both in the rest — listening to only one means Back
+  // updates the address bar while the list stays put, on some
+  // browser). Own writes re-enter only via hashchange (Safari;
+  // pushState never fires popstate), and the equality gate
+  // below turns that into a no-op.
+  useEffect(() => {
+    const onPop = () => {
+      if (!loggedIn || type === '__init__') return
+      const s = parseHash()
+      // Not ours: an out-of-app entry — the pre-login '#', a
+      // bare load, an anchor someone else owns (including the
+      // title / View / Edit <a href="#"> links on a missed
+      // preventDefault — a modifier or middle click, a future
+      // edit that drops the handler). IGNORE, deliberately:
+      // state is never reset on history nav. Back from
+      // #/app?type=todo to '#' leaves the app showing todo
+      // while the address bar shows '#' — the exact shape
+      // logout already produces. Do NOT "helpfully" reset here:
+      // the park-and-restore path lives on state outliving
+      // non-app entries.
+      if (!s) return
+      const byName = (n: string) =>
+        types.find(
+          t => t.name.toLowerCase() === n.toLowerCase())
+      const target = s.type ? byName(s.type) : null
+      if (s.type && !target)
+        return  // hand-edited hash: leave state alone
+              // (the login seed warns; here the URL is
+              // already bogus)
+      // Case-fold by resolution, BEFORE the gate: byName
+      // matches case-insensitively and live state is always
+      // canonical, so a case-only edit ('#/app?type=Todo' with
+      // state 'todo') changes nothing — without this the gate
+      // fails it and the full assignment below closes the form
+      // and pushes a corrected entry.
+      const entry = target ? { ...s, type: target.name } : s
+      // The canonical entry — the gate's left side AND the
+      // assignment source for everything below it: the raw
+      // parse can carry values canonicalization drops (page=1,
+      // hide-exclusive off a non-roles type, bool={}, a
+      // values-based-empty filters), and assigning one would
+      // ride a canonically-absent value into state with nothing
+      // to reconcile it (the writer canonical-compares and
+      // no-ops).
+      const c = canonicalize(entry)
+      // The equality gate — before ANY state is touched. BOTH
+      // sides through canonicalize: buildUrlState is the raw
+      // mirror (page: 1, empty q / notq, empty filters / bool,
+      // null sort, raw hideExclusive), so a bare build on one
+      // side compares canonical against raw and misses on every
+      // default it carries. Equal → this arrival changes
+      // nothing: return before the close, the selection clear,
+      // the timer clears, the assignments, the ref writes.
+      // Machine-written Back entries are never equal (the
+      // writer never pushes an entry identical to the live
+      // hash), so no required close is lost. This gate is also
+      // what makes own-write hashchange re-entry harmless
+      // wherever the browser delivers it.
+      if (urlStatesEqual(
+            c,
+            canonicalize(buildUrlState(
+              { type, debouncedSearch, debouncedNotTerm,
+                listFilters, boolFilters, hideExclusive,
+                sortField, sortDir, currentPage }))))
+        return
+      if (target) {
+        // Derive the view from the type's actual category —
+        // exactly the [loggedIn] effect's rule. Entries never
+        // carry view; the derivation is the only rule, so a
+        // hand-crafted admin type cannot land under the user
+        // tab strip.
+        setViewMode(
+          target.category === 'system' ? 'admin'
+          : target.category === 'settings' ? 'settings'
+          : 'app')
+        if (target.name !== type) setType(target.name)
+      }
+      // No type in the entry (same-type nav: sort, page, chips,
+      // bool): keep both type and view — the entry was written
+      // against them.
+      // The form and row selection close on every applied entry
+      // that changed something (the gate has established this
+      // one did): an open edit form is session chrome the
+      // history entry did not have — a same-type back from page
+      // 2 to page 1 must not leave it mounted over the restored
+      // list. Cross-type entries into settings close too — the
+      // open form belongs to the departed type's record, and
+      // the settings auto-open effect re-opens from the arrived
+      // data. A same-type settings entry never reaches here
+      // (query-equal, the gate returned; settings types have no
+      // list UI, so their entries carry type alone).
+      closeForm()
+      setSelectedIds([])
+      // NOT changeType: changeType → resetListQuery, whose
+      // setters land in the same batch and fight the seed
+      // assignments below — last write wins on call order
+      // inside one handler. Full assignment, absent keys =
+      // defaults — same rule as the login seed: every field
+      // gets exactly one write, sourced from the canonical
+      // entry alone; nothing from the pre-nav state survives.
+      // Clear the debounce timers BEFORE assigning the pairs:
+      // a Back landing inside the 300 ms window would
+      // otherwise leave the timer alive to commit the PRE-NAV
+      // trimmed query over the restored one — overwriting both
+      // the input and the URL.
+      if (searchTimer.current) clearTimeout(searchTimer.current)
+      if (notTimer.current) clearTimeout(notTimer.current)
+      const q = c.q ?? ''
+      setSearchTerm(q); setDebouncedSearch(q)
+      const nq = c.notq ?? ''
+      setNotTerm(nq); setDebouncedNotTerm(nq)
+      setListFilters(c.filters ?? {})
+      setBoolFilters(c.bool ?? {})
+      setHideExclusive(c.hideExclusive ?? true)
+      const sf = c.sort
+        ? (c.sort.startsWith('-')
+           ? c.sort.slice(1) : c.sort)
+        : null
+      setSortField(sf)
+      setSortDir(c.sort && c.sort.startsWith('-')
+                 ? 'desc' : 'asc')
+      setCurrentPage(c.page ?? 1)
+      // defaultSortRef is query state: a stale name from the
+      // previous type would steer the next sort-header click on
+      // a same-named column into the toggle branch instead of
+      // the clear branch. The fetch echo re-caches it — the
+      // only writer allowed.
+      defaultSortRef.current = null
+      // Latch on EVERY applied entry: URL bools when present
+      // (they win by being applied above), otherwise the
+      // arrived type's name — never the pre-nav value. Nulling
+      // here instead would re-seed authored defaults the entry
+      // never had and push an echo entry whose Back-revisit
+      // regenerates it — a loop.
+      boolSeededForRef.current = target ? target.name : type
+    }
+    window.addEventListener('popstate', onPop)
+    window.addEventListener('hashchange', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      window.removeEventListener('hashchange', onPop)
+    }
+  }, [loggedIn, type, types, sortField, sortDir,
+      debouncedSearch, debouncedNotTerm, currentPage,
+      listFilters, boolFilters, hideExclusive])
 
   // Clear the row selection whenever the page changes (button
   // navigation or the post-delete clamp inside fetchList), so
@@ -2439,12 +2935,17 @@ function App() {
               const statusVal = editRecord?.[statusKey] || ''
               const isRunning = statusVal.startsWith('running')
               const isPending = pendingActions.has(f)
+              // State gate (:enabled-when): the shared evaluator
+              // against the open record; disabled is UX, the
+              // backend rejects independently.
+              const isGatedOff = !evalEnabledWhen(
+                fieldMeta['enabled-when'], editRecord)
               return (
                 <div key={f} style={{ marginBottom: '0.5rem' }}>
                   <label>{fieldMeta.label}</label><br />
                   <button
                     type="button"
-                    disabled={isRunning || isPending}
+                    disabled={isRunning || isPending || isGatedOff}
                     onClick={() => handleAction(f)}
                   >
                     {isPending ? 'Working...' : fieldMeta.label}

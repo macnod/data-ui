@@ -5,7 +5,6 @@
 * Notes
 Periodically, DONE items should be moved to the [[done.org][done.org]] file, to keep this file from getting too large.
 * Done
-* MVP Now
 ** DONE Update on a NULL timestamp dies with 22007 ("false") :backend:frontend:mvp:bug:model:
 :PROPERTIES:
 :CREATED: [2026-10-01 Thu]
@@ -400,6 +399,265 @@ change; the todos test instance is disposable, =delete todos=
 when done).
 
 Plan: [[file:~/workbench/production-snapshots-plan.org][production-snapshots-plan.org]].
+** DONE State-gated buttons               :model:backend:frontend:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-10-05 Mon]
+:COMPLETED: [2026-10-12 Mon]
+:END:
+Enable/disable a =:button= field by record state. Surfaced by
+dogfooding chores: the Complete button *works* on a chore already
+marked done — =be-action='s only guard is the in-progress check,
+so =:spawn= re-runs, overwrites the closure history
+(=:completed-by= =:user= replaces the join list), inserts a
+duplicate successor, and the scoreboard rollup double-counts the
+points.
+
+Design: a =:ui (:enabled-when ((:complete-status :ne
+"complete")))= subkey on =:button= fields — filter-row grammar
+minus the type key, AND composition (appending a row only
+restricts), gated on the status companion (not the =:completed=
+boolean, preserving re-run-after-failure), dual-consumed: the FE
+evaluates against =editRecord= and renders disabled, =be-action=
+enforces the same condition beside the running guard. Generalizes
+to Deploy / Generate gates; composes with the role-gating and
+list-form-button items. Scope: =model.lisp= (=*ui-keys*= +
+validation), =backend.lisp= (~10-line guard), =App.tsx=, docs,
+tests.
+
+Implemented 2026-10-12 per the plan
+([[file:~/workbench/state-gated-buttons-plan.org][state-gated-buttons-plan.org]]), no deviations:
+
+- Compiler: =:enabled-when= added to =*ui-keys*=; value grammar
+  (closed v1 operator set =:eq :ne :gt :lt :gte :lte :in :not-in=,
+  =:like= family / =:has-all= rejected as deferred, empty =()=
+  rejected, scalar-vs-list literal shapes) in
+  =valid-enabled-when-value= (the =valid-filter-with-value=
+  slot); field existence in =valid-enabled-when-fields= and the
+  button-only scope rule in the =compile-field= finisher (against
+  the augmented model, so status companions validate);
+  =preliminary-model-check= walker arm so raw rows never recurse.
+- Backend: =eval-condition-rows= / =eval-condition-row= /
+  =empty-value-p= in =backend.lisp= (one evaluator, AND
+  composition, empty-class =:eq=/:ne= semantics per plan, fail
+  closed on absent/NULL fields, type-mismatch fail closed on
+  ordering + =:not-in=); =be-action= guard beside the in-progress
+  guard, before ="running"= is stamped, =report-ve= naming field /
+  rows / record value.
+- Frontend: =evalEnabledWhen= / =evalEnabledRow= in =App.tsx=
+  (the shared TS evaluator mirroring the Lisp rules; the edit-form
+  button renders disabled when the gate fails). Wire form is
+  zero-work: =:ui= rides =fe-fields= verbatim, keywords serialize
+  as downcased strings.
+- Tests: =tests/enabled-when-tests.lisp= (compile probes,
+  evaluator unit tests driven by the shared
+  =tests/fixtures/enabled-when-cases.json= — the future FE test
+  runner consumes the same file — plus =:null=-keyword
+  Lisp-only assertions, =be-action= guard behavior on the
+  spawn-test fixture whose =:complete= button now carries the
+  gate); =run-enabled-when-tests= helper registered in
+  =run-tests= (34 groups, 1989 checks, all green). Two
+  pre-existing helpers gained the =action-tests.lisp= load
+  (=run-backend-tests= / =run-action-tests=) so a fresh image's
+  =run-tests= compiles =test-model= with its test hooks
+  registered (previously only =run-agg-distinct-tests= loaded
+  it; first-group ordering masked it).
+- Docs: =model-reference.md= =:ui= subkeys table row, buttons
+  status-protocol bullet, spawn example with the gate, Quick key
+  index; =hook-registry.md= =:spawn= example + double-run-guard
+  paragraph.
+- Chores flip (last, per plan): =models/chores.lisp= =:complete=
+  gains the gate; =models/test/spawn-test.lisp= likewise.
+
+Post-implementation notes: =enabled-when-holds= (a
+=*compiled-model*=-reading convenience over
+=eval-condition-rows=) is exported by the backend for hook /
+REPL use. The FE check is the manual chores-stg pass (no FE test
+runner exists; the shared fixture is its future replacement).
+
+Plan: [[file:~/workbench/state-gated-buttons-plan.org][state-gated-buttons-plan.org]].
+
+* MVP Now
+** DONE Stay logged in across page refresh            :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-07 Wed]
+:COMPLETED: [2026-10-16 Fri]
+:END:
+A page refresh logs the user out today: access and refresh
+tokens live in module-level variables in =web/src/api.ts=
+(=setTokens= / =clearTokens=), so a reload wipes them and the
+app lands on the login screen. The machinery already exists —
+=/api/refresh= works and =apiFetch= already retries through
+=refreshAccessToken= on 401 — this is only about persistence.
+
+Decided 2026-10-07 (Donnie): *localStorage*, not sessionStorage —
+sessions survive browser restarts ("stay logged in"). Accepted
+trade-off: wider XSS exposure; the access token already rides
+=/api/file= query strings, so the marginal risk is small.
+
+Implementation sketch:
+- =setTokens= / =clearTokens= write and remove ={access, refresh,
+  username}= in localStorage alongside the in-memory copies;
+  logout clears it.
+- On app mount, restore from localStorage; if the access token
+  is stale, =refreshAccessToken()= recovers it (the 401 retry
+  path already proves this works mid-session).
+- A restored session must suppress =:guest-auto= re-login on
+  mount (same job as the =data-ui-skip-auto-guest=
+  sessionStorage flag) — restored session and auto-guest must
+  not fight.
+- Auth failure after restore (refresh token dead) falls through
+  to the login screen as today.
+
+Plan: [[file:~/workbench/refresh-plan.org][refresh-plan.org]] (ten Grok review passes folded; covers
+persistence layer, restore-on-mount, auto-guest suppression,
+and the =fileUrl= / lightbox token edge case).
+
+Implemented 2026-10-16 per the plan, no deviations:
+
+- =api.ts= persistence layer: single =data-ui-session=
+  localStorage key (JSON ={access, refresh, username}=);
+  =readStoredSession= validates the blob (non-empty strings —
+  =JSON.parse('{}')= does not throw; a ="= username would
+  restore a blank header and a broken =${user}:exclusive=
+  filter), =writeStoredSession= is best-effort try/catch (Safari
+  private mode / quota throw on =setItem=; persistence failure
+  degrades to logged-out-on-reload, never a failed login);
+  =setTokens= gained a required =username= parameter (the only
+  call site is =completeLogin=); =clearTokens= removes the
+  stored session and nulls the module =username= (so a later
+  rewrite cannot resurrect a logged-out session);
+  =refreshAccessToken= rewrites the stored blob from module
+  state after rotating the access token (never read-modify-write
+  the blob; the rewrite reuses the stored refresh token —
+  =/api/refresh= returns access only); =restoreSession= export
+  seeds the module vars and returns the blob.
+- App restore: mount effect calls =restoreSession=, sets
+  =loggedIn= / =loggedInUser=, and calls
+  =fetchAndApplyCssVariables= — the =[loggedIn]= data effects
+  fire exactly as after a fresh login. No preflight refresh
+  (the =apiFetch= 401 → refresh → retry path recovers a stale
+  access token; a dead refresh token lands on the login screen
+  via =onAuthFailure=). No effect cleanup (=restoreSession= is
+  idempotent; a cleanup would log out in dev-only StrictMode
+  double-invokes).
+- Auto-guest suppression: =restoredRef= (unconditional hook up
+  with the other refs) is set by the restore effect and read
+  inside the =/api/public-info= =.then= — a restored session
+  (guest sessions persist too) suppresses =:guest-auto= so
+  restore never fights guest re-login and never mints a second
+  per-user refresh token.
+- Token-rotation re-render (the =fileUrl= edge case): =<img>=
+  srcs bypass =apiFetch=, so a silent mid-session rotation left
+  them on a dead token. New single-slot =onTokenRefreshed=
+  callback in =api.ts= (same shape as =onAuthFailure=, setter
+  returns the displaced callback so the App registration can
+  save/set/restore), fired synchronously at the end of
+  =refreshAccessToken='s success path; App registers from a
+  mount effect and bumps a =tokenVersion= state counter to force
+  the URL-rebuilding re-render.
+- Lightbox fix (pre-existing bug folded from the plan's Step
+  4a): =ImageModal= previously received pre-baked =src= data
+  (=-ThumbnailGrid='s =modalImages= array) and never called
+  =fileUrl=, so an open lightbox held a dead-token URL for the
+  life of the open. Now takes =type= + =paths= and derives
+  =src= / =filename= / =caption= at render time; keyboard
+  handler reads =paths= / =index= through refs (the
+  =fetchListRef= pattern — no stale closure on same-length
+  array swaps); shrink guard clamps =index= against
+  =paths.length= (a shrunk list under an open modal no longer
+  throws); inline =onClose= / =onNavigate= arrows kept with
+  comments naming their identity churn as load-bearing against
+  =React.memo= (a skipped render would freeze the URL rebuild;
+  the =tokenVersion= prop-thread is the only fix if memoization
+  ever lands).
+- =tsc= + =vite build= green (npm is not on PATH on evo-x2;
+  ran =typescript/bin/tsc= + =vite/bin/vite.js= directly). No
+  backend changes, no test changes. Manual browser pass (plan
+  Step 5's nine cases) not yet run — staging deploy needed.
+** DONE App state in the URL                            :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-07 Wed]
+:COMPLETED: [2026-10-16 Fri]
+:END:
+Search, filters, sort, selected type, view mode, and pagination
+page should live in the URL, and the app should parse the URL on
+load and render accordingly. Refresh then re-renders the page
+the user is on (together with "Stay logged in across page
+refresh", a reload returns you exactly where you were), and
+filtered views become shareable links — valuable for Model Bank.
+
+Decided 2026-10-07 (Donnie):
+- *Hash params* (e.g.
+  =#/app?view=home&type=todo&q=x&sort=-name&page=2=), not real
+  query strings: a real path would require Hunchentoot to serve
+  =index.html= for arbitrary paths (server-side catch-all, new
+  deployment surface); hash survives refresh with zero server
+  changes.
+- *Encoded state*: selected type, search terms, active filters,
+  sort, pagination page. View mode is derived from the type's
+  category, not encoded (decided 2026-10-16). Modals / lightbox
+  excluded.
+
+Implementation sketch:
+- Small =urlState.ts= (serialize / parse), no routing library —
+  the frontend stays minimal and schema-driven.
+- Seed app state from the hash on mount; write via
+  =history.pushState= on committed changes only (search writes
+  on the debounce commit, not per keystroke); =popstate=
+  listener re-seeds so back / forward work.
+- Interplay with login: a shared URL opened while logged out
+  parks the URL state, shows login, then restores it once auth
+  completes.
+
+Plan: [[file:~/workbench/app-state-url-plan.org][app-state-url-plan.org]] (seven Grok passes + one Fable
+  pass incorporated; =view= dropped from the format; form-dependent
+  filter rows wait for the type's form — Step 2.5). Approved
+  2026-10-16; ready to implement.
+
+Implemented 2026-10-16 per the plan, no deviations from its
+final rule set:
+
+- New =web/src/urlState.ts=: =parseHash= / =canonicalize=
+  (behavioral absent-or-default contract, pass 7 — the single
+  home of every omission rule incl. the =hideExclusive=
+  roles-only rule and filters values-array sort/dedupe),
+  =buildUrlState= (raw mirror, never canonicalizes internally),
+  =urlStatesEqual= (case-sensitive type compare, deep filters /
+  bool), =writeUrl= (the only hash writer; =pushState= behind a
+  canonical-to-canonical no-op compare, =try=/=catch=). Format
+  =#/app?= hash params; =view= not encoded (derived from the
+  type's category); unknown params ignored.
+- =App.tsx= Step 2: writer effect mirroring the main fetch
+  effect's deps exactly — one history entry per committed
+  change; search writes on the debounce commit.
+- Step 2.5: =pendingFormRefetchRef= + a =[data, type]= arrival
+  effect; =fetchList= builds the not-ilike / bool =:eq= rows
+  only when =data='s =type-key= belongs to the requested type
+  and arms the one-shot refetch otherwise (a re-seeded first
+  request no longer silently drops the filters or 404s on a
+  stale field name). =resetListQuery= clears the ref.
+- Step 3: login seed in the =[loggedIn]= effect — live-hash
+  parse on every login transition, case-insensitive type
+  validation against =types= (unknown → landing flow +
+  =console.warn=), full canonical assignment of every query
+  field, timers cleared before the search pairs,
+  =defaultSortRef= nulled, bool latch set only when the
+  canonical entry carries =bool=.
+- Step 4: history listener on =popstate= + =hashchange= (one
+  idempotent handler): equality gate first (both sides through
+  =canonicalize=, type resolved through =target.name=), then
+  view derived from category, =closeForm= + selection clear,
+  full canonical assignment (never =changeType= — batched
+  setters would fight the seed), =defaultSortRef= nulled, bool
+  latch =target ? target.name : type= on every applied entry.
+- Step 5 (parking/logout): no code needed, verified — the hash
+  survives logout and logged-out screens write nothing
+  (writer's =!loggedIn= guard); relogin re-seeds from the live
+  hash.
+- =tsc= + =vite build= green (ran =node_modules/.bin=
+  directly; npm not on PATH on evo-x2). No backend changes, no
+  test changes. Manual browser pass (plan Step 6's 22 cases)
+  not yet run — needs a staging deploy.
 ** TODO Hide =logged-in= from assignable-role palettes :backend:frontend:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-09-25 Fri]

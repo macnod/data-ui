@@ -533,6 +533,11 @@ user-2), with appropriate roles and one model. Returns a plist, bound to
 ;;
 
 (defun run-backend-tests (&optional collect)
+  "Backend + predicates suites on test-model. The test action hooks
+(:test-sync …) must be registered before the model compiles (the
+fixture's buttons resolve them at compile time); loading
+action-tests.lisp does that (harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
   (let ((results
           (with-model "test-model" nil
             (append (run 'backend-suite)
@@ -598,7 +603,11 @@ tests against both test-model and modelbank-test."
     (when collect results)))
 
 (defun run-action-tests (&optional collect)
-  "Run action hook tests."
+  "Run action hook tests.
+The test action hooks (:test-sync …) must be registered before the
+model compiles; loading action-tests.lisp does that (harmless when
+already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
   (let ((results
           (with-model "test-model" nil
             (run 'action-suite))))
@@ -871,6 +880,22 @@ close-and-respawn behavior on the spawn-test fixture."
     (explain! results)
     (when collect results)))
 
+(defun run-enabled-when-tests (&optional collect)
+  ":ui :enabled-when tests: compile probes, evaluator unit tests
+from the shared JSON fixture (both no model needed), plus be-action
+guard behavior on the spawn-test fixture (whose :complete button
+now carries the gate)."
+  (let ((results
+          (append
+            ;; Compile probes + evaluator unit tests (no model, no DB)
+            (run 'enabled-when-compile)
+            (run 'enabled-when-evaluator)
+            ;; Guard behavior in shared context
+            (with-model "spawn-test" nil
+              (run 'enabled-when-behavior)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-new-roles-tests (&optional collect)
   ":new-roles top-level key tests.
 Validation probes run bare (no model). DB-init tests run in a
@@ -992,6 +1017,7 @@ groups."
                    ("agg-distinct"    . run-agg-distinct-tests)
                    ("update-permission" . run-update-permission-tests)
                    ("spawn"          . run-spawn-tests)
+                   ("enabled-when"   . run-enabled-when-tests)
                    ("new-roles"      . run-new-roles-tests)
                    ("guest"          . run-guest-tests)
                    ("api-roles"      . run-api-roles-tests)

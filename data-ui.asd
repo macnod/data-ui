@@ -57,6 +57,7 @@
                 (:file "agg-distinct-tests")
                 (:file "update-permission-tests")
                 (:file "spawn-tests")
+                (:file "enabled-when-tests")
                 (:file "new-roles-tests")
                 (:file "guest-tests")
                 (:file "api-roles-tests")

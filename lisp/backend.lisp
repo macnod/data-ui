@@ -3480,6 +3480,88 @@ t, and USER to exist."
       (a:with-rbac (*rbac*)
         (a:rbac-query (list sql value id))))))
 
+;;
+;; BEGIN :enabled-when evaluation (state-gated buttons)
+;;
+;; eval-condition-rows is the single runtime owner of the
+;; (:field :op :value) row grammar for :ui (:enabled-when …) gates:
+;; rows are AND-composed, values compare with equal after
+;; nil/:null/"" normalization, ordering ops fail closed on type
+;; mismatch, and a missing / nil row field fails the row (the
+;; button renders disabled and be-action rejects). The frontend
+;; mirrors these rules in evalEnabledWhen (App.tsx); drift between
+;; the two is the paired-evaluator risk the shared fixture
+;; (tests/fixtures/enabled-when-cases.json) exists to catch.
+;;
+
+(defun empty-value-p (v)
+  ":private: T when V belongs to the single \"empty\" class: nil, the
+:null keyword, or the empty string (Deploy's (:model :ne \"\") gate
+answers the nil-vs-empty question: one class, not three)."
+  (or (null v) (eq v :null) (and (stringp v) (string= v ""))))
+
+(defun eval-condition-row (row record)
+  ":private: Evaluate one (:field :op :value) row against RECORD (a
+loaded plist of current DB state). Returns T when the row holds.
+Fail-closed rules: a field absent from RECORD or holding SQL NULL
+fails every row except an empty-literal :eq / :ne (the empty class
+— nil / :null / \"\" — answers those directly, so (:field :eq \"\")
+holds on a fresh nil row: Deploy's gate, and :eq is the plan's
+stated mirror of the :ne empty rule); ordering ops fail closed on
+type mismatch; :in / :not-in fail closed on a value whose type
+matches no literal element. Never signals — the guard runs inside
+the action path, not validation."
+  (destructuring-bind (row-field op literal) row
+    (let ((value (getf record row-field)))
+      (cond
+        ;; The empty class answers :eq / :ne directly — including a
+        ;; nil record value (plan: ":eq is its mirror" of the :ne
+        ;; empty rule; Deploy's fresh-row gate relies on it).
+        ((and (member op '(:eq :ne)) (empty-value-p literal))
+          (if (eq op :eq)
+            (empty-value-p value)
+            (not (empty-value-p value))))
+        ;; Absent field or SQL NULL fails every other row (fail
+        ;; closed).
+        ((null value) nil)
+        ((eq op :eq) (equal value literal))
+        ((eq op :ne) (not (equal value literal)))
+        ((member op '(:gt :lt :gte :lte))
+          (and (typep value (type-of literal))
+            (funcall
+              (case op
+                (:gt #'>)
+                (:lt #'<)
+                (:gte #'>=)
+                (:lte #'<=))
+              value literal)))
+        ((eq op :in) (member value literal :test #'equal))
+        ((eq op :not-in)
+          (and (some (lambda (x) (typep value (type-of x))) literal)
+            (not (member value literal :test #'equal))))
+        (t nil)))))
+
+(defun eval-condition-rows (rows record)
+  ":private: AND-compose :enabled-when ROWS against RECORD. Appending
+a row may only restrict — every row must hold for the gate to
+pass. Returns T when all rows hold (or no gate was declared)."
+  (every (lambda (row) (eval-condition-row row record)) rows))
+
+(defun enabled-when-holds (type-key field-key record)
+  ":private: T when the :ui (:enabled-when …) gate on FIELD-KEY
+(when one exists) holds against RECORD. Reads the compiled field's
+:ui plist — the same rows the frontend receives verbatim — and
+evaluates them with eval-condition-rows. No gate means enabled
+(the fail-closed rule governs rows inside a present gate, never
+the gate's absence)."
+  (let ((rows (u:tree-get *compiled-model* type-key :fields field-key
+                :ui :enabled-when)))
+    (eval-condition-rows (or rows '()) record)))
+
+;;
+;; END :enabled-when evaluation
+;;
+
 (defun be-action (type-key id field-key user &optional (data nil data-p))
   ":public: Execute the action hook(s) attached to FIELD-KEY (a :button field)
 on the record ID of TYPE-KEY.
@@ -3541,6 +3623,22 @@ Signals a validation error if:
             (report-ve "be-action"
               "Action already in progress for ~s ~s field ~s."
               ~type-key ~id ~field-key)))
+        ;; State-gate guard (:ui :enabled-when). Runs before
+        ;; "running" is stamped — a rejection that stamped the
+        ;; status would strand the button (a cousin of the
+        ;; double-click bug this gate exists to close). Same error
+        ;; class as the in-progress guard so the REST layer renders
+        ;; it identically.
+        (let ((rows (u:tree-get m type-key :fields field-key
+                      :ui :enabled-when)))
+          (unless (eval-condition-rows (or rows '()) record)
+            (let ((failed-value (loop for row in rows
+                                  for v = (getf record (first row))
+                                  when v return v)))
+              (report-ve "be-action"
+                "Button ~s is disabled for this record: condition ~
+                 ~s does not hold (record value: ~s)."
+                ~field-key ~rows ~failed-value))))
         ;; Build set-status closure
         (let ((set-status (lambda (message)
                             (be-set-field-value

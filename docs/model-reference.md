@@ -574,7 +574,7 @@ For M2M list fields, the column used for options and join lookup must be the **s
 
 ### `:ui` subkeys
 
-The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean` or a plist `(:kind :boolean [:default :true | :false])`.
+The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean` or a plist `(:kind :boolean [:default :true | :false])`, `:enabled-when` must be a non-empty list of `(<field> <op> <value>)` rows (see the row in the table below).
 
 | Subkey | Values / meaning |
 |--------|------------------|
@@ -585,6 +585,7 @@ The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys 
 | `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
 | `:table` | keyword; **overwritten on the wire by `fe-fields`** from source table / type-key; used for `/api/file` URLs. Still authorable (compile-checked as a keyword) but normally left out |
 | `:filter-with` | `:boolean` or `(:kind :boolean [:default :true \| :false])`. Legal solely on a `:type :boolean` field with `:column t`; renders a three-state Any / Yes / No select on the list toolbar. Yes/No sends an `:eq` filter with the string `":true"` / `":false"` (`parse-filters` coerces these to the keywords on boolean fields). `:default` is optional — it seeds the select's initial state on first entry to the type (and Clear filters restores it); omitted means Any, and `:default :any` itself is a compile error (Any is unspellable). Wire forms: `"boolean"` vs `{"kind":"boolean","default":true}`. The default is frontend initial state only — `/api/list` without filter rows returns everything |
+| `:enabled-when` | non-empty list of `(<field> <op> <value>)` rows, legal solely on `:type :button` fields. Gates the button by **record state**: the frontend renders it disabled and `be-action` rejects (validation error, checked before `"running"` is stamped) when any row fails. Operators (v1 closed set): `:eq :ne :gt :lt :gte :lte :in :not-in`; `:like` family / `:has-all` are rejected as deferred. Rows are AND-composed (appending a row only restricts). `:eq`/`:ne` with an empty literal (`""`) compare against the single empty class — nil, `:null`, or `""` — so `(:model :ne "")` disables until a model is set and `(:model :eq "")` is its mirror; ordering ops fail closed on type mismatch; `:in`/`:not-in` take non-empty literal lists. A row naming a field absent from the record or holding NULL fails the row (**fail closed**). The typical gate targets the button's status companion — `(:complete-status :ne "complete")` disables only after a successful run; `"failed: …"` keeps the button live (the re-run recovery path) — but any field on the type works (gate the status companion, not a `:completed` boolean, so failed runs stay re-runnable). Wire form (keywords serialize as strings): `"enabled-when": [["complete-status","ne","complete"]]`. `:enabled-when` is the one dual-consumed `:ui` subkey (backend enforcement + frontend disable); the rest are presentation-only |
 
 Widget semantics:
 
@@ -1002,6 +1003,7 @@ Status writes go through `be-set-field-value` only.
 | `failed: <reason>` | framework (sync error) or worker | yes |
 
 - **In-progress guard:** refuse to start if status is exactly `"running"`
+- **State gate (`:ui :enabled-when`):** refuse to start when the gate fails against the current record (see [`:ui` subkeys](#ui-subkeys)); checked before `"running"` is stamped. The canonical gate — `((<button>-status :ne "complete"))` — disables only after a successful run, keeping `"failed: …"` re-runnable
 - **Sync hooks:** framework sets `complete` / `failed: …`
 - **Async hooks** (result includes `:async t`): worker must call `set-status`; process restart can leave `running` forever (no job queue in MVP)
 
@@ -1320,7 +1322,8 @@ Abbreviated from `models/todos.lisp` (which additionally sets `:domain-stg`, `:g
 ```lisp
 :complete
 (:type :button
-  :ui (:label "Complete" :widget :button)
+  :ui (:label "Complete" :widget :button
+       :enabled-when ((:complete-status :ne "complete")))
   :action (:spawn
             :close (:completed :true
                     :completed-at :now
@@ -1405,7 +1408,7 @@ One click closes the record (close fields written to the old row, which becomes 
 
 **Field:** `:type` `:ui` `:column` `:default` `:not-null` `:unique` `:identity` `:compose` `:required` `:validations` `:source` `:source-all` `:join-table` `:target` `:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:sortable` `:searchable` `:default-from` `:css-value` `:primary-key` / joiner `:reference`
 
-**UI:** `:label` `:widget` `:read-only` `:precision` `:options`
+**UI:** `:label` `:widget` `:read-only` `:precision` `:options` `:table` `:filter-with` `:enabled-when`
 
 **Source:** `:view` `:table` `:column` `:agg` `:scope`
 

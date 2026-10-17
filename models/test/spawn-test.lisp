@@ -3,7 +3,11 @@
 ;; (an :identity t name would collide on the second spawn), :tags
 ;; exercises the M2M copy through the join table, :notes exercises
 ;; :clear, and :completed / :completed-at / :completed-by are the
-;; close targets.  Used by tests/spawn-tests.lisp.
+;; close targets.  The :complete button carries the state gate
+;; ((:complete-status :ne "complete")) — the exact chores-bug shape:
+;; disabled after a successful spawn, live again on
+;; "failed: …" (the documented recovery path).  Used by
+;; tests/spawn-tests.lisp.
 '(:title "Spawn Test"
   :name "spawn-test"
   :version "0.1"
@@ -67,7 +71,8 @@
           :join-table :item-users)
         :complete
         (:type :button
-          :ui (:label "Complete" :widget :button)
+          :ui (:label "Complete" :widget :button
+               :enabled-when ((:complete-status :ne "complete")))
           :action (:spawn
                     :close (:completed :true
                             :completed-at :now

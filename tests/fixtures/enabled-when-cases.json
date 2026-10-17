@@ -1,0 +1,337 @@
+[
+  {
+    "name": "ne-status-idle",
+    "rows": [
+      [
+        "complete-status",
+        "ne",
+        "complete"
+      ]
+    ],
+    "record": {
+      "complete-status": "idle"
+    },
+    "expected": true
+  },
+  {
+    "name": "ne-status-complete",
+    "rows": [
+      [
+        "complete-status",
+        "ne",
+        "complete"
+      ]
+    ],
+    "record": {
+      "complete-status": "complete"
+    },
+    "expected": false
+  },
+  {
+    "name": "ne-status-failed-prefix",
+    "rows": [
+      [
+        "complete-status",
+        "ne",
+        "complete"
+      ]
+    ],
+    "record": {
+      "complete-status": "failed: hook exploded"
+    },
+    "expected": true
+  },
+  {
+    "name": "ne-empty-vs-null",
+    "rows": [
+      [
+        "model",
+        "ne",
+        ""
+      ]
+    ],
+    "record": {
+      "model": null
+    },
+    "expected": false
+  },
+  {
+    "name": "ne-empty-vs-empty-string",
+    "rows": [
+      [
+        "model",
+        "ne",
+        ""
+      ]
+    ],
+    "record": {
+      "model": ""
+    },
+    "expected": false
+  },
+  {
+    "name": "ne-empty-vs-value",
+    "rows": [
+      [
+        "model",
+        "ne",
+        ""
+      ]
+    ],
+    "record": {
+      "model": "todos"
+    },
+    "expected": true
+  },
+  {
+    "name": "eq-number",
+    "rows": [
+      [
+        "points",
+        "eq",
+        3
+      ]
+    ],
+    "record": {
+      "points": 3
+    },
+    "expected": true
+  },
+  {
+    "name": "eq-string-mismatch",
+    "rows": [
+      [
+        "name",
+        "eq",
+        "alpha"
+      ]
+    ],
+    "record": {
+      "name": "beta"
+    },
+    "expected": false
+  },
+  {
+    "name": "gt-number-pass",
+    "rows": [
+      [
+        "points",
+        "gt",
+        2
+      ]
+    ],
+    "record": {
+      "points": 3
+    },
+    "expected": true
+  },
+  {
+    "name": "gt-type-mismatch-fails-closed",
+    "rows": [
+      [
+        "points",
+        "gt",
+        2
+      ]
+    ],
+    "record": {
+      "points": "three"
+    },
+    "expected": false
+  },
+  {
+    "name": "lte-number-pass",
+    "rows": [
+      [
+        "points",
+        "lte",
+        3
+      ]
+    ],
+    "record": {
+      "points": 3
+    },
+    "expected": true
+  },
+  {
+    "name": "in-member",
+    "rows": [
+      [
+        "state",
+        "in",
+        [
+          "open",
+          "draft"
+        ]
+      ]
+    ],
+    "record": {
+      "state": "draft"
+    },
+    "expected": true
+  },
+  {
+    "name": "in-non-member",
+    "rows": [
+      [
+        "state",
+        "in",
+        [
+          "open",
+          "draft"
+        ]
+      ]
+    ],
+    "record": {
+      "state": "archived"
+    },
+    "expected": false
+  },
+  {
+    "name": "not-in-member",
+    "rows": [
+      [
+        "state",
+        "not-in",
+        [
+          "open",
+          "draft"
+        ]
+      ]
+    ],
+    "record": {
+      "state": "draft"
+    },
+    "expected": false
+  },
+  {
+    "name": "not-in-non-member",
+    "rows": [
+      [
+        "state",
+        "not-in",
+        [
+          "open",
+          "draft"
+        ]
+      ]
+    ],
+    "record": {
+      "state": "archived"
+    },
+    "expected": true
+  },
+  {
+    "name": "not-in-type-mismatch-fails-closed",
+    "rows": [
+      [
+        "state",
+        "not-in",
+        [
+          "open",
+          "draft"
+        ]
+      ]
+    ],
+    "record": {
+      "state": 7
+    },
+    "expected": false
+  },
+  {
+    "name": "missing-field-fails-closed",
+    "rows": [
+      [
+        "no-such-field",
+        "eq",
+        "x"
+      ]
+    ],
+    "record": {
+      "name": "alpha"
+    },
+    "expected": false
+  },
+  {
+    "name": "nil-field-fails-closed",
+    "rows": [
+      [
+        "completed-at",
+        "ne",
+        ""
+      ]
+    ],
+    "record": {
+      "completed-at": null
+    },
+    "expected": false
+  },
+  {
+    "name": "and-composition-both-hold",
+    "rows": [
+      [
+        "complete-status",
+        "ne",
+        "complete"
+      ],
+      [
+        "points",
+        "gt",
+        2
+      ]
+    ],
+    "record": {
+      "complete-status": "idle",
+      "points": 3
+    },
+    "expected": true
+  },
+  {
+    "name": "and-composition-one-fails",
+    "rows": [
+      [
+        "complete-status",
+        "ne",
+        "complete"
+      ],
+      [
+        "points",
+        "gt",
+        5
+      ]
+    ],
+    "record": {
+      "complete-status": "idle",
+      "points": 3
+    },
+    "expected": false
+  },
+  {
+    "name": "eq-empty-literal-vs-empty-value",
+    "rows": [
+      [
+        "model",
+        "eq",
+        ""
+      ]
+    ],
+    "record": {
+      "model": null
+    },
+    "expected": true
+  },
+  {
+    "name": "eq-empty-literal-vs-value",
+    "rows": [
+      [
+        "model",
+        "eq",
+        ""
+      ]
+    ],
+    "record": {
+      "model": "todos"
+    },
+    "expected": false
+  }
+]

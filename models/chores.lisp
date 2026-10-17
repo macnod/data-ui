@@ -7,7 +7,10 @@
 ;; fields (name, points, tags) copied and state (notes) reset. A scoreboard
 ;; rollup derives per-user point totals from completed chores. Instance :name is
 ;; plain non-unique text: a spawned successor legitimately repeats its name (an
-;; :identity t name would collide on the second spawn).
+;; :identity t name would collide on the second spawn). The :complete button
+;; carries a state gate (:enabled-when on :complete-status) so an already-
+;; completed row cannot be completed twice (history overwrite + scoreboard
+;; double-count).
 ;;
 '(:title "Home Chores"
    :name "chores"
@@ -35,7 +38,13 @@
            :column t :not-null t)
          :complete
          (:type :button
-           :ui (:label "Complete" :widget :button)
+           :ui (:label "Complete" :widget :button
+                ;; State gate: disabled once this instance has been
+                ;; completed (a second click would re-close the row,
+                ;; overwrite completed-at / completed-by history, and
+                ;; double-count the scoreboard); "failed: ..." keeps
+                ;; the button live for the re-run recovery path.
+                :enabled-when ((:complete-status :ne "complete")))
            :action (:spawn
                      :close (:completed :true
                               :completed-at :now
@@ -96,8 +105,7 @@
        :list-form (:fields (:name :description :points :tags
                              :completed :completed-at :completed-by))
        :update-form (:fields (:name :instance-id :description :points :tags
-                               :notes :complete :completed :completed-at
-                               :completed-by))
+                               :notes :complete))
        :add-form (:fields (:name :description :points :tags :notes)))
 
      :tags

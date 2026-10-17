@@ -317,7 +317,8 @@ The recurring-instance pattern: completing a chore, ticket, or inspection round 
 ```lisp
 :complete
 (:type :button
-  :ui (:label "Complete" :widget :button)
+  :ui (:label "Complete" :widget :button
+       :enabled-when ((:complete-status :ne "complete")))
   :action (:spawn
             :close (:completed :true
                     :completed-at :now
@@ -341,6 +342,8 @@ The recurring-instance pattern: completing a chore, ticket, or inspection round 
 **Failure mode** (no transactions — standing MVP caveat): close first, insert second. Insert failure → the old row stays closed with no successor; the button is re-runnable (re-close restamps the close fields and the insert retries). Note `be-action` checks *update* permission only; `be-insert` still requires *create* — a user with update but not create lands in the closed-no-successor bucket. The status column records the attempt either way.
 
 **Status vs domain truth:** the synthesized `<button>-status` column is operational (complete = closed & respawned); history views filter on the real `:completed` field, not on status.
+
+**Double-run guard (`:ui :enabled-when`):** the example gate above is load-bearing — without it, a second click on an already-completed row re-closes the old row (overwriting `completed-at` / `completed-by` history) and inserts a duplicate successor, double-counting any rollup over the closed rows. The gate targets the *status companion*, not the `:completed` boolean: `(:complete-status :ne "complete")` disables only after a successful run, while a `"failed: …"` status keeps the button live (the re-run recovery path below depends on that). Gate semantics, operator set, and the fail-closed rule: `docs/model-reference.md` → `:ui` subkeys → `:enabled-when`. The backend enforces the same condition in `be-action` (before `"running"` is stamped), so the API path is covered even where the disabled UI is not.
 
 
 ## MVP Caveat: No Transactional Guarantees

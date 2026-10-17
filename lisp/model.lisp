@@ -1547,7 +1547,8 @@ from a:login on \"\"."
   "Allowed values for the :widget key on a field :ui plist.")
 
 (defparameter *ui-keys*
-  '(:label :widget :read-only :precision :options :table :filter-with)
+  '(:label :widget :read-only :precision :options :table :filter-with
+     :enabled-when)
   "Closed set of legal keys on a field :ui plist. An author key not in
 this list is a compile error.")
 
@@ -2601,6 +2602,80 @@ and is not spellable. Signals via report-ve otherwise."
                    got ~s."
                   ~default)))))))))
 
+(defparameter *enabled-when-operators*
+  '(:eq :ne :gt :lt :gte :lte :in :not-in)
+  "Closed operator set for :ui :enabled-when rows. The request-filter
+operator table minus the wire-only members (:like family, :has-all —
+deferred out of v1 per plan review; widening later is additive).")
+
+(defun enabled-when-row-p (row)
+  ":private: T when ROW has the (:field :op :value) enabled-when shape:
+a proper 3-list with a keyword field key and an operator in the closed
+set. Value shape is enabled-when-value-ok-p's job."
+  (and
+    (listp row)
+    (null (nthcdr 3 row))
+    (keywordp (first row))
+    (keywordp (second row))
+    (member (second row) *enabled-when-operators*)))
+
+(defun enabled-when-value-ok-p (op value)
+  ":private: T when VALUE matches OP's compile-time shape, the
+filter-value-type-p split minus the wire-only :null member allowances
+(:enabled-when never crosses JSON as a filter). Scalars for :eq … :lte;
+non-empty proper lists for :in / :not-in."
+  (if (member op '(:in :not-in))
+    (and (listp value) value (null (last value)))
+    (not (or (listp value) (symbolp value)))))
+
+(defun valid-enabled-when-value (field-key ui)
+  ":private: Value-grammar gate for the :ui (:enabled-when …) subkey, the
+valid-filter-with-value slot: rows are (<field> <op> <value>) triples
+AND-composed; a non-empty proper list is required (empty () is vacuously
+true under AND yet reads like a gate); operators are the closed v1 set
+(the :like family and :has-all are deferred, not aliases); values are
+scalars for :eq … :lte and non-empty proper lists for :in / :not-in.
+Field existence is valid-enabled-when-fields's job (it sees the type's
+field vocabulary). Signals report-e otherwise."
+  (let ((rows (getf ui :enabled-when)))
+    (when rows
+      (unless (and (listp rows) rows (every #'listp rows))
+        (report-e "valid-enabled-when-value"
+          ":enabled-when on field ~s must be a non-empty list of ~
+           (<field> <op> <value>) rows; nil, (), a single row, and ~
+           non-lists are compile errors."
+          ~field-key))
+      (dolist (row rows)
+        (unless (enabled-when-row-p row)
+          (report-e "valid-enabled-when-value"
+            ":enabled-when row ~s on field ~s is not a (<field> ~
+             <op> <value>) triple with an operator in ~s."
+            ~row ~field-key ~*enabled-when-operators*))
+        (let ((op (second row))
+              (value (third row)))
+          (unless (enabled-when-value-ok-p op value)
+            (report-e "valid-enabled-when-value"
+              ":enabled-when row ~s on field ~s has a value that ~
+               does not match operator ~s (scalar for :eq … :lte; ~
+               non-empty list for :in / :not-in)."
+              ~row ~field-key ~op)))))))
+
+(defun valid-enabled-when-fields (field-key type-key rows model)
+  ":private: Field-vocabulary gate for :enabled-when rows: each row names
+a real field on TYPE-KEY — author fields, synthesized button status
+companions (both in MODEL's augmented raw fields by compile time), or a
+default field key. Runs from the compile-field finisher, where the
+widget-scope (button-only) rule is enforced beside it. Signals
+report-e on an unknown field."
+  (dolist (row rows)
+    (let ((row-field (first row)))
+      (unless (or (u:tree-get model type-key :fields row-field)
+                (member row-field (default-fields :keys-only t)))
+        (report-e "valid-enabled-when-fields"
+          ":enabled-when row on field ~s of type ~s names unknown ~
+           field ~s."
+          ~field-key ~type-key ~row-field)))))
+
 (defun finalize-ui (field-key ui)
   "Compile-time gate for field :ui plists. Validates keys and widget values, then
 injects safe defaults:
@@ -2624,6 +2699,11 @@ Rejects:
   (valid-precision-value ui)
   (valid-table-value ui)
   (valid-filter-with-value ui)
+  ;; :enabled-when value grammar (operators, row shape, literal shape).
+  ;; Runs before the widget default is injected so a button without an
+  ;; explicit :widget still reports the author's rows, and from the
+  ;; :ui plist itself (fe-fields passes :ui through verbatim).
+  (valid-enabled-when-value field-key ui)
   ;; Validate widget if explicitly present
   (let ((widget (getf ui :widget)))
     (when widget
@@ -2833,6 +2913,23 @@ correct there). Returns the effective :source plist."
                 ":filter-with requires :column t; field ~s of type ~s ~
                  has no column."
                 ~new-field-key ~type-key))))
+        ;; :enabled-when is a button-only subkey (the :filter-with
+        ;; boolean-only rule is the precedent for widget-scoped :ui
+        ;; keys). Field existence is checked against MODEL — the
+        ;; synthesized status companions are already in it by this
+        ;; point (compile-base-type-def augmented the model before
+        ;; compile-fields), so a fresh (:complete-status …) gate
+        ;; compiles. Buttons are also rejected on rollups wholesale,
+        ;; so no button rule is needed there.
+        (let ((ew-rows (getf ui-val :enabled-when)))
+          (when ew-rows
+            (unless (equal field-type :button)
+              (report-e "compile-field"
+                ":enabled-when is only valid on :button fields; ~
+                 field ~s of type ~s has :type ~s."
+                ~new-field-key ~type-key ~field-type))
+            (valid-enabled-when-fields new-field-key type-key
+              ew-rows model)))
         (let* ((final-ui (when ui-val
                            (finalize-ui new-field-key ui-val)))
                 (final-def (if final-ui
@@ -4277,10 +4374,20 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
             (listp sdef))
            t)
          ((and
+            (equal key :enabled-when)
+            (member :ui key-path)
+            (listp sdef))
+           ;; :ui (:enabled-when ((:field :op :value) …)) rows. The
+           ;; walker must not recurse into the triples; shape,
+           ;; operators, and value shapes are validated in
+           ;; valid-enabled-when-value, field existence in
+           ;; valid-enabled-when-fields.
+           t)
+         ((and
             (equal key :filter-with)
             (member :ui key-path)
             (listp sdef))
-           ;; :filter-with plist (kind/default grammar). Shape, kind set, and
+         ;; :filter-with plist (kind/default grammar). Shape, kind set, and
            ;; tail values are validated in valid-filter-with-value; the walker
            ;; must not recurse into it (a future kind's list-valued tail is not
            ;; a plist).
