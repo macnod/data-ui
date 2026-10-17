@@ -1337,14 +1337,16 @@ system exclusives."
          (expected (remove-if
                      (lambda (r)
                        (member r '("admin" "admin:exclusive"
-                                    "guest:exclusive" "settings")
+                                    "guest:exclusive" "settings"
+                                    "logged-in")
                          :test 'equal))
                      all-roles)))
     (is (equal (u:safe-sort result) (u:safe-sort expected)))
     (is-false (member "admin" result :test 'equal))
     (is-false (member "admin:exclusive" result :test 'equal))
     (is-false (member "guest:exclusive" result :test 'equal))
-    (is-false (member "settings" result :test 'equal))))
+    (is-false (member "settings" result :test 'equal))
+    (is-false (member "logged-in" result :test 'equal))))
 
 (test selectable-roles-non-admin
   "Non-admin sees own roles + public + type-roles + every other
@@ -1371,6 +1373,10 @@ user's shareable exclusive role, minus system exclusives."
         (is-false (member "admin" result :test 'equal))
         (is-false (member "admin:exclusive" result :test 'equal))
         (is-false (member "guest:exclusive" result :test 'equal))
+        ;; The fixture user must hold "logged-in" (every non-guest
+        ;; does) or this assertion proves nothing — it tests the
+        ;; filter, not the grant
+        (is-false (member "logged-in" result :test 'equal))
         ;; No duplicates
         (is (= (length result)
                (length (remove-duplicates result :test 'equal)))))

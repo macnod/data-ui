@@ -658,9 +658,10 @@ final rule set:
   directly; npm not on PATH on evo-x2). No backend changes, no
   test changes. Manual browser pass (plan Step 6's 22 cases)
   not yet run — needs a staging deploy.
-** TODO Hide =logged-in= from assignable-role palettes :backend:frontend:mvp:bug:
+** DONE Hide =logged-in= from assignable-role palettes :backend:frontend:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-09-25 Fri]
+:COMPLETED: [2026-10-16 Fri]
 :END:
 The =logged-in= role must never be offered as an option when
 assigning roles. It is automatically granted to every user except
@@ -669,15 +670,25 @@ comes back holding ="logged-in"=, its =name:exclusive=,
 ="public"=, ="settings"=), so offering it is at best noise and at
 worst the false impression that it is toggleable.
 
-Two palette paths still list it for admin (verified live):
+Still leaking (verified live [2026-10-16]) — both branches, not
+just admin (the original admin-only framing here was wrong):
 
 - =(selectable-roles :todos "admin")= — the =:roles= palette on
-  /every non-base type/ (resource-role assignment), admin branch.
-  =system-exclusives= in =selectable-roles= (lisp/backend.lisp)
-  lacks ="logged-in"=.
-- The =:roles= list of the =:roles= type itself (Admin view):
-  =allowed-values= → =be-list-column :roles :name= — no filtering
-  on that path at all.
+  /every non-base type/ (resource-role assignment), admin
+  branch. =system-exclusives= in =selectable-roles=
+  (lisp/backend.lisp) lacks ="logged-in"=.
+- =(selectable-roles :todos "alice")= — the non-admin branch
+  leaks the same way: every non-guest user *holds* ="logged-in"=
+  (it rides in via =user-roles=), and the same
+  =system-exclusives= list filters that branch's assembled list.
+
+One path this item used to list is dead: the =:roles= type's own
+=:roles= list (=allowed-values= → =be-list-column :roles :name=)
+no longer exists — =:roles= is =:base t=, so =allowed-values=
+never appends the synthetic palette (verified live:
+=(allowed-values :roles "admin")= returns keys =(:PERMISSIONS)=).
+The roles /rows/ in the Admin view are records, not an assignment
+palette; decision: that display is legitimate and stays.
 
 Already clean (do not duplicate; DONE 2026-08-09 "logged-in role
 should be not be shown in Add form" + the exclusives follow-ups):
@@ -686,12 +697,38 @@ Roles column via =add-roles-to-view= (both strip ="logged-in"=),
 and the write path re-attaches it on save (=update-roles=
 =reattach= list).
 
-Fix shape: add ="logged-in"= to =system-exclusives= (covers both
-=selectable-roles= branches); decide and note whether the =:roles=
-type's own =:roles= list counts as "assigning roles to a user" —
-it names a role's resource permissions, not user membership, so
-display there may be legitimate. Frontend needs nothing: App.tsx
-renders the palette the backend sends.
+Fix shape: add ="logged-in"= to =system-exclusives= (one edit,
+covers both =selectable-roles= branches). The write path needs
+nothing: records already holding ="logged-in"= keep it (held-but-
+hidden values ride through the form submit). Frontend needs
+nothing: App.tsx renders the palette the backend sends.
+
+Plan: [[file:~/workbench/hide-logged-in-plan.org][hide-logged-in-plan.org]].
+
+Fixed 2026-10-16: added ="logged-in"= to =system-exclusives= in
+=selectable-roles= (lisp/backend.lisp), docstring extended to
+name the full exclusion. Covers both branches: admin leaked it
+through the full role list, non-admin through =user-roles=
+(every non-guest user holds it) — the original item's
+"admin-only" framing was wrong. Test updates in
+=tests/backend-tests.lisp=: =selectable-roles-admin= expected-set
+plus an explicit =is-false=, =selectable-roles-non-admin= gained
+the =is-false= (with the hold-first guard comment). No frontend,
+write-path, or compiler changes: records already holding
+=logged-in= keep it (the edit form renders palette options only;
+held-but-hidden values ride through the submit), and
+=update-roles= reattaches it on =:users= saves (D12).
+
+The item's second path (the =:roles= type's own =:roles= list via
+=allowed-values= → =be-list-column=) no longer exists: =:roles=
+is =:base t= so =allowed-values= never appends the synthetic
+palette (verified live: keys =(:PERMISSIONS)=). The roles rows in
+the Admin view are records, not an assignment palette; they stay.
+
+Verification: live probes clean (admin + non-admin on
+=:todos=; =:users= palette still lists =ai-user= / =deployer=
+for admin); =run-backend-tests= 568/568; full =run-tests= 34
+suites, all =Fail: 0=.
 
 ** TODO Broken format string in =validate-new-directory= error :backend:bug:mvp:
 :PROPERTIES:
@@ -1184,10 +1221,6 @@ Clicking it re-requests the current data from the server and renders
 again. Useful when the list is stale (another user edited, an action
 hook completed, a deploy finished). Pure frontend: re-run the
 existing fetch path; no backend changes expected.
-** TODO Break up App.tsx                          :frontend:maintenance:mvp:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:END:
 ** TODO :directory default path                  :compiler:polish:mvp:model:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -1846,8 +1879,60 @@ Frontend (App.tsx):
 - Async hooks (=:deploy-model=): v1 is click-refresh only; per-row
   async status polling (the open form's 3s poller equivalent) is
   polish on top.
+** TODO Break up App.tsx                          :frontend:maintenance:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Moved from MVP Backlog 2026-10-16: the monolith is workable through
+MVP — the marginal cost of each edit is constant (read the relevant
+slice, not the whole file), and UI polish + the demo video will keep
+reshaping the components. Refactor after the video freezes the
+surface. Reassess if App.tsx passes ~4000 lines or frontend tasks
+become dreaded. Natural trigger to actually do it: the first
+post-MVP frontend feature (=:button= list rows, captions, column
+filters all touch the same cell renderers).
+
+Shape as of 2026-10-16: 3201 lines of the 4003-line frontend; the
+module-level layer is 744 lines of helpers and subcomponents, and
+=App()= itself spans line 745 to end (~2450 lines in one
+component). Siblings for scale: =urlState.ts= 280, =api.ts= 217,
+=StarRating.tsx= 182, =CheckboxList.tsx= 114.
+
+Phase 1 — mechanical extraction (lines 1–744, props only,
+near-zero risk): =applyCssVariables= / =PAGE_SIZE= / =formatNumber=
+/ =cellText= / =basename= / =fileUrl= to a lib module;
+=ImagePreview= / =ImageModal= / =ThumbnailGrid= to
+=components/images.tsx=; =renderCellValue= / =renderFormField= /
+=renderReadOnlyField= + =WIDGET_VOCABULARY= to
+=components/cells.tsx=. =tsc= must stay green; =npm run build=
+before eyeballing anything (no dev server).
+
+Phase 2 — component extraction from =App()= (medium): =Header=
+(view switcher), =TypeTabs=, =ListView= (table + inline edit +
+pagination + filter chips), =EditForm= (add/edit, two-phase file
+upload, =handleAction= + =pendingActions= + status polling),
+=SettingsView= / =AdminView= (roles). State stays lifted in =App=
+and passed via props (at most one context if drilling hurts) — no
+state library, no router; the minimalism rule outlives MVP.
+
+Phase 3 — only if needed: carve the state clusters (view mode,
+scoping, search, pagination, form state). The urlState writer
+effect must keep mirroring the main fetch effect's deps exactly —
+that coupling is the hardest single seam in the file.
+
+Traps from nearby items, all binding on the split:
+- =handleAction= is coupled to the open edit form (=editRecord=,
+  =formDef=, password gate, re-open on failure); the list-form
+  button item deliberately writes a sibling instead of reusing it.
+  Keep that split when extracting.
+- =submitForm= has two payload paths (add / update), both filtering
+  =formValues= to =formDef= keys with =hasOwnProperty=, not =in=
+  (the =[]= JSON-NULL echo bug). Preserve on both paths.
+- The frontend stays schema-driven — no hard-coded field lists ride
+  along into extracted components.
 
 * Scratch
+
 * Conf
 #+begin_src org
 # Local Variables:

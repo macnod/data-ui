@@ -1501,12 +1501,14 @@ compiled model metadata — no naming convention assumptions."
 
 (defun selectable-roles (type-key user)
   ":private: Returns the list of roles the current USER can assign on
-TYPE-KEY. For admin, returns all roles minus system exclusives. For
-other users, returns the user's own roles plus \"public\" plus the
-type's :type-roles plus every other user's shareable exclusive role
-(point-to-point sharing)."
+TYPE-KEY. For admin, returns all roles minus system exclusives: admin,
+admin:exclusive, guest:exclusive, settings, the auto-granted logged-in,
+and the viewer's own exclusive. For other users, returns the user's own
+roles plus \"public\" plus the type's :type-roles plus every other
+user's shareable exclusive role (point-to-point sharing)."
   (let ((system-exclusives
           (list* "admin" "admin:exclusive" "guest:exclusive" "settings"
+                 "logged-in"           ; auto-granted, not assignable
                  (when user
                    (list (a:exclusive-role-for user))))))
     (if (equal user "admin")
