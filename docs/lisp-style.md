@@ -53,6 +53,8 @@ All three vars are logged as `:hook-name`, `:key`, `:val`. All three are also fo
 
 Here `request-id` is logged but not shown in the error message.
 
+When rendering lists, use `~{~a~^, ~}` — the `~^` goes *after* `~a`, inside the `~{~}` — and tilde-prefixed specs bind to directives in order, so the spec for the message's subject must carry the tilde (an un-tilded subject renders the full context list instead).
+
 ### Practical constraints
 
 - Var-specs must be **symbols** (lexical variable names), not arbitrary expressions. Bind expressions to local variables first.

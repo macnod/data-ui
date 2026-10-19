@@ -579,13 +579,14 @@ The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys 
 | Subkey | Values / meaning |
 |--------|------------------|
 | `:label` | display label string (auto-generated from field key if omitted) |
-| `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:stars` \| `:select` \| `:file` \| `:checkbox` \| `:checkbox-list` \| `:password-new` \| `:password-read` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
+| `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:stars` \| `:select` \| `:file` \| `:file-path` \| `:checkbox` \| `:checkbox-list` \| `:password-new` \| `:password-read` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
 | `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
 | `:table` | keyword; **overwritten on the wire by `fe-fields`** from source table / type-key; used for `/api/file` URLs. Still authorable (compile-checked as a keyword) but normally left out |
 | `:filter-with` | `:boolean` or `(:kind :boolean [:default :true \| :false])`. Legal solely on a `:type :boolean` field with `:column t`; renders a three-state Any / Yes / No select on the list toolbar. Yes/No sends an `:eq` filter with the string `":true"` / `":false"` (`parse-filters` coerces these to the keywords on boolean fields). `:default` is optional — it seeds the select's initial state on first entry to the type (and Clear filters restores it); omitted means Any, and `:default :any` itself is a compile error (Any is unspellable). Wire forms: `"boolean"` vs `{"kind":"boolean","default":true}`. The default is frontend initial state only — `/api/list` without filter rows returns everything |
 | `:enabled-when` | non-empty list of `(<field> <op> <value>)` rows, legal solely on `:type :button` fields. Gates the button by **record state**: the frontend renders it disabled and `be-action` rejects (validation error, checked before `"running"` is stamped) when any row fails. Operators (v1 closed set): `:eq :ne :gt :lt :gte :lte :in :not-in`; `:like` family / `:has-all` are rejected as deferred. Rows are AND-composed (appending a row only restricts). `:eq`/`:ne` with an empty literal (`""`) compare against the single empty class — nil, `:null`, or `""` — so `(:model :ne "")` disables until a model is set and `(:model :eq "")` is its mirror; ordering ops fail closed on type mismatch; `:in`/`:not-in` take non-empty literal lists. A row naming a field absent from the record or holding NULL fails the row (**fail closed**). The typical gate targets the button's status companion — `(:complete-status :ne "complete")` disables only after a successful run; `"failed: …"` keeps the button live (the re-run recovery path) — but any field on the type works (gate the status companion, not a `:completed` boolean, so failed runs stay re-runnable). Wire form (keywords serialize as strings): `"enabled-when": [["complete-status","ne","complete"]]`. `:enabled-when` is the one dual-consumed `:ui` subkey (backend enforcement + frontend disable); the rest are presentation-only |
+| `:directory-type` | keyword; **required** with `:widget :file-path` (and only legal there — the `:options`/`:select` precedent). Names the type whose rows fill the widget's folder select; must name an existing type in the model (compile-checked). The frontend reads that type's list form for the `:path t` field (the folder column — schema-derived, not assumed to be `:name`) and lists it via `/api/list`, so options are exactly the directories the current user can read; `/` is always offered and is the default when the path is empty. No filtering beyond what `/api/list` already enforces |
 
 Widget semantics:
 
@@ -594,12 +595,13 @@ Widget semantics:
 - `:code`: monospace `<textarea>` (~12 rows)
 - `:stars`: interactive StarRating (editable) or static (read-only / list)
 - `:checkbox`: single boolean checkbox
-- `:checkbox-list`: multi-select from `allowed-values`; the frontend adds client-side search once the option set reaches 10
+- `:checkbox-list`: multi-select from `allowed-values`; the frontend adds client-side search once the option set reaches 10. On list views, chip-filterable fields (the same widget, joined table) also offer a searchable per-field chip picker fed by `allowed-values`, applying the same `has-all` filter a cell chip applies
 - `:select`: `<select>` dropdown. Two modes:
   - **Relation** (default): options from `allowed-values` via `:target` (foreign key). Requires `:target` + `:source` + `:source-all`.
   - **Static**: options from `:options` (a list of non-empty strings). Requires `:ui (:widget :select :options (...))`. No `:target` or `:join-table`. The stored value is the option string itself. See `models/test/static-select-test.lisp` for an example.
   - A bare `:widget :select` with neither `:options` nor `:target` is a compile error (empty dropdowns are not a valid mode).
 - `:file`: file input + two-phase upload
+- `:file-path`: folder select + editable filename, for the `:path t` field of an fs-backed leaf type. Splits the stored path at the last `/` (folder = everything up to and including it, filename = the remainder), joins them back on every change, and submits the same one-string value a `:textbox` submits today — the API is unchanged. Folder options come from `/api/list` on the `:directory-type` type (default `/`, always offered); the filename is prefilled from the basename of the sibling `:widget :file` field's picked file and stays editable. Requires `:ui (:widget :file-path :directory-type <type>)`; see `:directory-type` above
 - `:password-new`: masked input + confirmation box for creating / replacing a stored secret; on edit forms an untouched (blank) value means "keep current password"; `autoComplete="new-password"`
 - `:password-read`: single masked box for typing an *existing* secret that is not stored by this form (e.g. settings Current Password); no confirmation, no placeholder, `autoComplete="current-password"`
 - `:button`: action button (update form only)
@@ -1345,7 +1347,8 @@ One click closes the record (close fields written to the old row, which becomes 
   :fields
   (:name
     (:type :text :identity t :path t
-      :ui (:label "File" :widget :textbox)
+      :ui (:label "File" :widget :file-path
+           :directory-type :directories)
       :validations (:required)
       :source (:view :main :column :name :agg :first)
       :column t :not-null t :unique t)
@@ -1408,7 +1411,7 @@ One click closes the record (close fields written to the old row, which becomes 
 
 **Field:** `:type` `:ui` `:column` `:default` `:not-null` `:unique` `:identity` `:compose` `:required` `:validations` `:source` `:source-all` `:join-table` `:target` `:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:sortable` `:searchable` `:default-from` `:css-value` `:primary-key` / joiner `:reference`
 
-**UI:** `:label` `:widget` `:read-only` `:precision` `:options` `:table` `:filter-with` `:enabled-when`
+**UI:** `:label` `:widget` `:read-only` `:precision` `:options` `:table` `:filter-with` `:enabled-when` `:directory-type`
 
 **Source:** `:view` `:table` `:column` `:agg` `:scope`
 

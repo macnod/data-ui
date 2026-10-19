@@ -1543,12 +1543,13 @@ from a:login on \"\"."
 
 (defparameter *widgets*
   '(:textbox :textarea :code :stars :checkbox :checkbox-list :select
-     :file :password-new :password-read :button :hidden :image :image-list)
+     :file :file-path :password-new :password-read :button :hidden
+     :image :image-list)
   "Allowed values for the :widget key on a field :ui plist.")
 
 (defparameter *ui-keys*
   '(:label :widget :read-only :precision :options :table :filter-with
-     :enabled-when)
+     :enabled-when :directory-type)
   "Closed set of legal keys on a field :ui plist. An author key not in
 this list is a compile error.")
 
@@ -2545,6 +2546,24 @@ though fe-fields overwrites it on the wire. Signals via report-ve otherwise."
         ":table must be a keyword, got ~s."
         ~table))))
 
+(defun valid-directory-type-value (ui)
+  "Check :directory-type on :ui: a keyword, and only legal with
+:widget :file-path (the :options / :select precedent). Existence of the
+named type is checked in compile-field, which sees the model. Signals via
+report-ve / report-e otherwise."
+  (let ((directory-type (getf ui :directory-type :missing)))
+    (unless (eq directory-type :missing)
+      (unless (keywordp directory-type)
+        (report-ve "valid-directory-type-value"
+          ":directory-type must be a keyword, got ~s."
+          ~directory-type))
+      (let ((widget (getf ui :widget)))
+        (unless (eq widget :file-path)
+          (report-e "valid-directory-type-value"
+            ":directory-type is only valid with :widget :file-path, ~
+             got ~s"
+            ~widget))))))
+
 (defun filter-with-kind (filter-with)
   "Effective kind of a :filter-with value: the value itself for the
 bare-keyword sugar, the :kind entry for the plist form, :invalid for
@@ -2698,6 +2717,7 @@ Rejects:
   (valid-label-value ui)
   (valid-precision-value ui)
   (valid-table-value ui)
+  (valid-directory-type-value ui)
   (valid-filter-with-value ui)
   ;; :enabled-when value grammar (operators, row shape, literal shape).
   ;; Runs before the widget default is injected so a button without an
@@ -2857,6 +2877,21 @@ correct there). Returns the effective :source plist."
             ":widget :select requires either :options or :target ~
              on field ~s of type ~s."
             ~new-field-key ~type-key))
+        ;; :file-path requires :directory-type naming an existing type
+        ;; (the frontend must not guess the folder source; the same
+        ;; model-scope existence check pattern as :enabled-when).
+        (let ((directory-type (getf ui-val :directory-type)))
+          (when (eq widget :file-path)
+            (unless directory-type
+              (report-e "compile-field"
+                ":widget :file-path requires :directory-type on ~
+                 field ~s of type ~s."
+                ~new-field-key ~type-key))
+            (unless (getf model directory-type)
+              (report-e "compile-field"
+                ":directory-type ~s on field ~s of type ~s is not ~
+                 a type in this model."
+                ~directory-type ~new-field-key ~type-key))))
         ;; :sortable requires a base column, except on a rollup (plan 09): there
         ;; the ORDER BY targets the SELECT alias, so grain pass-throughs and
         ;; :sum / :count / :avg measures may sort.  :list / :distinct stay

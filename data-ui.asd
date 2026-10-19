@@ -64,4 +64,6 @@
                 (:file "type-roles-override-tests")
                 (:file "domain-stg-tests")
                 (:file "change-password-tests")
-                (:file "timestamp-null-update-tests")))))
+                (:file "timestamp-null-update-tests")
+                (:file "new-directory-tests")
+                (:file "file-path-tests")))))

@@ -37,7 +37,8 @@
        :fields
        (:name
          (:type :text :identity t :path t
-           :ui (:label "File" :widget :textbox)
+           :ui (:label "File" :widget :file-path
+                :directory-type :directories)
            :validations (:required)
            :source (:view :main :column :name :agg :first)
            :column t :not-null t :unique t)

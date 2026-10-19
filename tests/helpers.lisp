@@ -980,6 +980,30 @@ rejection (the 22007 fix). Runs on the spawn-test fixture (nullable
     (explain! results)
     (when collect results)))
 
+(defun run-new-directory-tests (&optional collect)
+  "valid-new-directory report-ve regressions: the FORMAT separator typo
+and the wrong var-spec bound to the \"Requested roles\" directive.
+Runs on the modelbank-test fixture (:directories tree, root created by
+add-root-fs-resources with directories-user)."
+  (let ((results
+          (with-model "modelbank-test" nil
+            (run 'new-directory-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-file-path-tests (&optional collect)
+  ":file-path widget tests: compile probes (no model needed) plus
+fe-fields wire emission on the file-path-test fixture."
+  (let ((results
+          (append
+            ;; Compile probes (pure compile-model, no DB)
+            (run 'file-path-compile)
+            ;; Wire emission (needs a live compiled model)
+            (with-model "file-path-test" nil
+              (run 'file-path-wire)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -1023,7 +1047,9 @@ groups."
                    ("api-roles"      . run-api-roles-tests)
                    ("type-roles-override" . run-type-roles-override-tests)
                    ("domain-stg"     . run-domain-stg-tests)
-                   ("timestamp-null" . run-timestamp-null-tests))
+                   ("timestamp-null" . run-timestamp-null-tests)
+                   ("new-directory" . run-new-directory-tests)
+                   ("file-path"     . run-file-path-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

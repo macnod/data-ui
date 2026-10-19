@@ -730,9 +730,89 @@ Verification: live probes clean (admin + non-admin on
 for admin); =run-backend-tests= 568/568; full =run-tests= 34
 suites, all =Fail: 0=.
 
-** TODO Broken format string in =validate-new-directory= error :backend:bug:mvp:
+** DONE Searchable chip picker on list views         :frontend:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-17 Sat]
+:COMPLETED: [2026-10-17 Sat]
+:END:
+The chip filter system works, but you can only click a chip that
+already appears on a row of the current page. On a large tag
+vocabulary (or a page that happens not to show the value you
+want) there is no way to find and apply a chip.
+
+Decided 2026-10-17 (Donnie):
+- *One picker per chip-eligible field*, not one grouped picker.
+  It must stay small at rest: a compact icon (or similarly
+  cheap control) in the filter bar that expands into a
+  searchable dropdown on click. The open list shows at most N
+  matches; typing narrows. Click outside / Escape closes it.
+  N is a frontend constant, same idea as =CheckboxList='s
+  =RENDER_CAP= — not a model key.
+- *Empty results are legal.* Picking a value that matches no
+  row still applies the filter and shows the empty list. The
+  active chip in the filter bar (already rendered for cell
+  chips) is how you remove it; Clear filters covers it too.
+
+The picker toggles the same =has-all= filter a cell chip does
+(=toggleChipFilter=). Active chips, URL state, and Clear
+filters stay as they are.
+
+Today the list payload only carries values present on the
+returned rows. The picker needs the full vocabulary, which
+=/api/list= already computes as =allowed-values= for
+=:checkbox-list= fields — reuse that palette rather than
+inventing a new endpoint. Open for the plan: full palette vs
+only values that occur on some row (a tag nobody uses is
+noise; the empty-result decision does not settle this, since
+a used tag can still match zero rows under the current
+search / other filters).
+
+Sibling of "=:searchable= on M2M list fields" above: that item
+is fuzzy free-text through the join; this one is exact-match
+chip filtering when the value is not on the page. Chips stay
+the better tag UX; this removes the "value must be visible"
+limitation.
+
+Plan: [[file:~/workbench/searchable-chips-plan.org][searchable-chips-plan.org]].
+
+Implemented 2026-10-17 per the plan, frontend-only:
+
+- =web/src/ChipPicker.tsx= (new): presentational picker.
+  Resting state is one 🏷 icon button (=title= /
+  =aria-label= "Filter by <label>", =aria-expanded=). Open:
+  absolutely-positioned dropdown (the wrapping filter bar
+  uses =flexWrap=, an in-flow panel would reflow it) with an
+  autofocused search input, a pinned selected section
+  (active-chip treatment, never filtered, never capped —
+  CheckboxList's rule), a capped unselected window
+  (=RENDER_CAP = 8=, alphabetical head of the case-insensitive
+  substring matches), the "N more — type to narrow" hint, and a
+  muted "No matching values" line. Escape closes; Enter toggles
+  the first visible unselected match only on a non-empty query
+  (Enter adds, never removes). Click outside closes via a
+  document =mousedown= listener that ignores events inside the
+  wrapper (button / panel / search input) so row clicks land.
+- =web/src/App.tsx=: =chipPickerOpen= state (one field open at
+  a time — opening one closes the other); one =ChipPicker= per
+  =chipFieldMeta= entry in =listFields= order, after the boolean
+  selects and before the active-chip spans; palette is
+  =allowed-values[f]=; =onToggle= is =toggleChipFilter=; button
+  hidden on an empty palette. =toggleChipFilter=, active chips,
+  URL state, cell chips, and Clear filters untouched.
+- =docs/model-reference.md=: one sentence on the
+  =:checkbox-list= widget row noting the list-view chip picker.
+
+No Lisp changes; no FiveAM coverage (presentational — the
+=has-all= filter path it calls is already tested). Verified
+=tsc= + =vite build= green and, on the live todos image, that
+=allowed-values= carries the full tag palette
+(:tags ("gamma" "alpha" "beta")) even when the only rows on
+the page show a subset.
+
+** DONE Broken format string in =validate-new-directory= error :backend:bug:mvp:
 :PROPERTIES:
 :CREATED: [2026-09-18 Fri]
+:COMPLETED: [2026-10-17 Sat]
 :END:
 =lisp/backend.lisp= (the "Can't assign roles that parent doesn't
 have" =report-ve= in =validate-new-directory=). Adding a
@@ -751,6 +831,122 @@ Can't assign roles that parent doesn't have.
 
 Workaround observed 2026-09-18: removing the =public= role from
 the request let the directory through.
+
+Plan: [[file:~/workbench/broken-format-validate-new-directory-plan.org][broken-format-validate-new-directory-plan.org]].
+
+Implemented 2026-10-17 per the plan: separator typo fixed
+(=~{~a^~, ~}= → =~{~a~^, ~}=) and the third tilde slot of both
+roles messages rebound to the excess list (=non-parent-roles= /
+=non-user-roles=), so "Requested roles" names the excess instead
+of the full request. Log-only specs keep the full context.
+Deviation from the plan: its fix snippets repeated the subject in
+both a tilde and non-tilde spec, which =report-ve='s log plist
+build rejects (repeated-key error, caught live); the subject
+appears once, tilde'd. The end-to-end =non-user-roles= test also
+needed the root "/" to actually carry =user-x:exclusive= before
+the =/child/= seed insert passes validation (type roles never
+reach the root resource), so the test grants it to "/" via
+=a:add-resource-role= first. New suite =new-directory-suite=
+(=tests/new-directory-tests.lisp=, =modelbank-test= fixture):
+14 checks — FORMAT regression, happy-path control, and the
+=non-user-roles= message end-to-end through the shareable
+exclusive-role path. Registered in =data-ui.asd=, runner
+=run-new-directory-tests= added to =tests/helpers.lisp= and
+=run-tests=. =docs/lisp-style.md= gained the =~{~a~^, ~}= idiom
+line. =run-tests=: 1995 checks, 34 groups, all green. Live repro
+on the books demo confirmed: renders the intended message naming
+the excess role, GMN attached, no FORMAT error. =valid-file-meta=
+has the same class of defects (plan marks it out of scope —
+follow-up ticket).
+
+** DONE =:file-path= widget                        :frontend:compiler:model:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-17 Sat]
+:COMPLETED: [2026-10-17 Sat]
+:END:
+Folder select + filename.
+
+Uploading a file asks the user to type a logical path, and the
+parent directory must already exist. Before any directories are
+created, the only valid parent is =/=, which a novice does not
+know to type. Replace the path textbox with a folder select plus
+an editable filename. The control still submits one path string;
+the API is unchanged.
+
+Decided 2026-10-17 (Donnie):
+- The widget lives on the path field, not on =:widget :file=.
+  =:file= keeps the bytes and the two-phase upload.
+- Widget name =:file-path=, so a future directory widget is not
+  boxed in. Parameter is =:directory-type= (not =:parent=, which
+  reads as type-level =:parent-type=, and not =:table=, which
+  =fe-fields= overwrites).
+- Default folder is =/=. Options are whatever =/api/list= on
+  that type already returns for this user — no extra filtering.
+- Filename is prefilled from the picked file and stays editable.
+
+The only Lisp is the closed =:ui= vocabulary: =:file-path= in
+=*widgets*=, =:directory-type= in =*ui-keys*=, required on that
+widget, must name an existing type. No REST, no DDL, no
+path-validation change.
+
+Plan: [[file:~/workbench/refine-file-uploads-plan.org][refine-file-uploads-plan.org]].
+
+Implemented 2026-10-17 per the plan. Compiler (=lisp/model.lisp=):
+=:file-path= in =*widgets*=, =:directory-type= in =*ui-keys*=,
+=valid-directory-type-value= (keyword check + :file-path-only, the
+=:options=/:select= precedent) called from =finalize-ui=, and a
+=compile-field= existence check beside the =:select= rule
+(required on =:file-path=, must name a type in the model). No REST,
+no DDL, no path-validation change; =fe-fields= passes the key
+through verbatim on the wire. Tests: new
+=tests/file-path-tests.lisp= (compile probes + =fe-fields= wire
+emission; sub-suites =file-path-compile= / =file-path-wire=), new
+fixture =models/test/file-path-test.lisp=, registered in
+=data-ui.asd=, =run-file-path-tests= in =tests/helpers.lisp= and
+added to =run-tests= (36 groups). Frontend: new
+=web/src/FilePath.tsx= (folder select + editable filename; splits
+at last =/=, joins on change, =/= always offered and default,
+schema-derived folder column via the =:path= flag, stale stored
+folder appended as an extra option, =limit 200=, filename
+prefilled from the sibling =:widget :file= File basename only
+while untouched and empty) + =App.tsx= form-map branch (beside the
+=file= branch, so it can see the sibling file field),
+=file-path= in =WIDGET_VOCABULARY=, =directory-type= in the Field
+interface; built with tsc + vite via =node_modules/.bin=. Docs:
+=:widget= row, new =:directory-type= row, widget-semantics
+paragraph, file-server worked example, and the Quick key index in
+=docs/model-reference.md=. Models: the four checked-in
+textbox-plus-file leaf types switched to
+=:widget :file-path :directory-type :directories= — =file-server=
+=:files=, =parts= =:files=, =modelbank= =:images=, =books=
+=:covers=. All four compile (validate-model); =/api/list= on the
+live image emits =directory-type: "directories"=. =run-tests=: 2019
+checks, 36 groups, all green (first run failed 33 backend checks —
+my parallel =(set-model "file-path-test")= had swapped the model
+mid-suite; clean second run with no interference passes
+everything). One plan deviation: tests landed as a new suite file
+(allowed by the plan's fallback) rather than inside the predicate
+suite, keeping existing test suites untouched.
+
+** TODO Directory path edits bypass validation      :backend:bug:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-17 Sat]
+:END:
+Adding a directory such as =/secret/= creates it correctly,
+but the record is then editable: renaming =/secret/= to
+=secret= goes through, and accepting that edit is broken:
+
+- Directory moves are not supported, so any accepted path
+  change leaves the record naming a directory that does not
+  exist.
+- The edited directory cannot be deleted — deletion fails
+  silently — unless another edit restores the original name
+  (=/secret/=).
+
+Fix direction: validate directory updates the way
+=validate-new-directory= validates inserts — reject path
+changes outright (no moves yet) and reject malformed paths —
+and surface deletion failures instead of failing silently.
 
 ** TODO =allowed-values= must not fail the parent list     :backend:bug:mvp:
 :PROPERTIES:
@@ -1778,7 +1974,6 @@ Lower priority than the chips: exact-match chips are the better
 tag UX, and once they exist this only adds fuzzy substring
 matching on top. Value rises for large tag vocabularies where
 clicking is impractical.
-
 ** TODO Generate operating manual for site from model             :compiler:
 :PROPERTIES:
 :CREATED:  [2026-09-19 Sat]

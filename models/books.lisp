@@ -137,7 +137,7 @@
                :users (:tables (:users) :scope :user))
       :fields
       (:book
-        (:type :text :identity t
+        (:type :text :identity t :sortable t
           :force-sql-name "rating_book"
           :ui (:label "Book" :widget :select)
           :target :books
@@ -154,7 +154,7 @@
           :source-all (:view :users :table :users :column :name :agg :list)
           :column t :not-null t)
         :rating
-        (:type :integer
+        (:type :integer :sortable t
           :ui (:label "Rating" :widget :stars)
           :validations ((:in-range :min 1 :max 5))
           :source (:view :main :table :my-ratings :column :rating :agg :first)
@@ -191,10 +191,11 @@
       :create :auto :update :auto :delete :auto :display t
       :tree t :is-leaf nil :parent-type :directories :fs-backed t
       :type-roles ("directories-user" "public")
+      :default-sort (:name :asc)
       :views (:main (:tables (:directories)))
       :fields
       (:name
-        (:type :text :identity t :path t
+        (:type :text :identity t :path t :sortable t
           :ui (:label "Directory" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
@@ -216,16 +217,17 @@
           :ui (:label "Image" :widget :image)
           :source (:view :main :column :name :agg :first)
           :column nil)
-        :name
-        (:type :text :identity t :path t :sortable t :searchable t
-          :ui (:label "File" :widget :textbox)
-          :validations (:required)
-          :source (:view :main :column :name :agg :first)
-          :column t :not-null t :unique t)
         :file
         (:type :file
           :ui (:label "Select File" :widget :file)
           :validations (:required))
+        :name
+        (:type :text :identity t :path t :sortable t :searchable t
+          :ui (:label "File" :widget :file-path
+               :directory-type :directories)
+          :validations (:required)
+          :source (:view :main :column :name :agg :first)
+          :column t :not-null t :unique t)
         :book
         (:type :text
           :force-sql-name "cover_book"

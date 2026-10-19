@@ -2085,10 +2085,10 @@ Can't specify roles that user doesn't have.
               "
 Can't assign roles that parent doesn't have.
   - Parent directory: ~a
-  - Parent roles: ~{~a^~, ~}
+  - Parent roles: ~{~a~^, ~}
   - Requested roles: ~{~a~^, ~}"
-              logical-path ~logical-parent non-parent-roles ~parent-roles
-              ~req-roles user-roles))
+              logical-path ~logical-parent ~parent-roles ~non-parent-roles
+              req-roles user-roles))
           (when non-user-roles
             (report-ve "validate-new-directory"
               "
@@ -2096,7 +2096,8 @@ Can't assign roles that user doesn't have.
   - User: ~a
   - User roles: ~{~a~^, ~}
   - Requested roles: ~{~a~^, ~}"
-              ~user ~user-roles non-user-roles ~req-roles parent-roles)))))))
+              ~user ~user-roles ~non-user-roles req-roles
+              parent-roles)))))))
 
 (defun valid-existing-file-or-directory (type-key logical-path)
   (when logical-path

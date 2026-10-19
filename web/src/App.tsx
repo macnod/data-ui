@@ -4,6 +4,8 @@ import { apiFetch, setTokens, clearTokens, getAccessToken,
   from './api'
 import StarRating from './StarRating'
 import CheckboxList from './CheckboxList'
+import ChipPicker from './ChipPicker'
+import FilePath from './FilePath'
 import { parseHash, canonicalize, buildUrlState,
          urlStatesEqual, writeUrl } from './urlState'
 
@@ -55,6 +57,10 @@ interface Field {
   'read-only'?: boolean
   sortable?: boolean
   searchable?: boolean
+  // :directory-type wire value (:widget :file-path only): the
+  // type whose rows fill the folder select. Keyword → downcased
+  // string (plist-to-json), e.g. "directories".
+  'directory-type'?: string
   // :filter-with wire value: "boolean" (bare sugar) or the
   // kind/default plist form {"kind":"boolean","default":true}.
   'filter-with'?: string | { kind?: string, 'default'?: boolean }
@@ -338,8 +344,8 @@ function ImagePreview({
 // (the compiler's own default rule for a missing :widget).
 const WIDGET_VOCABULARY = new Set([
   'textbox', 'textarea', 'code', 'stars', 'checkbox', 'checkbox-list',
-  'select', 'file', 'password-new', 'password-read', 'button', 'hidden',
-  'image', 'image-list'
+  'select', 'file', 'file-path', 'password-new', 'password-read',
+  'button', 'hidden', 'image', 'image-list'
 ])
 
 function renderFormField(
@@ -807,6 +813,16 @@ function App() {
   // with the other refs so the hook order is unconditional — a
   // hooks-order crash here blanks the page on login.
   const boolSeededForRef = useRef<string | null>(null)
+  // Chip picker (searchable chip filtering): which chip field's
+  // picker is open, or null. Lifted here, not owned per-picker,
+  // so opening one closes any other. Not cleared by
+  // resetListQuery: the filter bar unmounts on every type /
+  // view change, which unmounts the open panel with it — an
+  // effect adding setChipPickerOpen(null) to those paths would
+  // be dead code in practice.
+  const [chipPickerOpen, setChipPickerOpen] = useState<
+    string | null
+  >(null)
   // App state in the URL (Step 2.5): names the type whose first
   // fetch went out without its form-dependent rows (not-ilike /
   // bool :eq) because data did not yet belong to it — a URL
@@ -2633,6 +2649,31 @@ function App() {
               </select>
             </label>
           ))}
+          {/* Searchable chip pickers: one per chip-eligible
+              field, in listFields order. Lets the user name a
+              chip value that is not on the current page; the
+              palette is the same allowed-values the edit-form
+              CheckboxList uses. Button hidden on an empty
+              palette (nothing to pick — decision 4 does not
+              rescue it; allowed-values rides the /api/list
+              response and is stable across pages). */}
+          {Object.keys(chipFieldMeta).map(f => {
+            const opts =
+              data.result['allowed-values']?.[f] || []
+            if (opts.length === 0) return null
+            return (
+              <ChipPicker
+                key={f}
+                label={chipFieldMeta[f].label}
+                options={opts}
+                selected={listFilters[f] || []}
+                open={chipPickerOpen === f}
+                onOpenChange={o =>
+                  setChipPickerOpen(o ? f : null)}
+                onToggle={v => toggleChipFilter(f, v)}
+              />
+            )
+          })}
           {Object.entries(listFilters)
             .filter(([, values]) => values.length > 0)
             .map(([fieldKey, values]) =>
@@ -2791,6 +2832,51 @@ function App() {
                       const file = e.target.files?.[0] || null
                       setFormValues({ ...formValues, [f]: file })
                     }}
+                  />
+                </div>
+              )
+            }
+
+            if (fieldMeta['widget'] === 'file-path') {
+              // Folder select + editable filename. Lives beside
+              // the file branch (not inside renderFormField):
+              // the suggested filename comes from the sibling
+              // :widget :file field's File object, which only
+              // this form map can see. At most one file field
+              // exists today (submitForm's find makes the same
+              // assumption).
+              const fileFieldKey = Object.keys(
+                isEditMode
+                  ? (data.result[openFormName] || {})
+                  : (data.result['add-form'] || {})
+              ).find(k => {
+                const meta = isEditMode
+                  ? (data.result[openFormName] || {})[k]
+                  : (data.result['add-form'] || {})[k]
+                return meta?.['widget'] === 'file'
+              })
+              const siblingFile = fileFieldKey
+                ? formValues[fileFieldKey] : null
+              const suggested = siblingFile instanceof File
+                // File.name is a basename per spec; strip any
+                // path anyway ( defenses for browsers that
+                // include one)
+                ? siblingFile.name.split('/').pop()
+                  || siblingFile.name
+                : ''
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <FilePath
+                    directoryType={
+                      fieldMeta['directory-type'] || ''}
+                    value={
+                      typeof formValues[f] === 'string'
+                        ? formValues[f] : ''}
+                    onChange={v =>
+                      setFormValues({ ...formValues, [f]: v })
+                    }
+                    suggestedName={suggested}
                   />
                 </div>
               )
