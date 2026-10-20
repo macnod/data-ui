@@ -17,6 +17,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 - **Lisp style and error reporting** — `u:` preference, small functions, `report-e` / `report-ve`, `valid-*` naming → `docs/lisp-style.md` (read before writing any Lisp: tests, helpers, or engine code with permission). When dealing with `report-ve` (or `report-e`), read the macro documentation in `lisp/aux.lisp` first — the tilde-prefixed var-spec convention is easy to misread as a typo and both macros signal (they do not return).
 - **Dead-code decisions** — `docs/model-accessors.md` (check before removing anything that looks unused)
 - **Backlog** — `docs/todo.org`
+- **Demo video suggestions** → `~/workbench/video-plan.org` — running list of beats to capture (shots, pauses, points to land). Video work starts December 15; whenever a moment in the UI or flow would demo well, add it there.
 
 ## Key Architecture
 
@@ -72,6 +73,8 @@ then check the file (grep `RUN-TESTS-DONE`). Short suites (`run-m2m-tests`, `run
 
 Use the helpers in `tests/helpers.lisp` — never call `fiveam:run!` directly. They handle model loading, database reset, and suite selection.
 
+**Full suite runs go through the Bash tool:** `scripts/data-ui tests`. After implementing any plan — or finishing any nontrivial change — run the full suite this way as the final gate before calling the work done. It uses a dedicated test database (port 5445, isolated from the REPL's 5444), runs against the code on disk rather than the live image, and fits the Bash tool's 600s timeout (~2–4 min cold load + suite). In-image `(run-tests)` below is the fallback.
+
 - `(run-tests)` — all suite groups (backend, predicates, scoping, hook registry, lifecycle, actions, secrets, widgets, M2M, rollups, compose, sortable/searchable, guest, API-roles, generator, and more). Each group runs `with-model` on its **own fixture** (`test-model`, `m2m-test`, `modelbank-test`, `spawn-test`, `measure-rollup-test`, ...) — see `run-tests` in `helpers.lisp` for the full list. Resets the database and loads the fixture per group. Takes several minutes — use the background-thread pattern above.
 - `(run-action-tests)` — action hook suite (buttons, `be-action`, status transitions, in-progress guard, permissions, form exclusions)
 - `(run-scoping-tests)` — scoping suite on the `modelbank-test` fixture under `models/test/` (not the top-level `modelbank` demo)
@@ -116,7 +119,7 @@ Org outline hierarchy: `*` section, `**` parent todo, `***` its direct children 
 - Terminology: the Home / Settings / Admin buttons in the top-right header are the **view switcher** (they select `viewMode` via `switchViewMode`; Home calls `returnToLanding`). Distinct from the type tab row below the header, which picks a type within the current view.
 - Build: `npm install && npm run build` in `web/`. Hunchentoot serves `web/dist/`; there is no dev server. **Without `npm run build`, frontend changes are invisible** (it runs `tsc`, then `vite build`).
 - The app is intentionally simple — avoid heavy routing, state libraries, or styling until MVP is proven. All forms render from the schema returned by `/api/list`; the frontend does not hard-code field lists.
-- `:ui` is the extension point, passed through verbatim — new `:widget` values work without backend changes. `:widget`, `:read-only`, and `:table` are consumed by the React components.
+- `:ui` is the extension point, passed through verbatim — new `:widget` values need one keyword added to the `*widgets*` whitelist in `lisp/model.lisp` (plus a frontend branch); everything downstream of the whitelist is widget-agnostic. `:widget`, `:read-only`, `:not-null`, and `:table` are consumed by the React components.
 - Permission flags (`create` / `delete` / `update`) from `/api/list` control visibility of Add, Delete, and Edit controls.
 - `:widget :button` renders a button on the edit form; `onClick` posts to `/api/actions`; disabled while status is `running`.
 - `:widget :image` / `:image-list` render thumbnail grids with a modal lightbox; the `:table` key tells the frontend which type to use for `/api/file` URLs.

@@ -6,6 +6,7 @@ import StarRating from './StarRating'
 import CheckboxList from './CheckboxList'
 import ChipPicker from './ChipPicker'
 import FilePath from './FilePath'
+import SearchSelect from './SearchSelect'
 import { parseHash, canonicalize, buildUrlState,
          urlStatesEqual, writeUrl } from './urlState'
 
@@ -57,6 +58,10 @@ interface Field {
   'read-only'?: boolean
   sortable?: boolean
   searchable?: boolean
+  // :not-null wire value (fe-fields): JSON boolean via the
+  // registered boolean key (true only when the field declares
+  // :not-null t). search-select gates its clear ✕ on this.
+  'not-null'?: boolean
   // :directory-type wire value (:widget :file-path only): the
   // type whose rows fill the folder select. Keyword → downcased
   // string (plist-to-json), e.g. "directories".
@@ -344,8 +349,8 @@ function ImagePreview({
 // (the compiler's own default rule for a missing :widget).
 const WIDGET_VOCABULARY = new Set([
   'textbox', 'textarea', 'code', 'stars', 'checkbox', 'checkbox-list',
-  'select', 'file', 'file-path', 'password-new', 'password-read',
-  'button', 'hidden', 'image', 'image-list'
+  'select', 'search-select', 'file', 'file-path', 'password-new',
+  'password-read', 'button', 'hidden', 'image', 'image-list'
 ])
 
 function renderFormField(
@@ -2818,6 +2823,30 @@ function App() {
                       <option key={val} value={val}>{val}</option>
                     ))}
                   </select>
+                </div>
+              )
+            }
+
+            if (fieldMeta['widget'] === 'search-select') {
+              // Searchable single-select over the same
+              // allowed-values palette :select consumes. ✕ (clear
+              // to null) only on a nullable field — fe-fields
+              // emits :not-null as a JSON boolean; absent means
+              // clearable (older payloads / synthesized fields).
+              // The branch is load-bearing for the clear path:
+              // renderFormField's onChange is (v: string) => void,
+              // so null must go through here, not the fallback.
+              return (
+                <div key={f} style={{ marginBottom: '0.5rem' }}>
+                  <label>{fieldMeta.label}</label><br />
+                  <SearchSelect
+                    options={allowed}
+                    value={formValues[f] ?? null}
+                    clearable={fieldMeta['not-null'] !== true}
+                    onChange={v =>
+                      setFormValues({ ...formValues, [f]: v })
+                    }
+                  />
                 </div>
               )
             }

@@ -22,7 +22,7 @@
           :column t :not-null t :unique t)
         :assigned-to
         (:type :text :target :users
-          :ui (:label "Assigned To" :widget :select)
+          :ui (:label "Assigned To" :widget :search-select)
           :source (:view :main :table :users :column :name
                    :agg :first)
           :source-all (:view :main :table :users :column :name

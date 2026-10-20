@@ -1543,8 +1543,8 @@ from a:login on \"\"."
 
 (defparameter *widgets*
   '(:textbox :textarea :code :stars :checkbox :checkbox-list :select
-     :file :file-path :password-new :password-read :button :hidden
-     :image :image-list)
+     :search-select :file :file-path :password-new :password-read
+     :button :hidden :image :image-list)
   "Allowed values for the :widget key on a field :ui plist.")
 
 (defparameter *ui-keys*
@@ -2876,6 +2876,15 @@ correct there). Returns the effective :source plist."
           (report-e "compile-field"
             ":widget :select requires either :options or :target ~
              on field ~s of type ~s."
+            ~new-field-key ~type-key))
+        ;; :search-select requires :target (no static :options
+        ;; mode — valid-options-value keeps :options gated to
+        ;; :select, so :options + :search-select already signals
+        ;; there; this rule closes the bare case).
+        (when (and (eq widget :search-select) (not has-target))
+          (report-e "compile-field"
+            ":widget :search-select requires :target on field ~s ~
+             of type ~s."
             ~new-field-key ~type-key))
         ;; :file-path requires :directory-type naming an existing type
         ;; (the frontend must not guess the folder source; the same

@@ -928,7 +928,90 @@ everything). One plan deviation: tests landed as a new suite file
 (allowed by the plan's fallback) rather than inside the predicate
 suite, keeping existing test suites untouched.
 
-** TODO Directory path edits bypass validation      :backend:bug:mvp:
+** DONE Searchable picker for single-target        :frontend:backend:model:
+:PROPERTIES:
+:CREATED: [2026-10-19 Mon]
+:COMPLETED: [2026-10-20 Tue]
+:END:
+Implemented as =:widget :search-select= per
+[[file:~/workbench/searchable-picker-single-target-plan.org][searchable-picker-single-target-plan.org]] (all three review
+passes + Donnie's four decisions incorporated). =widget-suite=:
+73 checks green (3 new: compiles-with-:target, bare-rejected,
+:options-rejected); =nullable-fk-suite=: 20 checks green
+(:assigned-to fixture swapped to :search-select; new wire test
+asserts the widget, JSON-boolean :not-null false/true via
+plist-to-json, and a seeded palette entry); =run-backend-tests=:
+567 green (no movement).
+
+- Vocabulary: =*widgets*= gains =:search-select=; =compile-field=
+mirrors the =:select= rule (bare widget without =:target= is a
+compile error). =:options= stays =:select=-only
+(valid-options-value untouched).
+- Wire: =fe-fields= now emits =:not-null= and
+=(register-json-boolean-key :not-null)= makes it a real JSON
+boolean (add-to-plist's =or= drops bare nil, so without the
+registration the key would never arrive / arrive as =[]=).
+- Frontend: new =SearchSelect.tsx= (single-select twin of
+CheckboxList; shares its exported =SEARCH_THRESHOLD= / =RENDER_CAP=;
+current selection always rendered, palette-absent safe; ✕ clear
+→ JSON null → SQL NULL, gated on =not-null !== true=; ARIA
+combobox/listbox + arrow/Enter keys). =WIDGET_VOCABULARY=,
+=Field= type, and a dispatch branch beside =select= wired in;
+=npm run build= green.
+- Models: books =:covers :book= + =:my-ratings :book=, modelbank
+=:images :model= + =:ratings :model= swapped to =:search-select=;
+parts gains nullable =:primary-image= (=target :files=) on its own
+:primary-image view (:main untouched — find-table-xrefs has no
+edge for the joiner otherwise; the ordered-xrefs diamond). All
+five compile; live smoke: parts insert/update/nil-clear/delete and
+a REST null-clear round trip on nullable-fk-test.
+- Docs: model-reference widget table + semantics bullet; AGENT.md
+"new :widget values work without backend changes" corrected to
+the whitelist + branch reality.
+- Known limitation (plan-noted): duplicate display names resolve
+to one arbitrary id; palette payload ceiling deferred to
+"Server-side searchable =allowed-values=" (Post MVP).
+
+The original description follows.
+
+In the books model, adding a cover requires associating it with a
+book. That control is a drop-down listing every book (fed by
+=allowed-values=). Fine for the demo's few books; unusable with a
+real catalog. Single-target relations — each record points at
+exactly one other record — need a widget that scales.
+
+The model to follow: the M2M searchable checkbox list
+(=:widget :checkbox-list=) works beautifully no matter how many
+options exist — type to filter, then click. The single-target
+case should feel the same: a searchable single-select picker over
+the same =allowed-values= palette the =:select= already consumes.
+
+v1 is client-side search, exactly like the checkbox list (traced
+2026-10-19): =:target= selects already eat from =allowed-values=,
+and the write path already resolves the selected display name to
+a UUID (=resolve-reference-id=). Opt-in =:ui (:widget
+:search-select)=, decided 2026-10-19 — some targets have very few
+options and stay =:widget :select=. One backend change after all:
+the =*widgets*= whitelist (=lisp/model.lisp=) gates the
+vocabulary, so one keyword must be added (AGENT.md's
+"new =:widget= values work without backend changes" was stale).
+Models to update: books =:covers :book=, modelbank
+=:images :model=, and parts (new field — it has no single-target
+field today).
+
+Plan: [[file:~/workbench/searchable-picker-single-target-plan.org][searchable-picker-single-target-plan.org]].
+
+Known ceiling: the palette ships the whole target column per
+request. Client-side filtering matches the M2M list's
+architecture deliberately; the payload problem is shared by both
+widgets and deferred to "Server-side searchable
+=allowed-values=" (Post MVP).
+
+Related but different: "Searchable chip picker on list views"
+(DONE — filtering lists by value) and =:searchable= on M2M list
+fields (free-text search through join tables); this item is the
+edit-form control for picking one related record.
+** READY Directory path edits bypass validation      :backend:bug:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-17 Sat]
 :END:
@@ -943,53 +1026,50 @@ but the record is then editable: renaming =/secret/= to
   silently — unless another edit restores the original name
   (=/secret/=).
 
-Fix direction: validate directory updates the way
-=validate-new-directory= validates inserts — reject path
-changes outright (no moves yet) and reject malformed paths —
-and surface deletion failures instead of failing silently.
+Three defects: =be-update= has no path validation
+(=valid-new-directory= runs only on =be-insert=); the accepted
+rename desynchronizes DB row, RBAC resource name
+(=update-resource-name= follows it), and the on-disk directory
+(=be-update= never touches the fs); the delete failure is
+actually a correct server 400 (=valid-existing-file-or-directory=
+rejects the slash-less path) that the frontend =deleteSelected=
+swallows (no =res.ok= check, no alert).
 
-** TODO =allowed-values= must not fail the parent list     :backend:bug:mvp:
+Fix (reject, don't move — moves are a real feature with
+descendant-row / resource / RBAC rewrite fan-out, out of scope):
+new =valid-updated-directory= in =be-update= (any change to a
+=:path= field's value signals; total gate, admin included; called
+after =full-data= / before every side effect, so no rollback is
+ever needed), plus =res.ok= / alert in =deleteSelected= (the
+=submitForm= pattern). Leaf (file) types are gated identically.
+Frontend build + new FiveAM suite =directory-update-suite=
+(=modelbank-test= fixture).
+
+Plan: [[file:~/workbench/directory-edit-validation-plan.org][directory-edit-validation-plan.org]] (awaiting review).
+
+** READY =allowed-values= must not fail the parent list :backend:bug:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-29 Sat]
 :END:
+A permission error raised while building one field's option
+palette fails the whole parent list (and =/api/item=).
 =lisp/backend.lisp= — =allowed-values= walks every field with
-=:target=, =:join-table=, or =:ui :options=. For each,
+=:target=, =:join-table=, or =:ui :options=; for each,
 =allowed-values-for-field= does =(or :source-all :source)= and
 calls =(be-list-column target-type … user)=. That inner =be-list=
 still runs =valid-user-permissions= on the *target* type.
 =:skip-allowed-values t= only stops recursion (bidirectional M2M);
 it does not skip the permission check. =list-result= has no
 =handler-case=, so a permission error on the target *fails the
-outer list*.
+outer list*. This is what makes =:users (:type-roles ("admin"))=
+unsafe on Model Bank / chores / books (any type with a
+=:target :users= field).
 
-Surfaced by the =:type-roles= override plan. Restricting
-=:users= to =("admin")= would make non-admin =be-list :models=
-signal — Model Bank =:models :user= is autofill / read-only / no
-=:source-all=, but still has =:target :users= and a =:source=
-that names =:users=. Same for =:images=, =:ratings=, chores
-=:completed-by=. Autofill / no =:source-all= is not enough.
+Plan: [[file:~/workbench/allowed-values-nfpl-plan.org][allowed-values-nfpl-plan.org]] — catch =validation-error= per
+field, return an empty palette, log it. Does not apply the =:users=
+override (separate follow-up once this lands).
 
-Until this lands, the only safe authoring rule is: no
-=:target :users= field on any type non-admins can list. That
-blocks applying the override to Model Bank / chores / books.
-
-Fix directions to weigh (pick one in the plan):
-
-- Skip read-only / autofill fields in =allowed-values= (Owner
-  never needs a palette)
-- Catch the permission error per-field and return an empty
-  palette instead of signaling
-- A narrower options query that does not re-enter
-  =valid-user-permissions= on the target type
-
-Do not fold into the compiler override item. That primitive
-still lands; this is the backend hole that makes it usable on
-real apps.
-
-Blocks: putting =:users (:type-roles ("admin"))= in
-=models/modelbank.lisp= (and the same on chores / books).
-
-** TODO Reject =:sortable t= on =:target= fields               :compiler:bug:
+** READY Reject =:sortable t= on =:target= fields                  :compiler:bug:
 :PROPERTIES:
 :CREATED: [2026-08-22 Sat]
 :END:
@@ -1010,16 +1090,18 @@ rejects FK fields; add the same shape inside the =:sortable= =when=,
 =:models= =:user= in =models/modelbank.lisp= (the only current
 instance), update the =:sortable= row in =docs/model-reference.md=,
 and add a =(signals error)= compile test to =tests/sortable-tests.lisp=
-(test-suite edit needs human permission).
+(test-suite edit permission granted [2026-10-19 Mon]; see the
+plan header).
 
 Plan: [[file:~/workbench/target-non-sortable-plan.org][target-non-sortable-plan.org]]. Superseded by "Joined-column
 sort on base types" below when that lands.
-** TODO Restrict user names (lowercase, alphanumeric, dash)  :mvp:bug:model:
+** READY Restrict user names (lowercase, alphanumeric, dash) :mvp:bug:model:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
 Basic input hygiene that affects every model and the video. Prevent
 ugly or colliding usernames.
+Plan: [[file:~/workbench/restrict-user-names-plan.org][restrict-user-names-plan.org]].
 
 ** TODO Date-time picker =:ui= widget                 :model:frontend:mvp:
 :PROPERTIES:
@@ -1145,6 +1227,62 @@ Nothing → model → deployed app. Deadline: December 31, 2026.
 **When to shoot:** mid-to-late December — after polish and the features
 that should appear on camera (search/filtering, sort, static drop-downs,
 boolean list checkmarks, UI polish, etc.).
+
+** TODO Move =:model:= templates to =models/template/=   :model:testing:maintenance:
+:PROPERTIES:
+:CREATED: [2026-10-19 Mon]
+:END:
+Two template files carry =:model:= placeholder tokens and are not
+loadable models, yet one sits in loadable space: =models/widgets.lisp=
+(the =:generate-model= exemplar — =list-models= lists it,
+=(set-model "widgets")= finds it and then fails to compile) and
+=tests/model-template.lisp= (the spawn-test twin slurped by
+=th-slurp-model=). Rule (Donnie, 2026-10-19): nothing unloadable in
+the =models/= directory; a skippable subdirectory is fine. Both
+templates move to =models/template/= as accepted near-duplicates
+(deliberately not unified — different consumers: LLM exemplar vs
+regex-slurped payload).
+
+- Moves: =git mv models/widgets.lisp models/template/widgets.lisp=,
+  =git mv tests/model-template.lisp
+  models/template/model-template.lisp= (contents unchanged).
+- =set-model= needs nothing: =resolve-model-path= probes three
+  literal paths, blind to new subdirectories by construction.
+- =lisp/model.lisp=: =generate-model-example-files= includes the
+  template by explicit path (its depth-one walk can't see it);
+  =list-models= (recursive) also filters =models/template/=.
+- =tests/helpers.lisp=: =th-slurp-model= repoints to
+  =models/template/model-template.lisp=.
+- =tests/generator-tests.lisp=: pinned set survives (filename-only
+  still yields ="widgets"=); the prompt =search "models/widgets.lisp"=
+  strengthens to the full new path; add twin-absent guard.
+- =tests/form-fields-tests.lisp= + =tests/widget-tests.lisp=: the
+  stem skip (=unless (string= stem "widgets")=) becomes a
+  =models/template/= directory skip — future templates land for
+  free.
+- Docs: AGENT.md, README.md, models/README.md (Layout bullet).
+
+Lisp and test-suite edits need human permission.
+
+Plan: [[file:~/workbench/models-template-dir-plan.org][models-template-dir-plan.org]].
+** TODO CLI client for importing records                 :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-19 Mon]
+:END:
+A separate client (not a =scripts/data-ui= verb) that logs in
+like the browser and inserts records over the existing REST API.
+One =insert= verb: field flags set values directly, or with
+=--csv= name the CSV headers to read them from. File fields are
+in scope (the existing two-step upload plus insert, hidden inside
+the command). Failures print and the run continues;
+=--stop-on-failure= halts; any failure exits non-zero. Every
+=inserted: true= id is appended to a transcript, and a separate
+=undo= invocation deletes exactly those ids. Runs past an hour
+refresh the access token; no API keys, no new endpoints, no
+transactions.
+
+Context: [[file:~/workbench/data-ui-import-context.org][data-ui-import-context.org]]
+
 
 * MVP Backlog
 ** TODO Undeploy Model button (Model Bank)  :model:frontend:backend:scripts:
@@ -1536,6 +1674,78 @@ file at that location or update AGENT.md to wherever the history
 actually lives (or drop the reference).
 
 * Post MVP
+** TODO Server-side searchable =allowed-values=                :backend:frontend:
+:PROPERTIES:
+:CREATED: [2026-10-19 Mon]
+:END:
+The option palettes (=:join-table=, =:target= fields) ride
+=/api/list= (and =/api/item=) as =allowed-values= and ship the
+*entire* target display column to the client on every request.
+Mechanics (traced 2026-10-19): =allowed-values= (backend.lisp)
+→ =allowed-values-for-field= → =be-list-column= → =be-list= with
+=limit= nil → =add-page-clause= emits no LIMIT — bounded only by
+RBAC read scope, never by size. Every page navigation re-sends
+every option of every palette field.
+
+Consumers today all filter client-side over that one full array:
+
+- M2M =:checkbox-list= (=CheckboxList.tsx=): search box appears
+at ≥10 options, case-insensitive substring filter, render cap
+100 with "N more — type to narrow"; selected items always
+visible, never filtered
+- The list-view chip picker (same search/cap split)
+- =:target= =:select=: renders =<option>=s for the whole column,
+no search at all
+- The searchable single-target picker (MVP item) deliberately
+reuses the same architecture for v1
+
+So the wire cost is the shared wall: payload grows linearly with
+the target table and every list fetch pays it, no matter how
+clever the widget. Fine for demos; wrong for real catalogs.
+
+Direction:
+
+- A searchable, paged column endpoint — e.g.
+=/api/column?type=...&field=...&q=...&limit=...= — with an
+ILIKE arm in =be-list-column= (it already takes =limit=; the
+palette path just passes nil today). Debounced type-ahead from
+the frontend.
+- Threshold switch: small targets keep the inline palette (no
+extra requests); large targets go on-demand. Already-selected
+record values must still render whatever the palette returned
+(=CheckboxList= already renders palette-absent selected values;
+preserve that contract).
+- Caching / ETag: palettes change rarely relative to list pages;
+avoid re-querying the column per keystroke.
+- Write path unchanged: widgets submit display names;
+=resolve-reference-id= / =list-ids= resolve to ids at write
+time. No insert/update changes needed.
+
+Related: "Searchable picker for single-target relations" (MVP —
+the client-side v1 this defers to), =:searchable= on M2M list
+fields (server-side =EXISTS= search for list *filtering*, a
+different engine arm, not palettes).
+** TODO Keyboard navigation for the picker controls      :frontend:a11y:
+:PROPERTIES:
+:CREATED: [2026-10-20 Tue]
+:END:
+Proper combobox keyboard support for the shared picker
+anatomy — =CheckboxList= (M2M =:checkbox-list=), =SearchSelect=
+(single-target =:search-select=), and the list-view =ChipPicker=,
+which all use the same selected-above / search /
+unselected-below shape. Native Tab and Space already reach and
+toggle the controls, so nothing is blocked today; what's missing
+is list-level navigation: ArrowDown / ArrowUp to move a
+highlight through the option rows, Enter to pick the highlighted
+row, Escape to reset, focus return to the search input after a
+pick, and ARIA combobox / listbox / option roles with
+=aria-activedescendant= so screen readers announce the movement.
+An earlier =SearchSelect= revision carried hand-rolled arrow-key
+and ARIA machinery; it was dropped when the widget became the
+exact =CheckboxList= twin (only its rows differ), and the
+machinery belongs in /all three/ widgets, not one — likely as a
+small shared hook (e.g. =usePickerKeyboard=) when =App.tsx= is
+broken up.
 ** TODO Lifecycle side effects                            :backend:compiler:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]

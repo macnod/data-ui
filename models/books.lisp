@@ -139,7 +139,7 @@
       (:book
         (:type :text :identity t :sortable t
           :force-sql-name "rating_book"
-          :ui (:label "Book" :widget :select)
+          :ui (:label "Book" :widget :search-select)
           :target :books
           :source (:view :main :table :books :column :title :agg :first)
           :source-all (:view :books :table :books :column :title :agg :list)
@@ -231,7 +231,7 @@
         :book
         (:type :text
           :force-sql-name "cover_book"
-          :ui (:label "Book" :widget :select)
+          :ui (:label "Book" :widget :search-select)
           :target :books
           :source (:view :main :table :books :column :title :agg :first)
           :source-all (:view :books :table :books :column :title :agg :list)

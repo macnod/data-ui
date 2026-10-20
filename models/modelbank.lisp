@@ -64,12 +64,12 @@
            :source (:view :main :table :users :column :name :agg :first)
            :column t :not-null t)
          :description
-         (:type :text
+         (:type :text :searchable t
            :ui (:label "Model Description" :widget :textarea)
            :source (:view :main :column :description :agg :first)
            :column t :not-null nil :unique nil)
          :model
-         (:type :text
+         (:type :text :searchable t
            :ui (:label "Model Code" :widget :code)
            :source (:view :main :column :model :agg :first)
            :column t :not-null nil :unique nil)
@@ -110,6 +110,7 @@
        :create :auto :update :auto :delete :auto :display t
        :tree t :is-leaf t :parent-type :directories :fs-backed t
        :type-roles ("models-user" "public")
+       :default-sort (:name :asc)
        :views (:main (:tables (:images :users :models) :scope :user)
                 :users (:tables (:users) :scope :user)
                 :models (:tables (:models) :scope :user))
@@ -119,13 +120,6 @@
            :ui (:label "Image" :widget :image)
            :source (:view :main :column :name :agg :first)
            :column nil)
-         :name
-         (:type :text :identity t :path t :sortable t :searchable t
-           :ui (:label "File" :widget :file-path
-                :directory-type :directories)
-           :validations (:required)
-           :source (:view :main :column :name :agg :first)
-           :column t :not-null t :unique t)
          :file
          ;; TODO: For :type :file, the validation :valid-file should exist
          ;;       The validation should allow for NIL, but should otherwise
@@ -134,6 +128,13 @@
          (:type :file
            :ui (:label "Select File" :widget :file)
            :validations (:required))
+         :name
+         (:type :text :identity t :path t :sortable t :searchable t
+           :ui (:label "File" :widget :file-path
+                :directory-type :directories)
+           :validations (:required)
+           :source (:view :main :column :name :agg :first)
+           :column t :not-null t :unique t)
          :user 
          (:type :text
            :autofill :user
@@ -146,7 +147,7 @@
          :model
          (:type :text
            :force-sql-name "image_model"
-           :ui (:label "Model" :widget :select)
+           :ui (:label "Model" :widget :search-select)
            :target :models
            :source (:view :main :table :models :column :name :agg :first)
            :source-all (:view :models :table :models :column :name :agg :list)
@@ -166,7 +167,7 @@
        (:model
          (:type :text :identity t
            :force-sql-name "rating_model"
-           :ui (:label "Model" :widget :select)
+           :ui (:label "Model" :widget :search-select)
            :target :models
            :source (:view :main :table :models :column :name :agg :first)
            :source-all (:view :models :table :models :column :name :agg :list)
@@ -236,10 +237,11 @@
        :create :auto :update :auto :delete :auto :display t
        :tree t :is-leaf nil :parent-type :directories :fs-backed t
        :type-roles ("directories-user" "public")
+       :default-sort (:name :asc)
        :views (:main (:tables (:directories)))
        :fields
        (:name
-         (:type :text :identity t :path t
+         (:type :text :identity t :path t :sortable t :searchable t
            :ui (:label "Directory" :widget :textbox)
            :validations (:required)
            :source (:view :main :column :name :agg :first)

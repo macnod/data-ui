@@ -146,3 +146,50 @@ value-or-nil converts to NIL)."
             "FK should be NULL after clearing")))
       (when id
         (be-delete :tasks id "admin")))))
+
+;;; ---------------------------------------------------------------------------
+;;; :search-select widget: wire metadata and palette
+;;; ---------------------------------------------------------------------------
+
+(test nullable-fk-search-select-palette
+  "fe-fields emits the :search-select widget and a JSON
+boolean :not-null on :assigned-to, and allowed-values returns a
+palette once a target row exists (the widget consumes the same
+palette :select does). :ui keys merge at the top level of the
+emitted field plist; the boolean flips true/false only at
+plist-to-json time (a registered boolean key), so the not-null
+assertions go through the serializer."
+  (let* ((fields (fe-fields :tasks "admin"))
+          (add-form (getf fields :add-form))
+          (assigned (getf add-form :assigned-to))
+          (assigned-json (plist-to-json assigned))
+          (name-json (plist-to-json (getf add-form :name)))
+          (user-id (be-value-id :users :name "searchsel-pal-user"
+                      "admin")))
+    (unwind-protect
+      (progn
+        (is (eq :search-select (getf assigned :widget)))
+        ;; :not-null must serialize as a JSON boolean false on a
+        ;; nullable field (registered boolean key; the bare NIL
+        ;; survives add-to-plist's or and is written as false).
+        (is (search "\"not-null\":false" assigned-json :test #'equal))
+        ;; ... and true on a :not-null t field (the gate the
+        ;; frontend reads to suppress the clear ✕).
+        (is (search "\"not-null\":true" name-json :test #'equal))
+        ;; Palette: seed a target row, expect the field's palette
+        ;; to include it.
+        (unless user-id
+          (be-insert :users
+            '(:name "searchsel-pal-user" :password "password-1"
+              :email "searchsel@example.com")
+            "admin"))
+        (let* ((values (allowed-values :tasks "admin"))
+                (palette (getf values :assigned-to)))
+          (is-true (member "searchsel-pal-user" palette
+                      :test #'equal)
+            "assigned-to palette should include the seeded user")))
+      ;; Cleanup
+      (let ((cleanup-id (be-value-id :users :name
+                          "searchsel-pal-user" "admin")))
+        (when cleanup-id
+          (be-delete :users cleanup-id "admin"))))))

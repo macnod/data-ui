@@ -13,26 +13,27 @@
     (:table t
       :create :auto :update :auto :delete :auto :display t
       :type-roles ("gift-viewers")
+      :default-sort (:name :asc)
       :views (:main (:tables (:gifts :users)))
       :fields
       (:name
-        (:type :text :identity t
+        (:type :text :identity t :sortable t :searchable t
           :ui (:label "Gift" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
           :column t :not-null t)
        :url
-        (:type :text
+        (:type :text :sortable t :searchable t
           :ui (:label "URL" :widget :textbox)
           :source (:view :main :column :url :agg :first)
           :column t)
        :received
-        (:type :boolean :default :false
+        (:type :boolean :default :false :sortable t
           :ui (:label "Received" :widget :checkbox)
           :source (:view :main :column :received :agg :first)
           :column t :not-null t)
        :event
-        (:type :text
+        (:type :text :sortable t :searchable t
           :ui (:label "Event Received" :widget :textbox)
           :source (:view :main :column :event :agg :first)
           :column t)

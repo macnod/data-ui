@@ -14,19 +14,15 @@
       :parent-type :directories
       :fs-backed t
       :type-roles ("file-users")
+      :default-sort (:name :asc)
       :views (:main (:tables (:directories)))
       :fields
       (:name 
-        (:type :text :identity t :path t
+        (:type :text :identity t :path t :sortable t
           :ui (:label "Directory" :widget :textbox)
           :validations (:required)
           :source (:view :main :column :name :agg :first)
-          :column t :not-null t :unique t)
-        :bogus
-        (:type :text :default ""
-          :ui (:label "Bogus" :widget :textbox)
-          :source (:view :main :column :name :agg :first)
-          :column t))
+          :column t :not-null t :unique t))
       :list-form (:fields t)
       :update-form (:fields t)
       :add-form (:fields t))
@@ -35,10 +31,11 @@
       :create :auto :update :auto :delete :auto :display t
       :tree t :is-leaf t :parent-type :directories :fs-backed t
       :type-roles ("file-users")
+      :default-sort (:name :asc)
       :views (:main (:tables (:files)))
       :fields
       (:name
-        (:type :text :identity t :path t
+        (:type :text :identity t :path t :sortable t
           :ui (:label "File" :widget :file-path
                :directory-type :directories)
           :validations (:required)

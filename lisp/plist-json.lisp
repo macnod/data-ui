@@ -58,6 +58,7 @@
 (register-json-boolean-key :sortable)
 (register-json-boolean-key :guest-allowed)
 (register-json-boolean-key :guest-auto)
+(register-json-boolean-key :not-null)
 
 
 (defun plist-to-json-plist (plist &key (nil-value "[]"))

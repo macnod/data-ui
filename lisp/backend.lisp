@@ -749,6 +749,7 @@ a normal field and unaffected."
                                                :default default
                                                :path path
                                                :table table
+                                               :not-null (getf field-def :not-null)
                                                :sortable (getf field-def :sortable)
                                                :searchable (getf field-def :searchable))
                                  ui))))))

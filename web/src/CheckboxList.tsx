@@ -24,9 +24,11 @@ import { useState } from 'react'
 
 // Search box appears when the option set (selected ∪ unselected)
 // reaches this size. Below it, every option renders flat.
-const SEARCH_THRESHOLD = 10
+// Exported: SearchSelect (the single-select twin) shares the
+// same thresholds so both widgets feel identical.
+export const SEARCH_THRESHOLD = 10
 // Maximum unselected options rendered at once. Typing narrows.
-const RENDER_CAP = 100
+export const RENDER_CAP = 100
 // Scroll box height, sized to show ~5 rows (rows render at
 // roughly 22-24px: default font, one checkbox + label per row).
 const SCROLL_MAX_HEIGHT = '7.5rem'

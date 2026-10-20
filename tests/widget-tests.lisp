@@ -106,6 +106,45 @@ the compiled :wt type definition."
            :source (:view :main :column :bad :agg :first)
            :column t)))))
 
+(test widget-search-select-compiles
+  ":search-select with :target survives compilation with the
+widget intact."
+  (let* ((compiled (widget-compile
+                     (cons :pick
+                       '(:type :text
+                          :ui (:widget :search-select)
+                          :target :users
+                          :source (:view :main :table :users
+                                   :column :name :agg :first)
+                          :source-all (:view :main :table :users
+                                        :column :name :agg :list)
+                          :column t))))
+         (def (getf (getf compiled :fields) :pick)))
+    (is (eq :search-select
+          (getf (getf def :ui) :widget)))))
+
+(test widget-search-select-requires-target
+  "A bare :widget :search-select with no :target fails compile
+(empty dropdowns are not a valid mode; the :select rule)."
+  (signals error
+    (widget-compile
+      (cons :bare
+        '(:type :text
+           :ui (:widget :search-select)
+           :source (:view :main :column :bare :agg :first)
+           :column t)))))
+
+(test widget-search-select-rejects-options
+  ":options + :search-select fails compile (valid-options-value
+gates :options to :select; static lists stay :select only)."
+  (signals error
+    (widget-compile
+      (cons :stat
+        '(:type :text
+           :ui (:widget :search-select :options ("a" "b"))
+           :source (:view :main :column :stat :agg :first)
+           :column t)))))
+
 (test widget-reject-read-only-as-widget
   ":read-only is not a valid widget value."
   (signals error
