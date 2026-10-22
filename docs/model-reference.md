@@ -156,6 +156,8 @@ Under `:types`, each entry is `type-key` → plist.
 | `:internal` | Hidden from public BE API | default = `:is-joiner`; joiners are internal |
 | `:is-joiner` | M2M join table | fields are `:reference` pairs; no public CRUD SQL |
 | `:rollup` | Read-only analytical type (no table) | see [Rollup types](#rollup-types-read-only-analytical); with `:grain` and type-level `:filter` |
+| `:page-description` | Markdown intro block on the type's list page | non-blank string; collapsed by default, rendered above the Add row via the shared markdown renderer. List mode only — add / edit / view forms never render it. The type must be visible (compile error on `:user-setting` types — the settings view auto-opens the single-record form so the block could never render — and on non-visible types: `:display nil`, a base type omitting `:display`, or `:internal t`, none of which reach the wire). A `:category :settings` list type *without* `:user-setting` (the secrets shape) carries the key fine |
+| `:page-description-open` | Expanded default for the block | `t` or `nil`; **requires** `:page-description` (compile error alone). An explicit `nil` is legal and serializes as `false` end to end — never dropped, never `[]` |
 | Lifecycle slots | Custom logic | `:pre-create` `:post-create` `:pre-update` `:post-update` `:pre-delete` `:post-delete`; see [Hooks](#hooks) |
 
 ### CRUD strategy values
@@ -212,7 +214,7 @@ Rules (all compile errors via `report-e`):
 
 Tightening roles on an **existing** database does not revoke old grants — `add-type-roles` only inserts missing resources. Role tightening needs a clean slate (`reset-database` / fresh deploy); new deploys are correct on first boot.
 
-Known gap: any type with a `:target :users` field becomes unlistable for non-admins until `allowed-values` is hardened (the FK palette read re-enters `be-list :users` as the acting user). Restricting `:users` is not yet safe on models like Model Bank / chores / books.
+When the acting user cannot read a palette's target type (e.g. `:users` restricted while listing a type with a `:target :users` field), `allowed-values` returns an **empty palette for that field** (key present, value `null`) and logs a `palette suppressed` p-log entry instead of failing the parent list / `/api/item`. A direct `be-list` on the restricted target still signals.
 
 ### Declared roles (`:new-roles`)
 
@@ -495,7 +497,7 @@ Under `:fields`, each entry is `field-key` → plist (except joiner `:reference`
 | `:force-sql-name` | override generated column name string (e.g. `"rating_user"`) |
 | `:path` | marks the FS path field on fs-backed types (at most one per type) |
 | `:action` | **only** on `:type :button`; single action hook form |
-| `:sortable` | `t` → field is eligible for `ORDER BY` in list queries (clickable header). Base (non-rollup) types: only valid on `:column t` fields; compiler emits a sort index when no covering index exists. Rollup types only: the `:column t` rule is relaxed — pass-throughs and `:sum` / `:count` / `:avg` measures are legal; `:list` / `:distinct` measures are a compile error. On a hybrid (regular type with aggregated fields) `:sortable t` on a Phase B measure stays a compile error |
+| `:sortable` | `t` → field is eligible for `ORDER BY` in list queries (clickable header). Base (non-rollup) types: only valid on `:column t` fields; compiler emits a sort index when no covering index exists. Rollup types only: the `:column t` rule is relaxed — pass-throughs and `:sum` / `:count` / `:avg` measures are legal; `:list` / `:distinct` measures are a compile error. On a hybrid (regular type with aggregated fields) `:sortable t` on a Phase B measure stays a compile error. Compile error on `:target` (FK) fields (all types; see backlog "Joined-column sort on base types" for the future relaxation) |
 | `:searchable` | `t` → column is included in free-text `:search` (ILIKE OR-group in Phase A). Only valid on `:type :text` base columns without `:target`. Independent of `:sortable`. Distinct from type-level `:search-sql` (write-through identity lookup). Serialized as a JSON boolean (`true`/`false`, never `[]`). See [List queries](#list-queries-paging-sort-search) |
 | `:default-from` | `:user` → copy username when creating user-setting rows |
 | `:css-value` | `t` → included in CSS-vars API (e.g. settings `:dark-mode`) |
@@ -574,13 +576,14 @@ For M2M list fields, the column used for options and join lookup must be the **s
 
 ### `:ui` subkeys
 
-The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean` or a plist `(:kind :boolean [:default :true | :false])`, `:enabled-when` must be a non-empty list of `(<field> <op> <value>)` rows (see the row in the table below).
+The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:read-only` and `:hide-label` must be `t` or `nil`, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean` or a plist `(:kind :boolean [:default :true | :false])`, `:enabled-when` must be a non-empty list of `(<field> <op> <value>)` rows (see the row in the table below).
 
 | Subkey | Values / meaning |
 |--------|------------------|
 | `:label` | display label string (auto-generated from field key if omitted) |
-| `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:stars` \| `:select` \| `:search-select` \| `:file` \| `:file-path` \| `:checkbox` \| `:checkbox-list` \| `:password-new` \| `:password-read` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
+| `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:markdown` \| `:stars` \| `:select` \| `:search-select` \| `:file` \| `:file-path` \| `:checkbox` \| `:checkbox-list` \| `:password-new` \| `:password-read` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
 | `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
+| `:hide-label` | boolean (`t` / `nil`, default shown); suppresses the field label on Add, Edit, and View forms when the value is self-evident (a blog body needs no "Body" heading). Legal on any widget. List column headers always show the label. Wire form `"hide-label": true` (an explicit `nil` serializes `false`, not `[]`) |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
 | `:table` | keyword; **overwritten on the wire by `fe-fields`** from source table / type-key; used for `/api/file` URLs. Still authorable (compile-checked as a keyword) but normally left out |
@@ -593,6 +596,7 @@ Widget semantics:
 - `:textbox`: single-line `<input type="text">`
 - `:textarea`: multi-line `<textarea>` (~8 rows, resizable)
 - `:code`: monospace `<textarea>` (~12 rows)
+- `:markdown`: renders the value as Markdown (react-markdown + remark-gfm: tables, strikethrough, task lists, autolinks) in list cells and View mode; Edit and Add stay a plain `:textarea` (~8 rows, same as `:textarea`). Legal only on `:type :text` + `:column t` fields, never on `:target` fields (compile error; rollup fields are covered by the column rule — a rollup has no table). No raw HTML (default escaping, no `dangerouslySetInnerHTML` — anyone with update permission writes the field, so XSS would be privilege escalation); links open in a new tab (`target="_blank" rel="noopener noreferrer"`). List cells clamp to ~4.5em with overflow hidden (the `:code` treatment; View mode is the reading surface); an empty list cell renders nothing, an empty View renders an em dash
 - `:stars`: interactive StarRating (editable) or static (read-only / list)
 - `:checkbox`: single boolean checkbox
 - `:checkbox-list`: multi-select from `allowed-values`; the frontend adds client-side search once the option set reaches 10. On list views, chip-filterable fields (the same widget, joined table) also offer a searchable per-field chip picker fed by `allowed-values`, applying the same `has-all` filter a cell chip applies
@@ -1058,6 +1062,7 @@ Behavior:
 - `add-root-fs-resources` inserts logical `"/"` for non-leaf tree types
 - insert validates/stores directories; delete is recursive (FS + resources)
 - path values: directories end with `/`; leaves must not
+- path fields are immutable after create — `be-update` rejects any change to a `:path` field's value with a validation error (directory moves are not supported; rename desynchronizes row / RBAC resource / filesystem)
 
 ---
 
@@ -1167,7 +1172,7 @@ Always merged into every compiled model:
 
 | Type | Flags | Notes |
 |------|-------|-------|
-| `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` and `:sortable t` |
+| `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` and `:sortable t`; `:name` must be lowercase letters, digits, and dashes — start with a letter, end with a letter or digit (`^[a-z][a-z0-9-]*[a-z0-9]$`, 2+ chars) — login keeps the looser rbac policy so legacy names still work |
 | `:resources` | base, built-in, internal | no CRUD |
 | `:permissions` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
 | `:roles` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
@@ -1396,7 +1401,7 @@ One click closes the record (close fields written to the old row, which becomes 
 
 15. **`:new-roles` is additive-only.** Removing a role from `:new-roles` does not delete it from the database, and changing the permission list of a role that already exists has no effect until the role is deleted (the role keeps whatever permissions it had).
 
-16. **`:type-roles` override on built-in types does not revoke live grants.** `add-type-roles` only inserts missing resources, so tightening `:users` to `("admin")` on an already-initialized database leaves `"logged-in"` attached to `type-users`. Clean slate (new deploy / `reset-database`) required. Also, any type with a `:target :users` field becomes unlistable for non-admins until `allowed-values` is hardened — see [Overriding defaults on built-in types](#overriding-defaults-on-built-in-types).
+16. **`:type-roles` override on built-in types does not revoke live grants.** `add-type-roles` only inserts missing resources, so tightening `:users` to `("admin")` on an already-initialized database leaves `"logged-in"` attached to `type-users`. Clean slate (new deploy / `reset-database`) required. A denied palette no longer fails the parent list: `allowed-values` catches the permission error per field and returns an empty palette (key present, value `null`), logging `palette suppressed` — see [Overriding defaults on built-in types](#overriding-defaults-on-built-in-types).
 
 17. **DDL changes never reach an existing table.** `create-tables` runs table / trigger / index DDL only when the table is absent, and the first `set-model` after image start skips `reset-tables` (guarded by `*compiled-model*` being nil), so adding `:identity t` (composite unique index), `:unique t`, or new columns to a type whose table already exists in a persistent DB silently does nothing. `hard-reset` doesn't help: base tables are truncated, not dropped, and the `:force` reload nils `*compiled-model*` again. Recover by dropping the table and re-running `create-tables`, or hand-writing the DDL. Related post-MVP item: idempotent database initialization.
 
@@ -1406,7 +1411,7 @@ One click closes the record (close fields written to the old row, which becomes 
 
 **Top-level:** `:title` `:name` `:version` `:domain` `:domain-stg` `:repl` `:guest-allowed` `:guest-auto` `:api-roles` `:landing-page` `:new-roles` `:types`
 
-**Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles` `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form` `:tree` `:is-leaf` `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category` `:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter` lifecycle slots
+**Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles` `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form` `:tree` `:is-leaf` `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category` `:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter` `:page-description` `:page-description-open` lifecycle slots
 
 **View:** `:tables` `:scope`
 

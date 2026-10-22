@@ -1276,13 +1276,26 @@ GET /api/types"
     (render-output
       (mapcar
         (lambda (e)
-          (list :name (format nil "~(~a~)" (getf e :name))
-                :category (getf e :category)
-                ;; :user-setting types are single-record per user
-                ;; (e.g. settings); the frontend auto-opens their
-                ;; single record. :true/:false (not t/nil — nil
-                ;; would serialize as [], which JS reads as truthy).
-                :user-setting (if (getf e :user-setting) :true :false)))
+          (append
+            (list :name (format nil "~(~a~)" (getf e :name))
+                  :category (getf e :category)
+                  ;; :user-setting types are single-record per user
+                  ;; (e.g. settings); the frontend auto-opens their
+                  ;; single record. :true/:false (not t/nil — nil
+                  ;; would serialize as [], which JS reads as truthy).
+                  :user-setting (if (getf e :user-setting)
+                                  :true :false))
+            ;; Keys emitted only when the author declared them
+            ;; (minimal payload; be-types enforces the same
+            ;; discipline). Booleans keyword-encoded for the same
+            ;; []-is-truthy reason as :user-setting.
+            (when (getf e :page-description)
+              (list :page-description (getf e :page-description)))
+            (when (member :page-description-open e)
+              (list :page-description-open
+                (if (getf e :page-description-open)
+                  :true
+                  :false)))))
         (be-types user)))))
 
 (h:define-easy-handler (rest-public-info

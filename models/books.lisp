@@ -137,7 +137,7 @@
                :users (:tables (:users) :scope :user))
       :fields
       (:book
-        (:type :text :identity t :sortable t
+        (:type :text :identity t
           :force-sql-name "rating_book"
           :ui (:label "Book" :widget :search-select)
           :target :books

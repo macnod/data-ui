@@ -65,7 +65,7 @@
            :column t :not-null t)
          :description
          (:type :text :searchable t
-           :ui (:label "Model Description" :widget :textarea)
+           :ui (:label "Model Description" :widget :markdown)
            :source (:view :main :column :description :agg :first)
            :column t :not-null nil :unique nil)
          :model

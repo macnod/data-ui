@@ -9,6 +9,8 @@ import FilePath from './FilePath'
 import SearchSelect from './SearchSelect'
 import { parseHash, canonicalize, buildUrlState,
          urlStatesEqual, writeUrl } from './urlState'
+import { Markdown } from './Markdown'
+import { PageDescription } from './PageDescription'
 
 // Apply CSS-relevant settings values to the document.
 // Currently only dark-mode (boolean → toggle .dark class on body).
@@ -56,6 +58,7 @@ interface Field {
   table?: string
   precision?: number
   'read-only'?: boolean
+  'hide-label'?: boolean
   sortable?: boolean
   searchable?: boolean
   // :not-null wire value (fe-fields): JSON boolean via the
@@ -200,6 +203,12 @@ interface TypeInfo {
   // per user by nature. Multi-record settings types (secrets)
   // leave it unset.
   userSetting?: boolean
+  // :page-description — markdown intro block on the list page.
+  // pageDescriptionOpen is presence-preserving: undefined means
+  // the author declared nothing (collapsed default); false means
+  // an explicit :page-description-open nil.
+  pageDescription?: string
+  pageDescriptionOpen?: boolean
 }
 
 type ViewMode = 'app' | 'admin' | 'settings'
@@ -226,12 +235,41 @@ function formatNumber(
 // Each function handles one rendering context (list cell vs form).
 // Dispatch is on `widget` only.
 
+// Markdown source → plain text for the one-line cell preview:
+// images keep their alt, links keep their text, emphasis
+// markers and heading / quote / list sigils drop. Flattening
+// follows markdown semantics: a blank line (paragraph break)
+// becomes a middle dot so a title and its body don't run
+// together; a single newline is a soft break and renders as a
+// space, exactly as rendered markdown would. Not a renderer —
+// View mode (the reading surface) still gets the full
+// <Markdown>. Feeds the cell and its tooltip via cellText.
+function stripMarkdown(src: string): string {
+  return src
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')   // images → alt
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')    // links → text
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')         // bold
+    .replace(/~~(.+?)~~/g, '$1')                // strikethrough
+    .replace(/\*(.+?)\*/g, '$1')                // italic
+    .replace(/`+([^`]*)`+/g, '$1')              // inline code
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')         // headings
+    .replace(/^\s{0,3}>+\s?/gm, '')             // blockquotes
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, '')    // list markers
+    .replace(/\s*\n\s*\n\s*/g, ' · ')           // paragraphs → dot
+    .replace(/\s*\n\s*/g, ' ')                  // soft breaks → space
+    .trim()
+}
+
 // Plain-text projection of a cell value: arrays join with ", ",
-// numbers get :precision formatting. Feeds the default cell
-// rendering, the code widget, and the one-line clamp tooltip.
+// numbers get :precision formatting, markdown cells strip their
+// markup so the preview and tooltip read as text. Feeds the
+// default cell rendering, the code widget, and the one-line
+// clamp tooltip.
 function cellText(val: any, field: Field): string {
-  return Array.isArray(val) ? val.join(', ')
+  const text = Array.isArray(val) ? val.join(', ')
     : formatNumber(val, field)
+  return field['widget'] === 'markdown'
+    ? stripMarkdown(String(text)) : text
 }
 
 function renderCellValue(
@@ -254,6 +292,11 @@ function renderCellValue(
       </pre>
     )
   }
+
+  // markdown needs no branch here: cellText strips its markup,
+  // so the default text path renders the standard one-line
+  // clamp (<td> ellipsis + raw-text tooltip). View mode is the
+  // reading surface.
 
   if (widget === 'image-list') {
     const paths: string[] = Array.isArray(val) ? val : []
@@ -348,10 +391,34 @@ function ImagePreview({
 // of silently rendering a text input. '' stays a text input
 // (the compiler's own default rule for a missing :widget).
 const WIDGET_VOCABULARY = new Set([
-  'textbox', 'textarea', 'code', 'stars', 'checkbox', 'checkbox-list',
-  'select', 'search-select', 'file', 'file-path', 'password-new',
-  'password-read', 'button', 'hidden', 'image', 'image-list'
+  'textbox', 'textarea', 'code', 'markdown', 'stars', 'checkbox',
+  'checkbox-list', 'select', 'search-select', 'file', 'file-path',
+  'password-new', 'password-read', 'button', 'hidden', 'image',
+  'image-list'
 ])
+
+// Two-column property-sheet row for every field in the View/Edit
+// overlay form: label right-aligned in a fixed left column
+// (.field-label), value in the remainder (.field-value). Markdown
+// bodies made label-on-top bury the next field's name mid-page;
+// the gutter keeps the label->value pairing scannable. :hide-label
+// (strict === true, so absent, false, and a legacy [] all mean
+// shown) keeps the label column empty so the gutter and value
+// alignment hold. Row spacing lives in .field-row.
+function FieldRow({
+  field, children
+}: { field: Field; children: React.ReactNode }) {
+  return (
+    <div className="field-row">
+      <div className="field-label">
+        {field['hide-label'] === true
+          ? null
+          : <label>{field.label}</label>}
+      </div>
+      <div className="field-value">{children}</div>
+    </div>
+  )
+}
 
 function renderFormField(
   field: Field, value: any,
@@ -717,6 +784,22 @@ function renderReadOnlyField(
     )
   }
 
+  // markdown read-only: rendered, full length (View mode is the
+  // reading surface; the list cell is the clamped preview). Empty
+  // renders the em dash, mirroring the code / textarea branch.
+  if (widget === 'markdown') {
+    const text = Array.isArray(value) ? value.join(', ')
+      : formatNumber(value, field)
+    if (!text) {
+      return <div style={{ color: 'var(--muted-2)' }}>—</div>
+    }
+    return (
+      <div style={{ padding: '0.3rem 0', minHeight: '1.2em' }}>
+        <Markdown text={String(text)} />
+      </div>
+    )
+  }
+
   // code / textarea read-only: plain-text projection, but
   // pre-wrap so newlines survive — a collapsed blob is
   // unreadable for model source. code adds the monospace
@@ -758,6 +841,15 @@ function App() {
   const [types, setTypes] = useState<TypeInfo[]>([])
   const [viewMode, setViewMode] = useState<ViewMode>('app')
   const [type, setType] = useState('__init__')
+  // :page-description open/closed state, App-level and per-type:
+  // the block mounts inside the list page, which refetches on
+  // every sort / search / page / chip change — component-local
+  // state would snap back to the model default on each refetch.
+  // The map records only explicit toggles; an absent entry falls
+  // to the model default (pageDescriptionOpen === true). React
+  // state only: resets on reload, cleared on logout.
+  const [pageDescOpen, setPageDescOpen] = useState<
+    Record<string, boolean>>({})
   const [showAddForm, setShowAddForm] = useState(false)
   const [formValues, setFormValues] = useState<Record<string, any>>({})
   // Confirmation box for :widget :password-new fields. Keyed by
@@ -1196,6 +1288,7 @@ function App() {
     setFormValues({})
     setPasswordConfirm({})
     setListError(null)
+    setPageDescOpen({})
     resetListQuery()
   }
 
@@ -1751,10 +1844,14 @@ function App() {
 
     for (const id of selectedIds) {
       const payload = { type, filters: id }
-      await apiFetch('/api/delete', {
+      const res = await apiFetch('/api/delete', {
         method: 'POST',
         body: JSON.stringify(payload)
       })
+      if (!res.ok) {
+        alert(await errorMessage(res, 'Failed to delete'))
+        break
+      }
     }
     setSelectedIds([])
     fetchList()
@@ -1773,7 +1870,19 @@ function App() {
           category: typeof t === 'string'
             ? 'user' : t.category,
           userSetting: typeof t === 'string'
-            ? false : !!t['user-setting']
+            ? false : !!t['user-setting'],
+          // Wire presence → boolean | undefined. Not !!t[...] —
+          // that would collapse an explicit false (declared
+          // :page-description-open nil) into undefined-ish loss.
+          // The === true split preserves declared-false; the
+          // legacy-string branch renders no block.
+          pageDescription: typeof t === 'string'
+            ? undefined : t['page-description'],
+          pageDescriptionOpen:
+            typeof t === 'string'
+            || t['page-description-open'] === undefined
+              ? undefined
+              : t['page-description-open'] === true
         }))
       setTypes(typeInfos)
       const t = info.result?.['title']
@@ -2290,6 +2399,10 @@ function App() {
   }
 
   if (!data || !data.result || Array.isArray(data.result) || !data.result['list-form']) {
+    // Description block lookup for the "No records" shell (the
+    // types state is in scope here; listFields etc. are not yet
+    // bound — they belong to the list-carrying render below).
+    const shellTypeInfo = types.find(t => t.name === type)
     return (
       <div>
         <div style={{ position: 'relative' }}>
@@ -2386,6 +2499,25 @@ function App() {
             </button>
           ))}
         </div>
+        {/* List-mode shell (empty list / fetch error): the
+            description block renders here too — the empty list is
+            exactly the page the description exists to orient. The
+            !(showAddForm || isEditMode) guard is kept for symmetry
+            with the main return; forms never mount in this shell. */}
+        {!(showAddForm || isEditMode)
+          && shellTypeInfo?.pageDescription && (
+          <PageDescription
+            text={shellTypeInfo.pageDescription}
+            open={pageDescOpen[type]
+              ?? shellTypeInfo.pageDescriptionOpen === true}
+            onToggle={() =>
+              setPageDescOpen(prev => ({
+                ...prev,
+                [type]: !(prev[type]
+                  ?? shellTypeInfo.pageDescriptionOpen === true)
+              }))}
+          />
+        )}
         <p style={{ color: listError ? 'var(--error)' : undefined }}>
           {listError || 'No records'}
         </p>
@@ -2397,6 +2529,9 @@ function App() {
   const addFields: string[] =
     data.result['add-form'] ? Object.keys(data.result['add-form']) : []
   const records = data.result.records
+  // Description block lookup; both list-mode render sites (main
+  // return + the "No records" early-return shell) consume it.
+  const typeInfo = types.find(t => t.name === type)
 
   // Chip eligibility: checkbox-list fields whose source table differs
   // from the listed type. fe-fields always sets `table` (falls back
@@ -2539,6 +2674,19 @@ function App() {
 
       {!(showAddForm || isEditMode) && (
         <div style={{ marginBottom: '0.5rem' }}>
+          {typeInfo?.pageDescription && (
+            <PageDescription
+              text={typeInfo.pageDescription}
+              open={pageDescOpen[type]
+                ?? typeInfo.pageDescriptionOpen === true}
+              onToggle={() =>
+                setPageDescOpen(prev => ({
+                  ...prev,
+                  [type]: !(prev[type]
+                    ?? typeInfo.pageDescriptionOpen === true)
+                }))}
+            />
+          )}
           {data.result.create && (
             <button onClick={() => {
               setShowAddForm(true)
@@ -2561,7 +2709,6 @@ function App() {
           )}
         </div>
       )}
-
       {!(showAddForm || isEditMode) &&
         (hasSearchable || hasChipFields || boolFilterFields.length > 0) && (
         <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2753,12 +2900,11 @@ function App() {
                 return null
               }
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   {renderReadOnlyField(
                     fieldMeta, formValues[f]
                   )}
-                </div>
+                </FieldRow>
               )
             }
             const isCheckboxList = fieldMeta['widget'] === 'checkbox-list'
@@ -2776,8 +2922,7 @@ function App() {
                 : allowed
 
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <CheckboxList
                     options={options}
                     selected={selected}
@@ -2788,30 +2933,30 @@ function App() {
                       setFormValues({ ...formValues, [f]: next })
                     }}
                   />
-                </div>
+                </FieldRow>
               )
             }
 
             if (isCheckbox) {
+              // Label moves to the left column like every other
+              // field; the value column holds the bare checkbox
+              // (the old inline "☑ Label" put this field's label
+              // in a different place than every other widget's).
               const checked = !!formValues[f]
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={e => setFormValues({ ...formValues, [f]: e.target.checked })}
-                    />
-                    {' '}{fieldMeta.label}
-                  </label>
-                </div>
+                <FieldRow key={f} field={fieldMeta}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={e => setFormValues({ ...formValues, [f]: e.target.checked })}
+                  />
+                </FieldRow>
               )
             }
 
             if (fieldMeta['widget'] === 'select') {
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <select
                     value={formValues[f] || ''}
                     onChange={e =>
@@ -2823,7 +2968,7 @@ function App() {
                       <option key={val} value={val}>{val}</option>
                     ))}
                   </select>
-                </div>
+                </FieldRow>
               )
             }
 
@@ -2837,8 +2982,7 @@ function App() {
               // renderFormField's onChange is (v: string) => void,
               // so null must go through here, not the fallback.
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <SearchSelect
                     options={allowed}
                     value={formValues[f] ?? null}
@@ -2847,14 +2991,13 @@ function App() {
                       setFormValues({ ...formValues, [f]: v })
                     }
                   />
-                </div>
+                </FieldRow>
               )
             }
 
             if (fieldMeta['widget'] === 'file') {
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <input
                     type="file"
                     onChange={e => {
@@ -2862,7 +3005,7 @@ function App() {
                       setFormValues({ ...formValues, [f]: file })
                     }}
                   />
-                </div>
+                </FieldRow>
               )
             }
 
@@ -2894,8 +3037,7 @@ function App() {
                   || siblingFile.name
                 : ''
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <FilePath
                     directoryType={
                       fieldMeta['directory-type'] || ''}
@@ -2907,7 +3049,7 @@ function App() {
                     }
                     suggestedName={suggested}
                   />
-                </div>
+                </FieldRow>
               )
             }
 
@@ -2926,8 +3068,7 @@ function App() {
                 ? ' — entries do not match'
                 : ' — entries match'
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <input
                     type="password"
                     autoComplete="new-password"
@@ -2967,7 +3108,7 @@ function App() {
                   }}>
                     {matchHint}
                   </span>
-                </div>
+                </FieldRow>
               )
             }
 
@@ -2978,8 +3119,7 @@ function App() {
               // autoComplete="current-password" so browsers offer
               // saved credentials, not generation.
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <input
                     type="password"
                     autoComplete="current-password"
@@ -2989,7 +3129,7 @@ function App() {
                       setFormValues({ ...formValues, [f]: e.target.value })
                     }
                   />
-                </div>
+                </FieldRow>
               )
             }
 
@@ -2999,19 +3139,21 @@ function App() {
 
             if (fieldMeta['read-only'] === true) {
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   {renderReadOnlyField(
                     fieldMeta, formValues[f]
                   )}
-                </div>
+                </FieldRow>
               )
             }
 
-            if (fieldMeta['widget'] === 'textarea') {
+            if (fieldMeta['widget'] === 'textarea'
+                || fieldMeta['widget'] === 'markdown') {
+              // markdown edits through the same plain textarea —
+              // no preview pane, no editor (View mode is the
+              // reading surface).
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <textarea
                     value={formValues[f] || ''}
                     onChange={e =>
@@ -3020,14 +3162,13 @@ function App() {
                     rows={8}
                     style={{ width: '100%', resize: 'vertical' }}
                   />
-                </div>
+                </FieldRow>
               )
             }
 
             if (fieldMeta['widget'] === 'code') {
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <textarea
                     value={formValues[f] || ''}
                     onChange={e =>
@@ -3041,7 +3182,7 @@ function App() {
                       fontSize: '0.95em'
                     }}
                   />
-                </div>
+                </FieldRow>
               )
             }
 
@@ -3056,8 +3197,7 @@ function App() {
               const isGatedOff = !evalEnabledWhen(
                 fieldMeta['enabled-when'], editRecord)
               return (
-                <div key={f} style={{ marginBottom: '0.5rem' }}>
-                  <label>{fieldMeta.label}</label><br />
+                <FieldRow key={f} field={fieldMeta}>
                   <button
                     type="button"
                     disabled={isRunning || isPending || isGatedOff}
@@ -3096,17 +3236,16 @@ function App() {
                       {statusVal}
                     </span>
                   )}
-                </div>
+                </FieldRow>
               )
             }
 
             return (
-              <div key={f} style={{ marginBottom: '0.5rem' }}>
-                <label>{fieldMeta.label}</label><br />
+              <FieldRow key={f} field={fieldMeta}>
                 {renderFormField(fieldMeta, formValues[f], v =>
                   setFormValues({ ...formValues, [f]: v })
                 )}
-              </div>
+              </FieldRow>
             )
           })}
 

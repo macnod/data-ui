@@ -123,7 +123,7 @@ The three app-level endpoints in this section have no type whose roles they coul
 
 ### `GET /api/types`
 
-Available types, grouped by category (`:user`, `:settings`, `:system`).
+Available types, each entry an object: `name` (string), `category` (`user` / `settings` / `system`), `user-setting` (boolean). Two optional fields ride the entry only when the model author declared them (`:page-description` / `:page-description-open`): `page-description` (markdown string, the list-page intro block) and `page-description-open` (boolean; an explicit `:page-description-open nil` serializes as `false`, never dropped). RBAC scoping is inherent — `/api/types` returns only types the caller may read, so a user without read on a type sees no entry, and no description.
 
 ### `GET /api/info`
 

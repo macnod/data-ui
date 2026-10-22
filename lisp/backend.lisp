@@ -1468,6 +1468,17 @@ compiled model metadata — no naming convention assumptions."
       (insert-join-table-rows type-key uuid data)
       (values uuid t))))
 
+(defun log-palette-denied (type-key field-key target-type-key user e)
+  "Log that the palette for FIELD-KEY on TYPE-KEY came back empty:
+the palette query raised a validation error E — usually read
+denied on TARGET-TYPE-KEY for USER, but any palette validation
+failure lands here. Empty palette, not an error — one field's
+palette must not fail the parent list."
+  (pl:perror :in "log-palette-denied"
+    :status "palette suppressed"
+    :type-key type-key :field-key field-key
+    :target-type-key target-type-key :user user :error e))
+
 (defun allowed-values-for-field (type-key field-key user)
   (let* ((m *compiled-model*)
           (options (u:tree-get m type-key :fields field-key
@@ -1480,8 +1491,23 @@ compiled model metadata — no naming convention assumptions."
                          :source)))
               (x-type-key (getf source :table))
               (x-field-key (getf source :column))
-              (values (getf (be-list-column x-type-key x-field-key user
-                             :skip-allowed-values t)
+              (values (getf
+                        (handler-case
+                          (be-list-column x-type-key x-field-key user
+                            :skip-allowed-values t)
+                          (validation-error (e)
+                            ;; A palette is best-effort: the palette
+                            ;; query raised a validation error — most
+                            ;; often valid-user-permissions on the
+                            ;; target (e.g. :users restricted via
+                            ;; :type-roles), but any palette
+                            ;; validation failure lands here too. One
+                            ;; field's palette must never fail the
+                            ;; parent list — return an empty palette
+                            ;; and log why.
+                            (log-palette-denied type-key field-key
+                              x-type-key user e)
+                            nil))
                         :values)))
         (if (and (equal type-key :users)
               (equal field-key :roles))
@@ -2127,6 +2153,21 @@ Can't assign roles that user doesn't have.
             (report-ve "valid-existing-file-or-directory"
               "~(~s~) ~a does not have a resource record: ~a" ~type-key ~thing
               ~logical-path is-leaf fs-path path-field)))))))
+
+(defun valid-updated-directory (type-key record data)
+  ":private: Fs-backed path fields are immutable until moves are
+supported. Rejects any be-update that changes a :path field's value
+on a tree/fs-backed type; an unchanged value passes. Applies to both
+leaf (file) and non-leaf (directory) types — neither has a move
+implementation, and both desynchronize row / resource / filesystem
+when renamed."
+  (let* ((path-field (path-field type-key))
+         (old-path (when path-field (getf record path-field)))
+         (new-path (when path-field (getf data path-field))))
+    (when (and old-path new-path (not (equal old-path new-path)))
+      (report-ve "valid-updated-directory"
+        "Path cannot be changed (moves are not supported): ~a -> ~a"
+        ~new-path ~old-path))))
 
 (defun id-key (type-key)
   (valid-type-key type-key)
@@ -3180,6 +3221,8 @@ update fails.
       (when field-errors
         (report-ve "be-update"
           "Field validation failed:~{ ~a~}" ~field-errors)))
+    ;; Fs-backed path fields are immutable until moves are supported.
+    (valid-updated-directory type-key record full-data)
     ;; Update TYPE-KEY row (main update)
     (when (equal type-key :resources)
       (report-ve "be-update" "Can't update internal type :resources"))
@@ -3443,9 +3486,27 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
     for internal = (getf type-def :internal)
     for display = (getf type-def :display)
     when (and display allowed (not internal))
-    collect (list :name type-key
-                  :category (getf type-def :category)
-                  :user-setting (getf type-def :user-setting))))
+    collect (append
+              (list :name type-key
+                    :category (getf type-def :category)
+                    :user-setting (getf type-def :user-setting))
+              ;; getf truthiness is safe here by contract:
+              ;; valid-page-description guarantees a non-blank
+              ;; string whenever :page-description is declared, so
+              ;; a present key is always truthy. Do not "fix" this
+              ;; to member — that would start emitting the key for
+              ;; exactly the present-nil values the validator
+              ;; exists to reject.
+              (when (getf type-def :page-description)
+                (list :page-description
+                  (getf type-def :page-description)))
+              ;; member, not getf: an explicit
+              ;; :page-description-open nil is legal (collapsed
+              ;; default written out) and must ride the wire as
+              ;; false, never drop.
+              (when (member :page-description-open type-def)
+                (list :page-description-open
+                  (getf type-def :page-description-open))))))
 
 (defun be-landing-page (user)
   ":public: Effective landing type-key for USER, or NIL.

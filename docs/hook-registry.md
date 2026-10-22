@@ -117,7 +117,7 @@ The registry is the sole hook surface form. Raw lambda forms and shell hooks are
 | Name | Parameters | Behavior |
 |------|------------|----------|
 | `:required` | none | Rejects empty/nil values |
-| `:user-name` | none | Validates username format |
+| `:user-name` | none | Username format: lowercase letters, digits, dashes; starts with a letter, ends with a letter or digit (stricter than the rbac policy that gates login) |
 | `:password` | none | Validates password policy |
 | `:email` | none | Validates email format |
 | `:join-items-exist` | none | Validates join-table references exist |

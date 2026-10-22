@@ -1302,6 +1302,108 @@ Notes:
   (is-false (be-id :todos '((:todos :name :eq "ok")) "admin")))
 
 ;;
+;; BEGIN User name policy tests (lowercase, alphanumeric, dash)
+;;
+;; v-user-name enforces ^[a-z][a-z0-9-]*[a-z0-9]$ plus the rbac
+;; length cap — strictly tighter than the rbac default, which still
+;; gates login (decision 2 of restrict-user-names-plan.org: legacy
+;; names must keep signing in).
+;;
+
+(test user-name-policy-insert-rejects-bad-names
+  "be-insert :users with names that violate the policy signals
+validation-error: uppercase, space, dot, underscore, plus, non-ASCII,
+leading digit, leading dash, trailing dash, single character."
+  (dolist (bad '("Bad Name" "John.Doe" "alice_1" "user+plus"
+                 "Ümlaut" "9start" "-start" "end-" "a"))
+    (signals validation-error
+      (be-insert :users
+        `(:name ,bad :password "password-1" :email "no-email")
+        "admin")
+      "~a should be rejected" bad)))
+
+(test user-name-policy-insert-accepts-good-names
+  "be-insert :users with conforming names (2+ chars, lowercase
+letters/digits/dashes, letter first, letter-or-digit last) succeeds
+and cleans up after itself."
+  (dolist (good '("good-name-2" "ab" "user9"))
+    (unwind-protect
+      (let ((id (be-insert :users
+                   `(:name ,good :password "password-1"
+                     :email "no-email")
+                   "admin")))
+        (is-true (uuid-p id) "~a should be accepted" good))
+      (be-delete :users `((:users :name :eq ,good)) "admin"))))
+
+(test user-name-policy-update-rejects-bad-name
+  "be-update :users with a policy-violating :name signals; with a
+conforming one it succeeds."
+  (let ((user "un-policy-user"))
+    (th-make-user user)
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,user))
+            `(:name "Renamed.User" :password nil :email "no-email")
+            "admin"))
+        ;; Original name unchanged
+        (is-true (a:get-id *rbac* "users" user))
+        ;; Conforming rename round-trips
+        (be-update :users
+          `((:users :name :eq ,user))
+          `(:name "un-policy-user-2" :password nil :email "no-email")
+          "admin")
+        (is-true (a:get-id *rbac* "users" "un-policy-user-2")
+          "rename should land"))
+      ;; Pre-existing rbac quirk: renaming a user orphans the old
+      ;; exclusive role (no rename at the rbac layer), so be-delete
+      ;; on the renamed user dies inside a:remove-user. Clean up
+      ;; surgically: drop the user row (tolerating the role error),
+      ;; then the stale role, then the settings row.
+      (ignore-errors (a:remove-user *rbac* "un-policy-user-2"))
+      (a:remove-role *rbac* "un-policy-user:exclusive")
+      (let ((sid (be-value-id :settings :user "un-policy-user" "admin")))
+        (when sid (delete-by-id :settings sid))))))
+
+(test user-name-policy-validate-form-reports-error
+  "be-validate-form :users (the frontend pre-save path) returns the
+error string for a bad name and :valid :true for a good one."
+  (is (equal (getf (be-validate-form :users
+                      '(:name "John.Doe" :password "password-1"
+                        :email "no-email")
+                      "admin")
+                   :valid)
+             :false))
+  (is (equal (getf (be-validate-form :users
+                      '(:name "john-doe" :password "password-1"
+                        :email "no-email")
+                      "admin")
+                   :valid)
+             :true))
+  (is (equal (be-validate-field :users :name "John.Doe" "admin")
+             `(:valid :false
+                :errors (,(v-user-name :users :name "John.Doe"
+                            "admin"))))))
+
+(test user-name-policy-login-still-honors-legacy-names
+  "Login keeps the rbac policy, not v-user-name (decision 2): a
+legacy-format name that v-user-name would reject still signs in via
+a:login. Guards against someone 'fixing' login to reuse the tighter
+hook. (Legacy names are lowercase-only in practice: rbac creates the
+name:exclusive role on a:add-user, and its role regex rejects
+uppercase — dot/underscore/plus are the realistic legacy shapes.)"
+  (let ((legacy "legacy.user_1"))
+    (a:add-user *rbac* legacy "no-email" "password-1")
+    (unwind-protect
+      (is-true (a:login *rbac* legacy "password-1"))
+      (a:remove-user *rbac* legacy))))
+
+;;
+;; END User name policy tests
+;;
+
+;;
 ;; BEGIN Form Roles tests
 ;;
 

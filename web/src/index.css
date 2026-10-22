@@ -159,3 +159,42 @@ th {
   font-weight: bold;
   cursor: pointer;
 }
+
+/* --- Field rows (View / Edit overlay form) --- */
+
+/* Property-sheet layout: field label right-aligned in a fixed
+   left column, value in the remainder. min-width: 0 on the value
+   column is load-bearing — without it a long unbreakable line
+   (pre-wrap code, a URL) blows out the flex row. */
+.field-row {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 0.5rem;
+}
+
+.field-label {
+  flex: 0 0 180px;
+  text-align: right;
+  padding-top: 0.35rem;
+}
+
+.field-value {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Narrow screens: stack label above value, left-aligned, so the
+   value column is not squeezed to unusable width. */
+@media (max-width: 640px) {
+  .field-row {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .field-label {
+    flex-basis: auto;
+    text-align: left;
+    padding-top: 0;
+  }
+}

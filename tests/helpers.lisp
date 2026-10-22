@@ -939,6 +939,16 @@ run in an api-roles-test context."
     (explain! results)
     (when collect results)))
 
+(defun run-allowed-values-tests (&optional collect)
+  "allowed-values palette suppression: one field's palette denial
+must not fail the parent list. Runs on the allowed-values-test
+fixture (admin-only :users, :items with a :target :users field)."
+  (let ((results
+          (with-model "allowed-values-test" #'av-seed-fixture
+            (run 'allowed-values-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-type-roles-override-tests (&optional collect)
   ":type-roles override on base-model types: compile probes
 plus behavioral RBAC checks. Compile probes run bare; behavior
@@ -991,6 +1001,16 @@ add-root-fs-resources with directories-user)."
     (explain! results)
     (when collect results)))
 
+(defun run-directory-update-tests (&optional collect)
+  "valid-updated-directory gate: be-update rejects any change to a
+:path field's value on fs-backed types (directories and leaf files);
+unchanged values pass. Runs on the modelbank-test fixture."
+  (let ((results
+          (with-model "modelbank-test" nil
+            (run 'directory-update-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-file-path-tests (&optional collect)
   ":file-path widget tests: compile probes (no model needed) plus
 fe-fields wire emission on the file-path-test fixture."
@@ -1001,6 +1021,33 @@ fe-fields wire emission on the file-path-test fixture."
             ;; Wire emission (needs a live compiled model)
             (with-model "file-path-test" nil
               (run 'file-path-wire)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-markdown-tests (&optional collect)
+  ":markdown widget tests: compile probes (no model needed) plus
+fe-fields wire emission on the markdown-test fixture."
+  (let ((results
+          (append
+            ;; Compile probes (pure compile-model, no DB)
+            (run 'markdown-compile)
+            ;; Wire emission (needs a live compiled model)
+            (with-model "markdown-test" nil
+              (run 'markdown-wire)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-page-description-tests (&optional collect)
+  ":page-description tests: validator / compile-path probes (no
+model needed) plus be-types / serialization wire checks on the
+page-description-test fixture."
+  (let ((results
+          (append
+            ;; Compile probes (pure compile-model, no DB)
+            (run 'page-description-compile)
+            ;; Wire emission (needs a live compiled model)
+            (with-model "page-description-test" nil
+              (run 'page-description-wire)))))
     (explain! results)
     (when collect results)))
 
@@ -1046,10 +1093,14 @@ groups."
                    ("guest"          . run-guest-tests)
                    ("api-roles"      . run-api-roles-tests)
                    ("type-roles-override" . run-type-roles-override-tests)
+                   ("allowed-values" . run-allowed-values-tests)
                    ("domain-stg"     . run-domain-stg-tests)
                    ("timestamp-null" . run-timestamp-null-tests)
                    ("new-directory" . run-new-directory-tests)
-                   ("file-path"     . run-file-path-tests))
+                   ("directory-update" . run-directory-update-tests)
+                   ("file-path"     . run-file-path-tests)
+                   ("markdown"      . run-markdown-tests)
+                   ("page-description" . run-page-description-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

@@ -41,6 +41,8 @@ Non-frontend code is SBCL Common Lisp, written by a human.
 - Do not refactor, clean up, or "improve" Lisp code unless explicitly instructed.
 - Before any code is written, a thorough discussion of the goals must happen.
 - Some functions with no in-codebase callers are intentionally retained; see `docs/model-accessors.md` before removing "dead" code.
+- Prose in `.md` and `.org` files (docs, backlog items, plans) is never hard-wrapped: one paragraph per line, one list item per line — a newline ends a paragraph or a list item, never a sentence fragment; viewers wrap for display. See `~/r/elisp/ai/global.md` → Prose Line Length.
+- Emacs buffers visiting project files typically run `auto-revert-mode` + `auto-save-visited-mode`. Agent-side edits to a file whose visiting buffer is **unmodified** are safe — auto-revert syncs it within seconds. A **modified** buffer is the hazard: auto-save-visited writes it back over the disk edit. Before editing any file that has a live Emacs buffer (e.g. `docs/todo.org`), check `buffer-modified-p` on the visiting buffer (via `find-buffer-visiting` + `Eval`); if non-nil, flag it to the human instead of editing.
 
 ## Live Introspection: `eval-in-data-ui`
 
@@ -105,6 +107,7 @@ Lifecycle: TODO → PLANNING (a plan is being drafted) → READY (plan complete 
 
 - Every item carries a `:PROPERTIES:` drawer with `:CREATED:` (and, once done, `:COMPLETED:`) org inactive timestamps, e.g. `[2026-08-10 Sun]`.
 - New items: include the drawer with `:CREATED:` set to today. Marking DONE: set `:COMPLETED:` to today.
+- Titles are as short as possible — a noun phrase naming the ask, long enough only to disambiguate among siblings. Spec details (`:widget :markdown`, `:ui (:help ...)`, dev/stg/prod) belong in the item body, never the title: "Markdown widget", not "Markdown widget (`=:widget :markdown=`)".
 - **After any change to `docs/todo.org`, run `(fix-data-ui-todo-dates)`** (defined in `~/r/elisp/dc-ai.el`, no parameters). It enforces the date rules; just write today's date and run it. Currently *disabled* (`dc-ai-fix-todo-dates-enabled` is nil) — it returns 0 and touches nothing. Skip it until it is re-enabled.
 
 Org outline hierarchy: `*` section, `**` parent todo, `***` its direct children (children inherit tags/context). Never mix — do not put `**` children under a `**` parent; always step to `***`:

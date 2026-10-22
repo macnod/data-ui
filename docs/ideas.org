@@ -1,0 +1,100 @@
+# Data UI — Ideas
+
+* The Blog Application                                            :blog:mvp:
+
+Started 2026-10-20, out of the markdown-widget / public-pages / RBAC discussions. This is a positioning sketch: what a Data UI blog looks like, and why nothing like it currently exists. Dependencies: markdown widget, =:page-description=, field help (all MVP Now todos); public pages (Post MVP) for the crawlable face.
+
+** The pitch
+
+A blog engine where permissions are the substrate, not a feature. Posts, tags, images, ratings, comments, and authors are rows in one PostgreSQL database under row-level RBAC — and the whole engine is a model plist you can send in an email. *Publishing is a permission decision*: a draft is a post whose Roles row doesn't name ="public"= yet, and publishing is a role edit. Internal notes and public articles live in the same corpus, under the same search, separated only by who may read each row.
+
+** What it looks like
+
+The author logs into the same SPA every Data UI app has. A =:posts= type with a markdown body, cover images, tags, and a =published-at= timestamp; the type's list view sorts newest-first by declaration, not by code. Writing happens in a plain textarea; reading is rendered Markdown. The Roles row on each post names its audience — ="public"= for the world, ="friends"= for a curated circle, nothing but internal roles for team-only notes. A guest reader (one click, no password) lands on the same blog and sees only the public posts — the restricted ones are absent from the list, absent from search results, absent from the counts. There is no second system, no CMS, no plugin.
+
+*** Feature summary
+
+Content and authoring:
+- Markdown bodies (=​:widget :markdown=​): write in a textarea, read rendered in list and View mode
+- Cover images (=​:image-list=​ with lightbox), tags and categories (M2M checkbox lists, static selects)
+- Timestamps with declared sort (=​:default-sort (:published-at :desc)=​), author attribution (=​:autofill :user=​)
+- A collapsible page intro (=​:page-description=​) and inline field help (=​:help=​) — the house style guide rides the model
+- Field-level scopes, identities, and validations come from the compiler; no bespoke code exists to write
+
+Publishing as a Roles row:
+- Draft → published is a role edit on the row; no status enum, no workflow state machine, no special code path
+- Per-post audiences: one post for ="friends"=, one for the team, one for the world — simultaneously
+- Unpublishing is the same lever in reverse
+- Guest reading is permission-honest by construction: Phase A applies RBAC before search and filters, so guest lists, guest search, and =:total= counts see only public rows — the search-index leak bug class cannot occur
+
+Engagement:
+- Star ratings via write-through on (post, user) composite identity — "my rating" editable, the average read-only beside it
+- Comments as their own type targeting posts, each comment carrying its own Roles row — moderation is a permission edit, not a moderation queue
+- Author leaderboards as a read-only rollup type (posts per author, average rating), sortable server-side
+
+Public face (Post MVP — public pages):
+- =/p/<type>/<identity>= server-rendered pages: crawlable, unfurlable, indexable, while the editing surface stays behind auth
+- The public site is a *materialized build product* of the private source — rebuilt wholesale on any write or role change, so it can never disagree with the permissions that produced it
+- =sitemap.xml=, canonical tags, and a copy-link button that shares the public URL
+
+Operations:
+- Deploy = database + domain + TLS in one script run; no server to babysit
+- The entire blog is a versionable, auditable model plist — /your whole blog, in an email/
+- The AI tier closes the loop: =generate-model= produces a working blog from a description; the model remains the spec
+
+*** A model sketch (abbreviated)
+
+#+begin_src lisp
+'(:title "Engineering Notes"
+  :name "engnotes"
+  :version "0.1"
+  :domain "notes.example.com"
+  :guest-allowed t
+  :guest-auto t
+  :landing-page :posts
+  :types
+  (:posts
+    (:table t :create :auto :update :auto :delete :auto :display t
+      :type-roles ("public" "authors")
+      :default-sort (:published-at :desc)
+      :fields
+      (:title (:type :text :identity t :unique t
+               :ui (:label "Title" :widget :textbox)
+               :source (:view :main :column :title :agg :first)
+               :column t :not-null t)
+       :body (:type :text
+              :ui (:label "Body" :widget :markdown :hide-label t)
+              :source (:view :main :column :body :agg :first)
+              :column t)
+       :published-at (:type :timestamp :default :now ...)
+       :author (:type :text :autofill :user :target :users ...)
+       :tags (:type :list :join-table :post-tags ...))
+      :list-form (:fields (:published-at :title :tags :average-rating))
+      :update-form (:fields t)
+      :add-form (:fields t))))
+#+end_src
+
+Two types of note here: the sketch is illustrative (the MVP Now todos name the not-yet-landed keys), and the omitted pieces — ratings type, comments type, joiners, rollup — are all documented vocabulary, not new machinery.
+
+** Why nothing like this exists
+
+Every existing system gets this backwards: it creates content first and bolts permissions on afterward, so permissions never compose and visibility questions have no principled answer. Data UI inverts the ordering — RBAC is the base model every type compiles onto, so the blog is added to the permissions, not the other way around.
+
+- WordPress: five hardcoded roles tangled to post types; visibility is a private-or-public flag; per-post custom audiences need plugins
+- Ghost / Substack: membership paywalls and tiered newsletters, not row-level role-based access
+- Notion / Google Docs: link-based sharing, not RBAC; no public crawlable face
+- Confluence: page restrictions fight space permissions; nobody can predict what a restricted child of an open space does
+- MediaWiki: per-page protection tiers, no inheritance story, no row-level audiences
+- Static site generators: zero auth; the internal/external split is mandatory because there is no internal
+
+The differentiators in one list:
+- *Publishing is a permission decision* — one lever for draft, audience, and unpublish
+- *One corpus, two audiences* — intranet and public site are the same database under one search; visibility is a Roles row
+- *Row-level audiences* — one post for ="friends"= is a first-class citizen, not a hack
+- *Search that cannot leak* — every read path is permission-scoped before search runs
+- *The blog is compiler output* — the model is the whole spec, guaranteed consistent, sendable in an email, writable by an AI
+- *Ops-free* — domain, TLS, and database arrive with one deploy script
+
+** The demo moment
+
+Guest is browsing the blog; the author's view has one more post than the guest's. The author changes that post's Roles row from ="friends"= to nothing internal — and it vanishes from the guest's list without any code having been written about posts at all. That disappearance is the product.

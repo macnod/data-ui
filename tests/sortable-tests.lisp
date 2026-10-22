@@ -106,3 +106,71 @@ sort field does not exist."
   ;; Cleanup
   (loop for r in (getf (be-list :todos "admin") :records)
         do (be-delete :todos (getf r :id) "admin")))
+
+(test sortable-target-field-rejected
+  ":sortable t on a :target (FK) field is a compile error, uniformly
+(base types and rollups): stage 2 rewrites the sort column to the
+joined display column, which base Phase A never joins."
+  (signals error
+    (compile-model
+      (list
+        :things
+        (list :table t :create :auto :update :auto :delete :auto
+          :views (list :main (list :tables '(:things :users)))
+          :fields (list
+                    :name (list :type :text :identity t
+                            :source (list :view :main :column :name
+                                      :agg :first)
+                            :column t :not-null t)
+                    :owner (list :type :text :target :users
+                             :sortable t
+                             :source (list :view :main :table :users
+                                       :column :name :agg :first)
+                             :column t :not-null t))
+          :list-form (list :fields t)
+          :update-form (list :fields t)
+          :add-form (list :fields t))))))
+
+(test sortable-target-field-compiles-without-sortable
+  "Positive control: the same inline model minus :sortable t compiles
+(proves the rejection above comes from the new guard, not fixture
+shape)."
+  (finishes
+    (compile-model
+      (list
+        :things
+        (list :table t :create :auto :update :auto :delete :auto
+          :views (list :main (list :tables '(:things :users)))
+          :fields (list
+                    :name (list :type :text :identity t
+                            :source (list :view :main :column :name
+                                      :agg :first)
+                            :column t :not-null t)
+                    :owner (list :type :text :target :users
+                             :source (list :view :main :table :users
+                                       :column :name :agg :first)
+                             :column t :not-null t))
+          :list-form (list :fields t)
+          :update-form (list :fields t)
+          :add-form (list :fields t))))))
+
+(test sortable-target-field-rejected-on-rollup
+  ":sortable t on a :target field of a rollup grain pass-through is a
+compile error too (the uniform rule)."
+  (signals error
+    (compile-model
+      (list
+        :users-board
+        (list :rollup t
+          :grain :users
+          :views (list :main (list :tables '(:users)))
+          :list-form (list :fields t)
+          :fields (list
+                    (list :name
+                      (list :source (list :view :main :table :users
+                                      :column :name :agg :first)
+                        :sortable t))
+                    (list :user-count
+                      (list :type :integer
+                        :source (list :view :main :table :users
+                                  :column :id :agg :count)))))))))

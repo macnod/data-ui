@@ -7,6 +7,9 @@
     "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\\.)+"
     "[a-zA-Z]{2,}$"))
 
+(defparameter *user-name-regex*
+  "^[a-z][a-z0-9-]*[a-z0-9]$")
+
 (defun domain-stg-from-domain (domain)
   ":private: Derive the staging FQDN from DOMAIN by suffixing -stg
 onto the first DNS label (todo.x.com -> todo-stg.x.com). Assumes
@@ -121,10 +124,19 @@ returns S. If S is not a string or a number, this function returns NIL."
               type-key field-key value
               (format nil "must be a valid ~s." field-type-key))))))))
 (defun v-user-name (type-key field-key value user)
+  ":public: Validation hook behind the :user-name validation. Stricter
+than the rbac library's a:valid-user-name-p (which still gates login):
+lowercase letters, digits, and dashes; must start with a letter, end
+with a letter or digit, and respect the rbac length cap."
   (declare (ignore user))
-  (unless (a:valid-user-name-p *rbac* value)
+  (unless (and (stringp value)
+            (<= (length value) (a:user-name-length-max *rbac*))
+            (re:scan *user-name-regex* value))
     (validation-error-string
-      type-key field-key value "is not a valid user name.")))
+      type-key field-key value
+      (concatenate 'string
+        "must start with a letter, end with a letter or digit, "
+        "and contain only lowercase letters, digits, and dashes."))))
 
 (defun v-password (type-key field-key value user)
   (declare (ignore user))
@@ -1542,14 +1554,14 @@ from a:login on \"\"."
 (defparameter *forms* '(:list-form :add-form :update-form))
 
 (defparameter *widgets*
-  '(:textbox :textarea :code :stars :checkbox :checkbox-list :select
+  '(:textbox :textarea :code :markdown :stars :checkbox :checkbox-list :select
      :search-select :file :file-path :password-new :password-read
      :button :hidden :image :image-list)
   "Allowed values for the :widget key on a field :ui plist.")
 
 (defparameter *ui-keys*
-  '(:label :widget :read-only :precision :options :table :filter-with
-     :enabled-when :directory-type)
+  '(:label :widget :read-only :hide-label :precision :options :table
+     :filter-with :enabled-when :directory-type)
   "Closed set of legal keys on a field :ui plist. An author key not in
 this list is a compile error.")
 
@@ -2499,6 +2511,15 @@ otherwise."
         ":read-only must be t or nil, got ~s."
         ~ro))))
 
+(defun valid-hide-label-value (ui)
+  "Check that :hide-label, if present, is t or nil. Signals via report-ve
+otherwise."
+  (let ((hl (getf ui :hide-label :missing)))
+    (unless (or (eq hl :missing) (eq hl t) (null hl))
+      (report-ve "valid-hide-label-value"
+        ":hide-label must be t or nil, got ~s."
+        ~hl))))
+
 (defun valid-options-value (ui)
   "Check :options on :ui: non-empty list of non-empty strings; only legal with
 :widget :select."
@@ -2711,6 +2732,8 @@ Rejects:
   (valid-ui-keys ui)
   ;; Validate :read-only value if present
   (valid-read-only-value ui)
+  ;; Validate :hide-label value if present
+  (valid-hide-label-value ui)
   ;; Validate :options shape/widget if present
   (valid-options-value ui)
   ;; Validate per-key values for the remaining checked keys
@@ -2908,6 +2931,18 @@ correct there). Returns the effective :source plist."
         ;; with Phase B measures) keep the strict rule: no aggregate alias in
         ;; base Phase A.
         (when (getf def :sortable)
+          ;; Uniform rule: :target (FK) fields are never sortable.
+          ;; Base case (verified live): stage 2 rewrites :source
+          ;; :column-name to the joined table's display column,
+          ;; which base Phase A never joins (42P01 at click time).
+          ;; No claim made about rollups; the rule is uniform.
+          ;; Joined-column sort is the future relaxation.
+          ;; Mirrors the :searchable FK rejection below.
+          (when has-target
+            (report-e "compile-field"
+              ":sortable t is not valid on :target (FK) ~
+               fields; field ~s of type ~s."
+              ~new-field-key ~type-key))
           (if (getf model type-key :rollup)
             (when (member (u:tree-get field-def :source :agg)
                     '(:list :distinct))
@@ -2936,6 +2971,27 @@ correct there). Returns the effective :source plist."
             (report-e "compile-field"
               ":searchable t is not valid on :target (FK) fields; ~
                field ~s of type ~s."
+              ~new-field-key ~type-key)))
+        ;; :widget :markdown requires :type :text + :column t and is
+        ;; never valid on :target fields (an FK field declares :type
+        ;; :text — its display type — while its storage type is
+        ;; forced to :uuid, so the explicit clause is required; the
+        ;; same pattern as the :searchable / :sortable rules).
+        (when (eq widget :markdown)
+          (unless (eq (or field-type :text) :text)
+            (report-e "compile-field"
+              ":widget :markdown is only valid on :type :text ~
+               fields; field ~s of type ~s has :type ~s."
+              ~new-field-key ~type-key ~field-type))
+          (unless column
+            (report-e "compile-field"
+              ":widget :markdown requires :column t; field ~s of ~
+               type ~s has no :column t."
+              ~new-field-key ~type-key))
+          (when has-target
+            (report-e "compile-field"
+              ":widget :markdown is not valid on :target (FK) ~
+               fields; field ~s of type ~s."
               ~new-field-key ~type-key)))
         ;; :filter-with :boolean requires :type :boolean and :column t.
         ;; The value rule itself is valid-filter-with-value's (it sees the
@@ -3670,6 +3726,82 @@ valid-measure-sort)."
                 "In type ~s, :default-sort field ~s is not :sortable t."
                 ~type-key ~field-key))))))))
 
+(defun valid-page-description (type-key type-def)
+  ":private: Validate :page-description / :page-description-open on
+TYPE-DEF. :page-description, when present, must be a string that
+is non-blank (whitespace-only renders an empty block, so blank
+counts as empty); it is rejected on :user-setting types (the
+settings view auto-opens the single-record form, so a description
+there can never render) and on non-visible types (be-types
+collects display, non-internal types only, so the key would never
+reach the wire; :display nil and a base type omitting :display
+are the same invisible state — no default is injected on the base
+path — and :internal t is rejected with it, while a rollup
+omitting :display defaults to t and passes).
+:page-description-open is legal only
+together with :page-description. Signals report-e otherwise.
+Presence is detected with member on the plist (getf cannot tell
+present-nil from absent; present-nil on :page-description is an
+error, and on :page-description-open it is a legal explicit
+false — the distinction is the check)."
+  (let ((present (member :page-description type-def))
+        (desc (getf type-def :page-description))
+        (open-key (getf type-def :page-description-open)))
+    (when present
+      (when (getf type-def :user-setting)
+        (report-e "valid-page-description"
+          ":page-description on :user-setting type ~s never ~
+           renders (settings types auto-open their single-record ~
+           form); declare it on a list-bearing type instead."
+          ~type-key))
+      (when (and (member :display type-def)
+              (not (getf type-def :display)))
+        (report-e "valid-page-description"
+          ":page-description on type ~s with :display nil ~
+           never reaches the wire (be-types collects display ~
+           types only); drop :display nil or the description."
+          ~type-key))
+      ;; omitted :display on a base type is the same invisible
+      ;; state (no overlay injects a default on the base path;
+      ;; the compiled def has no :display key, and be-types drops
+      ;; it); a rollup alone defaults :display t
+      (unless (or (getf type-def :display)
+              (and (getf type-def :rollup)
+                (not (member :display type-def))))
+        (report-e "valid-page-description"
+          ":page-description on base type ~s without :display t ~
+           never reaches the wire (be-types collects display ~
+           types only); declare :display t or drop the ~
+           description."
+          ~type-key))
+      (when (getf type-def :internal)
+        (report-e "valid-page-description"
+          ":page-description on internal type ~s never reaches ~
+           the wire (be-types collects non-internal types only); ~
+           drop :internal t or the description."
+          ~type-key))
+      (unless (stringp desc)
+        (report-e "valid-page-description"
+          ":page-description on type ~s must be a string, got ~s."
+          ~type-key ~desc))
+      (unless (> (length (string-trim
+                           '(#\space #\tab #\newline #\return) desc))
+                 0)
+        (report-e "valid-page-description"
+          ":page-description on type ~s must not be blank."
+          ~type-key)))
+    (when (member :page-description-open type-def)
+      (unless present
+        (report-e "valid-page-description"
+          ":page-description-open on type ~s requires ~
+           :page-description."
+          ~type-key))
+      (unless (or (eq open-key t) (null open-key))
+        (report-e "valid-page-description"
+          ":page-description-open on type ~s must be t or nil, ~
+           got ~s."
+          ~type-key ~open-key)))))
+
 (defun expand-compose-hooks (type-key type-def)
   "Scan TYPE-DEF's fields for :compose and synthesize :compose-string lifecycle
 hook forms. Returns a plist of :pre-create / :pre-update hook lists to append
@@ -4228,6 +4360,7 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
           (raw-fields (rollup-normalize-fields type-key
                         (getf type-def :fields))))
     (valid-rollup-matrix model type-key type-def grain views)
+    (valid-page-description type-key type-def)
     (valid-rollup-fields type-key raw-fields view-tables)
     (valid-rollup-single-fact model type-key grain raw-fields
       view-tables)
@@ -4269,6 +4402,12 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
 
 (defun compile-base-type-def (model type-key)
   (valid-non-rollup-keys model type-key)
+  ;; valid-page-description runs on the raw author def (type-def
+  ;; binds to it on the next line); it fails before any field
+  ;; compilation runs. Never final-def — the base overlay never
+  ;; injects :display, but the raw def is the contract on both
+  ;; compile paths.
+  (valid-page-description type-key (getf model type-key))
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
           (is-joiner (getf type-def :is-joiner))
@@ -4554,12 +4693,39 @@ mutate *base-model*."
 (defun stage-3 (model)
   (loop
     for type-key in model by #'cddr
-    for type-def in (cdr model) by #'cddr
+    for type-def = (getf model type-key)
     for fields = (compile-fields-stage-2 model type-key)
-    for new-def = (add-to-plist type-def
-                    (list
-                      :fields fields
-                      :searchable-fields (collect-searchable-fields fields)))
+    ;; Re-emit declared :page-description keys after the last
+    ;; merge. add-to-plist overlays compute each key as (or new
+    ;; old), so a nil rider cannot be pinned through it — an
+    ;; overlay pair :page-description-open nil is indistinguishable
+    ;; from an absent overlay key. Survival through the pipeline is
+    ;; a guarantee now, not an accident of nobody naming the key.
+    ;; The values are captured BEFORE the remf (type-def here is
+    ;; the stage-2 entry; remf mutates it in place, and a member
+    ;; test after it would see nothing). The remf is hygiene: no
+    ;; stale or duplicate copy can survive ahead of the re-emitted
+    ;; one if a future overlay ever computes a value.
+    for new-def = (let ((pd (getf type-def :page-description))
+                    (pd-present
+                      (if (member :page-description type-def) t nil))
+                    (pdo
+                      (getf type-def :page-description-open))
+                    (pdo-present
+                      (if (member :page-description-open type-def)
+                        t nil)))
+                    (remf type-def :page-description)
+                    (remf type-def :page-description-open)
+                    (when pd-present
+                      (setf (getf type-def :page-description) pd))
+                    (when pdo-present
+                      (setf (getf type-def :page-description-open)
+                        pdo))
+                    (add-to-plist type-def
+                      (list
+                        :fields fields
+                        :searchable-fields
+                        (collect-searchable-fields fields))))
     appending (list type-key new-def)))
 
 (defun validate-model (model)
