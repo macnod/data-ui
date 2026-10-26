@@ -40,7 +40,7 @@ Log in as `alice` (same password) and the self-help shelf appears.
 
 A different story: not hidden data, but durable history. This is the `:spawn` pattern pilot. Each chore row is an open instance; a Complete button closes it and inserts a fresh successor in one click.
 
-1. In the `chores` tab, find an open chore (Done unchecked) and click its Edit icon (pencil).
+1. In the `chores` tab, find an open chore (Done unchecked) and click the row to open it, then click Edit.
 2. Click **Complete** on the edit form. The row closes with Done checked, Completed At stamped, Completed By set to you.
 3. Back in the list, a fresh open instance of the same chore has appeared: same name, points, and tags; notes cleared. The definition persists, the instance restarts. Nothing was coded per chore; the model's `:spawn` action does it all.
 4. Open the `scoreboard` tab. The rollup sums points and counts completed chores per user; the column headers are sortable. Your completion just moved your row.

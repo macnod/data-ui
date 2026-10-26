@@ -11,6 +11,7 @@ import { parseHash, canonicalize, buildUrlState,
          urlStatesEqual, writeUrl } from './urlState'
 import { Markdown } from './Markdown'
 import { PageDescription } from './PageDescription'
+import { FieldHelp } from './FieldHelp'
 
 // Apply CSS-relevant settings values to the document.
 // Currently only dark-mode (boolean → toggle .dark class on body).
@@ -59,6 +60,9 @@ interface Field {
   precision?: number
   'read-only'?: boolean
   'hide-label'?: boolean
+  // :help wire value (fe-fields passes :ui through verbatim):
+  // markdown string; absent / empty / non-string render nothing.
+  help?: string
   sortable?: boolean
   searchable?: boolean
   // :not-null wire value (fe-fields): JSON boolean via the
@@ -69,9 +73,17 @@ interface Field {
   // type whose rows fill the folder select. Keyword → downcased
   // string (plist-to-json), e.g. "directories".
   'directory-type'?: string
-  // :filter-with wire value: "boolean" (bare sugar) or the
-  // kind/default plist form {"kind":"boolean","default":true}.
+  // :filter-with wire value: "boolean" or "reference" (bare sugar)
+  // or the kind/default plist form {"kind":"boolean","default":true}
+  // (the reference kind has no default). The reference picker emits
+  // one target-keyed :in row per field — [target-type, target
+  // identity column, "in", values] — union within the field.
   'filter-with'?: string | { kind?: string, 'default'?: boolean }
+  // :column wire value (fe-fields, :target fields only): the target
+  // type's identity display column, the second element of the
+  // reference chip picker's :in row. Never a bare nil (plist-to-json
+  // would emit []).
+  column?: string
   // :enabled-when wire value (button-only, dual-consumed): AND-
   // composed [field, op, literal] rows. Keywords serialize as
   // downcased strings (plist-to-json), so ops arrive as "ne" etc.
@@ -134,29 +146,65 @@ const evalEnabledWhen = (
 }
 
 // Normalize the :filter-with wire value to its kind, or null when
-// the field does not carry one. Boolean-only by design; unknown
-// kinds collapse to null (no toolbar). A future kind must extend
-// this helper, not rely on the null fallthrough.
+// the field does not carry one. Boolean and reference by design;
+// unknown kinds collapse to null (no toolbar). A future kind must
+// extend this helper, not rely on the null fallthrough.
 const filterWithKind = (
   f: Field['filter-with']
 ): string | null =>
-  f === 'boolean'
-    ? 'boolean'
-    : typeof f === 'object' && f !== null && f.kind === 'boolean'
-      ? 'boolean'
+  f === 'boolean' || f === 'reference'
+    ? f
+    : typeof f === 'object' && f !== null
+      && (f.kind === 'boolean' || f.kind === 'reference')
+      ? f.kind
       : null
 
 // Authored initial state for a boolean filter select: 'yes' /
 // 'no' from the plist default, null when absent (Any) or the
-// bare sugar form.
+// bare sugar form. Kind-guarded so a future kind whose plist
+// carried a default never seeds a boolean select.
 const filterWithDefault = (
   f: Field['filter-with']
 ): 'yes' | 'no' | null =>
-  typeof f === 'object' && f !== null
-    ? f['default'] === true ? 'yes'
-      : f['default'] === false ? 'no'
+  filterWithKind(f) !== 'boolean'
+    ? null
+    : typeof f === 'object' && f !== null
+      ? f['default'] === true ? 'yes'
+        : f['default'] === false ? 'no'
+        : null
       : null
-    : null
+
+// Chip-eligible field metadata for both picker families: M2M
+// (checkbox-list whose source table differs from the listed type)
+// and reference (:filter-with :reference on a field whose table is
+// the :target and carries the wire :column). One membership rule,
+// two call sites — the render-site memo and fetchList's in-fetch
+// rebuild — so the pickers shown and the rows emitted can never
+// diverge. Discovery walks the whole form key set, the boolean
+// precedent (listFields is the rendered column set and can diverge
+// from the form the query covers).
+const buildChipFieldMeta = (
+  form: Record<string, Field>, type: string
+): Record<string, { table: string,
+                    column?: string,
+                    label: string, m2m: boolean }> => {
+  const meta: Record<string, { table: string,
+                               column?: string,
+                               label: string, m2m: boolean }> = {}
+  for (const f of Object.keys(form)) {
+    const fld = form[f]
+    if (fld['widget'] === 'checkbox-list'
+        && fld.table && fld.table !== type) {
+      meta[f] = { table: fld.table, label: fld.label, m2m: true }
+    } else if (filterWithKind(fld['filter-with']) === 'reference'
+               && fld.table && fld.table !== type
+               && fld.column) {
+      meta[f] = { table: fld.table, column: fld.column,
+                  label: fld.label, m2m: false }
+    }
+  }
+  return meta
+}
 
 // Authored initial state for every boolean filter field on a
 // list form (fieldKey -> 'yes' | 'no'; fields with no default
@@ -179,9 +227,12 @@ interface ListResponse {
     'type-key': string
     'list-form': Record<string, Field>
     // Rollups emit only list-form (the compiler forbids add/update
-    // forms on :rollup types), so both are optional on the wire.
+    // view forms on :rollup types), so all three are optional on
+    // the wire. view-form presence is the declaration bit: absent
+    // means the type has no view surface (no fallback).
     'add-form'?: Record<string, Field>
     'update-form'?: Record<string, Field>
+    'view-form'?: Record<string, Field>
     records: any[]
     total?: number
     // Plan 09: echoed user-facing effective sort. Null when the
@@ -194,6 +245,15 @@ interface ListResponse {
     delete?: boolean
     update?: boolean
   }
+}
+
+// Per-record capability flags on every /api/list record and the
+// /api/item record (row-level — the same gate the write
+// endpoints enforce). Strict === true everywhere: plist-to-json
+// emits [] for a bare nil, which must not count as permitted.
+interface RecordCaps {
+  update?: boolean
+  delete?: boolean
 }
 
 interface TypeInfo {
@@ -218,6 +278,13 @@ type ViewMode = 'app' | 'admin' | 'settings'
 // sends limit=, so the server default is unused, but the numbers
 // stay aligned.
 const PAGE_SIZE = 20
+
+// Interactive descendants disarm the row click (and the row's
+// Enter handler): native controls by tag, div-based ones (the
+// lightbox thumbnails' data-no-row-click marker) by attribute.
+const INTERACTIVE_SELECTOR =
+  'a, button, input, select, textarea, ' +
+  'label, [data-no-row-click]'
 
 // Format a number according to the field's :precision UI hint.
 // Returns the original value untouched if it's not a number or
@@ -408,12 +475,22 @@ const WIDGET_VOCABULARY = new Set([
 function FieldRow({
   field, children
 }: { field: Field; children: React.ReactNode }) {
+  // :help renders its "?" toggle beside the label only when the
+  // label is shown (help + :hide-label t is a compile error, and
+  // the === true guard is the defensive ignore for a stale wire).
+  // Absent / empty / non-string help renders nothing.
+  const help = typeof field.help === 'string' && field.help.length > 0
+    ? field.help : null
   return (
     <div className="field-row">
       <div className="field-label">
         {field['hide-label'] === true
           ? null
-          : <label>{field.label}</label>}
+          : <>
+              <label>{field.label}</label>
+              {help && field.label
+                ? <FieldHelp text={help} label={field.label} /> : null}
+            </>}
       </div>
       <div className="field-value">{children}</div>
     </div>
@@ -689,6 +766,7 @@ function ThumbnailGrid({
           return (
             <div
               key={p}
+              data-no-row-click=""
               onClick={() => setModalIndex(i)}
               style={{
                 cursor: 'pointer',
@@ -1088,12 +1166,13 @@ function App() {
   // Delete / action buttons) — for users who can read a type
   // but not update it, and for editors who just want to look.
   const isViewMode = !!editRecord && formViewing
-  // The form an open record form reads from. Rollup types emit
-  // no update-form, so a view-mode form (and its /api/item
-  // fetch) falls back to list-form, whose field meta carries
-  // widget / table / precision for read-only rendering.
-  const viewFormName =
-    data?.result?.['update-form'] ? 'update-form' : 'list-form'
+  // The form an open record form reads from. Absent view-form
+  // means no view surface (no fallback), so view mode exists
+  // only when the payload declares it. hasViewForm gates the
+  // only two entry points (the row click, the settings
+  // auto-open).
+  const hasViewForm = !!data?.result?.['view-form']
+  const viewFormName = 'view-form'
   const openFormName = isViewMode ? viewFormName : 'update-form'
 
   // Total comes from the last successful fetch envelope; do not
@@ -1119,18 +1198,54 @@ function App() {
     if (debouncedSearch) {
       url += `&search=${encodeURIComponent(debouncedSearch)}`
     }
-    // Chip filters: one [type, fieldKey, "has-all", values] row per
-    // chip-eligible field with a non-empty selection. has-all is the
-    // field-scoped shape — first element is the listed type, second
-    // the M2M field key — so additive chip clicks only ever narrow
-    // (AND within a field). has-any stays available to direct API
-    // consumers via "in".
+    // Chip filters, two families sharing the listFilters values
+    // slot: M2M chips emit one [type, fieldKey, "has-all", values]
+    // row per chip-eligible field — intersection within the field
+    // (additive chip clicks narrow), field-scoped shape, first
+    // element the listed type. Reference chips emit one
+    // target-keyed [table, column, "in", values] row — first
+    // element the field's :target type key, second the target's
+    // identity display column (the wire :column), union within the
+    // field (a single-value FK has no intersection reading); two
+    // reference fields sharing one target collapse to the same row
+    // (their selections union, they do not AND — v1 limitation).
+    // Across fields the rows AND-compose. Both families' rows are
+    // form-dependent (meta comes from the arrived form), hence the
+    // chipMeta guard: an empty map when formReady is false — no
+    // rows against a departed type's form; the armed one-shot
+    // refetch rebuilds them.
     {
-      const rows = Object.entries(listFilters)
-        .filter(([, values]) => values.length > 0)
-        .map(([fieldKey, values]) => [
-          type, fieldKey, 'has-all', values
-        ])
+      const rows: (string | string[])[][] = []
+      // Raw non-emptiness — NOT a picker-arm narrowing: the arming
+      // path runs only when formReady is false, and chipMeta is {}
+      // exactly then (a narrowing is empty precisely where it is
+      // consulted — dead code that silently drops the filter).
+      // listFilters keys always belong to the requested type at
+      // fetch time (resetListQuery clears on type change; both URL
+      // seeds assign together with setType); keys naming no picker
+      // are skipped by the (!meta) continue below and cost one
+      // harmless refetch.
+      const formReady = data?.result?.['type-key'] === type
+      const chipMeta = formReady
+        ? buildChipFieldMeta(
+            data?.result?.['list-form'] || {}, type)
+        : {}
+      for (const [fieldKey, values] of Object.entries(listFilters)) {
+        if (values.length === 0) continue
+        const meta = chipMeta[fieldKey]
+        if (!meta) continue
+        if (meta.m2m) {
+          // M2M: unchanged emission, intersection within the
+          // field (the todo-list chip-narrowing behavior).
+          rows.push([type, fieldKey, 'has-all', values])
+        } else {
+          // Reference: target-keyed, the backend's existing
+          // join-filter pushdown row — first element the field's
+          // :target type key, second the target's identity display
+          // column (the wire :column).
+          rows.push([meta.table, meta.column!, 'in', values])
+        }
+      }
       // Phase 1: hide the per-user exclusive roles (name suffix
       // :exclusive, trigger-enforced — same signal the backend's
       // exclusive-role-p reads). Case-sensitive not-like is exact
@@ -1153,15 +1268,16 @@ function App() {
       // these rows only when data belongs to the requested type;
       // otherwise arm the one-shot refetch (Step 2.5's arrival
       // effect) that refires once the form arrives.
-      const formReady = data?.result?.['type-key'] === type
       const wantsFormRows =
         !!debouncedNotTerm || Object.keys(boolFilters).length > 0
+        || Object.values(listFilters)
+             .some(v => v.length > 0)
       if (!formReady && wantsFormRows) {
         pendingFormRefetchRef.current = type
       }
+      const form = formReady
+        ? data?.result?.['list-form'] || {} : {}
       if (debouncedNotTerm) {
-        const form = formReady
-          ? data?.result?.['list-form'] || {} : {}
         for (const [fieldKey, f] of Object.entries(form)) {
           if (f.searchable === true) {
             rows.push([type, fieldKey, 'not-ilike',
@@ -1176,8 +1292,6 @@ function App() {
       // value-type-p accepts. Any sends no row. Same
       // form-dependent guard as the not-ilike loop above.
       {
-        const form = formReady
-          ? data?.result?.['list-form'] || {} : {}
         for (const [fieldKey, f] of Object.entries(form)) {
           if (filterWithKind(f['filter-with']) !== 'boolean') continue
           const choice = boolFilters[fieldKey]
@@ -1366,9 +1480,10 @@ function App() {
     // Fetch the full record from /api/item so that fields absent
     // from the form we already hold (e.g. deploy-status,
     // my-rating) are populated correctly in the open form.
-    // Edit mode reads update-form; view mode uses it too, except
-    // on rollup types (no update-form) where it falls back to
-    // list-form.
+    // Edit mode reads update-form; view mode reads view-form,
+    // which only exists when the model declares it (no
+    // fallback) — callers gate entry on hasViewForm / the
+    // update flag, so the name resolves here.
     const formName = viewing ? viewFormName : 'update-form'
     let fullRecord = record
     try {
@@ -1451,6 +1566,38 @@ function App() {
     setShowAddForm(false)
     setFormValues({})
     setPasswordConfirm({})
+  }
+
+  // Row click opens the read-only View form (guarded on
+  // hasViewForm — no view form, no surface). A text-selection
+  // drag fires click on mouseup — bail so selecting text never
+  // opens (checked first; a collapsed selection stringifies to
+  // ''). Interactive descendants disarm themselves through
+  // INTERACTIVE_SELECTOR.
+  const handleRowClick = (
+    e: React.MouseEvent<HTMLTableRowElement>, rec: any
+  ) => {
+    if (window.getSelection()?.toString()) return
+    const t = e.target as HTMLElement | null
+    if (t?.closest(INTERACTIVE_SELECTOR)) return
+    openEditForm(rec, true)
+  }
+
+  // Enter activates the focused row (Space keeps scrolling the
+  // page). Same disarm guard as the click path: keydown bubbles
+  // like click, so a focused child (checkbox, markdown link)
+  // handling its own Enter must not also open the row behind
+  // its own action. e.target is the focused element; the <tr>
+  // itself is not in the selector, so Enter on the row is
+  // unaffected. No selection guard here: Enter is never the
+  // tail of a drag.
+  const handleRowKeyDown = (
+    e: React.KeyboardEvent<HTMLTableRowElement>, rec: any
+  ) => {
+    if (e.key !== 'Enter') return
+    const t = e.target as HTMLElement | null
+    if (t?.closest(INTERACTIVE_SELECTOR)) return
+    openEditForm(rec, true)
   }
 
   // Return to the landing page (used by settings Submit/Cancel).
@@ -2109,7 +2256,7 @@ function App() {
       const s = parseHash()
       // Not ours: an out-of-app entry — the pre-login '#', a
       // bare load, an anchor someone else owns (including the
-      // title / View / Edit <a href="#"> links on a missed
+      // title <a href="#"> link on a missed
       // preventDefault — a modifier or middle click, a future
       // edit that drops the handler). IGNORE, deliberately:
       // state is never reset on history nav. Back from
@@ -2348,10 +2495,20 @@ function App() {
     const info = types.find(t => t.name === type)
     if (!info?.userSetting) return
     if (data.result.records.length > 1) return
-    openEditForm(
-      data.result.records[0],
-      data.result.update !== true
-    )
+    // Three-way auto-open: update-capable → edit; else the view
+    // form when the payload declares one; else don't open (the
+    // row shows in the list — an Update button that can only
+    // fail is worse than none, and view mode without a declared
+    // view form has no payload form to render). The edit-vs-view
+    // test reads the list record's own per-row flag (base-type
+    // degeneration makes it equal to the envelope flag here;
+    // the row flag is the honest source the View form's Edit
+    // button also gates on).
+    if (data.result.records[0]?.update === true) {
+      openEditForm(data.result.records[0])
+    } else if (data.result['view-form']) {
+      openEditForm(data.result.records[0], true)
+    }
   }, [data, viewMode, type, types])
 
   if (!loggedIn) {
@@ -2529,24 +2686,37 @@ function App() {
   const addFields: string[] =
     data.result['add-form'] ? Object.keys(data.result['add-form']) : []
   const records = data.result.records
+  // Page-level ✕ gate: any visible row deletable under its own
+  // per-record flag (a creator-delete user holds no type-level
+  // delete, so the envelope flag would hide the column over
+  // deletable rows). Hoisted once — the th and every td read
+  // the same const, so header and cells cannot drift on
+  // column count. A page of all-non-deletable rows shows no ✕
+  // column while a later page might: the accepted lie — the
+  // alternative is a type-level OR that reintroduces the lie
+  // the per-row gate exists to remove. "Delete Selected"
+  // stays on the envelope flag on purpose (type-level
+  // question).
+  const anyDeletable =
+    records.some((r: any) => r.delete === true)
   // Description block lookup; both list-mode render sites (main
   // return + the "No records" early-return shell) consume it.
   const typeInfo = types.find(t => t.name === type)
 
-  // Chip eligibility: checkbox-list fields whose source table differs
-  // from the listed type. fe-fields always sets `table` (falls back
-  // to the type key); only real join fields qualify (e.g. users.roles,
-  // table "roles" ≠ "users"). The synthetic Roles column no longer
-  // reaches the list form (add/update forms only), so nothing
-  // synthetic appears here.
-  const chipFieldMeta: Record<string, { table: string, label: string }> = {}
-  for (const f of listFields) {
-    const fld = data.result['list-form'][f]
-    if (fld['widget'] === 'checkbox-list'
-        && fld.table && fld.table !== type) {
-      chipFieldMeta[f] = { table: fld.table, label: fld.label }
-    }
-  }
+  // Chip eligibility, both families, via buildChipFieldMeta (the
+  // same function fetchList calls — one membership rule): M2M
+  // (checkbox-list whose source table differs from the listed
+  // type; e.g. users.roles, table "roles" ≠ "users") and
+  // reference (:filter-with :reference, table is the :target,
+  // column is the target's identity display column). The m2m bit
+  // also gates cell click-to-filter — a reference cell can arrive
+  // as the [] nil encoding of a NULL FK and must not render as
+  // chips. Plain call, not useMemo: this site sits after the
+  // "No records" early return, and a conditional hook would
+  // change the hook count between renders (React #310). The walk
+  // is a cheap object scan over the form — memo bought nothing.
+  const chipFieldMeta = buildChipFieldMeta(
+    data.result['list-form'] || {}, type)
   const hasChipFields = Object.keys(chipFieldMeta).length > 0
   const hasSearchable =
     Object.values(data.result['list-form'])
@@ -2801,14 +2971,17 @@ function App() {
               </select>
             </label>
           ))}
-          {/* Searchable chip pickers: one per chip-eligible
-              field, in listFields order. Lets the user name a
-              chip value that is not on the current page; the
+          {/* Searchable chip pickers, both families: one per
+              chip-eligible field, in form order. Lets the user
+              name a chip value that is not on the current page; the
               palette is the same allowed-values the edit-form
-              CheckboxList uses. Button hidden on an empty
-              palette (nothing to pick — decision 4 does not
+              CheckboxList / SearchSelect uses. Button hidden on an
+              empty palette (nothing to pick — decision 4 does not
               rescue it; allowed-values rides the /api/list
-              response and is stable across pages). */}
+              response and is stable across pages). A URL-carried
+              selection against an empty palette still filters —
+              the active-chip row below never consults the
+              palette. */}
           {Object.keys(chipFieldMeta).map(f => {
             const opts =
               data.result['allowed-values']?.[f] || []
@@ -2863,7 +3036,29 @@ function App() {
       )}
 
       {(showAddForm || isEditMode) && (
-        <form style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
+        <form
+          className={(() => {
+            // Label gutter: render it iff at least one field on
+            // the OPEN form draws a label in this mode. Skipped
+            // widgets (view mode skips password / file / button /
+            // hidden; edit mode skips hidden) never keep the
+            // gutter alive, and :hide-label t never does either —
+            // :settings' (:fields t) view form is the live case
+            // (its only labeled fields are password/button
+            // widgets that never draw there). Computed once from
+            // the open form's field set, never per row.
+            const skippedInMode = isViewMode
+              ? new Set(['password-new', 'password-read',
+                         'file', 'button', 'hidden'])
+              : new Set(['hidden'])
+            const formMeta = data.result[openFormName] || {}
+            const anyLabelShown = Object.keys(formMeta).some(f =>
+              formMeta[f]['hide-label'] !== true
+              && !skippedInMode.has(formMeta[f]['widget']))
+            return anyLabelShown ? '' : 'form-no-labels'
+          })()}
+          style={{ marginTop: '1rem', marginLeft: '1.5rem' }}
+        >
           <h3>{isViewMode ? 'View' : isEditMode ? 'Edit' : 'Add'} {data.result['type-key']}</h3>
 
           <div style={{ marginBottom: '1rem' }}>
@@ -2872,9 +3067,17 @@ function App() {
                 {isEditMode ? 'Update' : 'Submit'}
               </button>
             )}
+            {isViewMode && editRecord?.update === true && (
+              <button
+                type="button"
+                onClick={() => openEditForm(editRecord)}
+              >
+                Edit
+              </button>
+            )}
             <button
               type="button" onClick={handleCancel}
-              style={{ marginLeft: isViewMode ? '0' : '0.5rem' }}
+              style={{ marginLeft: '0.5rem' }}
             >
               {isViewMode ? 'Close' : 'Cancel'}
             </button>
@@ -3270,14 +3473,9 @@ function App() {
       <table>
         <thead>
           <tr>
-            {data.result.delete && (
+            {anyDeletable && (
               <th style={{ width: '40px', textAlign: 'center', color: 'var(--error-bright)' }}>✕</th>
             )}
-            {/* Actions: view for anyone who can read the type,
-                edit beside it when the list flags update. Icon-only
-                links carry title/aria-label (house style: header
-                buttons, delete column, pagination). */}
-            <th style={{ width: '60px' }}></th>
             {listFields.map(f => {
               const field = data.result['list-form'][f]
               if (field.sortable === true) {
@@ -3328,39 +3526,30 @@ function App() {
         </thead>
         <tbody>
           {records.map((rec, idx) => (
-            <tr key={idx}>
-              {data.result.delete && (
+            <tr
+              key={idx}
+              className={hasViewForm
+                ? 'row-clickable' : undefined}
+              tabIndex={hasViewForm ? 0 : undefined}
+              role={hasViewForm ? 'button' : undefined}
+              aria-label={hasViewForm
+                ? `Open ${type} record ${rec.id}` : undefined}
+              onClick={hasViewForm
+                ? e => handleRowClick(e, rec) : undefined}
+              onKeyDown={hasViewForm
+                ? e => handleRowKeyDown(e, rec) : undefined}
+            >
+              {anyDeletable && (
                 <td style={{ textAlign: 'center' }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(rec.id)}
-                    onChange={() => toggleSelect(rec.id)}
-                  />
+                  {(rec as RecordCaps).delete === true && (
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(rec.id)}
+                      onChange={() => toggleSelect(rec.id)}
+                    />
+                  )}
                 </td>
               )}
-              <td>
-                <a
-                  href="#" title="View" aria-label="View"
-                  style={{ textDecoration: 'none' }}
-                  onClick={e => {
-                    e.preventDefault()
-                    openEditForm(rec, true)
-                  }}
-                >👁</a>
-                {data.result.update && (
-                  <>
-                    {' '}
-                    <a
-                      href="#" title="Edit" aria-label="Edit"
-                      style={{ textDecoration: 'none' }}
-                      onClick={e => {
-                        e.preventDefault()
-                        openEditForm(rec)
-                      }}
-                    >✏️</a>
-                  </>
-                )}
-              </td>
               {listFields.map(f => {
                 const field = data.result['list-form'][f]
                 // Global one-line rule: text cells clamp to one
@@ -3370,7 +3559,8 @@ function App() {
                 const widget = field['widget'] || ''
                 const isMedia =
                   widget === 'image' || widget === 'image-list'
-                const isChipCell = f in chipFieldMeta
+                const isChipCell =
+                  f in chipFieldMeta && chipFieldMeta[f].m2m
                 const clamp = !(isMedia || isChipCell)
                 const cellStyle: React.CSSProperties | undefined =
                   clamp ? {

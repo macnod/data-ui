@@ -39,7 +39,8 @@
            :column t :not-null t))
        :list-form (:fields (:name :first-name :middle-name :last-name))
        :add-form (:fields (:first-name :middle-name :last-name))
-       :update-form (:fields (:name :first-name :middle-name :last-name)))
+       :update-form (:fields (:name :first-name :middle-name :last-name))
+       :view-form (:fields (:name :first-name :middle-name :last-name)))
 
      :books
      (:table t
@@ -64,6 +65,7 @@
            :join-table :book-authors))
        :list-form (:fields (:title :authors))
        :update-form (:fields (:title :authors))
+       :view-form (:fields (:title :authors))
        :add-form (:fields (:title :authors)))
 
      :book-authors

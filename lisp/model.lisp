@@ -1551,7 +1551,7 @@ from a:login on \"\"."
 ;; END Register hook :change-password
 ;;
 
-(defparameter *forms* '(:list-form :add-form :update-form))
+(defparameter *forms* '(:list-form :add-form :update-form :view-form))
 
 (defparameter *widgets*
   '(:textbox :textarea :code :markdown :stars :checkbox :checkbox-list :select
@@ -1560,12 +1560,12 @@ from a:login on \"\"."
   "Allowed values for the :widget key on a field :ui plist.")
 
 (defparameter *ui-keys*
-  '(:label :widget :read-only :hide-label :precision :options :table
+  '(:label :widget :read-only :hide-label :help :precision :options :table
      :filter-with :enabled-when :directory-type)
   "Closed set of legal keys on a field :ui plist. An author key not in
 this list is a compile error.")
 
-(defparameter *filter-with-kinds* '(:boolean)
+(defparameter *filter-with-kinds* '(:boolean :reference)
   "Closed set of :filter-with kinds. Per-kind tail keys and values are
 validated in valid-filter-with-value; adding a kind means adding a
 keyword here, a tail validator there, and a frontend renderer.")
@@ -1616,10 +1616,9 @@ keyword here, a tail validator there, and a frontend renderer.")
                           :join-table :role-users))
        :list-form (:fields (:name :created-at :updated-at :email :roles))
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
-     ;; TODO: Mark as internal. User should not be able to interact with this table
-     ;; via the UI or the backend functions.
      :resources
      (:table t :base t :built-in t :internal t
        :create nil :update nil :delete nil :display nil
@@ -1636,10 +1635,7 @@ keyword here, a tail validator there, and a frontend renderer.")
                           :source-all (:view :roles :table :roles :column :name :agg :list)
                           :validations (:required)
                           :ids-table :roles
-                          :join-table :resource-roles))
-       :list-form (:fields t)
-       :update-form (:fields t)
-       :add-form (:fields t))
+                          :join-table :resource-roles)))
 
      ;; TODO: Currently, a default list such as ("create" "read" ...) doesn't work
      ;; because of some kind of validation issue. Fix.
@@ -1656,6 +1652,7 @@ keyword here, a tail validator there, and a frontend renderer.")
                         :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :roles
@@ -1684,6 +1681,7 @@ keyword here, a tail validator there, and a frontend renderer.")
                                 :join-table :role-permissions))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :role-permissions
@@ -1742,6 +1740,7 @@ keyword here, a tail validator there, and a frontend renderer.")
                                    :action (:change-password)))
        :list-form (:fields (:user :dark-mode :display-name :bio))
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields (:user :dark-mode :display-name :bio)))
 
      :secrets
@@ -1776,6 +1775,7 @@ keyword here, a tail validator there, and a frontend renderer.")
                                 :column t))
        :list-form (:fields (:user :name :description))
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :tokens
@@ -2520,6 +2520,24 @@ otherwise."
         ":hide-label must be t or nil, got ~s."
         ~hl))))
 
+(defun valid-help-value (ui)
+  "Check that :help, if present, is a non-blank string (blank renders an
+empty panel). Signals via report-ve otherwise. The :missing sentinel is
+load-bearing: getf cannot tell absent from present-nil, and present-nil
+must fail as a non-string."
+  (let ((help (getf ui :help :missing)))
+    (unless (eq help :missing)
+      (unless (stringp help)
+        (report-ve "valid-help-value"
+          ":help must be a string, got ~s."
+          ~help))
+      (unless (> (length (string-trim
+                           '(#\space #\tab #\newline #\return) help))
+                 0)
+        (report-ve "valid-help-value"
+          ":help must not be blank."
+          ~help)))))
+
 (defun valid-options-value (ui)
   "Check :options on :ui: non-empty list of non-empty strings; only legal with
 :widget :select."
@@ -2599,12 +2617,14 @@ there instead of dying inside getf / plist-keys."
     (t :invalid)))
 
 (defun valid-filter-with-value (ui)
-  "Check :filter-with, if present. Two author shapes: the bare keyword
-:filter-with :boolean (sugar, no default) and the plist
-(:kind :boolean [:default :true | :false]). The tail key set is closed
-(:kind, :default); :kind must be in *filter-with-kinds*; :default is
-optional and accepts only :true / :false — Any is the omitted default
-and is not spellable. Signals via report-ve otherwise."
+  "Check :filter-with, if present. Two author shapes per kind: the
+bare keyword :filter-with :boolean / :filter-with :reference (sugar,
+no default) and the plist (:kind <kind> [tail]) — the tail is
+per-kind (:boolean: optional :default :true / :false, where Any is
+the omitted default and is not spellable; :reference: empty — a
+reference filter starts unfiltered, every tail key is rejected).
+The tail key set is closed (:kind, :default); :kind must be in
+*filter-with-kinds*. Signals via report-ve otherwise."
   (let ((fw (getf ui :filter-with :missing)))
     (unless (eq fw :missing)
       (cond
@@ -2615,8 +2635,8 @@ and is not spellable. Signals via report-ve otherwise."
               ~fw ~*filter-with-kinds*)))
         ((not (u:plistp fw))
           (report-ve "valid-filter-with-value"
-            ":filter-with must be :boolean or a plist like ~
-             (:kind :boolean :default :true), got ~s."
+            ":filter-with must be :boolean, :reference, or a plist ~
+             like (:kind :boolean :default :true), got ~s."
             ~fw))
         (t
           (let ((kind (getf fw :kind))
@@ -2634,13 +2654,25 @@ and is not spellable. Signals via report-ve otherwise."
                 (report-ve "valid-filter-with-value"
                   "Unknown :filter-with key ~s. Legal keys: ~{~a~^, ~}."
                   ~key ~legal)))
-            (unless (eq default :missing)
-              (unless (member default '(:true :false))
-                (report-ve "valid-filter-with-value"
-                  ":filter-with :default must be :true or :false ~
-                   (Any is the omitted default and not spellable); ~
-                   got ~s."
-                  ~default)))))))))
+            (case kind
+              (:boolean
+                (unless (eq default :missing)
+                  (unless (member default '(:true :false))
+                    (report-ve "valid-filter-with-value"
+                      ":filter-with :default must be :true or :false ~
+                       (Any is the omitted default and not spellable); ~
+                       got ~s."
+                      ~default))))
+              (:reference
+                ;; No tail key at all — not just :default; a future
+                ;; kind's new legal tail must not silently open one
+                ;; on :reference.
+                (dolist (key (u:plist-keys fw))
+                  (unless (eq key :kind)
+                    (report-ve "valid-filter-with-value"
+                      ":filter-with :reference takes no tail key (~s); ~
+                       a reference filter starts unfiltered. Got ~s."
+                      ~key ~fw)))))))))))
 
 (defparameter *enabled-when-operators*
   '(:eq :ne :gt :lt :gte :lte :in :not-in)
@@ -2727,7 +2759,8 @@ Rejects:
   - Dead keys (:render-as, :input-type, :form-control)
   - Unknown widget values
   - :read-only with non-boolean values
-  - :read-only nil on :image / :image-list (post-MVP)"
+  - :read-only nil on :image / :image-list (post-MVP)
+  - :help that is not a string, is blank, or rides :hide-label t"
   ;; Reject dead keys before anything else
   (valid-ui-keys ui)
   ;; Validate :read-only value if present
@@ -2747,6 +2780,23 @@ Rejects:
   ;; explicit :widget still reports the author's rows, and from the
   ;; :ui plist itself (fe-fields passes :ui through verbatim).
   (valid-enabled-when-value field-key ui)
+  ;; :help value check (author :ui, before any defaulting). A
+  ;; present-nil never reaches the combination check below — this
+  ;; value check runs first and reports "must be a string".
+  (valid-help-value ui)
+  ;; :help anchors to the label; :hide-label t leaves the help icon
+  ;; nothing to anchor to. Strict eq t (:hide-label is never
+  ;; defaulted; an explicit nil plus :help is legal). Runs after
+  ;; valid-help-value so :help nil + :hide-label t reports the value
+  ;; error, not the anchor error. Both keys live on this same :ui
+  ;; plist; a later reader must not be able to mask the clash by
+  ;; defaulting :hide-label.
+  (when (and (getf ui :help) (eq (getf ui :hide-label) t))
+    (report-e "finalize-ui"
+      ":help on field ~s requires a visible label; ~
+       :hide-label t leaves the help icon nothing to anchor to. ~
+       Drop one."
+      ~field-key))
   ;; Validate widget if explicitly present
   (let ((widget (getf ui :widget)))
     (when widget
@@ -2993,26 +3043,45 @@ correct there). Returns the effective :source plist."
               ":widget :markdown is not valid on :target (FK) ~
                fields; field ~s of type ~s."
               ~new-field-key ~type-key)))
-        ;; :filter-with :boolean requires :type :boolean and :column t.
-        ;; The value rule itself is valid-filter-with-value's (it sees the
-        ;; plist); repeating it here names the field on a bad value.
+        ;; :filter-with is kind-dispatched here. :boolean requires
+        ;; :type :boolean and :column t; :reference requires :target
+        ;; and rejects :join-table (M2M chip filtering is automatic).
+        ;; The value rule itself is valid-filter-with-value's (it
+        ;; sees the plist); repeating the field facts here names the
+        ;; field on a bad value. The otherwise arm is the kind-set
+        ;; check — one case, one list, a kind added to
+        ;; *filter-with-kinds* but forgotten here fails loudly.
         (let ((filter-with (getf ui-val :filter-with)))
           (when filter-with
-            (unless (eq (filter-with-kind filter-with) :boolean)
-              (report-e "compile-field"
-                ":filter-with kind must be :boolean; field ~s of ~
-                 type ~s has ~s."
-                ~new-field-key ~type-key ~filter-with))
-            (unless (eq field-type :boolean)
-              (report-e "compile-field"
-                ":filter-with is only valid on :type :boolean ~
-                 fields; field ~s of type ~s has :type ~s."
-                ~new-field-key ~type-key ~field-type))
-            (unless column
-              (report-e "compile-field"
-                ":filter-with requires :column t; field ~s of type ~s ~
-                 has no column."
-                ~new-field-key ~type-key))))
+            (case (filter-with-kind filter-with)
+              (:boolean
+                (unless (eq field-type :boolean)
+                  (report-e "compile-field"
+                    ":filter-with :boolean is only valid on :type ~
+                     :boolean fields; field ~s of type ~s has :type ~s."
+                    ~new-field-key ~type-key ~field-type))
+                (unless column
+                  (report-e "compile-field"
+                    ":filter-with :boolean requires :column t; field ~
+                     ~s of type ~s has no column."
+                    ~new-field-key ~type-key)))
+              (:reference
+                (unless has-target
+                  (report-e "compile-field"
+                    ":filter-with :reference is only valid on :target ~
+                     fields; field ~s of type ~s has no :target."
+                    ~new-field-key ~type-key))
+                (when has-join-table
+                  (report-e "compile-field"
+                    ":filter-with :reference is not valid on a ~
+                     :join-table field; field ~s of type ~s. M2M ~
+                     chip filtering is automatic."
+                    ~new-field-key ~type-key)))
+              (otherwise
+                (report-e "compile-field"
+                  ":filter-with kind must be :boolean or :reference; ~
+                   field ~s of type ~s has ~s."
+                  ~new-field-key ~type-key ~filter-with)))))
         ;; :enabled-when is a button-only subkey (the :filter-with
         ;; boolean-only rule is the precedent for widget-scoped :ui
         ;; keys). Field existence is checked against MODEL — the
@@ -3677,7 +3746,7 @@ Mirrors the previous runtime type-category logic."
 
 (defun valid-form-fields (type-key type-def)
   (loop
-    for form-field in '(:list-form :add-form :update-form)
+    for form-field in '(:list-form :add-form :update-form :view-form)
     for field-keys = (u:tree-get type-def form-field :fields)
     when (and field-keys (not (equal field-keys t)))
     do (loop for field-key in field-keys
@@ -3685,6 +3754,51 @@ Mirrors the previous runtime type-category logic."
          do (report-e "valid-form-fields"
               "In type ~s, ~s contains an unknown field ~s"
               ~type-key ~form-field ~field-key))))
+
+(defun valid-filter-with-list-form (type-key type-def)
+  ":private: :filter-with :reference is legal only on a field the
+list form includes — a picker that can never render is an authoring
+error. :fields t qualifies; :fields nil, a dotted tail, an atom,
+or an explicit list omitting the field does not (each bad shape
+signals the shape error, not the per-field message — nil is not
+a proper list of field keys). (An absent :list-form is not a
+separate error a base type can reach — the compiled def carries
+the author's :list-form verbatim and nothing injects one; a
+rollup with no :list-form already dies in
+valid-rollup-matrix. The :fields shape check (t or a proper
+list) runs only when the type declares a :reference
+filter — a malformed :fields on a reference-free type is the value
+valid-form-fields has always accepted, not this check's to tighten
+(a corpus-wide contract change is not this item's). :boolean is not
+checked here (a boolean select on a list-omitted field is the
+pre-existing documented contract). Signals report-e otherwise."
+  (let* ((list-fields (u:tree-get type-def :list-form :fields))
+         (fields (getf type-def :fields))
+         (has-reference
+           (loop for f-def in (cdr fields) by #'cddr
+             thereis (eq (filter-with-kind
+                           (u:tree-get f-def :ui :filter-with))
+                         :reference))))
+    (when has-reference
+      (unless (or (eq list-fields t)
+                (and (consp list-fields)
+                  (null (cdr (last list-fields)))))
+        (report-e "valid-filter-with-list-form"
+          ":list-form :fields on type ~s must be t or a proper ~
+           list of field keys; got ~s."
+          ~type-key ~list-fields))
+      (loop for field-key in fields by #'cddr
+        for field-def in (cdr fields) by #'cddr
+        for fw = (u:tree-get field-def :ui :filter-with)
+        when (eq (filter-with-kind fw) :reference)
+        do (unless (or (eq list-fields t)
+                     (and (listp list-fields)
+                       (member field-key list-fields)))
+             (report-e "valid-filter-with-list-form"
+               ":filter-with :reference on field ~s of type ~s ~
+                requires the field in :list-form; a reference ~
+                filter that can never render is a compile error."
+               ~field-key ~type-key))))))
 
 (defun valid-default-sort (type-key type-def)
   "Validate a type-level :default-sort declaration against the compiled TYPE-DEF
@@ -3950,7 +4064,7 @@ the first violation."
       "Author :suppress-roles nil on rollup ~s; the compiler ~
        auto-sets :suppress-roles t."
       ~type-key))
-  (dolist (key '(:add-form :update-form))
+  (dolist (key '(:add-form :update-form :view-form))
     (when (u:has (u:plist-keys type-def) key)
       (report-e "valid-rollup-matrix"
         "~s is not allowed on rollup type ~s (even nil); only ~
@@ -4018,13 +4132,15 @@ the first violation."
           ~type-key ~grain)))))
 
 (defun valid-rollup-fields (type-key raw-fields view-tables)
-  "Field-level rollup matrix (07b): author :id, forbidden attributes, :button,
-missing :agg, and :source :table membership in :tables."
+  "Field-level rollup matrix (07b): author :id, reserved record keys,
+forbidden attributes, :button, missing :agg, and :source :table membership in
+:tables."
   (when (u:has (u:plist-keys raw-fields) :id)
     (report-e "valid-rollup-fields"
       "Rollup type ~s must not declare :id; the compiler injects ~
        it from the grain PK."
       ~type-key))
+  (valid-field-names type-key raw-fields)
   (loop
     for field-key in raw-fields by #'cddr
     for field-def in (cdr raw-fields) by #'cddr
@@ -4393,12 +4509,29 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
                              t)))))
       (valid-form-fields type-key final-def)
       (valid-default-sort type-key final-def)
+      (valid-filter-with-list-form type-key final-def)
       final-def)))
 
 (defun compile-type-def (model type-key)
   (if (getf (getf model type-key) :rollup)
     (compile-rollup-type-def model type-key)
     (compile-base-type-def model type-key)))
+
+(defun valid-field-names (type-key raw-fields)
+  ":private: Author field keys must not collide with the injected
+record keys :update / :delete (the per-row capability flags
+be-list / be-rec emit on every record — a same-named author field
+would be shadowed on the wire). Runs on the raw author :fields
+plist, before add-default-fields / compile-fields, so injected
+keys and author keys cannot be confused. Rollups reject the same
+names in valid-rollup-fields (their records carry the flags too)."
+  (loop for field-key in raw-fields by #'cddr
+    when (member field-key '(:update :delete))
+    do (report-e "valid-field-names"
+         "Field key ~s on type ~s is reserved for the per-record ~
+          update / delete capability flags injected into every ~
+          /api/list and /api/item record; rename the field."
+         ~field-key ~type-key)))
 
 (defun compile-base-type-def (model type-key)
   (valid-non-rollup-keys model type-key)
@@ -4408,6 +4541,11 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
   ;; injects :display, but the raw def is the contract on both
   ;; compile paths.
   (valid-page-description type-key (getf model type-key))
+  ;; Same raw-def position: the reserved-name guard must see the
+  ;; author's own :fields (add-default-fields injects :id /
+  ;; timestamps below; a guard placed there could not tell an
+  ;; author key from an injected one).
+  (valid-field-names type-key (u:tree-get model type-key :fields))
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
           (is-joiner (getf type-def :is-joiner))
@@ -4483,6 +4621,10 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
                            (compile-lifecycle-hooks compose-model type-key)))))
       (valid-form-fields type-key final-def)
       (valid-default-sort type-key final-def)
+      ;; Belt-only on today's rollup matrix (:target is forbidden on
+      ;; rollup fields, so has-reference finds nothing); kept so a
+      ;; future relaxation does not silently lose the check.
+      (valid-filter-with-list-form type-key final-def)
       final-def)))
 
 (defun preliminary-model-check (&optional def key-path)
@@ -4548,7 +4690,8 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
             (listp sdef))
            t)
          ((and
-            (member (second key-path) '(:list-form :update-form :add-form))
+            (member (second key-path)
+              '(:list-form :update-form :add-form :view-form))
             (equal key :fields))
            t)
          ((and

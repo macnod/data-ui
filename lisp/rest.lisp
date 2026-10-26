@@ -502,7 +502,7 @@ form
 
 Optional. The name of the form to use for rendering the output. This will be
 converted to a keyword and used to look up the form in the model.  Valid values
-are 'list-form', 'update-form', and 'add-form'.
+are 'list-form', 'update-form', 'add-form', and 'view-form'.
 
 limit
 
@@ -564,7 +564,7 @@ form
 
 Optional. The name of the form to use for rendering the output. This will be
 converted to a keyword and used to look up the form in the model.  Valid values
-are 'list-form', 'update-form', and 'add-form'.
+are 'list-form', 'update-form', 'add-form', and 'view-form'.
 
 GET /api/item"
   (let* ((id (parse-id id))
@@ -733,7 +733,7 @@ form
 
 Optional. The name of the form to use for rendering the output. This will be
 converted to a keyword and used to look up the form in the model.  Valid values
-are 'list-form', 'update-form', and 'add-form'.
+are 'list-form', 'update-form', 'add-form', and 'view-form'.
 
 GET /api/column"
   (let* ((type-key (parse-type type))

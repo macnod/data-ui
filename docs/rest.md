@@ -6,23 +6,25 @@ All endpoints are defined in `lisp/rest.lisp` using Hunchentooth `define-easy-ha
 
 ### `GET /api/list`
 
-List records for a type. Returns records, form schemas (`list-form`, `add-form`, `update-form`), `allowed-values` for dropdown/checkbox fields, permission flags (`create`, `delete`, `update`), and paging keys `total` and `sort`.
+List records for a type. Returns records, form schemas (`list-form`, `add-form`, `update-form`, `view-form`), `allowed-values` for dropdown/checkbox fields, permission flags (`create`, `delete`, `update`), the type's RBAC role names (`type-roles` — see [`POST /api/insert`](#post-apiinsert)), and paging keys `total` and `sort`.
 
 **Parameters:**
 
 | Param | Required | Default | Meaning |
 |-------|----------|---------|---------|
 | `type` | yes | — | Type key, e.g. `todos`, `users` |
-| `form` | no | `list-form` | `list-form` \| `update-form` \| `add-form` |
-| `filters` | no | — | JSON list of `[type field operator value]` rows; `in` / `not-in` take a non-empty list of the field's atom type (join-table fields may also be targeted, e.g. `["tags","name","in",["chores","errands"]]`) |
+| `form` | no | `list-form` | `list-form` \| `update-form` \| `add-form` \| `view-form` |
+| `filters` | no | — | JSON list of `[type field operator value]` rows; `in` / `not-in` take a non-empty list of the field's atom type (join-table fields may also be targeted, e.g. `["tags","name","in",["chores","errands"]]`; a target-keyed row names the FK target's type and identity column, e.g. `["users","name","in",["admin"]]` — the reference chip picker's emission) |
 | `limit` | no | `20` | Max records; non-negative integer; clamped server-side to `200` |
 | `offset` | no | `0` | Records to skip; non-negative integer |
 | `sort` | no | — | `"field:asc"` / `"field:desc"`; direction defaults to `asc`; field must be `:sortable t` |
 | `search` | no | — | Free-text term, ILIKE against `:searchable t` fields; trimmed; blank ignored; clamped to 200 chars |
 
-**Filter operators** (lowercase in JSON): `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `like`, `ilike`, `not-like`, `not-ilike`, `in`, `not-in`, `has-all`. Filters may target a joined table's fields (the example above targets the `tags` joiner through the listed type). `has-all` is field-scoped instead — the row is `[listedType, m2mFieldKey, "has-all", values]` — and targets the listed type's M2M list field (the field must declare `:join-table`); values AND: the record must have all of them (`in` stays has-any).
+**Filter operators** (lowercase in JSON): `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `like`, `ilike`, `not-like`, `not-ilike`, `in`, `not-in`, `has-all`. Filters may target a joined table's fields (the example above targets the `tags` joiner through the listed type). `has-all` is field-scoped instead — the row is `[listedType, m2mFieldKey, "has-all", values]` — and targets the listed type's M2M list field (the field must declare `:join-table`); values AND: the record must have all of them (`in` stays has-any). A reference-chip row is target-keyed — `[targetType, targetIdentityColumn, "in", values]`, e.g. `["users","name","in",["admin"]]` — comparing the target's identity display values directly against the joined target table (union within the row; unknown names match zero rows, never a 400).
 
 **Response** (in addition to `records`, forms, `allowed-values`, permission flags): `total` (always present — pre-paging count of matching records; may exceed the number of returned records) and `sort` (the effective sort: `{"field": "...", "dir": "asc"|"desc"}`). When no sort was requested, `sort` reports the type's `:default-sort` declaration when one exists, else the rollup default policy (first sortable measure, `desc`) on a rollup type, else `null` on a base type.
+
+**Per-record flags:** every record object carries `update` / `delete` JSON booleans computed from the caller's permissions on that record's own resource (row-level — the same gate as [`POST /api/update`](#post-apiupdate) / [`POST /api/delete`](#post-apidelete); a creator with `create` but no type-level `update` gets `update: true` on rows her exclusive role sits on). Rollup records carry both `false`. The envelope `create` / `update` / `delete` flags stay type-level (Add / Delete Selected gating, legacy consumers). `/api/column` is unaffected — it projects one field key per row and discards the record plists, so the flag keys never reach its output.
 
 **400 errors:** non-integer `limit`/`offset`; unknown sort field, non-`:sortable` field, or bad direction; non-blank `search` on a type with zero `:searchable` fields.
 
@@ -30,9 +32,9 @@ List records for a type. Returns records, form schemas (`list-form`, `add-form`,
 
 ### `GET /api/item`
 
-Fetch a single record by UUID.
+Fetch a single record by UUID. The `record` object carries the same per-record `update` / `delete` JSON booleans as `/api/list` (row-level, computed from the caller's permissions on this record's own resource).
 
-**Parameters:** `type`, `id`.
+**Parameters:** `type`, `id`; optional `form`, default `update-form`, accepts `view-form`.
 
 ### `GET /api/id`
 
@@ -56,7 +58,7 @@ Fetch a column value, resolving the record by identity field.
 
 Fetch all values for a column across a type. Unpaged / full-set: this endpoint ignores the paging parameters (it exists to feed dropdowns and autocomplete, not paged tables). Accepts rollup types.
 
-**Parameters:** `type`, `field`.
+**Parameters:** `type`, `field`; optional `form`, default `list-form`, accepts `view-form`.
 
 ## CRUD mutations
 
@@ -64,13 +66,21 @@ Fetch all values for a column across a type. Unpaged / full-set: this endpoint i
 
 Create a new record. Validation runs before the SQL insert. Lifecycle hooks (`:pre-create` / `:post-create`) run around the write.
 
-**Body:** JSON with `type` and field values.
+**Body:** JSON with `type`, field values, and an optional `roles` array.
+
+**Roles and row visibility.** Every row is an RBAC resource: other users can read or write it only through a role the row carries. Two roles are always attached and can never be removed: the creator's exclusive role (`<user>:exclusive`) and `admin`.
+
+- `roles` omitted → **private by default**: the new row is visible only to its creator and admin.
+- `roles` present: each named role must already belong to the caller (admin may attach any role; another user's shareable exclusive role may also be attached, for point-to-point sharing). Requests naming roles the caller does not hold are rejected.
+- **Recommended:** pass the type's roles — what the built-in frontend does. It pre-fills the Add form's roles checkboxes from the `type-roles` array of the `/api/list` response and submits them with the insert, so new rows carry the ambient visibility the model author intended for the type. Omitting `roles` is only appropriate when rows should start private.
+
+**Creating users.** `type: "users"` changes the meaning of `roles`: they become the new user's role *memberships* (not resource roles), and nothing is pre-selected server-side — the API caller is on their own. The built-in frontend pre-fills the Add form from the `type-roles` array of the `/api/list` response for `users`, which for that type is the union of `:users`' own declared roles and every user-defined type's roles; an API caller who wants the same memberships must pass them explicitly. Automatic regardless of what is passed: the new user's exclusive role (`<user>:exclusive`), `logged-in`, and `settings`. The hold-them-first rule still applies (admin may pass any role; `ai-user` / `deployer` are admin-only assignments).
 
 ### `POST /api/update`
 
-Update an existing record. Validation runs before the SQL update. Lifecycle hooks (`:pre-update` / `:post-update`) run around the write.
+Update an existing record. Validation runs before the SQL update. Lifecycle hooks (`:pre-update` / `:post-update`) run around the write. The caller needs `update` on the target row's own resource, not on the type (base types degenerate to the type resource; `tokens` is gated on the type resource).
 
-**Body:** JSON with `type`, `id`, and field values.
+**Body:** JSON with `type`, `id`, field values, and an optional `roles` array. Roles on the row may be grown or trimmed through this field, subject to the same hold-them-first rule as insert; the creator's exclusive role and `admin` are force re-added server-side and cannot be stripped.
 
 ### `POST /api/delete`
 
@@ -82,7 +92,7 @@ Delete a record. For filesystem-backed types, deletes files/directories recursiv
 
 ### `POST /api/actions`
 
-Execute an action hook on a `:button` field (update form only).
+Execute an action hook on a `:button` field (update form only). The caller needs `update` on the target row's own resource, not on the type (base types degenerate to the type resource).
 
 **Body:** ```json {"type": "models", "id": "<record-uuid>", "field": "deploy"} ```
 

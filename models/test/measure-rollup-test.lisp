@@ -45,6 +45,7 @@
                                  :column t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :user-leaderboard
@@ -129,6 +130,7 @@
                               :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :task-notes
@@ -148,6 +150,7 @@
                          :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      ;; Issue 17 hop-binding: filter names the middle table :tasks; the
@@ -187,6 +190,7 @@
                          :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :widgets
@@ -206,6 +210,7 @@
                          :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :my-widgets

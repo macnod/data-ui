@@ -633,7 +633,10 @@ The hook registers at model.lisp load; the :settings type change is in
     (when collect results)))
 
 (defun run-widget-tests (&optional collect)
-  "Widget allow-list and UI emission tests."
+  "Widget allow-list and UI emission tests. action-tests.lisp is
+loaded first so the test-model fixture's :button actions resolve
+from the registry at compile time (harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
   (let ((results
           (with-model "test-model" nil
             (run 'widget-suite))))
@@ -853,6 +856,19 @@ that (and is harmless when already loaded)."
     (explain! results)
     (when collect results)))
 
+(defun run-row-write-tests (&optional collect)
+  "Row-only update/action gate suite on the row-write-test fixture
+(notes-user is create+read only — the :new-roles declaration is the
+split the fixture exists to express). The :test-sync button
+resolves from the registry at compile time, so action-tests.lisp
+must be loaded before set-model (harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (let ((results
+          (with-model "row-write-test" #'th-rw-seed
+            (run 'row-write-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun seed-spawn-fixture ()
   "Seed the spawn-test fixture for :spawn behavior tests."
   (th-make-user "worker" :roles '("item-users"))
@@ -1051,6 +1067,51 @@ page-description-test fixture."
     (explain! results)
     (when collect results)))
 
+(defun run-field-help-tests (&optional collect)
+  ":help tests: value / combination-rule compile probes (no model
+needed) plus fe-fields / plist-to-json wire checks on the
+field-help-test fixture."
+  (let ((results
+          (append
+            ;; Compile probes (pure compile-model, no DB)
+            (run 'field-help-compile)
+            ;; Wire emission (needs a live compiled model)
+            (with-model "field-help-test" nil
+              (run 'field-help-wire)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-view-form-tests (&optional collect)
+  ":view-form tests: compile acceptance / rejection probes (no
+model needed) plus wire emission and backend read checks on the
+view-form-test fixture."
+  (let ((results
+          (append
+            ;; Compile probes (pure compile-model, no DB)
+            (run 'view-form-compile)
+            ;; Wire + backend reads (needs a live compiled model)
+            (with-model "view-form-test" nil
+              (run 'view-form-wire)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-reference-chip-tests (&optional collect)
+  "Reference chip picker (:filter-with :reference) tests: compile
+probes and the fe-fields wire-column emission (no DB model needed
+beyond the fixture compile) plus behavior checks on the
+reference-chip-test fixture."
+  (let ((results
+          (append
+            ;; Compile probes + wire emission (fixture model)
+            (run 'reference-chip-compile)
+            (with-model "reference-chip-test" nil
+              (run 'reference-chip-wire-checks))
+            ;; Behavior (seeds / deletes rows; own with-model)
+            (with-model "reference-chip-test" nil
+              (run 'reference-chip-behavior)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -1087,6 +1148,7 @@ groups."
                    ("filtered-rollup" . run-filtered-rollup-tests)
                    ("agg-distinct"    . run-agg-distinct-tests)
                    ("update-permission" . run-update-permission-tests)
+                   ("row-write"      . run-row-write-tests)
                    ("spawn"          . run-spawn-tests)
                    ("enabled-when"   . run-enabled-when-tests)
                    ("new-roles"      . run-new-roles-tests)
@@ -1100,7 +1162,10 @@ groups."
                    ("directory-update" . run-directory-update-tests)
                    ("file-path"     . run-file-path-tests)
                    ("markdown"      . run-markdown-tests)
-                   ("page-description" . run-page-description-tests))
+                   ("page-description" . run-page-description-tests)
+                   ("field-help"    . run-field-help-tests)
+                   ("view-form"     . run-view-form-tests)
+                   ("reference-chip" . run-reference-chip-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

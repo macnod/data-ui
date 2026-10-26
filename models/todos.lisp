@@ -111,6 +111,7 @@ description are the only omissions:
           :join-table :todo-tags))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :tags
@@ -126,6 +127,7 @@ description are the only omissions:
           :column t :not-null t :unique t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :todo-tags

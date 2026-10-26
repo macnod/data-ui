@@ -425,9 +425,10 @@ Implemented per the plan (rev 5) end to end:
 - Docs: =:page-description= / =:page-description-open= rows in the type-key table (+ the =:category :settings= boundary and visibility rule), both keys in the Quick key index; =GET /api/types= entry in =docs/rest.md= now describes the whole payload.
 - Full suite via =scripts/data-ui tests=: 2134 checks, 40 groups, all passed.
 
-** TODO Field help text :model:frontend:compiler:mvp:
+** DONE Field help text :model:frontend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-20 Tue]
+:COMPLETED: [2026-10-22 Thu]
 :END:
 Optional help text for fields: =:ui (:help "<markdown>")=. One new keyword in =*ui-keys*= plus a string rule — =:ui= passes through verbatim, so no other backend plumbing.
 
@@ -435,36 +436,168 @@ Optional help text for fields: =:ui (:help "<markdown>")=. One new keyword in =*
 - Content is markdown (inline code for option names, bullets for choices) rendered with the shared markdown renderer (depends on the Markdown widget item above).
 - Name =:help= settled 2026-10-21 (collision check clean; keeps =:hint= free for the future text-field width / hint item). Decide in the plan: =:help= together with =:hide-label t= on one field — the icon anchors to the label; leaning toward a compile error, since fields that hide labels are the self-evident ones that need no help text.
 
-** TODO Page type (editable content pages)   :model:frontend:compiler:mvp:
-:PROPERTIES:
-:CREATED: [2026-10-21 Wed]
-:END:
-Prose an app user is meant to edit — About page, house style guide, landing blurb — as data, not model text: a content type holds one row per page (markdown body, =:identity t= slug, edited in-app under RBAC), and a =:page t= projection type renders one selected row as a full page in the type selector — no list chrome, always expanded, empty state when the row does not exist yet. Static =:page-description= (above) stays the author-prose counterpart; tabs remain model-declared — a page without a tab is just a row. v1 is a read-only projection; in-page editing waits on the per-field editability machinery. Naming settled 2026-10-21: =:page t= survives the collision check — pagination's =page= lives only in query-param / wire namespaces, never a model keyword (keep any future types-payload wire key from being named =page=). =:page-description= on a =:page t= type is a compile error: the page's content /is/ the description, and a collapsible intro on top of a full page is noise. Amended 2026-10-21 after the View form discussion: a page type *requires* =:view-form= (compile error, the rollup-requires-:list-form precedent) and renders it as the page — the reader may not hold read on the content type, so the page cannot borrow its forms. A page type declares no =:list-form= (compile error if it does; absent =:list-form= is already structurally list-less today, so no suppression mechanism is needed), does not use =:hide-list=, and has no list to hide.
+Plan: [[file:~/workbench/field-help-plan.org][field-help-plan.org]]
 
-Plan: [[file:~/workbench/page-type-plan.org][page-type-plan.org]] (unfinished)
-** TODO View form :model:frontend:backend:mvp:
+Implemented per the plan end to end:
+
+- Compiler (=lisp/model.lisp=, the only Lisp file touched): =:help= in =*ui-keys*= after =:hide-label= (the unknown-key message updates itself); =valid-help-value= beside =valid-hide-label-value= — =:missing= sentinel, =report-ve=, non-string and blank both signal (the length form, never =plusp= on the string); the =:help= + =:hide-label t= compile error lives in =finalize-ui= after the value checks and before the widget default is injected (strict =eq t=; an explicit =:hide-label nil= plus =:help= compiles; =:help nil= + =:hide-label t= reports the value error, not the anchor error); =finalize-ui= docstring's Rejects list extended.
+- Wire: nothing to do — =:ui= rides =fe-fields= verbatim; a string serializes as a JSON string (no =register-json-boolean-key=). Verified live: =/api/list= add-form shows ="help":"The **primary** identifier.\n\n- Use `kebab-case`\n- Keep it short"=, JSON-escaped newlines intact.
+- Frontend: new =web/src/FieldHelp.tsx= (real =<button type="button">=, =aria-expanded= / =aria-controls= / =aria-label= flipping with state, =Markdown= renderer in the panel, Escape + click-outside close while subscribed only when open, the outside handler ignores the "?" button's own node); =Field= interface gains =help?: string=; =FieldRow= renders =<FieldHelp>= after =<label>= when =help= is a non-empty string and =hide-label !== true= (the defensive ignore); =index.css= gains =.field-help= / =.field-help-toggle= / =.field-help-panel= (capped 20rem width / 16rem height, =z-index= 900 below the lightbox, =var(--border)= / =var(--tab-inactive-bg)= — no new tokens). One =npm= hiccup: node 22 has =node= but no =npm= on PATH; =./node_modules/.bin/tsc && ./node_modules/.bin/vite build= is the working build path (353.68 kB bundle, clean).
+- Fixture =models/test/field-help-test.lisp= (:posts — =:title= with =:help= exercising a paragraph break, inline code, and bullets; =:body= plain; real newlines in the fixture, not =\n= escapes — =plist-to-json= escapes them on the wire, verified live); =tests/field-help-tests.lisp= (22 checks: verbatim compile survival, absent-key, non-string / blank / whitespace signals, the =:hide-label t= clash, =:hide-label nil= legal, defaults path, typo listing =:help=, value-error precedence, =fe-fields= add/update/list-form emission, =plist-to-json= string serialization). Registered in =data-ui.asd=; =run-field-help-tests= in =tests/helpers.lisp= added to =run-tests=. Test-side stumble worth noting: =fe-fields= takes =(type-key user)= and returns the all-forms plist — not =(type form user)=; the markdown-tests helper was the precedent to copy.
+- Docs (=docs/model-reference.md=): =:help= in the per-key value-rules sentence, a =:help= row after =:hide-label= in the subkey table (incl. the inert =:hidden= / rollup cases and the list-header ignore), =:hide-label= added to the Quick key index UI line (it was missing there).
+- Full suite via =scripts/data-ui tests=: 2158 checks, 41 groups, all passed.
+
+- Forms only: a small info / question-mark icon beside the field label; click reveals the text (tooltip or popover). List headers unchanged.
+- Content is markdown (inline code for option names, bullets for choices) rendered with the shared markdown renderer (depends on the Markdown widget item above).
+- Name =:help= settled 2026-10-21 (collision check clean; keeps =:hint= free for the future text-field width / hint item). Decide in the plan: =:help= together with =:hide-label t= on one field — the icon anchors to the label; leaning toward a compile error, since fields that hide labels are the self-evident ones that need no help text.
+
+Plan: [[file:~/workbench/field-help-plan.org][field-help-plan.org]]
+
+** DONE View form                              :model:frontend:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-21 Wed]
+:COMPLETED: [2026-10-22 Thu]
 :END:
 A fourth form, =:view-form=, sibling of =:list-form= / =:add-form= / =:update-form=, same shape. View mode today renders =:update-form= read-only, so a reading surface cannot differ from the edit form — the blog gap: a post page cannot drop the Deploy button or re-order fields for reading. Core decision (settled 2026-10-21): treated exactly like the other forms in every respect, *no fallback* — absent means no view surface, just as absent =:add-form= means no Add surface. Payload presence ⇔ declaration (=*forms*= gains the fourth member; existing models' payloads stay byte-identical); the =form= parameter accepts =view-form= with no server-side fallback; frontend View button renders iff the payload carries =view-form= (the =viewFormName= update-form → list-form fallback chain dies). Buttons: explicit =:button= in a view form is legal, v1 unused; emission rule is buttons render on the update form only. Status companions land under =:fields t= (accepted feature); the injected =:roles= stays add/update-only. Rollups: =:view-form= joins the =valid-rollup-matrix= forbidden-key list. Settings auto-open read-only branch: update-capable → edit, else view-form present → view, else don't open. Base model: =:users=, =:roles=, =:permissions=, =:settings=, =:secrets= gain =:view-form (:fields t)=; =:resources= loses all three of its forms (internal, display nil — dead payload; verify no =be-list= call targets it first). Corpus copy rule: every model in =models/= and =models/test/= — any type with =:update-form= gains =:view-form= with the same =:fields=. Layout: zero new keys — the label gutter renders iff at least one field renders a label; all-hidden collapses it flush-left (correct rendering, not an inference rule; mixed label-above stacking is post-MVP =:layout :stack=).
 
-Plan: [[file:~/workbench/view-form-plan.org][view-form-plan.org]] (unfinished)
-** TODO Hide list :model:frontend:compiler:mvp:
+Notes: [[file:~/workbench/view-form-notes.org][view-form-notes.org]] 
+
+Plan: [[file:~/workbench/view-form-plan.org][view-form-plan.org]]
+
+Implemented per the plan end to end:
+
+- Compiler (=lisp/model.lisp=): =:view-form= appended to =*forms*= (fourth position, existing three stable), the =valid-form-fields= literal, the =valid-rollup-matrix= forbidden loop (present-nil signals too), and the =preliminary-model-check= walker arm. Base model: =:users= / =:roles= / =:permissions= / =:settings= / =:secrets= gain =:view-form (:fields t)= beside their =:update-form=; =:resources= loses all three forms (the plan's precondition re-verified — still no =be-list=/=be-rec= caller passes a form against =:resources=; the only lisp/ references are =uuid-exists-p= raw SQL, =valid-compiled-model= key presence, =insert-sql=, =be-update='s internal guard, and =base-resource-type-key-p=).
+- Backend (=lisp/backend.lisp=): =fe-fields='s button exclusion grows to =(:list-form :add-form :view-form)= (one list); =show-roles-p= excludes =(:list-form :view-form)= with the docstring rewritten (the rollup-fallback sentence died with the fallback). Step-9 leftover-literal sweep clean: the only code survivors are the =*forms*= definition and the (now four-member) validator/walker literals. No augment-update-form twin (status auto-append stays update-only by design).
+- REST (=lisp/rest.lisp=): no code change (=parse-form= walks =*forms*=); the three =form=-docstrings (=rest-list=, =rest-item=, =rest-column=) name =view-form=. The =/api/value= ="udpate-form"= typo left as-is per the plan (out of scope).
+- Frontend (=web/src/App.tsx=, =index.css=): =viewFormName= is now the literal =view-form= with =hasViewForm= gating the 👁 link and the settings three-way auto-open (update-capable → edit; view-form in payload → view; else don't open); the actions column collapses entirely when neither 👁 nor ✏️ can render (=hasViewForm || data.result.update= on the shared th/td); =ListResponse= gains =view-form?=. Label gutter: the open form's container gets =form-no-labels= when no field that renders in the current mode draws a label (view mode skips password/file/button/hidden — =:settings= is the live case); one CSS rule =.form-no-labels .field-label { display: none; }= collapses the 180px flex track. Build clean (354.01 kB).
+- Corpus copy: every non-rollup type under =models/= and =models/test/= declaring =:update-form= gained =:view-form= with the identical =:fields= (mechanical, scripted; rollup types skipped — verified none carry the key; chores' explicit list copied verbatim). Two script-stumble fixes worth noting: =todos.lisp='s =:page-description= embedded example carries the old three-form shape and was left alone (it is prose, not loadable — =widget-all-models-compile= still passes), and =rollup-compile-test.lisp= / =compose-test.lisp= / =compose-sugar-test.lisp= use nonstandard indents the first pass missed or mis-placed (a bare =:books (:table t :view-form …)= phantom type appeared; fixed by hand, then deduped a doubled insert in =rollup-compile-test.lisp=).
+- Fixture =models/test/view-form-test.lisp= (:posts declares =:view-form (:fields (:title :body))= + a =:test-sync= button — reuses the =tests/action-tests.lisp= registry, load that file before =set-model=; =:notes= declares none); suite =tests/view-form-tests.lisp= (22 checks: =*forms*= shape, compile accept/reject incl. rollup present-nil, =parse-form=, =fe-fields= field keys exactly =(:title :body)= with no =:id= / button / status / roles, byte-identical JSON for =:notes=, =show-roles-p= split, =form-field-keys= cons-id, =be-rec= / =be-list= records keyed =(:id :title :body)=, self-cleaning insert). Registered in =data-ui.asd=; =run-view-form-tests= added to =run-tests=.
+- Docs: =model-reference.md= (forms section + =:view-form= specifics, type-key table row, eligibility rules, roles paragraph, rollup forbidden list, base-model table, Quick key index), =rest.md= (=form= values on /list, /item, /column parameter lines), =hook-registry.md= (button placement sentence). =models/README.md= checked — no change needed.
+- Full suite via =scripts/data-ui tests=: 2187 checks, 42 groups, all passed.
+- Known behavior kept (plan-noted, not fixed here): =handleAction='s poll-completion re-open calls =openEditForm({ id })= with no =viewing= argument, so in view mode a completed poll flips the open form to update mode; the 3s poll effect's deps omit =openFormName= (both pre-existing; the Row-click item owns action-entry UX).
+** DONE Type-level check on row writes                        :backend:bug:
+:PROPERTIES:
+:CREATED: [2026-10-22 Thu]
+:COMPLETED: [2026-10-23 Fri]
+:END:
+Type-level roles answer one question: may this user *create* a row of this type (be-insert's only gate). An existing row carries its own roles, so operations on it must be decided solely by the row-role intersection — a role held by the user, sitting on the row, carrying the operation. =be-delete= already works this way (record-level check only). But =be-update= checks type-level update first (=valid-user-permissions=, backend.lisp ~3157 — the "backend standalone safety" comment) and =be-action= mirrors =be-update= exactly (type-level update + =user-allowed-resource=). That's the error: consulting the type resource for an existing row. Remove the type-level check from =be-update= and =be-action= so both are row-only, matching =be-delete=.
+
+Consequences (deliberate, from the 2026-10-22 blog/comments discussion): a creator with create but no type-level update can now edit rows their exclusive role sits on — the creator-edit case. This is what makes creator-only comment editing declarable without a write-carrying ambient role riding every row. Base types are unchanged (=user-allowed-resource= already degenerates to the type resource when the row has no =resources= entry); the =:tokens= carve-out is unchanged (no rows exist). Check =tests/update-permission-tests.lisp= for expectations that pin the type gate.
+
+Plan: [[file:~/workbench/type-level-check-on-row-writes-plan.org][type-level-check-on-row-writes-plan.org]]
+
+Implemented per the plan end to end:
+
+- Backend (=lisp/backend.lisp=): =be-update='s unconditional type-level =valid-user-permissions= deleted; the check moved into the =opaque-type-p= branch of the =uuid= binding (=:tokens= has no row resource, so the type resource is the only thing to consult — live-probed: admin update still works, a non-admin on =:tokens= gets the type-level error). Docstring gains the permission sentence. =be-action='s type-level call deleted, leaving the row-only =user-allowed-resource= gate; docstring's "TYPE-KEY or the record" clause narrowed to the record.
+- Docs: =hook-registry.md= (runtime invocation step 2 now record-level only), =model-reference.md= (button placement permission; =:type-roles= section gains the create/see-type vs row-roles split paragraph), =rest.md= (=/api/update= and =/api/actions= each state the row-resource requirement).
+- Tests: =tests/update-permission-tests.lisp= unchanged — all six tests pass against the new gate (none asserted the type-level error string; =be-update-peer-denied= is exactly the type-update-but-no-row-role case). New fixture =models/test/row-write-test.lisp= (=new-roles (:notes-user ("create" "read"))= — the split itself; =:test-sync= button reuses the =action-tests= registry). New suite =tests/row-write-tests.lisp= (16 checks: creator edits own row with no type-level update, peer denied update + delete-skips-not-signals, =be-action= both ways, insert still type-gated, wire =:update= flag stays =:false= with the Row-click-item note). Registered in =data-ui.asd=; =run-row-write-tests= added to =run-tests= (loads =action-tests.lisp= first, the =run-agg-distinct-tests= precedent).
+- One test deviation from the plan: =be-delete= on a denied row skips silently rather than signaling, so the denial is asserted as row-survives (=is-false= delete + row still present), not =signals error=.
+- Live probe on the new fixture: creator with =nil= type-level update edits own row =("v2")=; same-role peer denied with the record message; wire flag =:false=; =:tokens= carve-out intact both ways.
+- Full suite via =scripts/data-ui tests=: 2205 checks, 43 groups, all passed.
+- Known gap kept (plan-noted): the wire =update= flag stays type-level, so a creator-edit user gets no Edit control — the Row click item owns that flag.
+** DONE Row click replaces View/Edit icons     :frontend:backend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-21 Wed]
+:COMPLETED: [2026-10-25 Sun]
+:END:
+The list-view Actions column (👁 view / ✏️ edit icon links) goes away: clicking anywhere in a row opens the read-only View form, and the View form gains an Edit button — hidden, not disabled, when the record's own =update= flag is false (house visibility rule; rollups and read-only viewers get no button). Editing becomes view → Edit, the accepted Gmail trade. Row click, not first-cell click (first cells can be images / NULL / interactive — no reliable target or link styling there). Interactive descendants disarm at one guard in the row handler (=closest('a, button, input, select, textarea, label, [data-no-row-click]')=; lightbox thumbnails carry the marker). Affordance is hover: row tint + pointer cursor. Text-selection drag does not open (=getSelection= guard). Delete ✕ column unchanged in behavior, re-gated per row.
+Amended 2026-10-24: the item grows a backend arm — per-record =update= / =delete= flags in the =/api/list= records and the =/api/item= record, computed from the row's own resource (batched, one join per page). This closes the wire gap the row-only =be-update= / =be-action= gates (DONE "Type-level check on row writes") opened: a creator with =create= but no type-level =update= can edit rows their exclusive role sits on, but the type-level =update= flag hid the Edit control from them — and the blog surface's creator-edit recipe makes that user central. The ✕ cell gates on the row's =delete= flag (same rule, =be-delete= was always row-only); Add keeps the envelope =create= (no row exists yet). A reserved-field-name compile guard keeps author fields named =update= / =:delete= off the wire keys.
+
+Notes: [[file:~/workbench/view-link-notes.org][view-link-notes.org]]
+
+Plan: [[file:~/workbench/row-click-replaces-viewedit-icons-plan.org][row-click-replaces-viewedit-icons-plan.org]]
+
+Implemented per the plan end to end:
+
+- Backend (=lisp/backend.lisp=): =permitted-row-ids= (the batched set question behind =user-allowed-resource='s per-id ask — =a:list-user-resources= filtered to the type's =resource_name= prefix, the =user-read-type-ids= precedent, consumed past the library's pagination: pages repeat (role × resource) rows, so the stop condition is distinct ids reaching =a:user-resource-count='s count with the same filters, empty page as the belt. The plan's =resource_id IN= filter idea is not implementable — the library's filter grammar has no =in= operator, only the =like= family — so the prefix filter is the page-batched form); =row-capabilities= (two alists, =:update= / =:delete=, every record id a key; base types degenerate through =user-allowed-resource='s one live arm; model-capability truthiness non-nil = granted, nil forces =:false= with no query — the rollup answer); =record-capability= (:false-on-miss); =decorate-records-with-caps= (plain =append=, never =add-to-plist= — =:false= would read as unspecified and the key would silently never land). Emission: =list-result='s =:records= wrapped in =decorate-records-with-caps= (both base and measure branches route through it — measure records carry =:false= flags with no query); =be-rec= decorates its return's =:record= while =rec= stays clean (=be-update='s resource-rename path feeds that plist to =valid-data=, which rejects unknown keys; live-probed: alice's =be-update= on her note still succeeds with the flags riding =be-rec= only).
+- Compiler (=lisp/model.lisp=): =valid-field-names= — author field keys =:update= / =:delete= are compile errors naming the wire collision; called from =compile-base-type-def= on the *raw* author =:fields= (before =add-default-fields=, so a guard placed there could not tell an author key from an injected one) and from =valid-rollup-fields= beside the existing =:id= rejection.
+- Frontend (=web/src/App.tsx=, =index.css=): =INTERACTIVE_SELECTOR= at module scope; =handleRowClick= (selection guard first, then =closest=) and =handleRowKeyDown= (Enter only, Space keeps scrolling; same disarm guard — keydown bubbles like click) beside =closeForm=; the =<tr>= gains =className='row-click'= / =tabIndex= / =role="button"= / =aria-label= and both handlers under one =hasViewForm= conditional per attribute; the Actions =<th>= + =<td>= block deleted (icons, comment block, both gates); =ThumbnailGrid='s thumbnail div carries =data-no-row-click==; =RecordCaps= interface + the View form's Edit button in the top cluster (=editRecord?.update === true=, hidden not disabled; =marginLeft= ternary collapsed to a constant); =anyDeletable= hoisted beside the table (=records.some(r => r.delete === true)=) gating the ✕ =<th>= *and* every =<td>= (cell always renders on a mixed page — column-count invariant; the ✕ checkbox inside gates on the row's own =delete=); settings auto-open reads =records[0]?.update=; "Delete Selected" stays on the envelope flag on purpose. Envelope-flag census after the change: =create= → Add only, =delete= → Delete Selected only, =update= → no readers. =tr.row-clickable= / =:hover= rules in =index.css= (=--hover-bg= is theme-aware). Build clean (354.08 kB).
+- Tests: =tests/row-write-tests.lisp= extended (33 checks total, +17: per-row list flags via a role-readable note bob can read, =be-rec= flags + =rec= clean + =be-update= round-trip, model-gate probe, reserved-name compile errors); two pre-existing shape assertions updated for the new trailing keys (=tests/view-form-tests.lisp= =u:plist-keys= lists gain =:update :delete=; =tests/measure-rollup-tests.lisp= =mrb-rows-are-field-key-plists= likewise).
+- Docs: =docs/rest.md= (=/api/list= per-record-flags paragraph incl. the =/api/column= single-field-projection note; =/api/item= sentence), =docs/model-reference.md= (type-key table row + =:view-form= specifics rewrite), =docs/demos.md= (chores walkthrough step 1).
+- Full suite via =scripts/data-ui tests=: 2222 checks, 43 groups, all passed. Live probes: alice (creator, no type update) reads =:true/:true= on her note; bob reads =:false/:false= on the same row; base-type degeneration matches the envelope (admin =:users= rows =true=; guest settings =nil → false); envelope flags unchanged for both users.
+** DONE Reference-field chip picker              :model:compiler:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-23 Fri]
+:COMPLETED: [2026-11-10 Tue]
+:END:
+Filter a list by a single-target reference: extend =:filter-with= beyond boolean with =(:kind :reference)=, legal solely on =:target= fields present in the list form (the =:boolean= precedent — legal solely on =:type :boolean= =:column t= fields). The frontend renders the chip picker over the field's existing =allowed-values= palette and emits one =:in= filter row per field, comparing the FK's display column — the target's identity value, so the match is exact; =filterWithKind= (App.tsx) collapses to boolean-only today with a comment naming this extension ("a future kind must extend this helper").
+Composition: within one reference field the picker uses the same values-array slot as tags, so a second value widens the result (=user IN (alice, bob)= — union, the only non-empty reading for a single-value FK); across fields the rows AND-compose with search and every other filter. Amended 2026-10-25 after plan review: M2M chips keep =has-all= (intersection within a field — the todo-list chip-narrowing behavior is the wanted UX, settled with Donnie); the =:in= union row is the reference picker's semantics only, and its column is the target's *identity column* carried on the wire as a new =:column= beside =:table= (never a hardcoded =name= — books' =:title=, files' =:path=). No =:default= in v1: a reference filter starts unfiltered (boolean's authored-default seeding has no reference analogue).
+Two MVP customers, no dependency either direction: Model Bank =:models= by Owner, and the comments tab by author — under the reading-surface / query-surface split of "Embedded child region", the tab is the finding surface and author is its missing axis (search cannot cover it: =:searchable= is forbidden on =:target= fields, rightly). Implementable before or after that item.
+
+Plan: [[file:~/workbench/reference-field-chip-picker-plan.org][reference-field-chip-picker-plan.org]]
+
+Implemented per the plan end to end:
+
+- Compiler (=lisp/model.lisp=): =*filter-with-kinds*= gains =:reference=; =valid-filter-with-value= splits its tail checks by kind (=:boolean= keeps =:default :true|:false=; =:reference= rejects every tail key via a =dolist= over =plist-keys=, not just =:default=); =compile-field='s =:filter-with= block becomes a kind-dispatch =case= — =:boolean= requires =:type :boolean= + =:column t=, =:reference= requires =has-target= and rejects =has-join-table=, and the =otherwise= arm is the kind-set check (one case, one list — a kind added to the set but forgotten in the dispatch fails loudly); new =valid-filter-with-list-form= (gated by a =has-reference= scan — a no-op on every reference-free model, so =widget-all-models-compile= is untouched) signals the shape error on =:fields nil= / dotted tail / atom and the per-field message only on an explicit list omitting the field; called from both =compile-base-type-def= and =compile-rollup-type-def= (the rollup call is belt-only today — =:target= is forbidden on rollup fields — kept for future relaxation).
+- Wire (=lisp/backend.lisp=): =fe-fields= emits =:column= on the leading plist of every =:target= field's wire entry — =(identity-field target)= downcased to a string, computed only when =(getf field-def :target)= is set (never an unconditional nil: =add-to-plist= emits every union key and a nil would serialize as ="column":[]=), placed in an =append= ahead of the =add-to-plist= base (=:column= is not an =*ui-keys*= member, so the =:ui= spread can never collide). The one wire change of the item; =add-where-clause= / =phase-a-join-sql= / =parse-filters= all already accept the target-keyed =:in= row (live-verified against the fixture before any test was written).
+- Frontend (=web/src/App.tsx=): =filterWithKind= accepts both kinds in both shapes; =filterWithDefault= gains the kind guard (boolean-only meaning, belt against a future kind carrying a default); new module-level =buildChipFieldMeta(form, type)= — one membership rule, two call sites (the render site's =useMemo= and =fetchList='s in-fetch rebuild) — with the M2M arm (=:checkbox-list=, =m2m: true=) and the reference arm (=:filter-with= =reference=, =fld.table= + =fld.column=, =m2m: false=), discovery walking the whole form key set (the boolean precedent); =fetchList='s chip block is rebuilt per the tenth-review sketch — =formReady= / =chipMeta= / the =hideExclusive= roles push (inside the sketch, deletion-proof) / =wantsFormRows= gaining the raw =listFilters= non-emptiness term (arming the one-shot refetch for URL-seeded reference filters; a picker-arm narrowing would be dead code exactly where it is consulted) / the =meta.m2m= branch emitting the unchanged =has-all= row and the =else= emitting =[meta.table, meta.column, 'in', values]= — a deliberate timing change for M2M too (URL-seeded chips now emit after the one-shot refetch, the stale-form guard's contract); =isChipCell= gains the =m2m= qualification (a reference cell's =[]= nil encoding must not render as click-to-filter chips). Build clean (354.47 kB).
+- Fixture + model: =models/test/reference-chip-test.lisp= (=projects= =:title=-identity before =tasks= — type order is load-bearing, =create-tables= walks author order and the FK DDL references =rt_projects=; both types =:type-roles ("logged-in")=; identity fields spell =:source (:view :main :column <author-key> :agg :first)=, the eleventh-review rule — the spelled author key compiles, the omission is the compile error); =models/modelbank.lisp= =:models= =:user= gains =:filter-with :reference= and a =:source-all (:table :users :column :name :agg :list)= twin (the field was the one user-FK without one; no =:view= key — the palette path reads =:table= / =:column= only, and a =:view= would claim stage-2 treatment it does not get).
+- Tests: =tests/widget-tests.lisp= extended (8 new tests: both author shapes compile, wire JSON for both, =no-target= / =join-table= (full joiner-type shape, the base-model precedent) / =:default= rejections, =:source= passthrough); new =tests/reference-chip-tests.lisp= (35 checks: the list-form membership matrix incl. dotted-tail / nil / atom spellings and the reference-free no-op control; the wire =:column= emission asserted =member=-style on the fixture where =fe-fields= reads =*compiled-model*=; behavior — the exact picker row =:total 2=, union =3=, AND-across-rows =1=, cross-target =:title= pin =1=, null-FK arm, ="nobody"= → =0=, join+sort, palettes before/after the project insert); registered in =data-ui.asd= + =run-reference-chip-tests= in =helpers.lisp= (and =run-widget-tests= now loads =action-tests.lisp= first — the test-model fixture's =:button= actions resolve from the registry at compile time; the suite previously depended on the caller's load order).
+- Docs: =docs/model-reference.md= (per-key sentence, the =:filter-with= row's reference half incl. the row shape and the same-target collapse, the =:checkbox-list= chip note, the Filter-operators paragraph reconciled to name =:has-all= and the target-keyed row); =docs/rest.md= (the =filters= cell gains the =["users","name","in",["admin"]]= twin, the operators paragraph notes the emission shape).
+- Full suite via =scripts/data-ui tests=: 2269 checks, 44 groups, all passed. Live probes: fixture =fe-fields= shows =:column "name"= / =:title=; both =left join= lines in =phase-a-join-sql=; palettes =(guest admin)= / =("Apollo")=; modelbank =:user= carries =:filter-with :reference= and the palette lists users after the =:source-all= addition. The M2M stale-form timing change and the URL-seed arming path are pinned only by the manual browser pass (no JS test harness) — the plan's step 19 checks, still open.
+** TODO Hide list                              :model:frontend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-21 Wed]
 :END:
 =:hide-list t=, a form-level key sibling of =:fields=, suppresses the list while the form that declares it is open — the public reader of a post has no business seeing the table. Legal on =:view-form=, =:update-form=, and =:add-form= (there is no =:new-form=); compile error on =:list-form=. Omitted means show — Books stays as it is, and the writing-aid default keeps the table under an open form (the shape of an ISBN, a date, the last post is guidance). While the carrying form is open, the table, the pagination, and the record count are not rendered (half-hidden chrome would look broken); the tab with no record open still shows the list — that is what keeps a =:posts= type a list type rather than a page type. Per form, not per type, and not view-only: view and edit of the same type can disagree, and an author adding a post may want the last one underneath — forbidding the key on add/update would make a focused editor unspellable. A page type does not use it; it has no list.
 
-Plan: [[file:~/workbench/hide-list-plan.org][hide-list-plan.org]] (unfinished)
+Notes: [[file:~/workbench/hide-list-notes.org][hide-list-notes.org]]
 
-** TODO Row click replaces View/Edit icons      :frontend:polish:mvp:
+** TODO Timestamp field overrides                   :model:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-23 Fri]
+:END:
+Authors today cannot present the injected =:created-at= / =:updated-at= fields: =fe-fields= drops any field without a =:ui= widget (backend.lisp, the =(or (getf ui :widget) …)= gate), so the timestamps never reach the wire even when named in a form — the base model's own =:users= list form names them and gets only =(:name :email :roles)= back. And an author who *does* write =:created-at (:ui …)= is silently ignored: =add-default-fields= blind-appends the injected defs ahead of author fields, =getf= returns the injected copy, and the author's plist is dead weight — no error, no effect. Neither field is =:sortable t= either (live-verified 2026-10-23), so no list anywhere can be ordered or reversed by date, and a =:sort= / =:default-sort= referencing them fails validation.
+
+Two-part fix (the ambient / opt-in split, settled 2026-10-23):
+
+- *Ambient =:sortable t=:* =default-fields= (model.lisp) injects =:sortable t= on exactly the two timestamps — not a general "all fields sortable" default; every author field keeps today's opt-in rule. Nothing renders by itself: =:sortable= affects SQL legality and header clicks only, and the field still needs a =:ui= widget to appear on the wire. Fresh =rt_= tables get the sort index at creation; pre-existing built-ins (=:users=) sort unindexed — the same caveat as "Sortable =:name= and =:email=", performance not correctness.
+- *Opt-in =:ui= via override:* redeclaring an injected field key merges the author plist over the injected def (author keys win, =add-to-plist= semantics — the base-type =:type-roles= overlay precedent), *restricted to presentation keys*: =:ui= and =:sortable= legal; anything structural (=:type=, =:default=, =:not-null=, =:update=, =:source=) is a compile error — the injection's contract cannot be reshaped. =:id= stays out of scope in v1. Blog fixture spelling: =:created-at (:ui (:label "Posted" :widget :textbox :read-only t))= on comments — no =:sortable t= needed.
+
+The blog surface depends on this (its =:sort (:created-at :asc)=, the comments tab's =:default-sort (:created-at :desc)=, and the Created column all ride it); place it in the run-up before "Embedded child region". Also fixes the general "reverse the records" question: name Created in a list form, click the header.
+
+** TODO Record permalinks                              :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-23 Fri]
+:END:
+The URL grammar gains record addressing: =id= (plus a view/edit bit) joins =type= / =q= / =notq= / =filters= / =bool= / =sort= / =page= in =buildUrlState= / =parseHash= / =canonicalize=; an entry carrying =id= opens the record's view form on arrival through =openEditForm= (the single open choke point) instead of =closeForm=, and the login seed carries it across the login wall exactly like list state. The routing machinery exists today for list state (hash router, =popstate= + =hashchange=, canonicalize, equality gate — App.tsx ~2030–2260); the open form is deliberately session chrome ("session chrome the history entry did not have" — the handler's own comment); this item is what makes a record addressable. =viewMode= stays unencoded (derived from the type's category, the existing rule).
+Two grades: grade 1 — a row of any type, the link opens the type tab with that record's view form open. Grade 2 — a child row (a comment under a post): the link resolves the child's parent FK, opens the parent's view form, expands the embedded region's row, and scrolls to it. Grade 2 depends on the embedded child region (blog surface); grade 1 does not.
+The consumer is prose: a markdown body links another record as =#/app?type=comments&id=<uuid>=, and the quote/mention conventions gain a resolvable target (external links already render). Permissions fail closed — =/api/item= enforces read, so a link to a row the viewer cannot see shows the error and leaks nothing. Depends on "Row click replaces View/Edit icons" (the open choke point and the view-form landing conventions this rides).
+** PLANNING Embedded child region                :model:backend:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-23 Fri]
+:END:
+The blog/forum gap: a parent type's =:view-form= declares =:children ((:type :comments :via :post :sort (:created :desc)))= — child type, the child's FK field pointing back at the parent (compile-checked: =:via= must be a =:target= field whose target is the declaring type; =:children= on any non-view form is a compile error), fixed sort — and the frontend renders the region under the parent's view form as a mini list page: child rows through the existing list-cell pipeline (1-line chopped markdown body), own pager, row click expands in place to the child's view-form fields (full-length markdown; the region inherits the row-click machinery), an inline Add form gated on the child's =create= flag with the FK preset and hidden, and a Reply control inside the expansion that opens Add with the quoted comment pre-filled (markdown blockquote with attribution, nested quotes stripped to one level). The boundary: Reply and Add write byte-identical rows — reply context is prose, never a stored =reply-to= link (that is threading through the basement door).
+One backend addition: the =fk-eq= filter operator (=[["comments","post","fk-eq","<uuid>"]]= compares the FK's storage column, not its display value — =eq= on an FK compares the parent's display column and cannot express child-of-this-row; no join involved, the filter touches the requested type's own field). Comments: no title, no =:identity t= field (identity would make a composite unique index — "Nice post!" once ever; comments are referenced by nothing while threading is parked, so zero identity fields compiles clean). =body= is =:widget :markdown= + =:searchable t=. Permission recipe: =:type-roles ("public" ("comments-user" :create :read))= — guests read, members post, creator edit/delete row-only.
+Depends on "Type-level check on row writes" (creator-edit needs row-only update) and "Row click replaces View/Edit icons" (the open-choke-point and row-interaction machinery the region rows reuse). Draft plan, refining continues; no =::COMPLETE::= yet.
+
+Plan: [[file:~/workbench/blog-surface-plan.org][blog-surface-plan.org]]
+
+** PLANNING Bot-crawlable public pages                :backend:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-20 Tue]
+:END:
+Promoted to MVP 2026-10-24 (from Post MVP): the blog surface (markdown widget → timestamps → permalinks → embedded child region) turns this from a theoretical gap into a fitness function — a finished blog with no discoverable public face is not shippable. The demo video depends on it (the closer: paste a =/p/= URL, watch a real unfurl render).
+Public (guest-readable) apps are invisible to non-browser consumers: guest login is a frontend ritual (=guest-auto= posts =/api/login= and holds tokens in the browser), so crawlers, link-preview unfurlers, and RSS readers get 401s from the API — and a cold fetch of any URL returns the empty SPA shell, so search engines and unfurls see no content at all. Surfaced by the markdown-widget / blog direction (2026-10-20).
+
+Direction: a *distinct public URL space*, not same-URL SSR and not bot-UA sniffing. For guest-readable types, serve server-rendered read-only pages at e.g. =/p/<type>/<identity>= (the native blog-engine shape — every real blog serves HTML at the article URL; the SPA stays the editing surface). Bot-UA sniffing at HAProxy is rejected deliberately: UA-list maintenance forever, and cloaking-adjacent. Build-time SSG is also out — content is DB data, unknown at deploy.
+
+- Renderer decision: =3bmd= server-side keeps the deploy Lisp-only and self-contained but is a second markdown renderer that can drift from the FE's =react-markdown= GFM flavor; a =react-dom/server= Node sidecar keeps one renderer but puts Node in the runtime image. Pick deliberately. The sidecar, if chosen, is a batch process at regeneration time, not a per-request dependency.
+- If Lisp-side: the renderer runs in-process and reads the DB directly as the guest role, so crawlability needs no anonymous HTTP read path at all. The anonymous read path (no-credential requests read as the seeded guest; reads only) then survives only as an API-consumer concern — separate decision.
+- Crawler glue: canonical tags on the SPA record views pointing at the public URL; a generated =sitemap.xml=; a copy-link button shares the public URL so unfurlers fetch real HTML.
+- The public pages are a *materialized build product*, not a per-page cache: a render cycle walks every guest-readable type and renders the list view per type plus the view-mode page per record, into a temp tree that atomically swaps into place (never update in place — a deleted or gone-private record must not leave stale HTML being served). The private app is the source; =/p/= is the build output; no per-page invalidation logic exists at all.
+- Regeneration is driven by one *dirty flag*, set by every mutation path: =be-insert= / =be-update= / =be-delete=, =be-set-field-value= (action status writes), user role changes, role permission changes, =resource-roles= writes, and model (re)set. The render thread polls the flag about once a second when idle and starts a pass when set; while rendering it finishes undisturbed, then checks the flag again and starts another pass if it was set meanwhile — multiple sets during a pass coalesce into one re-render. =sitemap.xml= is emitted in the same pass.
+- Serving is static-file cheap: no DB touch, no permission evaluation at request time; =ETag= / =Cache-Control= headers keep bots and unfurlers cheap. Full re-render per change batch is right at Data UI scale (tens to hundreds of records; a pass is milliseconds) — incremental rendering is a non-goal.
+
+Plan: [[file:~/workbench/public-pages-plan.org][public-pages-plan.org]] — all design-shape decisions settled (grammar, renderer, images, human-forward, scale); pending Grok review, then the code-investigation pass (its "Deliberately not covered" list is the table of contents) before READY.
+** TODO Page type (editable content pages)     :model:frontend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-21 Wed]
 :END:
-The list-view Actions column (👁 view / ✏️ edit icon links) goes away: clicking anywhere in a row opens the read-only View form, and the View form gains an Edit button — hidden, not disabled, when the list's =update= flag is false (house visibility rule; rollups and read-only roles get no button). Editing becomes view → Edit, the accepted Gmail trade. Row click, not first-cell click (first cells can be images / NULL / interactive — no reliable target or link styling there). Interactive descendants disarm at one guard in the row handler (=closest('a, button, input, select, textarea, label, [data-no-row-click]')=; lightbox thumbnails carry the marker). Affordance is hover: row tint + pointer cursor. Text-selection drag does not open (=getSelection= guard). Delete ✕ column unchanged. Frontend-only; permission flags already ride =/api/list=.
+Prose an app user is meant to edit — About page, house style guide, landing blurb — as data, not model text: a content type holds one row per page (markdown body, =:identity t= slug, edited in-app under RBAC), and a =:page t= projection type renders one selected row as a full page in the type selector — no list chrome, always expanded, empty state when the row does not exist yet. Static =:page-description= (above) stays the author-prose counterpart; tabs remain model-declared — a page without a tab is just a row. v1 is a read-only projection; in-page editing waits on the per-field editability machinery. Naming settled 2026-10-21: =:page t= survives the collision check — pagination's =page= lives only in query-param / wire namespaces, never a model keyword (keep any future types-payload wire key from being named =page=). =:page-description= on a =:page t= type is a compile error: the page's content /is/ the description, and a collapsible intro on top of a full page is noise. Amended 2026-10-21 after the View form discussion: a page type *requires* =:view-form= (compile error, the rollup-requires-:list-form precedent) and renders it as the page — the reader may not hold read on the content type, so the page cannot borrow its forms. A page type declares no =:list-form= (compile error if it does; absent =:list-form= is already structurally list-less today, so no suppression mechanism is needed), does not use =:hide-list=, and has no list to hide.
 
-Plan: [[file:~/workbench/view-link-plan.org][view-link-plan.org]] (incomplete plan)
-** TODO Date-time picker =:ui= widget                 :model:frontend:mvp:
+Notes: [[file:~/workbench/page-type-notes.org][page-type-notes.org]]
+** TODO Date-time picker =:ui= widget                   :model:frontend:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-29 Sat]
 :END:
@@ -503,7 +636,7 @@ Additional clean, small models (beyond todos, modelbank, chores, books) to prove
 
 ** TODO Remove =:private:= from all doc strings                :maintenance:
 Public, exported function will carry the =:public:= label. We'll assume all the rest are private.
-** TODO Expose host profiles via HAProxy                      :scripts:
+** TODO Expose host profiles via HAProxy                           :scripts:
 :PROPERTIES:
 :CREATED: [2026-08-15 Sat]
 :END:
@@ -531,7 +664,7 @@ Intended inferences (explicit =:widget= always wins):
 :END:
 If no model is selected when uploading an image, the error is cryptic. Instead of "Model is required" or something like that, we get: "Invalid value type for field :IMAGES :MODEL. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-f02]" Model Bank demo polish.
 
-** TODO Move =:model:= templates to =models/template/=   :model:testing:maintenance:
+** TODO Move =:model:= templates to =models/template/= :model:testing:maintenance:
 :PROPERTIES:
 :CREATED: [2026-10-19 Mon]
 :END:
@@ -548,7 +681,7 @@ Two template files carry =:model:= placeholder tokens and are not loadable model
 Lisp and test-suite edits need human permission.
 
 Plan: [[file:~/workbench/models-template-dir-plan.org][models-template-dir-plan.org]].
-** TODO CLI client for importing records                 :scripts:mvp:
+** TODO CLI client for importing records                       :scripts:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-19 Mon]
 :END:
@@ -561,6 +694,8 @@ Context: [[file:~/workbench/data-ui-import-context.org][data-ui-import-context.o
 :CREATED: [2026-08-09 Sun]
 :END:
 Nothing → model → deployed app. Deadline: December 31, 2026.
+
+Montage concept (2026-10-24): ~20 seconds creating and deploying one simple app — nothing → model → deployed, the complete story once — then the remaining ~10 seconds as rapid-fire deployments of a few more apps, 2–3 seconds each. The first 20 seconds carry the claim; the last 10 are repetition at speed, which is the proof. Fits the 30-second ceiling exactly. Beat details live in the video plan: [[file:~/workbench/video-plan.org][video-plan.org]].
 
 **When to shoot:** mid-to-late December — after polish and the features that should appear on camera (search/filtering, sort, static drop-downs, boolean list checkmarks, UI polish, etc.).
 
@@ -955,22 +1090,7 @@ Post-MVP: allow users to *update* (replace) images or files from the forms that 
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
-** TODO Bot-crawlable public pages                    :backend:frontend:
-:PROPERTIES:
-:CREATED: [2026-10-20 Tue]
-:END:
-Public (guest-readable) apps are invisible to non-browser consumers: guest login is a frontend ritual (=guest-auto= posts =/api/login= and holds tokens in the browser), so crawlers, link-preview unfurlers, and RSS readers get 401s from the API — and a cold fetch of any URL returns the empty SPA shell, so search engines and unfurls see no content at all. Surfaced by the markdown-widget / blog direction (2026-10-20).
 
-Direction: a *distinct public URL space*, not same-URL SSR and not bot-UA sniffing. For guest-readable types, serve server-rendered read-only pages at e.g. =/p/<type>/<identity>= (the native blog-engine shape — every real blog serves HTML at the article URL; the SPA stays the editing surface). Bot-UA sniffing at HAProxy is rejected deliberately: UA-list maintenance forever, and cloaking-adjacent. Build-time SSG is also out — content is DB data, unknown at deploy.
-
-- Renderer decision: =3bmd= server-side keeps the deploy Lisp-only and self-contained but is a second markdown renderer that can drift from the FE's =react-markdown= GFM flavor; a =react-dom/server= Node sidecar keeps one renderer but puts Node in the runtime image. Pick deliberately. The sidecar, if chosen, is a batch process at regeneration time, not a per-request dependency.
-- If Lisp-side: the renderer runs in-process and reads the DB directly as the guest role, so crawlability needs no anonymous HTTP read path at all. The anonymous read path (no-credential requests read as the seeded guest; reads only) then survives only as an API-consumer concern — separate decision.
-- Crawler glue: canonical tags on the SPA record views pointing at the public URL; a generated =sitemap.xml=; a copy-link button shares the public URL so unfurlers fetch real HTML.
-- The public pages are a *materialized build product*, not a per-page cache: a render cycle walks every guest-readable type and renders the list view per type plus the view-mode page per record, into a temp tree that atomically swaps into place (never update in place — a deleted or gone-private record must not leave stale HTML being served). The private app is the source; =/p/= is the build output; no per-page invalidation logic exists at all.
-- Regeneration is driven by one *dirty flag*, set by every mutation path: =be-insert= / =be-update= / =be-delete=, =be-set-field-value= (action status writes), user role changes, role permission changes, =resource-roles= writes, and model (re)set. The render thread polls the flag about once a second when idle and starts a pass when set; while rendering it finishes undisturbed, then checks the flag again and starts another pass if it was set meanwhile — multiple sets during a pass coalesce into one re-render. =sitemap.xml= is emitted in the same pass.
-- Serving is static-file cheap: no DB touch, no permission evaluation at request time; =ETag= / =Cache-Control= headers keep bots and unfurlers cheap. Full re-render per change batch is right at Data UI scale (tens to hundreds of records; a pass is milliseconds) — incremental rendering is a non-goal.
-
-Plan: [[file:~/workbench/public-pages-plan.org][public-pages-plan.org]] (partial plan).
 ** TODO Document management                  :frontend:backend:polish:model:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -1174,6 +1294,21 @@ Traps from nearby items, all binding on the split:
 - =handleAction= is coupled to the open edit form (=editRecord=, =formDef=, password gate, re-open on failure); the list-form button item deliberately writes a sibling instead of reusing it. Keep that split when extracting.
 - =submitForm= has two payload paths (add / update), both filtering =formValues= to =formDef= keys with =hasOwnProperty=, not =in= (the =[]= JSON-NULL echo bug). Preserve on both paths.
 - The frontend stays schema-driven — no hard-coded field lists ride along into extracted components.
+
+** TODO Public self-registration                           :backend:frontend:
+:PROPERTIES:
+:CREATED: [2026-10-24 Sat]
+:END:
+Let visitors create their own accounts. Today there is no signup flow: no =/api/signup= route and no SPA form — accounts are created by admins (the users type has an =:email= validation hook, so the field exists). Motivated by the blog direction: comments require registration, and a real blog cannot route every commenter through an admin.
+
+Anti-spam shape settled 2026-10-24 (public-pages planning session): captcha at signup plus a rate limit on posting. Never a captcha per comment — friction would land exactly on the interaction a blog lives on.
+
+- Captcha at signup: Cloudflare Turnstile (free, invisible, one SPA script + one backend verify call with a secret) is the pragmatic v1; Altcha (proof-of-work, fully self-hosted) is the no-external-service alternative. Either kills scripted signup at this scale.
+- Rate limit: N comments/hour/account, enforced in the write path (=be-insert=), not the frontend.
+- Email verification deferred: as pure spam control it doesn't pay for itself (outbound SMTP, deliverability/SPF/DKIM from the cluster, token flow, pending→active account states). Build it when reply notifications want mail infrastructure; spam control rides along.
+- Moderation backstop falls out of RBAC for free: a held-for-review comment is a comment scoped away from the guest role, so it simply doesn't render on /p/ pages (the public renderer walks as guest). No render-side machinery.
+
+Not a public-render concern: writers to public types are registered authors and commenters — single-digit concurrent at worst — and the dirty-flag coalescer absorbs bursts. See [[file:~/workbench/public-pages-plan.org][public-pages-plan.org]].
 
 * Scratch
 

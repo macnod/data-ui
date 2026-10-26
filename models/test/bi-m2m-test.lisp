@@ -31,6 +31,7 @@
           :join-table :book-authors))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :authors
@@ -56,6 +57,7 @@
           :join-table :book-authors))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :book-authors

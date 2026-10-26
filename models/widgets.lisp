@@ -19,4 +19,5 @@
           :column t :not-null t :unique t)))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t)))

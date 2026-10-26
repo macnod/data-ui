@@ -38,6 +38,7 @@
                           :column t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :items-plain
@@ -55,6 +56,7 @@
                            :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      ;; :item-count is the first sortable measure; the declaration

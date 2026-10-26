@@ -285,14 +285,14 @@ The compiler auto-includes the status field on `:update-form` when the button is
 
 ### Placement
 
-Buttons appear on the **update form only**. `fe-fields` excludes `:button` fields from `:list-form` and `:add-form`.
+Buttons appear on the **update form only**. `fe-fields` excludes `:button` fields from `:list-form`, `:add-form`, and `:view-form`.
 
 ### Runtime invocation
 
 `be-action` (backend.lisp) is the sole runtime entry point:
 
 1. Validates type, record, field is `:button` with a compiled hook.
-2. Checks type-level `update` permission + record-level access.
+2. Checks record-level `update` access (the row's own resource; base types degenerate to the type resource).
 3. Reads current status; rejects if `"running"` (in-progress guard).
 4. Sets status to `"running"` via `be-set-field-value`.
 5. Calls the hook with the action contract, passing `:data` (the posted form values) when the caller supplied it.

@@ -47,4 +47,5 @@
           :column t :not-null t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields (:name :url :received :event)))))

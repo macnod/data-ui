@@ -79,6 +79,7 @@
       :list-form (:fields (:covers :title :isbn :description :genres
                             :average-rating :authors :published))
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields (:title :isbn :description :genres :rating :authors
                            :published)))
 
@@ -96,6 +97,7 @@
           :column t :not-null t :unique t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :book-genres
@@ -126,6 +128,7 @@
           :join-table :book-authors))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :my-ratings
@@ -161,6 +164,7 @@
           :column t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :books-by-rating
@@ -202,6 +206,7 @@
           :column t :not-null t :unique t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :covers
@@ -238,6 +243,7 @@
           :column t :not-null t :unique nil))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :book-authors

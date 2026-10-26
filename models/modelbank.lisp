@@ -59,9 +59,11 @@
          (:type :text
            :autofill :user
            :force-sql-name "model_user"
-           :ui (:label "Owner" :widget :textbox :read-only t)
+           :ui (:label "Owner" :widget :textbox :read-only t
+                :filter-with :reference)
            :target :users
            :source (:view :main :table :users :column :name :agg :first)
+           :source-all (:table :users :column :name :agg :list)
            :column t :not-null t)
          :description
          (:type :text :searchable t
@@ -103,6 +105,7 @@
                                     :model-field :model)))
        :list-form (:fields (:name :user :description :model :images :average-rating))
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields (:name :description :model :images :rating)))
 
      :images
@@ -154,6 +157,7 @@
            :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :ratings
@@ -189,6 +193,7 @@
            :column t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :hot-models
@@ -248,6 +253,7 @@
            :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      ;; Petting-zoo D1 overlays: guest reads the built-in account /

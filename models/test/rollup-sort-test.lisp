@@ -36,6 +36,7 @@
                               :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      ;; Leaderboard with sortable pass-through + :sum / :count
@@ -129,5 +130,6 @@
                                :ui (:label "Avg Rating")))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))))
 

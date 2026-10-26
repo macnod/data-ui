@@ -106,6 +106,8 @@
                              :completed :completed-at :completed-by))
        :update-form (:fields (:name :instance-id :description :points :tags
                                :notes :complete))
+       :view-form (:fields (:name :instance-id :description :points :tags
+                               :notes :complete))
        :add-form (:fields (:name :description :points :tags :notes)))
 
      :tags
@@ -122,6 +124,7 @@
            :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :scoreboard

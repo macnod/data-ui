@@ -237,7 +237,8 @@ gates :options to :select; static lists stay :select only)."
            :column t)))))
 
 (test widget-filter-with-rejects-non-boolean-value
-  ":filter-with :select fails compile (only :boolean is legal)."
+  ":filter-with :select fails compile (:boolean and :reference are
+the legal kinds)."
   (signals error
     (widget-compile
       (cons :f1
@@ -427,6 +428,176 @@ no default key at all. Fails if anyone 'fixes' the serializer."
           json-1))
     (is (search "{\"kind\":\"boolean\"}" json-2))
     (is (null (search "default" json-2)))))
+
+(test widget-filter-with-plist-reference-wire-json
+  "Reference wire tripwire: (:kind :reference) serializes as
+{\"kind\":\"reference\"} with no default key, and the bare keyword
+as \"reference\" — the verbatim-passthrough tripwire for the second
+kind."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :text
+                  :target :users
+                  :ui (:filter-with (:kind :reference)
+                        :widget :search-select)
+                  :source (:view :main :table :users :column :name
+                           :agg :first)
+                  :column t))
+             (cons :f2
+               '(:type :text
+                  :target :users
+                  :ui (:filter-with :reference :widget :search-select)
+                  :source (:view :main :table :users :column :name
+                           :agg :first)
+                  :column t))))
+         (ui-1 (getf (getf (getf compiled :fields) :f1) :ui))
+         (ui-2 (getf (getf (getf compiled :fields) :f2) :ui))
+         (json-1 (plist-to-json (list :filter-with
+                                (getf ui-1 :filter-with))))
+         (json-2 (plist-to-json (list :filter-with
+                                (getf ui-2 :filter-with)))))
+    (is (search "{\"kind\":\"reference\"}" json-1))
+    (is (null (search "default" json-1)))
+    (is (search "\"filter-with\":\"reference\"" json-2))))
+
+(test widget-filter-with-reference-compiles
+  "Bare :filter-with :reference on a :target :users field compiles,
+and the compiled :ui carries it verbatim."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :text
+                  :target :users
+                  :ui (:widget :search-select :filter-with :reference)
+                  :source (:view :main :table :users :column :name
+                           :agg :first)
+                  :column t))))
+         (ui (getf (getf (getf compiled :fields) :f1) :ui)))
+    (is (eq :reference (getf ui :filter-with)))))
+
+(test widget-filter-with-plist-reference-compiles
+  "(:kind :reference) on a :target field survives verbatim."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :text
+                  :target :users
+                  :ui (:widget :search-select
+                       :filter-with (:kind :reference))
+                  :source (:view :main :table :users :column :name
+                           :agg :first)
+                  :column t))))
+         (ui (getf (getf (getf compiled :fields) :f1) :ui)))
+    (is (equal '(:kind :reference) (getf ui :filter-with)))))
+
+(test widget-filter-with-reference-rejects-no-target
+  ":filter-with :reference on a :type :text field with no :target
+fails compile."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+           :ui (:filter-with :reference)
+           :source (:view :main :column :f1 :agg :first)
+           :column t)))))
+
+(test widget-filter-with-reference-rejects-join-table
+  ":filter-with :reference on an M2M (:join-table) field fails
+compile — M2M chip filtering is automatic. Builds the joiner +
+target shape (base-model :roles / :role-permissions precedent):
+:wt-tags is a joiner type referencing :wt and :tags; the M2M field
+on :wt declares :type :list, :join-table :wt-tags, and a
+:source (:view … :table :tags :column :name :agg :list)."
+  (signals error
+    (compile-model
+      `(:tags
+         (:table t
+           :create :auto :update :auto :delete :auto
+           :type-roles ("wt-users")
+           :views (:main (:tables (:tags)))
+           :fields
+           (:name
+             (:type :text :identity t
+               :ui (:label "Tag" :widget :textbox)
+               :source (:view :main :column :name :agg :first)
+               :column t :not-null t :unique t))
+           :list-form (:fields t)
+           :update-form (:fields t)
+           :add-form (:fields t))
+         :wt-tags
+         (:table t
+           :is-joiner t
+           :internal t
+           :fields
+           (:wt
+             (:type :uuid :target :wt :column t)
+            :roles
+             (:type :uuid :target :tags :column t)))
+          :wt
+         (:table t
+           :create :auto :update :auto :delete :auto
+           :type-roles ("wt-users")
+           :views (:main (:tables (:wt :tags)))
+           :fields
+           (:name
+             (:type :text :identity t
+               :ui (:label "Wt" :widget :textbox)
+               :source (:view :main :column :name :agg :first)
+               :column t :not-null t :unique t)
+             :tags
+             (:type :list
+               :ui (:widget :checkbox-list
+                    :filter-with :reference)
+               :join-table :wt-tags
+               :source (:view :main :table :tags :column :name
+                        :agg :list)
+               :column t))
+           :list-form (:fields t)
+           :update-form (:fields t)
+           :add-form (:fields t))))))
+
+
+(test widget-filter-with-reference-rejects-default
+  "(:kind :reference :default …) fails compile in both value
+spellings — a reference filter starts unfiltered; every tail key
+is rejected. Full input spelled (a bare :default :x is not a
+:filter-with value at all)."
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+           :target :users
+           :ui (:widget :search-select
+                :filter-with (:kind :reference :default "alice"))
+           :source (:view :main :table :users :column :name :agg :first)
+           :column t))))
+  (signals error
+    (widget-compile
+      (cons :f1
+        '(:type :text
+           :target :users
+           :ui (:widget :search-select
+                :filter-with (:kind :reference :default :x))
+           :source (:view :main :table :users :column :name :agg :first)
+           :column t)))))
+
+(test widget-filter-with-reference-source-column
+  "The compiled :source of a :reference FK field passes a spelled
+:column through verbatim (the write path's own passthrough; the
+wire :column is identity-field-based and pinned separately in
+reference-chip-tests)."
+  (let* ((compiled
+           (widget-compile
+             (cons :f1
+               '(:type :text
+                  :target :users
+                  :ui (:widget :search-select :filter-with :reference)
+                  :source (:view :main :table :users :column :name
+                           :agg :first)
+                  :column t))))
+         (source (u:tree-get (getf compiled :fields) :f1 :source)))
+    (is (eq :name (getf source :column)))))
 
 (test widget-roles-injection-keyword
   "Roles injection uses keyword :checkbox-list, not string."

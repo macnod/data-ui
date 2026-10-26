@@ -697,16 +697,17 @@ user-defined types (non-:built-in), excluding \"admin\"."
 
 (defun show-roles-p (type-key form user)
   "Non-nil when the synthetic :roles checkbox-list belongs on FORM of
-TYPE-KEY: non-base, not :suppress-roles, and FORM is not :list-form
-(list views show no Roles column; the rollup view-mode /api/item
-fallback also passes :list-form). :users' real :roles M2M field is
+TYPE-KEY: non-base, not :suppress-roles, and FORM is neither :list-form
+nor :view-form (list views show no Roles column; the synthetic :roles
+is add/update only — a view surface declares the real :roles field
+itself when it wants it). :users' real :roles M2M field is
 a normal field and unaffected."
   (declare (ignore user))
   (let* ((m *compiled-model*)
           (base (u:tree-get m type-key :base))
           (suppress (u:tree-get m type-key :suppress-roles)))
     (when (and (not base) (not suppress)
-               (not (equal form :list-form)))
+               (not (member form '(:list-form :view-form))))
       t)))
 
 (defun fe-fields (type-key user)
@@ -743,16 +744,36 @@ a normal field and unaffected."
                       (equal form :list-form)
                       (equal field-type :file)))
                (not (and
-                      (member form '(:list-form :add-form))
+                      (member form '(:list-form :add-form :view-form))
                       (equal field-type :button))))
-        append (list field-key (add-to-plist (list
-                                               :default default
-                                               :path path
-                                               :table table
-                                               :not-null (getf field-def :not-null)
-                                               :sortable (getf field-def :sortable)
-                                               :searchable (getf field-def :searchable))
-                                 ui))))))
+        append (list field-key
+                 (add-to-plist
+                   (append
+                     (list
+                       :default default
+                       :path path
+                       :table table
+                       :not-null (getf field-def :not-null)
+                       :sortable (getf field-def :sortable)
+                       :searchable (getf field-def :searchable))
+                     ;; :column rides the leading plist only on
+                     ;; :target fields (the target's identity
+                     ;; display column, downcased string — the
+                     ;; reference chip picker's :in row names it).
+                     ;; Never an unconditional nil: add-to-plist
+                     ;; emits every union key, and a nil :column
+                     ;; would serialize as "column":[] through
+                     ;; plist-to-json's nil-value default. column is
+                     ;; not an *ui-keys* member, so the :ui spread
+                     ;; can never collide with it.
+                     (when (getf field-def :target)
+                       (list
+                         :column
+                         (string-downcase
+                           (string
+                             (identity-field
+                               (getf field-def :target)))))))
+                   ui))))))
 
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))
@@ -807,17 +828,20 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
       :create (user-capability user type-key :create)
       :update (user-capability user type-key :update)
       :delete (user-capability user type-key :delete)
-      :records (add-roles-to-view
-                 type-key
-                 form
-                 user
-                 (mapcar
-                   (lambda (r) (blank-password-fields type-key r))
-                   ;; 08b measure path: RECORDS are already field-key plists
-                   ;; from the GROUP BY query.  No Phase B collapse.
-                   (or records
-                     (view-result-values type-key field-keys
-                       view-result :user user))))
+      :records (decorate-records-with-caps type-key
+                 (add-roles-to-view
+                   type-key
+                   form
+                   user
+                   (mapcar
+                     (lambda (r) (blank-password-fields type-key r))
+                     ;; 08b measure path: RECORDS are already field-key plists
+                     ;; from the GROUP BY query.  No Phase B collapse.
+                     (or records
+                       (view-result-values type-key field-keys
+                         view-result :user user)))
+                   )
+                 user)
       :allowed-values (if skip-allowed-values
                         nil
                         (allowed-values type-key user))
@@ -833,7 +857,6 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
 ;;
 ;; END Internal helper functions
 ;;
-
 ;;
 ;; BEGIN Filesystem functions
 ;;
@@ -1239,6 +1262,116 @@ otherwise."
             (equal user "admin")
             (a:user-allowed *rbac* user permission
               (id-to-resource-name uuid))))))))
+
+(defun permitted-row-ids (type-key user permission)
+  ":private: Resource ids of TYPE-KEY rows USER holds PERMISSION on —
+the set question behind user-allowed-resource's per-id ask, answered
+through the same library join the per-row gate uses (a:list-user-resources
+filtered to the type's resource-name prefix, the user-read-type-ids
+precedent; the library's filter grammar has no id-set operator, so the
+prefix filter is the page-batched form). Consumed past the library's
+pagination: pages repeat (role x resource) rows, so the stop condition
+is distinct ids reaching a:user-resource-count's count with the same
+filters (count is the robust stop; a short page only means no more).
+An empty page is the belt: roles changing mid-loop must not spin
+forever. Returns NIL when the user holds the permission on none."
+  (let* ((search (format nil "~(~a~):%" type-key))
+         (filters `(("resource_name" "like" ,search)))
+         (count (a:user-resource-count *rbac* user permission
+                   :filters filters)))
+    (when (plusp count)
+      (loop
+        with ids = nil
+        and page = 1
+        and page-size = (max a:*default-page-size* count)
+        while (< (length ids) count)
+        do
+        (let ((rows (a:list-user-resources *rbac* user permission
+                      :page page :page-size page-size
+                      :filters filters)))
+          (unless rows (return ids))
+          (dolist (row rows)
+            (pushnew (getf row :resource-id) ids :test #'equal))
+          (incf page))
+        finally (return ids)))))
+
+(defun row-capabilities (type-key records user)
+  ":private: Per-record update/delete capability flags for every
+record in RECORDS (field-key plists). Returns a plist of two alists
+(:update :delete), each mapping every record id to :true / :false —
+keyword booleans, so plist-to-json emits JSON booleans without the
+registry (do not register these keys: a registered bare nil would
+serialize as false, silently converting a forgotten emission into a
+visible denial). Answers exactly what be-update / be-delete answer
+per row (user-allowed-resource semantics), never a hand-rolled join
+that could drift from a:user-allowed. Base types degenerate to the
+one live arm of user-allowed-resource (base-type-p → a:user-allowed
+on the type resource; the member/base-resource-type-keys arm beside
+it is dead code, and not because the else branch re-derives what
+base-type-p rejected — that argument is false — but because
+base-resource-type-keys holds only non-internal base types whose
+rows have no resources rows, so the when resource-name gate ahead of
+it already returns nil). The model-level :update / :delete
+capabilities gate per type with user-capability's own truthiness —
+non-nil = granted (:EQ T IS WRONG: base types store :AUTO) — and a
+nil model capability forces :false on every row with no query, which
+is also the rollup answer (rollups compile both caps to nil)."
+  (flet ((kw (x) (if x :true :false)))
+    (let* ((model-update (u:tree-get *compiled-model* type-key :update))
+           (model-delete (u:tree-get *compiled-model* type-key :delete))
+           (base-p (base-type-p type-key))
+           (type-update
+             (and model-update
+               (a:user-allowed *rbac* user "update"
+                 (type-resource-name type-key))))
+           (type-delete
+             (and model-delete
+               (a:user-allowed *rbac* user "delete"
+                 (type-resource-name type-key))))
+           (update-ids (when (and model-update (not base-p))
+                         (permitted-row-ids type-key user "update")))
+           (delete-ids (when (and model-delete (not base-p))
+                         (permitted-row-ids type-key user "delete"))))
+      (loop for record in records
+        for id = (getf record :id)
+        collect (cons id
+                 (kw (if base-p
+                       type-update
+                       (and update-ids
+                         (member id update-ids :test #'equal)))))
+          into update-alist
+        collect (cons id
+                 (kw (if base-p
+                       type-delete
+                       (and delete-ids
+                         (member id delete-ids :test #'equal)))))
+          into delete-alist
+        finally (return (list :update update-alist
+                          :delete delete-alist))))))
+
+(defun record-capability (id alist)
+  ":private: Lookup ID in a row-capabilities alist, defaulting to
+:FALSE on a miss so an id that somehow escapes the map still emits
+a wire flag (a nil on the record plist would serialize as [] and
+the frontend's === true gate would read it as not-permitted)."
+  (or (cdr (assoc id alist :test #'equal)) :false))
+
+(defun decorate-records-with-caps (type-key records user)
+  ":private: Append :update / :delete keyword flags to every record
+plist, computed per row by row-capabilities. Appends (never
+add-to-plist, whose (or new old) lookup would treat :false as
+unspecified and silently drop the key); reserved-name guards keep
+author fields off these keys, so no shadowing."
+  (let* ((caps (row-capabilities type-key records user))
+         (update-alist (getf caps :update))
+         (delete-alist (getf caps :delete)))
+    (mapcar
+      (lambda (r)
+        (let ((id (getf r :id)))
+          (append r
+            (list :update (record-capability id update-alist)
+              :delete (record-capability id delete-alist)))))
+      records)))
 
 (defun resource-exists-p (type-key field-key value user)
   ":private: Returns T if a records of type TYPE-KEY exists where FIELD-KEY has
@@ -2264,10 +2397,20 @@ the value VALUE."
   ":public: Returns the TYPE-KEY record with the given ID, provided that it is
 accessible to USER. Given the IDs are UUIDs (globally unique), TYPE-KEY is
 optional. However, providing TYPE-KEY helps the function avoid an extra database
-lookup."
+lookup. The :record plist carries :update / :delete keyword flags computed from
+USER's permissions on this row's own resource (the /api/item arm; rec stays
+clean — internal callers feed its :record back through valid-data, which would
+reject the injected keys)."
   (valid-compiled-model)
   (valid-non-rollup-type-key (if type-key type-key (id-to-type-key id)))
-  (rec id user :form form :type-key type-key :public t))
+  (let* ((result (rec id user :form form :type-key type-key :public t))
+         (record (getf result :record))
+         (record-type (or type-key (getf result :type))))
+    (when record
+      (setf (getf result :record)
+        (car (decorate-records-with-caps record-type
+               (list record) user))))
+    result))
 
 (defun be-val (id field-key user &key (form :update-form) type-key)
   ":public: Returns the value for field FIELD-KEY in the TYPE-KEY record with
@@ -3144,7 +3287,11 @@ for those fields.
 
 This function returns the ID of the updated record, or a list of errors if the
 update fails.
-"
+
+The update is allowed when USER holds update on the matched record's own
+resource (base types degenerate to the type resource; the opaque built-in
+:tokens type, which has no row resource, is gated on the type resource
+instead)."
   (valid-compiled-model)
   (valid-type-key type-key)
   (valid-non-rollup-type-key type-key)
@@ -3153,8 +3300,6 @@ update fails.
     (valid-filters filters :required t))
   (valid-data type-key data)
   (valid-user-roles user (remove-existing-non-user-roles user roles))
-  ;; Type-level update permission (backend standalone safety).
-  (valid-user-permissions user type-key "update")
   ;; Non-resource, non-base built-in types (e.g. :tokens) are invisible
   ;; to uuid-exists-p / id-to-type-key / user-allowed-resource, so the
   ;; record-level checks below would lock their callers (REST
@@ -3165,17 +3310,23 @@ update fails.
                            (not (u:tree-get m type-key :internal))))
           (uuid (let ((uuid (id-from-filters-and-data type-key filters data)))
                   (cond
-                    ((and opaque-type-p (uuid-p uuid)) uuid)
+                    ;; No row resource exists, so the type resource is
+                    ;; the only thing to check (the :tokens carve-out).
                     (opaque-type-p
-                      (report-ve "be-update"
-                        "No record of type ~s matches FILTERS/DATA."
-                        ~type-key))
-                    ((and uuid (user-allowed-resource user uuid "update"))
+                      (valid-user-permissions user type-key "update")
+                      (if (uuid-p uuid)
+                        uuid
+                        (report-ve "be-update"
+                          "No record of type ~s matches FILTERS/DATA."
+                          ~type-key)))
+                    ((and uuid
+                       (user-allowed-resource user uuid "update"))
                       (valid-existing-uuid uuid)
                       uuid)
                     (uuid
                       (report-ve "be-update"
-                        "User ~a does not have update permission on record ~a."
+                        "User ~a does not have update permission ~
+                         on record ~a."
                         ~user ~uuid))
                     (t
                       (report-ve "be-update"
@@ -3648,7 +3799,7 @@ Returns a plist:
 
 Signals a validation error if:
   - TYPE-KEY is invalid or lacks action hooks for FIELD-KEY
-  - USER lacks update permission on TYPE-KEY or the record
+  - USER lacks update permission on the record
   - Status is already \"running\" (in-progress guard)"
   (valid-compiled-model)
   (valid-type-key type-key)
@@ -3670,8 +3821,6 @@ Signals a validation error if:
         (report-ve "be-action"
           "Field ~s on type ~s has no action hook."
           ~field-key ~type-key))
-      ;; Type-level update permission
-      (valid-user-permissions user type-key "update")
       ;; Record-level access
       (unless (user-allowed-resource user id "update")
         (report-ve "be-action"

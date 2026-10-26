@@ -143,7 +143,7 @@ Under `:types`, each entry is `type-key` → plist.
 | `:default-sort` | Sort used when a list request sends none | `(:field :asc\|:desc)`; direction optional, defaults `:asc` (**always write the direction**: omitted means `:asc` even on measures, where the automatic policy is `:desc`). Field must exist and be `:sortable t` (compile error otherwise). Absent = current behavior (id-ASC on base types, first-sortable-measure `:desc` on rollups). An explicit request sort always wins. Applies to every `be-list` read of the type with no request sort, including `allowed-values` FK option lists targeting it |
 | `:views` | Named join views | plist; see [Views](#views). Default if omitted (non-joiner): `(:main (:tables (<type-key>)))` |
 | `:fields` | Field definitions | plist; see [Fields](#fields) |
-| `:list-form` / `:add-form` / `:update-form` | FE form specs | `(:fields t)` or `(:fields (:a :b))`; absent/nil → no form |
+| `:list-form` / `:add-form` / `:update-form` / `:view-form` | FE form specs | `(:fields t)` or `(:fields (:a :b))`; absent/nil → no form. Absent `:view-form` means no row click opens a record (no fallback); forbidden on rollups |
 | `:tree` | Tree-structured type | requires `:parent-type` |
 | `:is-leaf` | Leaf vs directory | requires `:tree t` |
 | `:parent-type` | Parent type-key | existing non-base type; requires `:tree t` |
@@ -177,6 +177,8 @@ For author models, use `:auto` or `nil`:
 ```
 
 String form gets full CRUD permissions when the role is created. Every type that participates in RBAC also receives `"admin"`.
+
+A `:type-roles` entry gates *creating* a row of the type (`be-insert`) and *seeing the type*; operations on an existing row are decided by the roles on that row, not by the type resource (`be-update` / `be-action` / `be-delete` are row-only). A role declared with `:create` and `:read` but not `:update` can still edit the rows it sits on — and it sits on the rows that user creates, because insert attaches the type's roles to the new row's resource along with the creator's exclusive role; it does not sit on rows created by others. Type-level create does not imply row update on rows the user did not create.
 
 #### Default type-roles for built-in types
 
@@ -353,7 +355,7 @@ Always a list of 4-tuples, `(table column op value)`, even for one clause. No si
 
 ### Incompatible keys
 
-`:table`, type-level `:type`, `:tree` / `:fs-backed` / `:is-leaf` / `:parent-type`, lifecycle slots, `:write-to`, `:create` / `:update` / `:delete`, `:add-form` / `:update-form` (even nil), extra views beyond `:main`, author `:id`, `:column t`, `:button` fields, `:suppress-roles nil`, type-level `:user-setting` / `:is-joiner` / `:built-in`, and on fields: `:action`, `:validations`, `:compose-string`, `:compose`, `:autofill`, `:source-all`, `:write-to`, `:join-table`, `:target`, `:identity t`. `:grain` or `:filter` on a non-rollup type is also a compile error.
+`:table`, type-level `:type`, `:tree` / `:fs-backed` / `:is-leaf` / `:parent-type`, lifecycle slots, `:write-to`, `:create` / `:update` / `:delete`, `:add-form` / `:update-form` / `:view-form` (even nil), extra views beyond `:main`, author `:id`, `:column t`, `:button` fields, `:suppress-roles nil`, type-level `:user-setting` / `:is-joiner` / `:built-in`, and on fields: `:action`, `:validations`, `:compose-string`, `:compose`, `:autofill`, `:source-all`, `:write-to`, `:join-table`, `:target`, `:identity t`. `:grain` or `:filter` on a non-rollup type is also a compile error.
 
 ### Runtime behavior
 
@@ -413,7 +415,7 @@ Every list read — `be-list` from Lisp, `GET /api/list` over HTTP — accepts t
 | `:form` | `list-form` | Form key to render (`:list-form` / `:update-form` / `:add-form`) |
 | `:filters` | `nil` | List of `(type-key field-key operator value)` 4-tuples (see below); a bare UUID string is also accepted (single-record fetch) |
 
-**Filter operators** (`operator-sql`): `:eq :ne :gt :lt :gte :lte :like :ilike :not-like :not-ilike :in :not-in`. `:in` / `:not-in` take a non-empty list of the field's atom type; nil elements are rejected; `:eq` / `:ne` nil means *is [not] null* (translated to `IS NULL` / `IS NOT NULL`, no placeholder). A filter row may target a joined table's field (including a join-table field); that pulls the join into Phase A (`SELECT DISTINCT id … JOIN …`).
+**Filter operators** (`operator-sql`): `:eq :ne :gt :lt :gte :lte :like :ilike :not-like :not-ilike :in :not-in :has-all`. `:in` / `:not-in` take a non-empty list of the field's atom type; nil elements are rejected; `:eq` / `:ne` nil means *is [not] null* (translated to `IS NULL` / `IS NOT NULL`, no placeholder). `:has-all` is field-scoped to M2M list fields (every value must be attached; the chip picker's emission). A filter row may target a joined table's field (including a join-table field); that pulls the join into Phase A (`SELECT DISTINCT id … JOIN …`). A target-keyed `:in` / `:eq` row — target type key + target identity column, e.g. `(:users :name :in ("admin"))` — compares display values directly against the joined target table; that is the row the reference chip picker emits.
 
 ```lisp
 (be-list :todos "admin" :limit 20 :offset 40 :sort '(:name :desc)
@@ -576,7 +578,7 @@ For M2M list fields, the column used for options and join lookup must be the **s
 
 ### `:ui` subkeys
 
-The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:read-only` and `:hide-label` must be `t` or `nil`, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean` or a plist `(:kind :boolean [:default :true | :false])`, `:enabled-when` must be a non-empty list of `(<field> <op> <value>)` rows (see the row in the table below).
+The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:read-only` and `:hide-label` must be `t` or `nil`, `:help` must be a non-blank string, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean`, `:reference`, or a plist `(:kind <kind> [tail])` (`:boolean` takes an optional `:default :true | :false`; the `:reference` tail is empty), `:enabled-when` must be a non-empty list of `(<field> <op> <value>)` rows (see the row in the table below).
 
 | Subkey | Values / meaning |
 |--------|------------------|
@@ -584,10 +586,11 @@ The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys 
 | `:widget` | `:textbox` \| `:textarea` \| `:code` \| `:markdown` \| `:stars` \| `:select` \| `:search-select` \| `:file` \| `:file-path` \| `:checkbox` \| `:checkbox-list` \| `:password-new` \| `:password-read` \| `:hidden` \| `:button` \| `:image` \| `:image-list` |
 | `:read-only` | boolean (`t` / `nil`); renders display variant instead of editor |
 | `:hide-label` | boolean (`t` / `nil`, default shown); suppresses the field label on Add, Edit, and View forms when the value is self-evident (a blog body needs no "Body" heading). Legal on any widget. List column headers always show the label. Wire form `"hide-label": true` (an explicit `nil` serializes `false`, not `[]`) |
+| `:help` | non-blank string of markdown; help text rendered beside the field label on Add / Edit / View forms via a click-to-toggle "?" button (collapsed by default; inline code for option names, bullets for choices; Esc and click-outside close the panel). Compile error together with `:hide-label t` — the icon anchors to the label. Legal on every widget, including inert cases: `:widget :hidden` fields never reach the wire and help on a rollup field never renders (rollups have no add/update form and list headers ignore it) — both are legal, documented, not rejected. List column headers ignore `:help` (the list-form payload still carries it, verbatim passthrough). Wire form `"help": "<markdown>"` |
 | `:precision` | number; JavaScript `toFixed` for numeric display (e.g. average rating) |
 | `:options` | list of non-empty strings; static dropdown values (requires `:widget :select`) |
 | `:table` | keyword; **overwritten on the wire by `fe-fields`** from source table / type-key; used for `/api/file` URLs. Still authorable (compile-checked as a keyword) but normally left out |
-| `:filter-with` | `:boolean` or `(:kind :boolean [:default :true \| :false])`. Legal solely on a `:type :boolean` field with `:column t`; renders a three-state Any / Yes / No select on the list toolbar. Yes/No sends an `:eq` filter with the string `":true"` / `":false"` (`parse-filters` coerces these to the keywords on boolean fields). `:default` is optional — it seeds the select's initial state on first entry to the type (and Clear filters restores it); omitted means Any, and `:default :any` itself is a compile error (Any is unspellable). Wire forms: `"boolean"` vs `{"kind":"boolean","default":true}`. The default is frontend initial state only — `/api/list` without filter rows returns everything |
+| `:filter-with` | `:boolean` or `(:kind :boolean [:default :true \| :false])` — legal solely on a `:type :boolean` field with `:column t`; renders a three-state Any / Yes / No select on the list toolbar. Yes/No sends an `:eq` filter with the string `":true"` / `":false"` (`parse-filters` coerces these to the keywords on boolean fields). `:default` is optional — it seeds the select's initial state on first entry to the type (and Clear filters restores it); omitted means Any, and `:default :any` itself is a compile error (Any is unspellable). Wire forms: `"boolean"` vs `{"kind":"boolean","default":true}`. The default is frontend initial state only — `/api/list` without filter rows returns everything. `:reference` or `(:kind :reference)` (empty tail — every tail key, not just `:default`, is a compile error; a reference filter starts unfiltered, no `:default` analogue) — legal solely on a `:target` field (no `:join-table`) that the list form includes (compile error otherwise; M2M fields get automatic chip filtering instead). Renders the list-toolbar chip picker over the field's `allowed-values` palette; the picker emits one target-keyed `:in` row per field — `[["users","name","in",["admin"]]]`, first element the field's `:target` type key, second the target's identity display column (the wire `:column`) — union within the field (a single-value FK has no intersection reading), AND across fields *except* two reference fields sharing one target, which collapse to the same row (their selections union; per-field same-target AND is not expressible in v1 — the fix is the joined-column-aliasing relaxation, post-MVP) and with M2M chips (which keep `:has-all` intersection within their own field). Values are display names compared directly against the joined target table — nothing resolves them, so an unknown name matches zero rows, never a 400. Do not "fix" the row into a listed-type row (`[tasks,assigned-to,in,…]` names a display column the join-free base SQL never joins — Postgres 42P01) or a `resolve-reference-id` story (that is the write path's mechanism). Wire forms: `"reference"` vs `{"kind":"reference"}` |
 | `:enabled-when` | non-empty list of `(<field> <op> <value>)` rows, legal solely on `:type :button` fields. Gates the button by **record state**: the frontend renders it disabled and `be-action` rejects (validation error, checked before `"running"` is stamped) when any row fails. Operators (v1 closed set): `:eq :ne :gt :lt :gte :lte :in :not-in`; `:like` family / `:has-all` are rejected as deferred. Rows are AND-composed (appending a row only restricts). `:eq`/`:ne` with an empty literal (`""`) compare against the single empty class — nil, `:null`, or `""` — so `(:model :ne "")` disables until a model is set and `(:model :eq "")` is its mirror; ordering ops fail closed on type mismatch; `:in`/`:not-in` take non-empty literal lists. A row naming a field absent from the record or holding NULL fails the row (**fail closed**). The typical gate targets the button's status companion — `(:complete-status :ne "complete")` disables only after a successful run; `"failed: …"` keeps the button live (the re-run recovery path) — but any field on the type works (gate the status companion, not a `:completed` boolean, so failed runs stay re-runnable). Wire form (keywords serialize as strings): `"enabled-when": [["complete-status","ne","complete"]]`. `:enabled-when` is the one dual-consumed `:ui` subkey (backend enforcement + frontend disable); the rest are presentation-only |
 | `:directory-type` | keyword; **required** with `:widget :file-path` (and only legal there — the `:options`/`:select` precedent). Names the type whose rows fill the widget's folder select; must name an existing type in the model (compile-checked). The frontend reads that type's list form for the `:path t` field (the folder column — schema-derived, not assumed to be `:name`) and lists it via `/api/list`, so options are exactly the directories the current user can read; `/` is always offered and is the default when the path is empty. No filtering beyond what `/api/list` already enforces |
 
@@ -599,7 +602,7 @@ Widget semantics:
 - `:markdown`: renders the value as Markdown (react-markdown + remark-gfm: tables, strikethrough, task lists, autolinks) in list cells and View mode; Edit and Add stay a plain `:textarea` (~8 rows, same as `:textarea`). Legal only on `:type :text` + `:column t` fields, never on `:target` fields (compile error; rollup fields are covered by the column rule — a rollup has no table). No raw HTML (default escaping, no `dangerouslySetInnerHTML` — anyone with update permission writes the field, so XSS would be privilege escalation); links open in a new tab (`target="_blank" rel="noopener noreferrer"`). List cells clamp to ~4.5em with overflow hidden (the `:code` treatment; View mode is the reading surface); an empty list cell renders nothing, an empty View renders an em dash
 - `:stars`: interactive StarRating (editable) or static (read-only / list)
 - `:checkbox`: single boolean checkbox
-- `:checkbox-list`: multi-select from `allowed-values`; the frontend adds client-side search once the option set reaches 10. On list views, chip-filterable fields (the same widget, joined table) also offer a searchable per-field chip picker fed by `allowed-values`, applying the same `has-all` filter a cell chip applies
+- `:checkbox-list`: multi-select from `allowed-values`; the frontend adds client-side search once the option set reaches 10. On list views, chip-filterable fields (the same widget, joined table) also offer a searchable per-field chip picker fed by `allowed-values`, applying the same `has-all` filter a cell chip applies — M2M chips keep emitting `has-all` (intersection within the field, unchanged); the reference picker's target-keyed `:in` row is the union spelling, and both operators stay wire-legal for direct API use
 - `:select`: `<select>` dropdown. Two modes:
   - **Relation** (default): options from `allowed-values` via `:target` (foreign key). Requires `:target` + `:source` + `:source-all`.
   - **Static**: options from `:options` (a list of non-empty strings). Requires `:ui (:widget :select :options (...))`. No `:target` or `:join-table`. The stored value is the option string itself. See `models/test/static-select-test.lisp` for an example.
@@ -754,6 +757,7 @@ See `docs/hook-registry.md` → Registered Lifecycle Hooks for the full `:compos
 :list-form   (:fields t)
 :add-form    (:fields (:name :description :model))
 :update-form (:fields t)
+:view-form   (:fields (:title :body))
 ```
 
 Only `:fields` is meaningful under each form:
@@ -768,17 +772,21 @@ Only `:fields` is meaningful under each form:
 
 A field is emitted when:
 
-1. the form includes it (`t` or explicit list; non-base `:roles` always eligible when shown on `:add-form` / `:update-form` — never `:list-form`)
+1. the form includes it (`t` or explicit list; non-base `:roles` always eligible when shown on `:add-form` / `:update-form` — never `:list-form`, never `:view-form`)
 2. it has `:ui :widget` (or is injected roles)
 3. widget is not `:hidden`
 4. not (`:list-form` and `:type :file`)
-5. not (`:list-form` or `:add-form` and `:type :button`)
+5. not (`:list-form`, `:add-form`, or `:view-form` and `:type :button`)
 
-Buttons appear on the **update form only**.
+Buttons appear on the **update form only** (an explicit `:button` in a view-form field list is compile-legal, v1 unused — the wire excludes it).
 
-If an explicit `:update-form` lists a button field, the compiler auto-appends the companion `:<button>-status` field (`augment-update-form`).
+If an explicit `:update-form` lists a button field, the compiler auto-appends the companion `:<button>-status` field (`augment-update-form`). A view form gets no auto-append; under `:fields t` the status companions land in the view form (accepted feature — a read surface showing a deploy outcome is desirable), and a view form that wants one names it.
 
 Emitted field meta includes `:default`, `:path`, `:table`, and the full `:ui` plist.
+
+### `:view-form` specifics
+
+Absent `:view-form` means **no view surface** — the frontend row click opens a record only when the `/api/list` payload carries `view-form`; the View form's Edit button renders only when the fetched record's `update` flag is true (row-level — a creator can edit rows their role sits on without type-level update); there is no fallback to `update-form` or `list-form` (same uniformity as absent `:add-form` meaning no Add surface). Payload presence ⇔ declaration: `fe-fields` emits `:view-form` only for types that declare it, so an undeclared type's payload stays byte-identical. Rollup types must not declare it (compile error; only `:list-form` is legal there).
 
 ---
 
@@ -1017,7 +1025,7 @@ Status writes go through `be-set-field-value` only.
 ### Placement and permissions
 
 - Update form only
-- Permission: type-level `update` + record-level access (same as `be-update`)
+- Permission: record-level `update` access, same as `be-update` (the row's own resource; base types degenerate to the type resource)
 - REST: `POST /api/actions` with `{"type", "id", "field"}`
 
 Full contract and registered actions: `docs/hook-registry.md`.
@@ -1146,7 +1154,7 @@ Marked `:base-field t`. Not part of author field lists.
 
 ### Roles field
 
-Non-base types without `:suppress-roles` get a synthetic `:roles` checkbox-list on the add and update forms only (view mode renders the update form); list views carry no Roles column except `:users`'s real `:roles` field. `allowed-values.roles` is filtered to roles the current user may assign: their own roles, "public", the type's `:type-roles`, and every other user's shareable exclusive role (point-to-point sharing).
+Non-base types without `:suppress-roles` get a synthetic `:roles` checkbox-list on the add and update forms only (never the view form or list views). `allowed-values.roles` is filtered to roles the current user may assign: their own roles, "public", the type's `:type-roles`, and every other user's shareable exclusive role (point-to-point sharing).
 
 ### Table and column naming
 
@@ -1173,7 +1181,7 @@ Always merged into every compiled model:
 | Type | Flags | Notes |
 |------|-------|-------|
 | `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` and `:sortable t`; `:name` must be lowercase letters, digits, and dashes — start with a letter, end with a letter or digit (`^[a-z][a-z0-9-]*[a-z0-9]$`, 2+ chars) — login keeps the looser rbac policy so legacy names still work |
-| `:resources` | base, built-in, internal | no CRUD |
+| `:resources` | base, built-in, internal | no CRUD; declares no forms at all (internal + display nil — no UI surface can request them) |
 | `:permissions` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
 | `:roles` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
 | `:role-permissions`, `:resource-roles`, `:role-users` | base, built-in, joiner, internal | |
@@ -1181,7 +1189,7 @@ Always merged into every compiled model:
 | `:secrets` | built-in, not base, suppress-roles, category `:settings` | per-user secrets; `:name` is `:searchable t` |
 | `:tokens` | built-in, not base, no display | internal token store |
 
-RBAC types are treated like user-defined types at the API level (e.g. assign roles the same way you assign tags).
+RBAC types are treated like user-defined types at the API level (e.g. assign roles the same way you assign tags). `:users`, `:roles`, `:permissions`, `:settings`, and `:secrets` carry `:view-form (:fields t)` beside their `:update-form` (the built-in reading surfaces); `:resources` declares no forms at all.
 
 ---
 
@@ -1411,13 +1419,13 @@ One click closes the record (close fields written to the old row, which becomes 
 
 **Top-level:** `:title` `:name` `:version` `:domain` `:domain-stg` `:repl` `:guest-allowed` `:guest-auto` `:api-roles` `:landing-page` `:new-roles` `:types`
 
-**Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles` `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form` `:tree` `:is-leaf` `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category` `:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter` `:page-description` `:page-description-open` lifecycle slots
+**Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles` `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form` `:view-form` `:tree` `:is-leaf` `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category` `:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter` `:page-description` `:page-description-open` lifecycle slots
 
 **View:** `:tables` `:scope`
 
 **Field:** `:type` `:ui` `:column` `:default` `:not-null` `:unique` `:identity` `:compose` `:required` `:validations` `:source` `:source-all` `:join-table` `:target` `:write-to` `:autofill` `:force-sql-name` `:path` `:action` `:sortable` `:searchable` `:default-from` `:css-value` `:primary-key` / joiner `:reference`
 
-**UI:** `:label` `:widget` `:read-only` `:precision` `:options` `:table` `:filter-with` `:enabled-when` `:directory-type`
+**UI:** `:label` `:widget` `:read-only` `:hide-label` `:help` `:precision` `:options` `:table` `:filter-with` `:enabled-when` `:directory-type`
 
 **Source:** `:view` `:table` `:column` `:agg` `:scope`
 

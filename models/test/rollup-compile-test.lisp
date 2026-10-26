@@ -42,6 +42,7 @@
                              :column t))
     :list-form (:fields t)
     :update-form (:fields t)
+    :view-form (:fields t)
     :add-form (:fields t))
 
   :user-leaderboard
@@ -88,6 +89,7 @@
                           :column t :not-null t))
     :list-form (:fields t)
     :update-form (:fields t)
+    :view-form (:fields t)
     :add-form (:fields t))
 
   :task-notes
@@ -107,6 +109,7 @@
                      :column t :not-null t))
     :list-form (:fields t)
     :update-form (:fields t)
+    :view-form (:fields t)
     :add-form (:fields t))
 
   :note-summary
@@ -143,6 +146,7 @@
                      :column t :not-null t))
     :list-form (:fields t)
     :update-form (:fields t)
+    :view-form (:fields t)
     :add-form (:fields t))
 
   :widgets
@@ -162,6 +166,7 @@
                     :column t :not-null t))
     :list-form (:fields t)
     :update-form (:fields t)
+    :view-form (:fields t)
     :add-form (:fields t))
 
   :my-widgets
@@ -195,5 +200,6 @@
                     :column t :not-null t))
     :list-form (:fields t)
     :update-form (:fields t)
+    :view-form (:fields t)
     :add-form (:fields t))))
 

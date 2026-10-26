@@ -26,6 +26,7 @@
          :column t :not-null t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t)
       :page-description "These are the **notes**."
       :page-description-open t)
@@ -45,6 +46,7 @@
           :column t :not-null t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t)
       :page-description "Collapsed by default."
       :page-description-open nil)
@@ -63,6 +65,7 @@
           :column t :not-null t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     ;; Rollup path, deliberately display-less: the rollup overlay

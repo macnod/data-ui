@@ -226,10 +226,12 @@ admin, guest, alice, bob, carol)."
 
 (test mrb-rows-are-field-key-plists
   "Row keys are the field keys (:id, :name); no Phase B collapse, no
-alias keys."
+alias keys. The trailing :update / :delete are the per-record
+capability flags (shape-stable :false on rollups)."
   (let* ((r (be-list :user-leaderboard "admin"))
          (alice (mrb-record-by-name r "alice")))
-    (is (equal '(:id :name :total-points :chores-done)
+    (is (equal '(:id :name :total-points :chores-done
+                 :update :delete)
             (u:plist-keys alice)))))
 
 (test mrb-zero-fact-list-and-avg

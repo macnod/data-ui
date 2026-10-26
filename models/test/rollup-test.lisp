@@ -39,6 +39,7 @@
                       :column t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     ;; Test 13/13b: leaf fact table two hops from grain,
@@ -61,6 +62,7 @@
                :column t :not-null t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     ;; Tests 1-9, 14, 16: the board. SUM + COUNT over completed
@@ -168,6 +170,7 @@
                   :join-table :award-users))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     :award-users

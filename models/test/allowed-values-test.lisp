@@ -46,6 +46,7 @@
           :column t))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))
 
     ;; the whole point: users hidden from non-admins

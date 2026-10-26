@@ -24,4 +24,5 @@
          :source (:view :main :column :body :agg :first)))
       :list-form (:fields t)
       :update-form (:fields t)
+      :view-form (:fields t)
       :add-form (:fields t))))

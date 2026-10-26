@@ -27,6 +27,7 @@
            :column t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :files
@@ -59,6 +60,7 @@
            :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
      
      :parts
@@ -110,6 +112,7 @@
            :column t :not-null nil :unique nil))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :part-files

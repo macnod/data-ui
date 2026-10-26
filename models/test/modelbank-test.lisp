@@ -21,6 +21,7 @@
            :column t :not-null t :unique t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :models
@@ -75,6 +76,7 @@
                                     :model-field :model)))
        :list-form (:fields (:name :description :model :images :average-rating))
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields (:name :description :model :images :rating)))
 
      :images
@@ -119,6 +121,7 @@
            :column t :not-null t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
 
      :ratings
@@ -154,6 +157,7 @@
            :column t))
        :list-form (:fields t)
        :update-form (:fields t)
+       :view-form (:fields t)
        :add-form (:fields t))
      ;; Petting-zoo D1 overlays: guest reads the built-in account /
      ;; role / permission lists (tier identity stays visible; :settings
