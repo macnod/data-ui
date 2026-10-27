@@ -130,7 +130,7 @@ tr.row-clickable:hover {
   font-size: 0.9em;
 }
 
-/* --- Clickable value chips (M2M filter) --- */
+/* --- Clickable value chips (M2M and reference filter) --- */
 
 .chip {
   display: inline-block;

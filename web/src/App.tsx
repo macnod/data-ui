@@ -191,7 +191,7 @@ const buildChipFieldMeta = (
   const meta: Record<string, { table: string,
                                column?: string,
                                label: string, m2m: boolean }> = {}
-  for (const f of Object.keys(form)) {
+  for (const f of formFieldKeys(form)) {
     const fld = form[f]
     if (fld['widget'] === 'checkbox-list'
         && fld.table && fld.table !== type) {
@@ -220,6 +220,19 @@ const boolDefaultsOf = (
         [fieldKey, filterWithDefault(f['filter-with'])])
       .filter(([, d]) => d !== null)
   ) as Record<string, 'yes' | 'no'>
+
+// Wire form objects carry one non-field key: 'hide-list' (a
+// form-level declaration the backend appends beside the field
+// entries). Field walks must not see it. The parameter is
+// Record<string, any> — the ListResponse forms are declared
+// Record<string, Field>, and reading the flag off a Field-typed
+// value does not compile (no overlap between Field and boolean);
+// structural typing makes the wire value assignable here. Do not
+// add 'hide-list' to Field (it is not a field).
+const formFieldKeys = (
+  form: Record<string, any> | undefined
+): string[] =>
+  Object.keys(form || {}).filter(k => k !== 'hide-list')
 
 interface ListResponse {
   status: string
@@ -1175,6 +1188,24 @@ function App() {
   const viewFormName = 'view-form'
   const openFormName = isViewMode ? viewFormName : 'update-form'
 
+  // The open form's :hide-list t: the author suppressed the list
+  // (table, pagination, record count) while this form is open.
+  // Resolve the open form once with the renderer's own precedence
+  // — isEditMode before showAddForm, the <form> block's condition
+  // (isViewMode implies isEditMode; both derive from editRecord) —
+  // then read the flag through Record<string, any> (a Field-typed
+  // index does not compile against boolean; the flag is not a
+  // field). Absent, false, and a legacy [] all mean show — strict
+  // === true, the hide-label guard's shape. No form open →
+  // undefined → false → the list shows: that is the whole
+  // product rule.
+  const activeForm = isEditMode
+    ? data?.result?.[openFormName]
+    : showAddForm ? data?.result?.['add-form'] : undefined
+  const hideList =
+    (activeForm as Record<string, any> | undefined)
+      ?.['hide-list'] === true
+
   // Total comes from the last successful fetch envelope; do not
   // derive it from records.length (wrong on any page past 1).
   const totalRecords = data?.result?.total ?? 0
@@ -1207,8 +1238,10 @@ function App() {
     // element the field's :target type key, second the target's
     // identity display column (the wire :column), union within the
     // field (a single-value FK has no intersection reading); two
-    // reference fields sharing one target collapse to the same row
-    // (their selections union, they do not AND — v1 limitation).
+    // reference fields sharing one target emit two rows, ANDed
+    // through the one shared join column (distinct selections
+    // typically match nothing — v1 limitation; the joined-column
+    // aliasing relaxation owns per-field rows).
     // Across fields the rows AND-compose. Both families' rows are
     // form-dependent (meta comes from the arrived form), hence the
     // chipMeta guard: an empty map when formReady is false — no
@@ -1521,7 +1554,7 @@ function App() {
       const cleared: Record<string, any> = { ...fullRecord }
       const openFormMeta = data?.result?.[formName] || {}
       const gatedFields = new Set<string>()
-      for (const f of Object.keys(openFormMeta)) {
+      for (const f of formFieldKeys(openFormMeta)) {
         const rows = openFormMeta[f]?.['enabled-when']
         if (!rows) continue
         for (const row of rows) gatedFields.add(row[0])
@@ -1698,7 +1731,7 @@ function App() {
     // Password confirmation gate: the same loop submitForm runs.
     // Without it the confirm boxes are decorative on the one path
     // that actually changes a password (e.g. :change-password).
-    for (const f of Object.keys(formDef)) {
+    for (const f of formFieldKeys(formDef)) {
       if (formDef[f]['widget'] !== 'password-new') continue
       const pw = typeof formValues[f] === 'string'
         ? formValues[f] : ''
@@ -1717,7 +1750,7 @@ function App() {
     // objects, array-valued roles, and status companions are not
     // JSON-representable form data).
     const actionData: Record<string, string> = {}
-    for (const f of Object.keys(formDef)) {
+    for (const f of formFieldKeys(formDef)) {
       const w = formDef[f]['widget']
       if (!['password-new', 'password-read', 'textbox', 'textarea',
             'select', 'code'].includes(w)) continue
@@ -1809,7 +1842,7 @@ function App() {
     // Password confirmation gate: every :widget :password-new field
     // on the form must match its confirmation box before anything
     // is sent (covers both the JSON and file-upload paths below).
-    for (const f of Object.keys(formDef)) {
+    for (const f of formFieldKeys(formDef)) {
       if (formDef[f]['widget'] !== 'password-new') continue
       // An untouched edit-form password arrives from the backend
       // as [] (the JSON form of nil), which is truthy and !== '' —
@@ -1825,7 +1858,8 @@ function App() {
       }
     }
 
-    const fileField = Object.keys(formDef).find(f => formDef[f]['widget'] === 'file')
+    const fileField = formFieldKeys(formDef)
+      .find(f => formDef[f]['widget'] === 'file')
     const fileValue = fileField ? formValues[fileField] : null
 
     if (fileField && fileValue instanceof File) {
@@ -1836,7 +1870,7 @@ function App() {
       // multipart boundary automatically (see apiFetch).
       const formData = new FormData()
       formData.append('type', type)
-      for (const f of Object.keys(formDef)) {
+      for (const f of formFieldKeys(formDef)) {
         const value = formValues[f]
         if (value === undefined || value === null) continue
         if (f === fileField) {
@@ -1901,13 +1935,18 @@ function App() {
       // are stale echoes — drop them. hasOwnProperty, not `k in
       // formDef`: `in` walks the prototype chain, so a field
       // literally named toString or constructor would false-positive.
+      // Membership through formFieldKeys keeps the own-property
+      // protection while excluding the form-level 'hide-list' key —
+      // a seeded formValues['hide-list'] must never ride to the
+      // server (POST 1 appends it to FormData directly otherwise).
       // On-form empty arrays (checkbox-list / image-list "clear
       // all") still go out; empty strings stay dropped as today.
       const { roles, [fileField]: _omit, ...rest } = formValues
+      const allowedKeys = new Set(formFieldKeys(formDef))
       const filteredRest = Object.fromEntries(
         Object.entries(rest).filter(
           ([k, v]) =>
-            Object.prototype.hasOwnProperty.call(formDef, k) &&
+            allowedKeys.has(k) &&
             (typeof v !== 'string' || v.trim() !== '')
         )
       )
@@ -1933,13 +1972,16 @@ function App() {
     // record in edit mode, and off-form keys (e.g. the [] echo of a
     // NULL timestamp the update form does not render) must not ride
     // along on the update — absent keys leave their columns
-    // untouched. On-form empty arrays (checkbox-list / image-list
+    // untouched. Membership through formFieldKeys (own-property
+    // derived, 'hide-list' excluded — the seeded phantom-field
+    // leak). On-form empty arrays (checkbox-list / image-list
     // "clear all") still go out; empty strings stay dropped.
     const { roles, ...rest } = formValues
+    const allowedKeys = new Set(formFieldKeys(formDef))
     const filteredRest = Object.fromEntries(
       Object.entries(rest).filter(
         ([k, v]) =>
-          Object.prototype.hasOwnProperty.call(formDef, k) &&
+          allowedKeys.has(k) &&
           (typeof v !== 'string' || v.trim() !== '')
       )
     )
@@ -2682,9 +2724,7 @@ function App() {
     )
   }
 
-  const listFields = Object.keys(data.result['list-form'])
-  const addFields: string[] =
-    data.result['add-form'] ? Object.keys(data.result['add-form']) : []
+  const listFields = formFieldKeys(data.result['list-form'])
   const records = data.result.records
   // Page-level ✕ gate: any visible row deletable under its own
   // per-record flag (a creator-delete user holds no type-level
@@ -2708,13 +2748,15 @@ function App() {
   // (checkbox-list whose source table differs from the listed
   // type; e.g. users.roles, table "roles" ≠ "users") and
   // reference (:filter-with :reference, table is the :target,
-  // column is the target's identity display column). The m2m bit
-  // also gates cell click-to-filter — a reference cell can arrive
-  // as the [] nil encoding of a NULL FK and must not render as
-  // chips. Plain call, not useMemo: this site sits after the
-  // "No records" early return, and a conditional hook would
-  // change the hook count between renders (React #310). The walk
-  // is a cheap object scan over the form — memo bought nothing.
+  // column is the target's identity display column). Cell
+  // click-to-filter follows membership for both families — the
+  // per-family render guards at the cell site own the [] nil
+  // encoding of a NULL FK (M2M needs an array, reference a
+  // non-empty string). Plain call, not useMemo: this site sits
+  // after the "No records" early return, and a conditional hook
+  // would change the hook count between renders (React #310). The
+  // walk is a cheap object scan over the form — memo bought
+  // nothing.
   const chipFieldMeta = buildChipFieldMeta(
     data.result['list-form'] || {}, type)
   const hasChipFields = Object.keys(chipFieldMeta).length > 0
@@ -3052,7 +3094,7 @@ function App() {
                          'file', 'button', 'hidden'])
               : new Set(['hidden'])
             const formMeta = data.result[openFormName] || {}
-            const anyLabelShown = Object.keys(formMeta).some(f =>
+            const anyLabelShown = formFieldKeys(formMeta).some(f =>
               formMeta[f]['hide-label'] !== true
               && !skippedInMode.has(formMeta[f]['widget']))
             return anyLabelShown ? '' : 'form-no-labels'
@@ -3083,9 +3125,9 @@ function App() {
             </button>
           </div>
 
-          {(isEditMode
-            ? Object.keys(data.result[openFormName] || {})
-            : addFields).map(f => {
+          {(formFieldKeys(isEditMode
+             ? data.result[openFormName] || {}
+             : data.result['add-form'] || {})).map(f => {
             const fieldMeta = isEditMode
               ? (data.result[openFormName] || {})[f]
               : (data.result['add-form'] || {})[f]
@@ -3220,7 +3262,7 @@ function App() {
               // this form map can see. At most one file field
               // exists today (submitForm's find makes the same
               // assumption).
-              const fileFieldKey = Object.keys(
+              const fileFieldKey = formFieldKeys(
                 isEditMode
                   ? (data.result[openFormName] || {})
                   : (data.result['add-form'] || {})
@@ -3470,6 +3512,7 @@ function App() {
         </form>
       )}
 
+      {!hideList && (
       <table>
         <thead>
           <tr>
@@ -3554,14 +3597,43 @@ function App() {
                 const field = data.result['list-form'][f]
                 // Global one-line rule: text cells clamp to one
                 // line with an ellipsis; the full value rides
-                // along as the hover tooltip. Media cells and chip
-                // cells keep their own layout (chips wrap).
+                // along as the hover tooltip. Media cells and
+                // chip cells (M2M arrays, reference scalars)
+                // keep their own layout (chips wrap).
                 const widget = field['widget'] || ''
                 const isMedia =
                   widget === 'image' || widget === 'image-list'
-                const isChipCell =
-                  f in chipFieldMeta && chipFieldMeta[f].m2m
-                const clamp = !(isMedia || isChipCell)
+                // Chip membership is the shared chipFieldMeta
+                // rule (the picker's own), tested as an own
+                // property — the object literal's prototype
+                // would otherwise hand a non-chip field named
+                // constructor / toString inherited metadata
+                // through `in`. Membership gates the render
+                // branches below; the clamp follows what
+                // actually renders (per-family guards: M2M
+                // needs an array — an empty array renders the
+                // empty chip-cell span, as today; reference
+                // needs a non-empty string — NULL FKs arrive
+                // as the [] nil encoding and fall through,
+                // clamped). A future chip family without its
+                // own branch here renders via renderCellValue,
+                // clamped — safe.
+                const meta =
+                  Object.prototype.hasOwnProperty.call(
+                    chipFieldMeta, f)
+                  ? chipFieldMeta[f] : undefined
+                // Reference scalar chip value, computed in the
+                // component body (JSX children cannot hold a
+                // bare IIFE — only expressions in {}).
+                const refVal = meta && !meta.m2m
+                  && typeof rec[f] === 'string' && rec[f] !== ''
+                    ? rec[f] : null
+                // Clamp exemption couples to the render
+                // branches, not membership alone.
+                const chipRendered =
+                  (meta && meta.m2m
+                    && Array.isArray(rec[f])) || refVal !== null
+                const clamp = !(isMedia || chipRendered)
                 const cellStyle: React.CSSProperties | undefined =
                   clamp ? {
                     maxWidth: '22rem',
@@ -3576,7 +3648,7 @@ function App() {
                     key={f} style={cellStyle}
                     title={tip || undefined}
                   >
-                    {isChipCell && Array.isArray(rec[f])
+                    {meta && meta.m2m && Array.isArray(rec[f])
                       ? (
                         <span className="chip-cell">
                           {(rec[f] as string[]).map(v => {
@@ -3598,6 +3670,23 @@ function App() {
                           })}
                         </span>
                       )
+                      : meta && !meta.m2m && refVal !== null
+                      ? (
+                        <span className="chip-cell">
+                          <button
+                            type="button"
+                            className={(listFilters[f] || [])
+                              .includes(refVal)
+                              ? 'chip chip-active' : 'chip'}
+                            title={(listFilters[f] || [])
+                              .includes(refVal)
+                              ? `Remove filter: ${refVal}`
+                              : `Filter by ${refVal}`}
+                            onClick={() =>
+                              toggleChipFilter(f, refVal)}
+                          >{refVal}</button>
+                        </span>
+                      )
                       : renderCellValue(rec[f], field)}
                   </td>
                 )
@@ -3606,7 +3695,9 @@ function App() {
           ))}
         </tbody>
       </table>
+      )}
 
+      {!hideList && (
       <div className="list-footer">
         {totalPages > 1 && (
           <div className="pagination">
@@ -3639,6 +3730,7 @@ function App() {
         )}
         <span className="record-count">{totalRecords} records</span>
       </div>
+      )}
     </div>
   )
 }

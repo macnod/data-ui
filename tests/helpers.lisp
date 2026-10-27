@@ -1095,6 +1095,21 @@ view-form-test fixture."
     (explain! results)
     (when collect results)))
 
+(defun run-hide-list-tests (&optional collect)
+  ":hide-list tests: compile acceptance / rejection probes (no
+model needed) plus wire emission and backend read checks on the
+hide-list-test fixture (seeds 21 posts / 1 draft via
+hl-seed-fixture, defined in the test file — load it first)."
+  (let ((results
+          (append
+            ;; Compile probes (pure compile-model, no DB)
+            (run 'hide-list-compile)
+            ;; Wire + backend reads (needs a live compiled model)
+            (with-model "hide-list-test" #'hl-seed-fixture
+              (run 'hide-list-wire)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-reference-chip-tests (&optional collect)
   "Reference chip picker (:filter-with :reference) tests: compile
 probes and the fe-fields wire-column emission (no DB model needed
@@ -1165,6 +1180,7 @@ groups."
                    ("page-description" . run-page-description-tests)
                    ("field-help"    . run-field-help-tests)
                    ("view-form"     . run-view-form-tests)
+                   ("hide-list"     . run-hide-list-tests)
                    ("reference-chip" . run-reference-chip-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)

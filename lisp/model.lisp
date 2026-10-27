@@ -1553,6 +1553,12 @@ from a:login on \"\"."
 
 (defparameter *forms* '(:list-form :add-form :update-form :view-form))
 
+(defparameter *form-keys* '(:fields :hide-list)
+  "Closed set of legal keys on a form plist (:list-form, :add-form,
+:update-form, :view-form). An author key outside this set is a compile
+error (valid-hide-list). :hide-list is t or nil, legal on :view-form /
+:update-form / :add-form only — never :list-form.")
+
 (defparameter *widgets*
   '(:textbox :textarea :code :markdown :stars :checkbox :checkbox-list :select
      :search-select :file :file-path :password-new :password-read
@@ -3755,6 +3761,46 @@ Mirrors the previous runtime type-category logic."
               "In type ~s, ~s contains an unknown field ~s"
               ~type-key ~form-field ~field-key))))
 
+(defun valid-hide-list (type-key type-def)
+  ":private: :hide-list is a form-level key, sibling of :fields,
+legal on :view-form, :update-form, and :add-form only. t or nil;
+present-nil is an explicit show and must survive the wire (key
+membership on u:plist-keys, never raw member on the plist — raw
+member scans values too — and never bare getf, which cannot tell
+present-nil from absent without a sentinel). On :list-form the
+key is a compile error even as nil — the list form is the list;
+the key has no reading there. Any form key outside *form-keys*
+is a compile error (closed set, the *ui-keys* precedent).
+Signals report-e otherwise. Does not tighten the :fields
+contract — valid-form-fields owns that, and it signals first on
+shapes it walks (malformed-form values may die in earlier
+validators or plist utilities before this one; only the plist
+gate here is this validator's own message)."
+  (dolist (form *forms*)
+    (let ((form-def (getf type-def form)))
+      (when form-def
+        (unless (u:plistp form-def)
+          (report-e "valid-hide-list"
+            "~s on type ~s must be a plist (:fields …), got ~s."
+            ~form ~type-key ~form-def))
+        (dolist (key (u:plist-keys form-def))
+          (unless (member key *form-keys*)
+            (report-e "valid-hide-list"
+              "Unknown key ~s on ~s of type ~s. Legal keys: ~{~a~^, ~}."
+              ~key ~form ~type-key ~*form-keys*)))
+        (when (member :hide-list (u:plist-keys form-def))
+          (let ((value (getf form-def :hide-list)))
+            (unless (or (eq value t) (null value))
+              (report-e "valid-hide-list"
+                ":hide-list on ~s of type ~s must be t or nil, got ~s."
+                ~form ~type-key ~value))
+            (when (eq form :list-form)
+              (report-e "valid-hide-list"
+                ":hide-list is not legal on :list-form of type ~s; ~
+                 it hides the list while another form is open, and ~
+                 :list-form is the list."
+                ~type-key))))))))
+
 (defun valid-filter-with-list-form (type-key type-def)
   ":private: :filter-with :reference is legal only on a field the
 list form includes — a picker that can never render is an authoring
@@ -4508,6 +4554,11 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
                              (getf type-def :display)
                              t)))))
       (valid-form-fields type-key final-def)
+      ;; Required enforcement here, not belt-only: the rollup
+      ;; matrix permits extra keys inside :list-form, so this
+      ;; validator is the only :hide-list / closed-key check on
+      ;; the rollup path.
+      (valid-hide-list type-key final-def)
       (valid-default-sort type-key final-def)
       (valid-filter-with-list-form type-key final-def)
       final-def)))
@@ -4518,19 +4569,24 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
     (compile-base-type-def model type-key)))
 
 (defun valid-field-names (type-key raw-fields)
-  ":private: Author field keys must not collide with the injected
-record keys :update / :delete (the per-row capability flags
-be-list / be-rec emit on every record — a same-named author field
-would be shadowed on the wire). Runs on the raw author :fields
-plist, before add-default-fields / compile-fields, so injected
-keys and author keys cannot be confused. Rollups reject the same
-names in valid-rollup-fields (their records carry the flags too)."
+  ":private: Author field keys must not collide with names the
+wire objects already carry: :update / :delete (the per-row
+capability flags be-list / be-rec emit on every record — a
+same-named author field would be shadowed there) and :hide-list
+(the form option fe-fields appends beside the field entries in
+each form object — a same-named author field would emit into the
+same JSON object). Runs on the raw author :fields plist, before
+add-default-fields / compile-fields, so injected keys and author
+keys cannot be confused. Rollups reject the same names in
+valid-rollup-fields (their records carry the flags too, and
+valid-rollup-fields calls this validator)."
   (loop for field-key in raw-fields by #'cddr
-    when (member field-key '(:update :delete))
+    when (member field-key '(:update :delete :hide-list))
     do (report-e "valid-field-names"
-         "Field key ~s on type ~s is reserved for the per-record ~
-          update / delete capability flags injected into every ~
-          /api/list and /api/item record; rename the field."
+         "Field key ~s on type ~s is reserved (the per-record ~
+          update / delete capability flags and the form option ~
+          :hide-list ride the same wire objects as author ~
+          fields); rename the field."
          ~field-key ~type-key)))
 
 (defun compile-base-type-def (model type-key)
@@ -4620,6 +4676,7 @@ names in valid-rollup-fields (their records carry the flags too)."
                            ;; type-def
                            (compile-lifecycle-hooks compose-model type-key)))))
       (valid-form-fields type-key final-def)
+      (valid-hide-list type-key final-def)
       (valid-default-sort type-key final-def)
       ;; Belt-only on today's rollup matrix (:target is forbidden on
       ;; rollup fields, so has-reference finds nothing); kept so a

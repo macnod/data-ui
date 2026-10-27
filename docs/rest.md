@@ -6,7 +6,7 @@ All endpoints are defined in `lisp/rest.lisp` using Hunchentooth `define-easy-ha
 
 ### `GET /api/list`
 
-List records for a type. Returns records, form schemas (`list-form`, `add-form`, `update-form`, `view-form`), `allowed-values` for dropdown/checkbox fields, permission flags (`create`, `delete`, `update`), the type's RBAC role names (`type-roles` — see [`POST /api/insert`](#post-apiinsert)), and paging keys `total` and `sort`.
+List records for a type. Returns records, form schemas (`list-form`, `add-form`, `update-form`, `view-form`), `allowed-values` for dropdown/checkbox fields, permission flags (`create`, `delete`, `update`), the type's RBAC role names (`type-roles` — see [`POST /api/insert`](#post-apiinsert)), and paging keys `total` and `sort`. Each of `add-form`, `update-form`, `view-form` may carry `hide-list` (a JSON boolean) beside its field entries; `true` means the client should hide the list table, pagination, and record count while that form is open; absent (and `false`, the explicit-show spelling) means show; `list-form` never carries it. `/api/item`'s `fields` object is the same form-schema plist, so the flag rides there too; clients that read only `record` can ignore it.
 
 **Parameters:**
 
@@ -14,7 +14,7 @@ List records for a type. Returns records, form schemas (`list-form`, `add-form`,
 |-------|----------|---------|---------|
 | `type` | yes | — | Type key, e.g. `todos`, `users` |
 | `form` | no | `list-form` | `list-form` \| `update-form` \| `add-form` \| `view-form` |
-| `filters` | no | — | JSON list of `[type field operator value]` rows; `in` / `not-in` take a non-empty list of the field's atom type (join-table fields may also be targeted, e.g. `["tags","name","in",["chores","errands"]]`; a target-keyed row names the FK target's type and identity column, e.g. `["users","name","in",["admin"]]` — the reference chip picker's emission) |
+| `filters` | no | — | JSON list of `[type field operator value]` rows; `in` / `not-in` take a non-empty list of the field's atom type (join-table fields may also be targeted, e.g. `["tags","name","in",["chores","errands"]]`; a target-keyed row names the FK target's type and identity column, e.g. `["users","name","in",["admin"]]` — the reference chip picker's and list-cell chips' emission) |
 | `limit` | no | `20` | Max records; non-negative integer; clamped server-side to `200` |
 | `offset` | no | `0` | Records to skip; non-negative integer |
 | `sort` | no | — | `"field:asc"` / `"field:desc"`; direction defaults to `asc`; field must be `:sortable t` |

@@ -42,7 +42,11 @@ Non-frontend code is SBCL Common Lisp, written by a human.
 - Before any code is written, a thorough discussion of the goals must happen.
 - Some functions with no in-codebase callers are intentionally retained; see `docs/model-accessors.md` before removing "dead" code.
 - Prose in `.md` and `.org` files (docs, backlog items, plans) is never hard-wrapped: one paragraph per line, one list item per line — a newline ends a paragraph or a list item, never a sentence fragment; viewers wrap for display. See `~/r/elisp/ai/global.md` → Prose Line Length.
-- Emacs buffers visiting project files typically run `auto-revert-mode` + `auto-save-visited-mode`. Agent-side edits to a file whose visiting buffer is **unmodified** are safe — auto-revert syncs it within seconds. A **modified** buffer is the hazard: auto-save-visited writes it back over the disk edit. Before editing any file that has a live Emacs buffer (e.g. `docs/todo.org`), check `buffer-modified-p` on the visiting buffer (via `find-buffer-visiting` + `Eval`); if non-nil, flag it to the human instead of editing.
+- Emacs buffers visiting project files typically run `auto-revert-mode` + `auto-save-visited-mode`. Agent-side edits to a file whose visiting buffer is **unmodified** are safe — auto-revert syncs it within seconds. A **modified** buffer is the hazard: auto-save-visited writes it back over the disk edit. Before editing any file that has a live Emacs buffer (e.g. `docs/todo.org`), check `buffer-modified-p` on the visiting buffer; if non-nil, flag it to the human instead of editing. **Nil-guard the check** — `(buffer-modified-p (find-buffer-visiting PATH))` is a trap: with no visiting buffer, `find-buffer-visiting` returns nil and `buffer-modified-p` defaults nil to the *current* buffer (the gptel chat buffer, always modified) instead of erroring, reporting a false hazard. Use:
+
+      (if-let ((buf (find-buffer-visiting PATH)))
+        (buffer-modified-p buf)   ; t = hazard, flag it
+        nil)                      ; no visiting buffer — safe
 
 ## Live Introspection: `eval-in-data-ui`
 

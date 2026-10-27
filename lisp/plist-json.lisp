@@ -55,6 +55,7 @@
 ;; Register known boolean keys
 (register-json-boolean-key :read-only)
 (register-json-boolean-key :hide-label)
+(register-json-boolean-key :hide-list)
 (register-json-boolean-key :searchable)
 (register-json-boolean-key :sortable)
 (register-json-boolean-key :guest-allowed)

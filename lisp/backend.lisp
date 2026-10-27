@@ -717,63 +717,75 @@ a normal field and unaffected."
     append
     (list
       form
-      (loop
-        with base = (u:tree-get *compiled-model* type-key :base)
-        with fields = (append
-                        (u:tree-get *compiled-model* type-key :fields)
-                        (when (show-roles-p type-key form user)
-                          `(:roles (:ui (:label "Roles"
-                                          :widget :checkbox-list)))))
-        and form-fields = (u:tree-get *compiled-model* type-key form :fields)
-        for field-key in fields by #'cddr
-        for field-def in (cdr fields) by #'cddr
-        for field-type = (getf field-def :type)
-        for default = (getf field-def :default)
-        for path = (getf field-def :path :false)
-        for non-base-roles-field = (and (not base) (equal field-key :roles))
-        for ui = (getf field-def :ui)
-        for table = (or (u:tree-get field-def :source :table) type-key)
-        when (and
-               (or
-                 (equal form-fields t)
-                 (member field-key form-fields)
-                 non-base-roles-field)
-               (or (getf ui :widget) non-base-roles-field)
-               (not (equal (getf ui :widget) :hidden))
-               (not (and
-                      (equal form :list-form)
-                      (equal field-type :file)))
-               (not (and
-                      (member form '(:list-form :add-form :view-form))
-                      (equal field-type :button))))
-        append (list field-key
-                 (add-to-plist
-                   (append
-                     (list
-                       :default default
-                       :path path
-                       :table table
-                       :not-null (getf field-def :not-null)
-                       :sortable (getf field-def :sortable)
-                       :searchable (getf field-def :searchable))
-                     ;; :column rides the leading plist only on
-                     ;; :target fields (the target's identity
-                     ;; display column, downcased string — the
-                     ;; reference chip picker's :in row names it).
-                     ;; Never an unconditional nil: add-to-plist
-                     ;; emits every union key, and a nil :column
-                     ;; would serialize as "column":[] through
-                     ;; plist-to-json's nil-value default. column is
-                     ;; not an *ui-keys* member, so the :ui spread
-                     ;; can never collide with it.
-                     (when (getf field-def :target)
+      (append
+        (loop
+          with base = (u:tree-get *compiled-model* type-key :base)
+          with fields = (append
+                          (u:tree-get *compiled-model* type-key :fields)
+                          (when (show-roles-p type-key form user)
+                            `(:roles (:ui (:label "Roles"
+                                            :widget :checkbox-list)))))
+          and form-fields = (u:tree-get *compiled-model* type-key form :fields)
+          for field-key in fields by #'cddr
+          for field-def in (cdr fields) by #'cddr
+          for field-type = (getf field-def :type)
+          for default = (getf field-def :default)
+          for path = (getf field-def :path :false)
+          for non-base-roles-field = (and (not base) (equal field-key :roles))
+          for ui = (getf field-def :ui)
+          for table = (or (u:tree-get field-def :source :table) type-key)
+          when (and
+                 (or
+                   (equal form-fields t)
+                   (member field-key form-fields)
+                   non-base-roles-field)
+                 (or (getf ui :widget) non-base-roles-field)
+                 (not (equal (getf ui :widget) :hidden))
+                 (not (and
+                        (equal form :list-form)
+                        (equal field-type :file)))
+                 (not (and
+                        (member form '(:list-form :add-form :view-form))
+                        (equal field-type :button))))
+          append (list field-key
+                   (add-to-plist
+                     (append
                        (list
-                         :column
-                         (string-downcase
-                           (string
-                             (identity-field
-                               (getf field-def :target)))))))
-                   ui))))))
+                         :default default
+                         :path path
+                         :table table
+                         :not-null (getf field-def :not-null)
+                         :sortable (getf field-def :sortable)
+                         :searchable (getf field-def :searchable))
+                       ;; :column rides the leading plist only on
+                       ;; :target fields (the target's identity
+                       ;; display column, downcased string — the
+                       ;; reference chip picker's :in row names it).
+                       ;; Never an unconditional nil: add-to-plist
+                       ;; emits every union key, and a nil :column
+                       ;; would serialize as "column":[] through
+                       ;; plist-to-json's nil-value default. column is
+                       ;; not an *ui-keys* member, so the :ui spread
+                       ;; can never collide with it.
+                       (when (getf field-def :target)
+                         (list
+                           :column
+                           (string-downcase
+                             (string
+                               (identity-field
+                                 (getf field-def :target)))))))
+                     ui)))
+        ;; Form-level :hide-list (sibling of :fields) rides the same
+        ;; form object as a boolean — but only when declared. append
+        ;; of a nil tail is a no-op, so an undeclared form stays
+        ;; byte-identical. Key membership on u:plist-keys, never raw
+        ;; member on the plist (raw member scans values too) and
+        ;; never add-to-plist (its (or new old) overlay cannot pin a
+        ;; new nil). Registration as a JSON boolean key serializes a
+        ;; declared nil as false, never [] (truthy in JS).
+        (let ((form-plist (u:tree-get *compiled-model* type-key form)))
+          (when (member :hide-list (u:plist-keys form-plist))
+            (list :hide-list (getf form-plist :hide-list))))))))
 
 (defun true-or-false (&rest path)
   (if (apply #'u:tree-get (cons *compiled-model* path)) :true :false))

@@ -74,4 +74,5 @@
                 (:file "page-description-tests")
                 (:file "field-help-tests")
                 (:file "view-form-tests")
+                (:file "hide-list-tests")
                 (:file "reference-chip-tests")))))
