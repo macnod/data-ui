@@ -90,7 +90,7 @@ Recognized keys: `*top-level-keys*` = `(:title :name :version :domain :domain-st
 | `:guest-allowed` | no (default `nil`) | boolean | passwordless guest login via `/api/login`; see [Guest login](#guest-login) |
 | `:guest-auto` | no (default `t`) | boolean | whether the frontend may auto-login as guest without showing the login page (only meaningful with `:guest-allowed t`; `nil` keeps the login page as the first screen). Served as a JSON boolean by `/api/public-info` |
 | `:api-roles` | no (default `("logged-in")`) | non-empty list of role-name strings, no duplicates | app-level REST endpoints; see [API roles](#api-roles) |
-| `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-base type the user can access |
+| `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-built-in type the user can access |
 | `:new-roles` | no | plist: role-name keyword → non-empty list of permission strings | `ensure-declared-roles` at `set-model` time |
 | `:types` | yes | plist of type-key → type-def | compiler |
 
@@ -500,7 +500,7 @@ Under `:fields`, each entry is `field-key` → plist (except joiner `:reference`
 | `:force-sql-name` | override generated column name string (e.g. `"rating_user"`) |
 | `:path` | marks the FS path field on fs-backed types (at most one per type) |
 | `:action` | **only** on `:type :button`; single action hook form |
-| `:sortable` | `t` → field is eligible for `ORDER BY` in list queries (clickable header). Base (non-rollup) types: only valid on `:column t` fields; compiler emits a sort index when no covering index exists. Rollup types only: the `:column t` rule is relaxed — pass-throughs and `:sum` / `:count` / `:avg` measures are legal; `:list` / `:distinct` measures are a compile error. On a hybrid (regular type with aggregated fields) `:sortable t` on a Phase B measure stays a compile error. Compile error on `:target` (FK) fields (all types; see backlog "Joined-column sort on base types" for the future relaxation) |
+| `:sortable` | `t` → field is eligible for `ORDER BY` in list queries (clickable header). Base (non-rollup) types: only valid on `:column t` fields; compiler emits a sort index when no covering index exists. The compiler injects `:sortable t` on `:created-at` / `:updated-at` for every non-rollup type — an author need not declare it (restating `:sortable t` inside an otherwise valid override is a legal no-op; a bare `(:created-at (:sortable t))` without `:ui` is still a compile error; an explicit `:sortable nil` on either timestamp is a compile error until Model value vocabulary lands `:false`). Rollup types only: the `:column t` rule is relaxed — pass-throughs and `:sum` / `:count` / `:avg` measures are legal; `:list` / `:distinct` measures are a compile error. On a hybrid (regular type with aggregated fields) `:sortable t` on a Phase B measure stays a compile error. Compile error on `:target` (FK) fields (all types; see backlog "Joined-column sort on base types" for the future relaxation) |
 | `:searchable` | `t` → column is included in free-text `:search` (ILIKE OR-group in Phase A). Only valid on `:type :text` base columns without `:target`. Independent of `:sortable`. Distinct from type-level `:search-sql` (write-through identity lookup). Serialized as a JSON boolean (`true`/`false`, never `[]`). See [List queries](#list-queries-paging-sort-search) |
 | `:default-from` | `:user` → copy username when creating user-setting rows |
 | `:css-value` | `t` → included in CSS-vars API (e.g. settings `:dark-mode`) |
@@ -673,6 +673,16 @@ Notes:
 | Type is a **`:target`** of an FK | **No**: exactly one identity field | `valid-target` (compile error otherwise) |
 | Type is the other side of an **M2M** list | **No**: join insert/update resolves checkbox values via `identity-field` → single key, then `list-ids` | `insert-join-table-rows`, `update-join-tables` |
 
+One narrow storage-edge exception to the `:target` rule: a **pre-rename `:reference` field declared on the internal joiner type** (the `(:reference (:target …))` idiom, before `compile-fields` renames it) may target a type with **zero** author-declared identity fields — the joiner row stores bare UUIDs and no display resolution ever runs on that edge. A field merely *named* `:reference` on an ordinary type does not qualify, a joiner `:reference` to a multi-identity target still fails, and an ordinary `:target` to a zero-identity type is still a compile error. The blog's `:post-tags` joiner (references to zero-identity `:comments` and identity-carrying `:tags`) is the canonical case. This is not a display path onto comments: `fe-fields` is unchanged, and a later ordinary `:target` to a zero-identity type remains illegal.
+
+Separately, a **join-table list field whose `:source :table` other side has zero identity fields is a compile error** at the `compile-field` join-table validation point:
+
+```text
+Join-table list field :COMMENTS on :TAGS requires an identity field on other side :COMMENTS; got zero identity fields
+```
+
+Without the guard, `identity-field` returns nil and the existing `list-ids` / `be-value-id` validation fails at runtime as "Invalid field key NIL". This is not a generalized M2M zero-identity list-value contract: `insert-join-table-rows` and `unknown-values` retain their `identity-field` calls, no source-column write-resolution change exists, and no zero-identity round trip is promised.
+
 **Composite identity is real** (Model Bank `:ratings` uses `:book` + `:user` both `:identity t`). That works because ratings are matched by write-through search, not by a single display string in a checkbox list.
 
 **Referenced types need a scalar display identity.** If authors (or any type) appear in another type's `:type :list` / `:join-table` field or as a `:target`, they must have **exactly one** `:identity t` field. That field's values are what the UI sends and what the backend looks up.
@@ -761,7 +771,7 @@ See `docs/hook-registry.md` → Registered Lifecycle Hooks for the full `:compos
 :view-form   (:fields (:title :body))
 ```
 
-Two keys are meaningful under each form — `:fields` selects fields; any other key outside the closed set (`:fields`, `:hide-list`) is a compile error:
+Keys under each form: `:fields` selects fields; `:hide-list` suppresses the list; `:children` declares the embedded child region (`:view-form` only — below). The closed set is (`:fields`, `:hide-list`, `:children`); any other key is a compile error. `:default-sort` may ride `:list-form` (the tab spelling) and is validated there by `valid-default-sort`; on the other forms it is a compile error:
 
 | Value | Meaning |
 |-------|---------|
@@ -790,6 +800,31 @@ Emitted field meta includes `:default`, `:path`, `:table`, and the full `:ui` pl
 ### `:view-form` specifics
 
 Absent `:view-form` means **no view surface** — the frontend row click opens a record only when the `/api/list` payload carries `view-form`; the View form's Edit button renders only when the fetched record's `update` flag is true (row-level — a creator can edit rows their role sits on without type-level update); there is no fallback to `update-form` or `list-form` (same uniformity as absent `:add-form` meaning no Add surface). Payload presence ⇔ declaration: `fe-fields` emits `:view-form` only for types that declare it, so an undeclared type's payload stays byte-identical. Rollup types must not declare it (compile error; only `:list-form` is legal there). A view form may declare `:hide-list t` so a reader opening a record does not see the table; the list returns on close.
+
+### Embedded child region (`:children`, view-form only)
+
+```lisp
+:posts (:table t ...
+  :view-form (:fields (:title :body)
+              :hide-list t
+              :children ((:type :comments
+                          :via :post
+                          :sort (:created-at :asc)))))
+```
+
+`:children` embeds one child region in the parent's reading form (the blog comments-under-post surface). Legal **only on `:view-form`** — the same key on `:add-form` / `:list-form` / `:update-form` is a compile error even as an explicit nil, and a type-level `:children` (with no `:view-form`) is the missing-`:view-form` compile error. The value is a list of **exactly one** region spec plist; zero, two, an atom, a dotted list, or a non-plist spec are compile errors. `:hide-list t` is a required companion on the same `:view-form` (an explicit `:hide-list nil` is the same error — key membership, not truthiness).
+
+Spec alphabet (v1): `:type` (required, the child type), `:via` (required, the child's FK field), `:sort` (optional, the request-sort shape — `(:field)` or `(:field :asc|:desc)`; an omitted direction is legal, a present nil direction is a compile error for `:children :sort` and type-level `:default-sort` alike). `:sort` validates against the **compiled** child in a post-stage-1 cross-type pass (`validate-model` → `stage-1` → `valid-children`, which returns the compiled model), because stage-1 compiles each type against the raw model and a child's injected `:sortable t` on `:created-at` is not visible during the parent's own compile. The omitted default is `(:created-at :asc)` and is deliberately **not** validated in that pass (injected timestamps are sortable on every legal type; a present `:sort` naming another field is what the shared `valid-sort-declaration` checks).
+
+Parent/child surface contract (compile checks, not doc hopes — `valid-children-region-surface`): both sides need a declared non-nil `:list-form` (the parent's because `App.tsx` returns its no-data shell without one; the child's because it is the tab the escape hatch opens), truthy `:display` and non-internal compiled defs (the model-side half of `be-types`' visibility gate; per-user RBAC `allowed` remains runtime), and compiled `:category :user` (per `compute-category`: explicit `:category` wins, `:user-setting` → `:settings`, `:built-in` → `:system`, everything else `:user`); the child additionally needs declared non-nil `:view-form` and `:add-form` (`fe-fields` emits only declared forms; the region renderer has no update-form fallback). `:via` names a singular `:target` field on the **compiled** child whose target is the declaring parent, with no `:join-table` — anything else is a compile error, and a stray **type-level** `:via` (which survives compilation) is rejected. `:children` is not legal on tree / fs-backed types: the tree vocabulary uses `:parent-type` and must never grow a `:children` key (a compile check, not a doc line).
+
+Wire: the spec rides `be-rec`'s `:view-form` payload beside `:fields` (never `rec`, never `list-result`, never `fe-fields`), triple-guarded — inside the record guard, only for `:view-form`, only when the type declares `:children`. `:type` / `:via` go out as downcased strings and `:sort` as a two-element string pair (an omitted or direction-less sort normalizes to `("created-at" "asc")`); `plist-to-json` emits:
+
+```json
+"children":[{"type":"comments","via":"post","sort":["created-at","asc"]}]
+```
+
+The string pair — never a sort plist, which would serialize as `{"field":"dir"}` (the `json-sort-echo` trap) — is what 03's region fetch builds its `fk-eq` tuple and request sort from. The compiled def keeps the author spec verbatim (omitted `:sort` stays omitted); normalization happens at attach time only. Between 02 and 03 the key is inert by design: nothing consumes it until the region renderer lands.
 
 ---
 
@@ -1150,10 +1185,20 @@ Every non-internal type receives:
 | Field | Type | Notes |
 |-------|------|-------|
 | `:id` | `:uuid` | PK; non-base → `:target :resources`; base/joiner → `:default :generate-uuid` |
-| `:created-at` | `:timestamp` | `:default :now`, `:not-null t` |
-| `:updated-at` | `:timestamp` | `:default :now` + trigger `set_<table>_updated_at` |
+| `:created-at` | `:timestamp` | `:default :now`, `:not-null t`, `:sortable t` (injected) |
+| `:updated-at` | `:timestamp` | `:default :now` + trigger `set_<table>_updated_at`, `:sortable t` (injected) |
 
-Marked `:base-field t`. Not part of author field lists.
+Marked `:base-field t`. Not part of author field lists — but the two timestamps may be **redeclared as presentation overrides** (below); `:id` cannot be redeclared (v1; compile error). Fresh `rt_` tables get `ix_<table>_created_at` / `ix_<table>_updated_at` at creation; pre-existing tables (built-ins, any leftover `rt_` table) sort correctly but unindexed until recreated (same caveat as sortable `:name`/`:email`; see gotcha 17).
+
+#### Presenting the timestamps (override grammar)
+
+A field never reaches the wire without a `:ui` widget, so naming `:created-at` in a form does nothing by itself. Redeclare it in `:fields` to present it:
+
+```lisp
+:created-at (:ui (:label "Posted" :widget :textbox :read-only t))
+```
+
+The author plist merges over the injected def (author keys win). Legal keys are exactly `:ui` and `:sortable`; anything structural (`:type`, `:default`, `:not-null`, `:update`, `:source`, …) is a compile error — the injection's contract cannot be reshaped. `:ui` is required, must carry `:read-only t` (the field is never writable; an editable widget would drop the edit on save), and `:widget` must be `:textbox` or omitted (a hidden field never reaches the wire; the date-time picker is a future item). A redeclaration without `:ui` is a compile error. `:sortable` need not be declared (the injected default is `t`); a `:sortable t` restated *inside an otherwise valid override* is a legal no-op, but an explicit `:sortable nil` is a compile error until "Model value vocabulary" lands the `:false` spelling. Duplicate redeclarations of the same injected key signal a compile error (no silent first-wins). Base-type `:fields` overlays remain `:type-roles`-only — presenting `:users`' timestamps is a separate question.
 
 ### Roles field
 
@@ -1183,7 +1228,7 @@ Always merged into every compiled model:
 
 | Type | Flags | Notes |
 |------|-------|-------|
-| `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` and `:sortable t`; `:name` must be lowercase letters, digits, and dashes — start with a letter, end with a letter or digit (`^[a-z][a-z0-9-]*[a-z0-9]$`, 2+ chars) — login keeps the looser rbac policy so legacy names still work |
+| `:users` | base, built-in | custom create/delete; settings row lifecycle; `:name` and `:email` are `:searchable t` and `:sortable t`; `:created-at` / `:updated-at` are `:sortable t` (injected) — its list form names them and they still do not render (no `:ui`); `:name` must be lowercase letters, digits, and dashes — start with a letter, end with a letter or digit (`^[a-z][a-z0-9-]*[a-z0-9]$`, 2+ chars) — login keeps the looser rbac policy so legacy names still work |
 | `:resources` | base, built-in, internal | no CRUD; declares no forms at all (internal + display nil — no UI surface can request them) |
 | `:permissions` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
 | `:roles` | base, built-in | `:name` is `:searchable t` and `:sortable t` |
@@ -1202,18 +1247,21 @@ RBAC types are treated like user-defined types at the API level (e.g. assign rol
 set-model
   → top-level-settings          ; validate A keys → *top-level-settings*
   → compile-model (:types)
-       stage-1 validate-model:
-         append *base-model*
-         preliminary-model-check
-         per type:
-           ensure-action-on-buttons
-           synthesize-status-fields
-           compile-fields (+ validations, write-to, action)
-           mark-path-field
-           validate-tree
-           compile-lifecycle-hooks
-           compute-category / suppress-roles
-           augment-update-form
+       validate-model:
+         stage-1:
+           append *base-model*
+           preliminary-model-check
+           per type:
+             ensure-action-on-buttons
+             synthesize-status-fields
+             compile-fields (+ validations, write-to, action)
+             mark-path-field
+             validate-tree
+             compile-lifecycle-hooks
+             compute-category / suppress-roles
+             augment-update-form
+         valid-children (post-stage-1 cross-type :children
+           pass over the compiled model; returns it)
        stage-2:
          enrich-views (SQL / aliases)
          insert / update / delete / search SQL
@@ -1424,7 +1472,7 @@ One click closes the record (close fields written to the old row, which becomes 
 
 **Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles` `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form` `:view-form` `:tree` `:is-leaf` `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category` `:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter` `:page-description` `:page-description-open` lifecycle slots
 
-**Form:** `:fields` `:hide-list`
+**Form:** `:fields` `:hide-list` `:children` (`:view-form` only)
 
 **View:** `:tables` `:scope`
 

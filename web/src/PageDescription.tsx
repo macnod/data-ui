@@ -27,7 +27,7 @@ export function PageDescription({ text, open, onToggle }: {
           cursor: 'pointer',
           fontSize: '0.9rem'
         }}
-      >ℹ️ About this page</button>
+      >ℹ️ Information</button>
       {open && (
         <div className="page-description"
           style={{

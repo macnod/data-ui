@@ -121,7 +121,6 @@ Implemented 2026-10-12 per the plan ([[file:~/workbench/state-gated-buttons-plan
 Post-implementation notes: =enabled-when-holds= (a =*compiled-model*=-reading convenience over =eval-condition-rows=) is exported by the backend for hook / REPL use. The FE check is the manual chores-stg pass (no FE test runner exists; the shared fixture is its future replacement).
 
 Plan: [[file:~/workbench/state-gated-buttons-plan.org][state-gated-buttons-plan.org]].
-
 * MVP Now
 ** DONE Stay logged in across page refresh            :frontend:polish:mvp:
 :PROPERTIES:
@@ -518,7 +517,7 @@ Implemented per the plan end to end:
 ** DONE Reference-field chip picker              :model:compiler:frontend:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-23 Fri]
-:COMPLETED: [2026-11-10 Tue]
+:COMPLETED: [2026-10-25 Sun]
 :END:
 Filter a list by a single-target reference: extend =:filter-with= beyond boolean with =(:kind :reference)=, legal solely on =:target= fields present in the list form (the =:boolean= precedent — legal solely on =:type :boolean= =:column t= fields). The frontend renders the chip picker over the field's existing =allowed-values= palette and emits one =:in= filter row per field, comparing the FK's display column — the target's identity value, so the match is exact; =filterWithKind= (App.tsx) collapses to boolean-only today with a comment naming this extension ("a future kind must extend this helper").
 Composition: within one reference field the picker uses the same values-array slot as tags, so a second value widens the result (=user IN (alice, bob)= — union, the only non-empty reading for a single-value FK); across fields the rows AND-compose with search and every other filter. Amended 2026-10-25 after plan review: M2M chips keep =has-all= (intersection within a field — the todo-list chip-narrowing behavior is the wanted UX, settled with Donnie); the =:in= union row is the reference picker's semantics only, and its column is the target's *identity column* carried on the wire as a new =:column= beside =:table= (never a hardcoded =name= — books' =:title=, files' =:path=). No =:default= in v1: a reference filter starts unfiltered (boolean's authored-default seeding has no reference analogue).
@@ -537,7 +536,7 @@ Implemented per the plan end to end:
 - Full suite via =scripts/data-ui tests=: 2269 checks, 44 groups, all passed. Live probes: fixture =fe-fields= shows =:column "name"= / =:title=; both =left join= lines in =phase-a-join-sql=; palettes =(guest admin)= / =("Apollo")=; modelbank =:user= carries =:filter-with :reference= and the palette lists users after the =:source-all= addition. The M2M stale-form timing change and the URL-seed arming path are pinned only by the manual browser pass (no JS test harness) — the plan's step 19 checks, still open.
 
 Corrected 2026-10-27: the Docs bullet above records that =model-reference.md='s =:filter-with= row shipped with "the same-target collapse" — that claim is false. Same-target selections do not collapse to one row and do not union: =fetchList= emits one target-keyed =:in= row per selected field and =add-where-clause= ANDs every row through the single joined column, so disjoint selections (=admin= through one =:users=-targeting field, =guest= through another) match nothing. The docs sentence (and the same stale sentence in =fetchList='s chip-block comment) is corrected by "Clickable reference chips in list cells" (its plan pins the contract with a dev-REPL probe); Post MVP "Same-target filter semantics" owns the joined-column-aliasing fix.
-** DONE Clickable reference chips in list cells     :frontend:mvp:
+I thi** DONE Clickable reference chips in list cells     :frontend:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-26 Mon]
 :COMPLETED: [2026-10-27 Tue]
@@ -572,10 +571,16 @@ Notes: [[file:~/workbench/hide-list-notes.org][hide-list-notes.org]]
 
 Plan: [[file:~/workbench/hide-list-plan.org][hide-list-plan.org]]
 
-** TODO Timestamp field overrides                   :model:compiler:mvp:
+** DONE Timestamp field overrides                   :model:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-23 Fri]
+:COMPLETED: [2026-10-27 Tue]
 :END:
+Two-part fix per the plan (ambient / opt-in split). Ambient: =default-fields= injects =:sortable t= on exactly =:created-at= / =:updated-at= (fresh =rt_= tables get the sort indexes at creation; pre-existing tables sort unindexed, the same caveat as "Sortable =:name= and =:email="). Opt-in: redeclaring =:created-at= / =:updated-at= in =:fields= is a presentation override — author plist merges over the injected def (=add-to-plist=, author keys win), restricted to =:ui= and =:sortable= (new =*default-field-override-keys*=); =:ui= required with =:read-only t= and =:widget :textbox= or omitted; =:sortable nil= rejected with the Model-value-vocabulary deferral named; =:id= redeclaration is a compile error naming the v1 exclusion; duplicate injected-key redeclarations signal (no silent first-wins). New validator =valid-default-field-override= (+ walk) runs on the raw author =:fields= in =compile-base-type-def=.
+
+Kimi's blocker (adding =:ui= would enroll the timestamps in INSERT/UPDATE SQL via the =(:column :ui)= selection) is fixed by =dml-fields= (model.lisp): =insert-sql= / =update-sql= main column lists now exclude =:created-at= / =:updated-at= by explicit key, with or without an override — =updated_at='s sole writer is the trigger again, and =created_at= is never bound on UPDATE. The =:id= DML plumbing (base-dropped / retained on INSERT, appended on UPDATE) is untouched and pinned by tests.
+
+Wire: =fe-fields= needed nothing — the merged =:ui= opens the widget gate, =:sortable= was already emitted; the base =:users= list form still returns =(:name :email :roles)= (nothing renders by itself). Tests: =tests/timestamp-override-tests.lisp= (two suites, 92 checks: compile probes bare, wire/behavior on the new =timestamp-override-test= fixture), =run-timestamp-override-tests= in =run-tests=; DML exclusion pinned as the 5a regression guard, behavior probes are labeled smoke per the plan's determinism analysis. Docs: =docs/model-reference.md= (=:sortable= row, Default fields section with the override grammar, =:users= row). Full suite green (2414 checks / 46 groups). Plan: [[file:~/workbench/timestamp-field-overrides-plan.org][timestamp-field-overrides-plan.org]].
 Authors today cannot present the injected =:created-at= / =:updated-at= fields: =fe-fields= drops any field without a =:ui= widget (backend.lisp, the =(or (getf ui :widget) …)= gate), so the timestamps never reach the wire even when named in a form — the base model's own =:users= list form names them and gets only =(:name :email :roles)= back. And an author who *does* write =:created-at (:ui …)= is silently ignored: =add-default-fields= blind-appends the injected defs ahead of author fields, =getf= returns the injected copy, and the author's plist is dead weight — no error, no effect. Neither field is =:sortable t= either (live-verified 2026-10-23), so no list anywhere can be ordered or reversed by date, and a =:sort= / =:default-sort= referencing them fails validation.
 
 Two-part fix (the ambient / opt-in split, settled 2026-10-23):
@@ -585,40 +590,165 @@ Two-part fix (the ambient / opt-in split, settled 2026-10-23):
 
 The blog surface depends on this (its =:sort (:created-at :asc)=, the comments tab's =:default-sort (:created-at :desc)=, and the Created column all ride it); place it in the run-up before "Embedded child region". Also fixes the general "reverse the records" question: name Created in a list form, click the header.
 
-** TODO Record permalinks                              :frontend:mvp:
+Plan: [[file:~/workbench/timestamp-field-overrides-plan.org][timestamp-field-overrides-plan.org]]
+
+** DONE Record permalinks                            :frontend:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-23 Fri]
+:COMPLETED: [2026-11-01 Sun]
 :END:
-The URL grammar gains record addressing: =id= (plus a view/edit bit) joins =type= / =q= / =notq= / =filters= / =bool= / =sort= / =page= in =buildUrlState= / =parseHash= / =canonicalize=; an entry carrying =id= opens the record's view form on arrival through =openEditForm= (the single open choke point) instead of =closeForm=, and the login seed carries it across the login wall exactly like list state. The routing machinery exists today for list state (hash router, =popstate= + =hashchange=, canonicalize, equality gate — App.tsx ~2030–2260); the open form is deliberately session chrome ("session chrome the history entry did not have" — the handler's own comment); this item is what makes a record addressable. =viewMode= stays unencoded (derived from the type's category, the existing rule).
-Two grades: grade 1 — a row of any type, the link opens the type tab with that record's view form open. Grade 2 — a child row (a comment under a post): the link resolves the child's parent FK, opens the parent's view form, expands the embedded region's row, and scrolls to it. Grade 2 depends on the embedded child region (blog surface); grade 1 does not.
-The consumer is prose: a markdown body links another record as =#/app?type=comments&id=<uuid>=, and the quote/mention conventions gain a resolvable target (external links already render). Permissions fail closed — =/api/item= enforces read, so a link to a row the viewer cannot see shows the error and leaks nothing. Depends on "Row click replaces View/Edit icons" (the open choke point and the view-form landing conventions this rides).
-** PLANNING Embedded child region                :model:backend:frontend:mvp:
+A link opens the record it names. =#/app?type=comments&id=<uuid>= opens that comment's View form; =&mode=edit= requests Edit. =id= and =mode= join the existing list params in the hash grammar, ride the login seed, and open through =openEditForm=. Close on a cold link shows the unscoped list — do not seed a scope the URL does not mention. =id= must not occupy or erase the scope dimension "Embedded child region" adds, and Best Link copies =type= + =id= only, never the current list scope. The label is "Best Link": the URL you hand someone, which is the clean hash here and =/p/= once public pages exist. The address bar is the worse link whenever it carries list state.
+One grade. A comment link does not open the parent post, expand a region row, or scroll. That was the dropped Grade 2 (2026-10-27): it latches the address bar to a record the screen may no longer show, and it fights the public-pages decision that a child gets its own URL. Reachability is clicks, not a smarter landing: the comment's post field is a link to the post, the region's "All N comments »" reaches the other comments, and the chip's × widens to every comment. Expand-and-scroll, if the paging cost matters, is a later Post MVP item — not a hook in this grammar.
+A =:target= field on a View form renders as a link to the referenced record, built from a sibling ="<field>-id"= the record payload grows. The field's own value stays the display string, so list-cell filter chips are untouched, and list cells keep filtering. Ambiguous shapes fail closed and render as text: two =:target= fields aimed at one table, or a self-FK — a link that says "Mary" and opens John is worse than no link. A target type or row the viewer cannot see renders as text or the record error and leaks nothing. Markdown links the same hash; no special router. The expanded-region-row copy control waits on "Embedded child region".
+Depends on "Row click replaces View/Edit icons" (DONE — the open choke point). No dependency on the embedded region. =:frontend:backend:= because the sibling id is a backend change.
+
+Implemented per the plan. Backend (=model.lisp=, =backend.lisp=): =:target= fields grow a sibling ="<field>-id"= record key carrying the pristine UUID (=[]= when NULL) through the alias-global conversion exclusion, a =target= wire property on =fe-fields=, and a compile-time synthetic-key collision guard (:reference spellings included); the view SQL is untouched; self-FK / shared-target / cross-source shapes fail closed to text. Frontend (=App.tsx=, =urlState.ts=): =id= / =mode= join the hash grammar and the login seed; =openEditForm= went strict (mismatched type, nonexistent or inaccessible id, and read-only =mode=edit= rejected — no fallback to the supplied row); navigation fences per plan (generation clock, list sequence guard with synchronous commit-site invalidation, echo-replace rule with push precedence and the parked-history latch, the stale-envelope single =type-key= interactivity gate, =navGen=-fenced submit / delete / action refreshes); View-form FK links build from the sibling id while list cells keep filtering; Best Link copies the canonical URL. Fixture =models/test/record-permalink-test.lisp=, suite =tests/record-permalink-tests.lisp= (+ =run-record-permalink-tests= in =tests/helpers.lisp=), =npm run test:url-state= for the pure URL grammar.
+
+Browser matrix (plan steps 36–38, runbook =~/workbench/record-permalinks-browser-matrix.org=): Passes 1–3 fully green across admin / viewer / incognito windows, final pass 2026-11-01. Two findings along the way: (2026-11-04, fixed) =returnToLanding='s async =/api/info= continuation raced the settings auto-open effect — Cancel / Home from the auto-opened form reopened it and deadened Home; the suppression latch now arms synchronously on settings exit and =resetListQuery= clears it (frontend-only, rebuilt, no re-seed). (2026-11-01, pinned gap, not a failure) the self-FK display join is degenerate — suppression (b) exactly as the plan pins it; self-join aliasing stays Post MVP. Remaining exposure is the runbook's Part 4 only: the one-batch pending-cause orderings and the fixture-shape legs (guest login, no-view / no-edit / no-list types, markdown link, action-during-navigation) need scripted browser instrumentation or a shadow-model fixture — to be filed as new items if wanted.
+
+Plan: [[file:~/workbench/record-permalinks-plan.org][record-permalinks-plan.org]]
+
+** DONE Landing page falls back to :secrets          :backend:docs:mvp:bug:
+:PROPERTIES:
+:CREATED: [2026-10-31 Sat]
+:COMPLETED: [2026-11-01 Sun]
+:END:
+For models without =:landing-page=, =be-landing-page='s fallback picks "the first non-base type the user can access" — but =:base= means /no per-row resources/, not /author-defined/, and =:secrets= is =:built-in t= with =:base nil=. So for every settings-role user (admin always) the effective landing type is =:SECRETS=: a bare login lands in the Settings view on the Secrets tab, and Home / settings Cancel / Submit render the Secrets list under the Home tab strip with no tab highlighted. Unnoticed because all five demo models pin =:landing-page= explicitly; surfaced live on =record-permalink-test= (2026-10-31).
+Fix: one predicate swap in the fallback — =base-type-p= → =built-in-p= (=:built-in= is exactly "framework-provided, not author-defined"; the codebase already distinguishes the two flags jointly, e.g. =opaque-type-p=). Backend-only; no wire or frontend change. The =:landing-page=-configured arm, the only-built-ins and empty-=be-types= fallback arms, and all other =base-type-p= call sites are untouched — the empty case stays with [[*TODO Fallback landing page that never requires permissions][Fallback landing page that never requires permissions]].
+
+Implemented per the plan. =be-landing-page= (backend.lisp) swaps the fallback predicate to =built-in-p= with the docstring updated to say why; =docs/model-reference.md='s =:landing-page= row now reads "first non-built-in (author-defined) type". First-ever test pins on the fallback added to =backend-suite= (tests/backend-tests.lisp): =be-landing-page-fallback-skips-builtins= (admin leg, lands =:todos=) and =be-landing-page-fallback-settings-role-user=. One deviation: the settings-role leg also grants =todo-users= — on =test-model= the author types are type-role gated, so a settings-only user sees just the five built-ins and lands =:users= (the plan's arm-3 shape, not the =:secrets= bug shape); with both roles the user sees =:SECRETS= ahead of =:TODOS= and the test proves the fallback skips it (probe-verified before writing). Live probes on =record-permalink-test=: admin and a settings-role user both land =:WRITERS=. Accepted residual, per the plan: =returnToLanding= hardcoding =viewMode 'app'= stays for an explicit settings-category =:landing-page= — author's choice. Full suite green (2471 checks, 47 groups).
+
+Plan: [[file:~/workbench/landing-page-selection-plan.org][landing-page-selection-plan.org]]
+** DONE Embedded child region                  :model:backend:frontend:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-23 Fri]
+:COMPLETED: [2026-11-03 Mon]
 :END:
-The blog/forum gap: a parent type's =:view-form= declares =:children ((:type :comments :via :post :sort (:created :desc)))= — child type, the child's FK field pointing back at the parent (compile-checked: =:via= must be a =:target= field whose target is the declaring type; =:children= on any non-view form is a compile error), fixed sort — and the frontend renders the region under the parent's view form as a mini list page: child rows through the existing list-cell pipeline (1-line chopped markdown body), own pager, row click expands in place to the child's view-form fields (full-length markdown; the region inherits the row-click machinery), an inline Add form gated on the child's =create= flag with the FK preset and hidden, and a Reply control inside the expansion that opens Add with the quoted comment pre-filled (markdown blockquote with attribution, nested quotes stripped to one level). The boundary: Reply and Add write byte-identical rows — reply context is prose, never a stored =reply-to= link (that is threading through the basement door).
-One backend addition: the =fk-eq= filter operator (=[["comments","post","fk-eq","<uuid>"]]= compares the FK's storage column, not its display value — =eq= on an FK compares the parent's display column and cannot express child-of-this-row; no join involved, the filter touches the requested type's own field). Comments: no title, no =:identity t= field (identity would make a composite unique index — "Nice post!" once ever; comments are referenced by nothing while threading is parked, so zero identity fields compiles clean). =body= is =:widget :markdown= + =:searchable t=. Permission recipe: =:type-roles ("public" ("comments-user" :create :read))= — guests read, members post, creator edit/delete row-only.
-Depends on "Type-level check on row writes" (creator-edit needs row-only update) and "Row click replaces View/Edit icons" (the open-choke-point and row-interaction machinery the region rows reuse). Draft plan, refining continues; no =::COMPLETE::= yet.
+The blog/forum gap. A parent type's =:view-form= declares =:children ((:type :comments :via :post :sort (:created-at :asc)))= — child type, the child's FK back to the parent, fixed sort. =:type= and =:via= are required; =:sort= defaults to =(:created-at :asc)=, document order, and is not inherited from the child's =:default-sort=. =:via= must be a =:target= field aimed at the declaring type. =:children= is legal only on =:view-form=, and it requires =:hide-list t= on that same form. The frontend renders the region under the parent's view form as a mini list page: chopped markdown rows, its own pager, row click expands in place to the child's view-form fields, an inline Add form gated on the child's =create= flag with the FK preset to the parent's id and hidden, and a Reply control inside the expansion that opens that same Add with the quoted comment pre-filled (one quote level, attribution composed from the record). Reply and Add write byte-identical rows. Reply context is prose, never a stored =reply-to= link.
+The region reads; the comments tab finds. The region is oldest-first and has no search. The tab is newest-first (=:default-sort (:created-at :desc)=) and owns search, sort, and chips. The region's "All N comments »" is committed v1 scope: it lands on the comments tab scoped to this post, in its own URL dimension — not in =listFilters=, which emits display-column =has-all= and cannot say child-of-this-row. That scope needs the one backend addition, the =fk-eq= filter operator, which compares the FK's storage column. Empty and no create renders nothing; a failed fetch renders an error, never silence.
+Comments have no title and no =:identity t= field (a unique index would make "Nice post!" exist once). =body= is =:widget :markdown= and =:searchable t=. Permission recipe: =:new-roles (:comments-user ("create" "read"))= with =:type-roles ("public" "comments-user")= on =:comments= and =:type-roles ("public")= on =:posts= / =:tags= — flat role-name strings only (amended 2026-11-01 after plan review: =ensure-model-roles= forwards =:type-roles= entries to RBAC and =list-result= emits them verbatim onto the wire, so the nested =(role :create :read)= spelling both breaks the RBAC attach and leaks into insert payloads; permissions ride =:new-roles=, the =new-roles-test= pattern). Guests read, members post, creator edit/delete is row-only. Author filtering on the tab is "Reference-field chip picker" (DONE); no dependency either direction. Threading is parked.
+Hard dependencies, all DONE: "Type-level check on row writes", "Row click replaces View/Edit icons", "Hide list", "Timestamp field overrides".
 
-Plan: [[file:~/workbench/blog-surface-plan.org][blog-surface-plan.org]]
+Restructured 2026-11-01 into four numbered children, one per stage of the plan's Steps; its step 3 (renderer plus escape hatch) is divided between children 3 and 4 because the two halves touch disjoint risk surfaces — region-local state vs the URL grammar. Ordering constraint: (1) → (2) → (3) → (4). Do not start (3) before (1) and (2) exist, or the region will invent a second filter spelling. (4)'s scope machinery is tab-side and needs only (1), but its footer link and its acceptance script both need (3), so it stays last. Amended 2026-11-01 when the plan was split: each child carries its own plan file (linked below), and the original plan file is now the overview only — ordering and the shared-contract index; the spec text lives in the per-item plans, not here. The cross-item contracts sit in those files: the =fk-eq= spelling in 01, the =be-rec= attachment and the =blog-test= fixture in 02. Between (2) and (3) a =:children= spec rides =be-rec='s =:view-form= payload with no consumer: inert by design, no model declares it yet, harmless. =rec= stays clean.
 
-** PLANNING Bot-crawlable public pages                :backend:frontend:mvp:
+Notes: [[file:~/workbench/blog-surface-notes.org][blog-surface-notes.org]] — history only; the plan is complete without it.
+Plan: [[file:~/workbench/blog-surface-plan.org][blog-surface-plan.org]] — overview only since the 2026-11-01 split: ordering and the shared-contract index; the spec text lives in the per-child plan files linked below.
+
+Implemented across the four children above (each DONE with its own plan link and summary), plus a review-driven reply-quote overhaul from the 2026-11-03 manual pass: nested quote depth (each reply generation one level deeper, =quoteLine= depth+1 — depth is speaker identity), a bare => separator after attribution, a trailing blank line + caret-at-end focus + =separateQuotes= submit normalization against CommonMark lazy continuation, blockquote CSS, and =stripMarkdown= widened to strip the whole marker run so nested tooltips carry zero sigils; =test:region= grew 37 → 49. The plan's six-step browser acceptance script ran 2026-11-03 on the live =blog-test= image with a 200-row controlled setup and a private post: steps 1–4 and 6 verified in-browser (including the scope-only filter-bar check via a temporary =blog-test-scope-only= variant in =models/local/=, deleted after), and step 5's title-session races spot-verified by Donnie in earlier passes and skipped in the final run by his call. Gates at completion: =test:url-state= 60, =test:region= 49, =npm run build= clean (=index-DNUA7Nca=, the browser-tested bundle), full suite 2667 checks across 49 groups PASS.
+
+*** DONE 1. =fk-eq= filter operator                   :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-01 Sun]
+:COMPLETED: [2026-11-02 Mon]
+:END:
+Storage-column compare for FK fields — =[["<type>","<fk-field>","fk-eq","<row-uuid>"]]= — the one new query primitive; the region (3) and the post scope (4) both consume it. Backend only: the inert =(:fk-eq "fk-eq")= arm in =operator-sql= (the =:has-all= precedent, never emitted as SQL text), the storage-column case in =add-where-clause=, a =valid-filter= arm running before the generic type check (uuid values only — nil, =:null=, and display names rejected; =:target= field with no =:join-table=; =table-key= must equal the listed type), the measure-path reject before the =operator-sql= splice, and the =docs/rest.md= Filter operators list. No =rest.lisp= edit. Independently testable; the fixture can be a tiny posts/comments pair with no =:children= declaration.
+
+Amended 2026-11-01 after plan review: the =add-where-clause= condition column is the table-qualified physical storage column (=rt_comments.comment_post=), resolved from the compiled view's =:columns= metadata (the first =table-column= value at =(u:tree-get *compiled-model* type-key :views :main :columns type-key field-key)=), with the raw uuid bound directly and never through =db-value= — not the select-list output alias / =target-storage-alias-key=. =filters-require-join-p= stays nil for a listed-type row.
+
+Implemented per the plan (all three review amendments). =predicates.lisp=: the inert =operator-sql= arm and the string-shaped =:fk-eq= case in =filter-value-type-p= (shape only — =uuid-p= semantics live in =valid-filter=; the boolean-declared FK hazard is pinned by a fixture probe). =backend.lisp=: =fk-eq-condition-column= (the =:columns=-metadata lookup) + the =:fk-eq= arm in =add-where-clause= (qualified physical column, = "= $N"=, raw bind, never =db-value=), the =valid-filter= arm beside =:has-all= (=singular-target-field-p= + =uuid-p=; completes validation, skips the generic type check), =valid-filters=' optional =:type-key= (cross-type =:fk-eq= rejected naming both types; guards at =be-list=, =be-id=, =be-update=, =be-delete=, =be-list-column=, and =update-roles= — direct callers unaffected), and the =measure-request-grain-filters= arm before both the generic classifier and the =operator-sql= splice. =docs/rest.md= documents the tuple. Fixture =models/test/fk-eq-test.lisp= (posts/comments + =:crosspost= second FK, boolean =:flag= FK, M2M =:tags=; comment =:title= identity so today's =valid-target= compiles the joiner) seeded via =be-set-field-value=; suite =tests/fk-eq-tests.lisp= (46 checks: SQL text on base/join/view SQL, two-filter placeholder alignment, raw-bind pin, storage matches with the title-collision probe, unknown-uuid empty, two-FK column distinctness, guards, rejections, predicate split, =(eq :fk-eq (parse-operator "fk-eq"))=). Measure rejections added beside =mrb-request-filters-rejected= (rollup-self dies in =valid-filter=; cross-type FK reaches the new arm and dies with the pinned rollup message). Two deviations, none behavioral: the =:in=-first placeholder-alignment probe pins =$3= (two =:in= atoms), not =:has-all=; the join-context SQL assertion uses an =:eq= chip (A's title is B's uuid — the collision makes =:eq= the honest chip), while the execution test keeps the chip-plus-fk-eq pairing. Full suite green (2523 checks, 48 groups).
+
+Plan: [[file:~/workbench/blog-surface-plan/01-fk-eq.org][01-fk-eq.org]]
+
+*** DONE 2. =:children= vocabulary and wire      :model:compiler:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-01 Sun]
+:COMPLETED: [2026-11-02 Mon]
+:END:
+Compiler plus =be-rec=. Validation: legal only on =:view-form=, a list of exactly one region spec, =:type= and =:via= required, =:sort= validated by the extracted =valid-default-sort= rule set against the /compiled/ child type in a post-stage-1 cross-type pass (stage-1 compiles each type against the raw model, so a child's injected =:sortable t= is not visible during the parent's own compile), =:hide-list t= as required companion, and the walker arm so a well-formed spec does not die as "Invalid value". Wire: the spec attaches in =be-rec= beside =:fields= — not =rec=, not =list-result=, not =fe-fields= — only on =:view-form=, only inside the record guard, only when the type declares =:children=; =:type= / =:via= go out as strings and =:sort= as a two-element string pair =("field" "asc")= with the direction normalized (a sort plist would serialize as ={"field": "dir"}= — the =json-sort-echo= trap), so =plist-to-json= emits =["created-at","asc"]=; a backend test asserts the compiled def still carries =:children= verbatim, omitted =:sort= included. The =models/test/blog-test.lisp= fixture lands here complete for 03/04: =:guest-allowed t= + =:api-roles ("logged-in" "public")=, guest-readable types, seeded post/comment rows (suite-side, ="public"= roles), scalar view/add forms, the tab's =:list-form= and =:default-sort=, the full M2M tags structure, author/reference chip filtering, and the permission recipe — =:new-roles (:comments-user ("create" "read"))= plus flat-string =:type-roles= (amended 2026-11-01 after plan review: the nested =:type-roles= spelling never reaches RBAC correctly and leaks onto the wire verbatim). New suite =tests/children-tests.lisp= with the standard asd / =run-*= registration. No React. Docs: =docs/model-reference.md= gains the vocabulary rows, the emitted JSON shape, and the tree-UI guard (tree vocabulary must never grow a =:children= key). After this, =(be-rec …)= returns the region spec and (1) returns the rows; nothing consumes them until (3).
+
+Plan: [[file:~/workbench/blog-surface-plan/02-children-vocabulary-wire.org][02-children-vocabulary-wire.org]]
+
+Implemented per the plan (all five review amendments). =model.lisp=: =*form-keys*= grows =:children= (closed set) with the per-form reject in =valid-hide-list= (=:view-form= only, even as nil; =:default-sort= rides =:list-form= via a new =*form-macro-keys*= skip and its own list-form-only rule); the =preliminary-model-check= walker arm stops at the region list; =valid-sort-declaration= extracted from =valid-default-sort= (shared rule set; presence-aware direction check — =(cdr sort)= — so =(:created-at nil)= now rejects in both the region spec and type-level =:default-sort=, the deliberate behavior change); =valid-children= + =valid-children-region-surface= run as the post-stage-1 cross-type pass inside =validate-model= (both spelling positions of =:default-sort= honored; compiled child's injected =:sortable t= visible; parent/child list-form / display / non-internal / user-category / child view+add forms; =:via= singular-target check against the compiled child; tree/fs-backed guard on values; stray type-level =:children= and =:via= rejected); =valid-target= takes the pre-rename =old-field-key= and grants the zero-identity storage-edge carve-out exactly for joiner-internal =:reference= fields; =compile-field= rejects a join-table list field whose other side has zero identity fields (the pinned message). =backend.lisp=: =region-spec-list= (pure emitter — downcased =:type=/:via= strings, =("created-at" "asc")= string pair, omitted =:sort= defaulted) and the triple-guarded =be-rec= attach (record guard + =:view-form= + declared =:children=; docstring updated). Fixture =models/test/blog-test.lisp= (zero-identity comments, =:post-tags= joiner to comments+tags, =:autofill :user= author, reference chips on =:user=/:post=, =:new-roles= + flat =:type-roles=) and suite =tests/children-tests.lisp= (compile probes bare via =blog-types= mutations; DB/RBAC/wire probes under one seeded =with-model=; =run-children-tests= registered in =run-tests=; =form-keys-closed-set= updated in hide-list-tests). Docs: =model-reference.md= gains the =:children= section, the emitted JSON shape, the parent/child surface contract, the pipeline's =valid-children= pass, the storage-edge identity carve-out, and the quick-key index row. Three deviations, all probe-shape rather than behavior: the missing-=:view-form= catch is the type-level =:children= arm (one catch, not two — the plan's own "one catch" reading); the fs-backed tree guard probe covers the shared message via the tree arm only (an fs-backed compile probe dies in =mark-path-field= first because compiled fields drop =:path= — a mark-path-field ordering question, not this item's); =valid-sort-declaration= gained a =listp= pre-check so a keyword =:sort= reports the shape message instead of a =(cdr keyword)= type error. Full suite green (2665 checks, 49 groups).
+
+*** DONE 3. Region renderer                        :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-01 Sun]
+:COMPLETED: [2026-11-02 Mon]
+:END:
+Frontend, reading surface only, under the parent's view form. The region owns its fetch (=/api/list=, =form=view-form=, the fixed =fk-eq= filter, the region's =:sort=) and keeps the child payload in region-local state — never =setData=, =formValues=, the query setters, or the router. Rows through the existing list-cell pipeline, prev/next pager, accordion expand to the child's view-form fields, inline Add via direct =/api/insert= (uuid preset, hidden FK, jump to the last page), Reply's quote preset with the one-level strip, and loaded-empty vs failed fetch as explicit state flags. =:hide-list= (DONE) already suppresses the parent table. No footer link: that link is defined as landing on the scoped tab (4); an interim substitute — a search pre-fill, a display-column filter — is the second filter spelling the ordering exists to prevent. This is the App.tsx slice that can go wrong; isolating it means a broken hop cannot hide a broken expand. Smoke slice: oldest-first render, pager, expand, Add preset and last-page landing, Reply strip, guest sees no Add, zero-comment no-create renders nothing, failed fetch renders the error line; =npm run build= or it is invisible.
+
+Plan: [[file:~/workbench/blog-surface-plan/03-region-renderer.org][03-region-renderer.org]]
+
+Implemented per the plan. =web/src/region.ts=: pure helpers — =composeReply= (quoteLine: strip one leading =>= + optional space, flatten remaining markers, prefix exactly one => =; attribution only from a nonblank string =user=, never lifted from the body; missing user → empty preset), =normalizeRoles= (string → itself, array → element zero, nonempty strings only), =lastOffset= (=total<=0= → 0), =regionPayloadData= (add-form keys ∪ =via= minus =roles=; blanks omitted, nonblanks untrimmed, explicit null preserved, =undefined= absent so =:autofill :user= supplies the username; =via= assigned unconditionally after filtering so a backend-hidden FK still rides), and =insertOutcome= (HTTP OK + =success= + =inserted: true= + nonempty id → =inserted=; =inserted: false= → =noop=; else =invalid=). =web/src/region.test.mjs= + =npm run test:region= (37 checks): all four quote cases plus multiline nesting, no-space markers, forged attribution, missing/null/[]=/blank users, flat + nested + malformed roles, totals 0/1/20/21/40/41, payload membership/blank/sparse/null/untrimmed/hidden-=:via=, roles never in =data=, and the outcome matrix. =App.tsx=: =ItemResponse= grows =children=, =ListResponse=['type-roles']= widens to =Array<string | [string, ...unknown[]]>=, =ChildSpec= + =childSpec= state retained from =openEditForm='s envelope (=viewing= only, after =stillCurrent=; cleared at open start, in =clearLoadedForm= / =clearRecordTarget=, on parent-type Add; not re-cleared by the 3s status poll); =Region= mounts immediately after the parent =</form>=, keyed by =type|via|sort|parentId= (parent/spec change remounts and resets by construction), outside every =!hideList= block; region-local fetch via =requestRegionList= / =commitRegion= / =loadRegion= (sequence + mounted fences; the =sort= plist wire trap avoided — =spec.sort= is the emitted =["created-at","asc"]= pair and the URL spells =field:dir=); offset state is the sole effect-driven display-fetch trigger; pager handlers and the shrink/post-insert handoffs synchronously invalidate old work and set the target offset (at most two list fetches after a POST, one final rows commit, no intermediate-page paint); manual =Reload= reads the live offset, commits through the clamp path, and retains expansion only when the expanded id survives the refreshed page; collapsed rows and expanded fields both use the region's own =view-form= + =formFieldKeys= through =renderCellValue= / =cellText= clamp + tooltip / =renderReadOnlyField= without ctx (no FK navigation out of the region); row-click contract via =INTERACTIVE_SELECTOR=, =tr.row-clickable=, =tabIndex=, =role="button"=, Enter, Expand/Collapse aria-label; =React.Fragment= rows keep =FieldRow= instances inside a =<td colSpan>=; Add presets =spec.via= to the parent uuid and skips it in the visible map (=RegionPanel= renders the shared =renderRegionField= alphabet — hidden nothing, read-only, markdown/textarea, =renderFormField= fallback); the panel is a =<div>= with =type="button"= controls and an explicit Submit handler (no nested =<form>=, no implicit submit); insert failure keeps the panel/body/page with the server's message; =noop= closes and same-page Reloads; a confirmed insert probes the fresh total and hands off to =lastOffset=; a failed probe or display fetch is a load failure with Reload (never a retry or a restore); roles ride top-level, normalized — never verbatim from =type-roles=; guest (create false) sees no Add/Reply; =total===0 with no create renders nothing, with create the Add control is the empty state; in-flight renders only the container; failed fetch renders one error line + Reload (console.error). Smoke-tested end to end over the live REPL image on =blog-test= (guest/member): =be-rec= → =children= spec, =fk-eq= region fetch ordering and totals, member insert with uuid preset + autofilled user + flat roles visible to guest, whitespace-body 400 message, shrink shape (offset 20, total 4, zero rows), reply-preset round trip. Full suite green (2668 checks, 49 groups).
+
+*** DONE 4. Post scope                          :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-01 Sun]
+:COMPLETED: [2026-11-03 Mon]
+:END:
+The escape hatch: finding routes to the comments tab, never to new region state. The scope is its own state slot and its own URL dimension in the =urlState.ts= closed set — =UrlState=, =QueryFields=, =parseHash=, =canonicalize= (absent and default both drop, or the writer loops), =urlStatesEqual=, and a writer path that never goes through the =filters= maps; a new field, never a reuse of =id=. =fetchList= emits the scope as the =fk-eq= row; the filter bar renders the chip "Post: <title> ×" through the active-chips path, and the × is a scope-slot clearer that never calls =toggleChipFilter=. Title resolution is one cached =/api/item= fetch, failing closed. The footer link ("All N comments »", =N= from the region fetch's =total=) lands here and performs the hop; the hop closes the parent form on purpose. The 12,000-comment figure is the story; the seed is 200 rows. Gate: the plan's full acceptance script, all six steps.
+
+Plan: [[file:~/workbench/blog-surface-plan/04-post-scope.org][04-post-scope.org]]
+
+Implemented per the plan. =urlState.ts=: discriminated =ScopeState= (=none= / =valid {via, id}= / =invalid {raw}=) with pure =parseScope= (exactly one =:=, two nonempty halves; =post:garbage= structurally valid for the server) / =scopeToParam= / shared =SCOPE_NONE= constant; =UrlState= grows the scalar =fk?: string= (presence significant even when empty); =QueryFields.scope= required (all literals updated); =parseHash= uses =getAll= (one param → raw, duplicates → the empty invalid marker); =canonicalize= requires =type= exactly as =id=, lowercases only the id half of a valid pair, and keeps an invalid raw present — including =fk: ''= — never canonicalizing malformed input to absence; =buildUrlState= routes the =ScopeState= through =scopeToParam=; =writeUrl= serializes every canonical present =fk= (the =%3A= → =:= unescape keeps the shared-link spelling =fk=post:<uuid>=) so the writer loop and the duplicate-URL equality gate hold; =urlStatesEqual= untouched (scalar walk). =App.tsx=: =scope= is its own state slot (never =listFilters=, never =id=); =fetchList= emits =[listedType, via, "fk-eq", id]= independently of =formReady= and before the nonempty check (a cold scoped request carries =fk-eq= on the first request — no unscoped bootstrap, no =pendingFormRefetch= arming), and an invalid scope stands down before =apiFetch= (sequence allocated, error + envelope cleared, no fetch, no stale rows); =resetListQuery= clears it; the hop =onShowAll(spec, parentId)= (one explicit Region callback prop — Region owns the link and its current =total=, App owns navigation: mark push, =changeType= exactly once, then =setData(null)= + install =valid {via, id}= after the reset; writer effect creates the hash entry; parent form closes through =changeType → clearRecordTarget=, no =hashchange= wait); =clearScope= (scope × and the invalid-surface Clear control: synchronous =listSeq= bump, envelope clear, push mark, scope → none, page 1, selection clear — never =toggleChipFilter=, never a stale-closure fetch; the fetch effect's scope dep owns exactly one replacement fetch; search/chips/bools preserved); Clear filters now also synchronously invalidates, marks push, clears the scope (plus the envelope when a scope stood), still restores authored bool defaults and preserves =q= / =notq=; =anyFilterActive= gains the scope-present arm (scope-only bar lights the button); the filter bar mounts on scope presence and renders =Post: <title> ×= / =Post ×= (never the uuid) through the shared =ScopeChip=; the no-data shell renders the generic =Post ×= beside the no-records/error line and the neutral "Invalid post scope" + Clear scope notice for structural garbage. Title resolution: raw FK metadata from the arrived list form only when =type-key= matches (=viaMeta.target= / =viaMeta.column= — never =buildChipFieldMeta=, never =Field.table=); one =/api/item?type=…&form=view-form= fetch per =(session epoch, target type, id)= with an epoch-keyed cache + in-flight dedup; success requires OK + non-array object record + case-insensitive id match + type match when present + nonblank =record[titleKey]= — anything else caches a failure and renders =Post ×=; visible commits fenced by (epoch, latest title sequence, current key ref assigned during render — the =fetchListRef= pattern — so A→B and A→clear responses populate only their own cache entry and a delayed privileged response after guest login writes nothing); =resetSessionState= advances the epoch, clears cache/in-flight/visible, fences outstanding work. Scope rides the login seed's full assignment (both arms), the history listener's full assignment + equality-gate object + dep array, the writer effect's object + deps, and the fetch effect's deps; a scope-changing history arrival clears the old envelope synchronously beside the listener's =listSeq= bump (no stale rows under a pending scoped request). Record opens from the scoped tab keep =fk= beside =id=; =copyBestLink= untouched (copies =type= + =id= only). Region: =onShowAll= optional prop; footer link "All N <type> »" beside the pager, gated =!inFlight && !failed= (never a stale or failed total), absent in the render-nothing empty state by construction. =urlState.test.mjs= grew to 60 checks (23 new: valid/non-UUID/bare/empty-half/extra-colon/empty-string parse, duplicate-param marker, fk-beside-id, canonical lowercasing of only the id half, no-type drop, raw survival through parse → canonicalize → state → build → write incl. the empty marker, duplicate-URL no-push, scoped/unscoped inequality, full round trip); =npm run test:url-state= (60), =test:region= (37), =npm run build= (374.10 kB) all green. Live-REPL smoke on seeded =blog-test=: comments list-form =:post= carries =:target :posts= + =:column "title"= (the title-resolution metadata path), a parsed =fk-eq= row over =parse-filters= returns the honest scoped =:total= (3 on the seeded post, 0 on an unknown uuid), and =be-rec= view-form emits the region spec. Full suite green (2667 checks, 49 groups). The plan's six-step browser acceptance script (hop/history shape, fail-closed hand edits, composition, title sessions/races, return) and the temporary no-search/no-chip variant are manual passes — no JS test harness exists; the fixture is loaded in the development image for them. One reading pinned: the Region footer link renders only in the non-empty main path ("beside the pager"), so a zero-comment create-allowed region shows the Add-only empty state without the link.
+
+** READY Action log                                  :model:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-03 Tue]
+:END:
+A built-in =:usage= type an admin can list, so a demo answers "who did what today" without the journal. Append-only: =:create nil :update nil :delete nil :display t=, =:type-roles ("admin")=, written only by a backend helper that inserts as =admin= and swallows its own errors (no transactions — a log write must not fail the user's request). Fields: nullable =:user= FK, =:user-name= (search and sort; a failed login for an unknown name has no row to point at), =:event=, =:on=, =:detail=, and =:when= (the full timestamp as fixed-width text, so a search for =2026-11-02T10:= is that hour). =:created-at= stays the real timestamp and is not overridden. List repeats of the same user + event + type + detail inside one minute collapse; login, view, insert, update, delete, and action always write. Guest counts. The helper does not log itself.
+
+Plan: [[file:~/workbench/action-log-plan.org][action-log-plan.org]]
+
+** READY Bot-crawlable public pages                   :backend:frontend:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-20 Tue]
 :END:
-Promoted to MVP 2026-10-24 (from Post MVP): the blog surface (markdown widget → timestamps → permalinks → embedded child region) turns this from a theoretical gap into a fitness function — a finished blog with no discoverable public face is not shippable. The demo video depends on it (the closer: paste a =/p/= URL, watch a real unfurl render).
-Public (guest-readable) apps are invisible to non-browser consumers: guest login is a frontend ritual (=guest-auto= posts =/api/login= and holds tokens in the browser), so crawlers, link-preview unfurlers, and RSS readers get 401s from the API — and a cold fetch of any URL returns the empty SPA shell, so search engines and unfurls see no content at all. Surfaced by the markdown-widget / blog direction (2026-10-20).
+Promoted to MVP 2026-10-24: a finished blog with no discoverable public face is not shippable. The demo video's closer is pasting a =/p/= URL and watching a real unfurl render.
+Guest login is a frontend ritual, and a cold fetch of any URL returns the empty SPA shell, so crawlers and unfurlers see nothing. The fix is a distinct public URL space, not same-URL SSR and not bot-UA sniffing. Guest-readable types with a =:view-form= are rendered to static HTML at =/p/=, =/p/<type>/=, and =/p/<type>/<uuid>=. The address is the row uuid, never a slug. The SPA stays the editing surface.
 
-Direction: a *distinct public URL space*, not same-URL SSR and not bot-UA sniffing. For guest-readable types, serve server-rendered read-only pages at e.g. =/p/<type>/<identity>= (the native blog-engine shape — every real blog serves HTML at the article URL; the SPA stays the editing surface). Bot-UA sniffing at HAProxy is rejected deliberately: UA-list maintenance forever, and cloaking-adjacent. Build-time SSG is also out — content is DB data, unknown at deploy.
+The renderer is in-process =3bmd=, reading the database as the guest role. No Node sidecar, and no anonymous HTTP read path — crawlability does not need one. =/p/= is a materialized build product: a full pass writes a sibling tree and swaps it into place only if the whole pass succeeds. A failed pass leaves the live tree alone. Serving is static and unauthenticated. Regeneration is one coalesced worker, marked dirty after a successful mutation's effects, not a one-second poll. =sitemap.xml= is emitted in the same pass. Incremental rendering is a non-goal.
+The Best Link control from "Record permalinks" keeps that label and copies the public URL when the publication manifest has one, and the SPA hash otherwise. It does not guess, and it does not get a second button. Copying the address bar of a public record in the SPA still hands a non-JavaScript unfurler the empty shell; the button is the habit, and rewriting the bar to =/p/= is Post MVP. Humans arriving at =/p/= get a visible "Open in app" link and a bot-gated forward to the hash; bots stay on the HTML. Images materialize at =/p/files/<hash>.<ext>=.
+Depends on "Record permalinks" (the =id= grammar, the sibling id, and the one Copy control). "Embedded child region" is not a prerequisite — public child links are discovered from compiled FK metadata. Design shape is settled in the plan (grammar, renderer, images, human-forward, scale).
 
-- Renderer decision: =3bmd= server-side keeps the deploy Lisp-only and self-contained but is a second markdown renderer that can drift from the FE's =react-markdown= GFM flavor; a =react-dom/server= Node sidecar keeps one renderer but puts Node in the runtime image. Pick deliberately. The sidecar, if chosen, is a batch process at regeneration time, not a per-request dependency.
-- If Lisp-side: the renderer runs in-process and reads the DB directly as the guest role, so crawlability needs no anonymous HTTP read path at all. The anonymous read path (no-credential requests read as the seeded guest; reads only) then survives only as an API-consumer concern — separate decision.
-- Crawler glue: canonical tags on the SPA record views pointing at the public URL; a generated =sitemap.xml=; a copy-link button shares the public URL so unfurlers fetch real HTML.
-- The public pages are a *materialized build product*, not a per-page cache: a render cycle walks every guest-readable type and renders the list view per type plus the view-mode page per record, into a temp tree that atomically swaps into place (never update in place — a deleted or gone-private record must not leave stale HTML being served). The private app is the source; =/p/= is the build output; no per-page invalidation logic exists at all.
-- Regeneration is driven by one *dirty flag*, set by every mutation path: =be-insert= / =be-update= / =be-delete=, =be-set-field-value= (action status writes), user role changes, role permission changes, =resource-roles= writes, and model (re)set. The render thread polls the flag about once a second when idle and starts a pass when set; while rendering it finishes undisturbed, then checks the flag again and starts another pass if it was set meanwhile — multiple sets during a pass coalesce into one re-render. =sitemap.xml= is emitted in the same pass.
-- Serving is static-file cheap: no DB touch, no permission evaluation at request time; =ETag= / =Cache-Control= headers keep bots and unfurlers cheap. Full re-render per change batch is right at Data UI scale (tens to hundreds of records; a pass is milliseconds) — incremental rendering is a non-goal.
+Restructured 2026-11-02 into four numbered children. Ordering constraint: (1) → (2) → (3) → (4). Do not start (4) before (2) is serving, or Best Link can copy a =/p/= URL that still falls through to the SPA shell. (2) does not need the worker or the wire key: (1) writes a generation stamp into the tree and (2) reads it for the weak ETag and the CSP nonce; an absent tree is a static 404, not the SPA shell. (3)'s code does not need the dispatcher, but its acceptance does, so it stays after (2). Amended 2026-11-02 when the plan was split: each child carries its own plan file (linked below), and the original plan file is now the overview only — ordering and the shared-contract index; the spec text lives in the per-item plans, not here. The cross-item contracts sit in those files: the projection, the URL grammar, and the generation stamp in 01; =:public-url= omitted-never-nil, decorated on =be-rec= and =list-result= only, in 03. The acceptance script lives in 04 and gates the whole release.
 
-Plan: [[file:~/workbench/public-pages-plan.org][public-pages-plan.org]] — all design-shape decisions settled (grammar, renderer, images, human-forward, scale); pending Grok review, then the code-investigation pass (its "Deliberately not covered" list is the table of contents) before READY.
+Notes: [[file:~/workbench/public-pages-notes.org][public-pages-notes.org]] — history only; the plan is complete without it.
+Plan: [[file:~/workbench/public-pages-plan.org][public-pages-plan.org]] — overview only since the 2026-11-02 split: ordering and the shared-contract index; the spec text lives in the per-child plan files linked below.
+
+*** READY 1. Renderer                                 :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-02 Mon]
+:END:
+Eligibility, guest reads, the rendered type's own =:view-form= projection, titles, FK / child / M2M links, HTML, markdown, images, sitemap, atomic swap, =PUBLIC_ROOT= / =PUBLIC_ORIGIN=, and the checked-in bot-forward asset. Record HTML is complete before anyone serves it. No HTTP dispatcher, no worker, no SPA button. Tests call =render-public-pages= directly. Images, relationships, and the bot gate stay here; they are branches of the renderer, not their own items. This child writes the generation stamp the later children read. The fixture =models/test/public-pages-test.lisp= lands here and is consumed by 02, 03, and 04.
+
+Plan: [[file:~/workbench/public-pages-plan/01-renderer.org][01-renderer.org]]
+
+*** READY 2. Static serving                           :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-02 Mon]
+:END:
+=/p= and =/sitemap.xml= dispatchers registered before the SPA fallback, path containment, cache headers, CSP, HEAD/405, and a 404 that does not fall through to =index.html=. Depends on (1) having written a tree. Does not need the worker or the wire key. Reads the generation stamp (1) wrote for the weak ETag and the CSP nonce. An absent tree is a clean 404, not the SPA shell. A deploy of (1)+(2) with no manual =render-public-pages= is that 404. Automatic render-on-=set-model= arrives in (3).
+
+Plan: [[file:~/workbench/public-pages-plan/02-static-serving.org][02-static-serving.org]]
+
+*** READY 3. Lifecycle and manifest                   :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-02 Mon]
+:END:
+Worker, dirty marks on the success path only, =set-model= pause, synchronous render before =start-web-server=, =manifest.json= loaded into the in-memory snapshot, =decorate-public-url= on =be-rec= and =list-result= only. =:public-url= is reserved in =valid-field-names= and is omitted, never nil — =plist-to-json= renders nil as =[]=, which is truthy in JS, and decorating =rec= breaks =be-update= because =valid-data= rejects unknown keys. Depends on (1). Acceptance also needs (2), so this stays after (2) even though the code does not need the dispatcher. A just-inserted row has no snapshot key yet; Best Link copies the hash during that window.
+
+Plan: [[file:~/workbench/public-pages-plan/03-lifecycle-manifest.org][03-lifecycle-manifest.org]]
+
+*** READY 4. SPA                                      :frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-02 Mon]
+:END:
+Best Link keeps its label and copies =public-url= when that string is nonempty, else today's hash. =web/src/publicLink.ts=, the =link[data-ui-canonical]= hint, and the status-poll merge. Depends on (3) emitting the key and on (2) serving the URL. No second button. No address-bar rewrite to =/p/= (Post MVP). The manual acceptance script (curl a staging =/p/=, draft 404, OG tags, JS forward, Best Link) lives here and gates the whole release.
+
+Plan: [[file:~/workbench/public-pages-plan/04-spa.org][04-spa.org]]
+
+** READY Deployment cleanup                       :scripts:deployment:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-27 Tue]
+:END:
+Separate development, staging, and production source checkouts so a dirty development tree can never change what a deployed app loads on restart. Development remains =~/common-lisp/data-ui=; staging and production use independent clean clones at =/data/data-ui/repos/staging= and =/data/data-ui/repos/production=. Host profiles, =demo= / =e-demo= lifecycle operations, and nightly resets use staging code; production images are always built from production code. Existing profiles, snapshots, databases, credentials, and exposure stay under =/data/data-ui= and are not moved.
+
+Running =scripts/data-ui deploy todos= from development (or another directory) means “deploy the production checkout,” never “deploy the invoking checkout.” By default it fetches and fast-forwards the latest =public/master=; =scripts/data-ui deploy todos --from private/master= fetches and selects the named remote branch first. Selection requires a clean deployment checkout, refuses destructive cleanup and non-fast-forward updates, reports the selected source and exact commit, and re-executes the selected production script so the compiler, script, models, frontend, and Docker build context all come from the same revision.
+
+Staging gets an explicit update path using the same safe checkout mechanics, builds =web/dist= there, installs changed ops/unit files, and restarts active apps only through plain =systemctl restart=. The app wrapper and reset service point at staging, and ASDF explicitly prefers that checkout before =(require :data-ui)= so it cannot load the development =data-ui.asd=. Routine staging commands do not silently update code. Snapshots continue to carry only database/files/metadata; they never select or restore code.
+
+Plan: [[file:~/workbench/deployment-cleanup-plan.org][deployment-cleanup-plan.org]]. Reviewed 2026-10-27 against the live script and ops files: keep this one item. Do not split it. Selection without routing leaves host profiles on the development checkout; routing without selection leaves =deploy= pushing the caller's branch. The shell harness must be green before any live unit is touched. Publish order, the non-read-only dry run, and the accepted demo-verb race are pinned in the plan's "Implementation notes (2026-10-27 review)" section — do not close that race with a second lock.
 ** TODO Page type (editable content pages)     :model:frontend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-21 Wed]
@@ -626,38 +756,13 @@ Plan: [[file:~/workbench/public-pages-plan.org][public-pages-plan.org]] — all 
 Prose an app user is meant to edit — About page, house style guide, landing blurb — as data, not model text: a content type holds one row per page (markdown body, =:identity t= slug, edited in-app under RBAC), and a =:page t= projection type renders one selected row as a full page in the type selector — no list chrome, always expanded, empty state when the row does not exist yet. Static =:page-description= (above) stays the author-prose counterpart; tabs remain model-declared — a page without a tab is just a row. v1 is a read-only projection; in-page editing waits on the per-field editability machinery. Naming settled 2026-10-21: =:page t= survives the collision check — pagination's =page= lives only in query-param / wire namespaces, never a model keyword (keep any future types-payload wire key from being named =page=). =:page-description= on a =:page t= type is a compile error: the page's content /is/ the description, and a collapsible intro on top of a full page is noise. Amended 2026-10-21 after the View form discussion: a page type *requires* =:view-form= (compile error, the rollup-requires-:list-form precedent) and renders it as the page — the reader may not hold read on the content type, so the page cannot borrow its forms. A page type declares no =:list-form= (compile error if it does; absent =:list-form= is already structurally list-less today, so no suppression mechanism is needed), does not use =:hide-list=, and has no list to hide.
 
 Notes: [[file:~/workbench/page-type-notes.org][page-type-notes.org]]
-** TODO Date-time picker =:ui= widget                   :model:frontend:mvp:
+** TODO Page description button label     :model:frontend:polish:mvp:
 :PROPERTIES:
-:CREATED: [2026-08-29 Sat]
+:CREATED: [2026-10-27 Tue]
 :END:
-A =:ui= widget (e.g. =:widget :date-time=) that renders a date-time picker on forms and submits ISO 8601 values like =2026-08-29T15:53:12= — the same shape =:created-at= / =:updated-at= use. Pairs with =:type :timestamp= fields. The =:ui= key passes through verbatim, so no backend change is expected beyond possibly validating the format on write.
-** TODO AI-only model reference                                :docs:mvp:ai:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:END:
-Condensed, AI-optimized version of =docs/model-reference.md= (denser, shorter examples, vocabulary-focused, no prose) to serve as the LLM system prompt for the model generator button.
+The button that toggles a type's =:page-description= block open renders a hardcoded =ℹ️ About this page= (=web/src/PageDescription.tsx=), but the description is often not about the page at all: the todos demo's description is about the whole application, and future authors may use the block for other purposes entirely. The label should be model-authored text.
 
-Create a condensed version of =docs/model-reference.md= optimized for LLM consumption. The full reference (1157 lines) consumes significant tokens per request. An AI-optimized reference could be denser, use shorter examples, and focus on the vocabulary without prose explanations. This will require many tests to ensure generated models remain valid. Could even be an AI-only reference that is best suited for AIs, even if humans can't make heads or tails of it.
-** TODO Instance knows its environment :backend:scripts:
-:PROPERTIES:
-:CREATED: [2026-09-27 Sun]
-:END:
-A running instance cannot today determine whether it is development, staging, or production — nothing inside the process carries it; the port it binds and the domain HAProxy routes to it are external facts (=model-name= names the app, not the environment; dev and staging Model Bank are both =modelbank=). Surfaced by the generate-button prompt-log design (2026-09-27): the log origin/filename can name the app but not the environment, so dev and staging generations are indistinguishable in the log.
-
-Environment vocabulary of record: =docs/deployment.md= → "Environments" (the =:domain-stg= item, DONE 2026-09-13). This item gives the *instance* that vocabulary at runtime:
-
-- Source of truth is ops metadata, not introspection: an env var (e.g. =DATA_UI_ENV=dev|stg|prod=) set by =profile-run.sh= (host profiles → =dev=) and by the deploy script (=stg= / =prod=), read once at startup into a dynamic variable, defaulting to =dev= when unset (bare REPL image keeps working).
-- Surface it: =/api/info= payload, =pl:= log context, and available to hook code (prompt-log origin field first consumer).
-- Decide whether an unset variable is an error in production deploys (fail loud) vs defaulting quietly.
-
-Small item; do it with or just before the generate-button prompt logging.
-
-** TODO More example models                                            :mvp:
-:PROPERTIES:
-:CREATED: [2026-08-09 Sun]
-:END:
-Additional clean, small models (beyond todos, modelbank, chores, books) to prove generality. All models are now fitness functions; Model Bank remains primary.
-
+Shape: a type-level key beside =:page-description= (e.g. =:page-description-label=), validated as a non-blank string when present (the =valid-page-description= blank-rejection precedent), defaulting to =Info= when absent so no existing model changes. Wire: rides the same =/api/types= entry as =:page-description= / =:page-description-open= (=be-types=); the frontend =TypeInfo= gains the field and =PageDescription= renders it in place of the hardcoded string. The ℹ️ glyph and the show/hide =title= attributes stay frontend-owned.
 ** TODO Text-field width default and hint            :frontend:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -665,13 +770,77 @@ Additional clean, small models (beyond todos, modelbank, chores, books) to prove
 
 ** TODO Remove =:private:= from all doc strings                :maintenance:
 Public, exported function will carry the =:public:= label. We'll assume all the rest are private.
-** TODO Expose host profiles via HAProxy                           :scripts:
+** TODO Column visibility                        :frontend:polish:mvp:
 :PROPERTIES:
-:CREATED: [2026-08-15 Sat]
+:CREATED: [2026-10-27 Tue]
 :END:
-=expose-profile <profile>= / =unexpose-profile <profile>= in =scripts/data-ui=: route a locally-run host profile's HTTP port through the existing HAProxy TLS front door (=https://<model :domain>= → =127.0.0.1:<HTTP_PORT>=, backend =dataui-profile-<name>=). Primary profiles only; must run on =$DEPLOY_HOST=; one domain one owner (symmetric refuse against deploys); =delete-profile= cleans up the exposure. Model =:name= values =profile= / =profile-*= are reserved by the compiler (=lisp/model.lisp=). Implemented per =~/workbench/expose-profile-plan.org=; left TODO until smoke-tested on evo-x2.
+A "Columns" control near the search/filter controls on record lists letting the user toggle which columns are visible — all visible by default (e.g. hide =Created= / =Updated= timestamps on the todos list for a clean look). The video shows it.
 
-** TODO Determine how public role is applied              :backend:compiler:
+- Popover with checkboxes over =list-form= field names, a search-as-you-type filter over those names (same anatomy as the M2M chip picker), and a "Show all" reset
+- Persistence in =localStorage=, per model + type key (e.g. =todos:todo=); stored names no longer in the schema are ignored (model drift)
+- Hiding every column is allowed (rows show row controls only)
+- Row-control columns (Edit/Delete) are not fields and are always visible
+- Frontend-only; rollup lists excluded (v1 scope)
+
+** PLANNING =record= CLI                                     :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-27 Tue]
+:END:
+A small client the model users call to write blog posts. Not a =scripts/data-ui= verb. One Python client, three verbs: this item is =data-ui-client record=, [[*TODO CLI client for importing records][CLI client for importing records]] is =import=, and [[*TODO Mass archive][Mass archive]] (Post MVP) is =archive=. Credentials, the base-URL environment variable, login, and the no-password-in-argv rule are shared and agreed across the three. =record= itself is one login per invocation, then exit. No token file, no refresh.
+
+- =record post --user rose --type posts --title ... --body-file post.md --image one.png --image two.png= logs in as that user, uploads each image first, then =POST=s =/api/insert= with ="roles": ["public"]= always. No flag to omit it. Omitting =roles= is a private row, and =/p/= 404s it. The server adds =<user>:exclusive= and =admin=; the script never sends the exclusive role (the caller does not hold it, and naming it is a 400). The body comes from a file, never from =--body=: a real post has newlines and quotes, and argv lands in the process list. Each =--image= is uploaded into the blog's images directory (created once by hand, =public= on that directory row) via the two-step upload, and its images row is inserted with ="roles": ["public"]=. The Markdown holds placeholders, ={{one.png}}=, and the script replaces each with the image's public URL before inserting. Repeated =--image= flags, in order. The script does not wait for the files to appear under =/p/=. A post written in the same breath shows broken images until the next =/p/= pass, and that is accepted.
+- =record edit --user rose --id <uuid> ...= =POST=s =/api/update= and does not send =roles=. A =roles= array replaces the row's list; =admin= and the exclusive come back, =public= does not, and a forgotten =public= unpublishes the post.
+- =record delete --user rose --id <uuid>= deletes by id. Someone else's post is already a 400 (row-level update/delete is the exclusive role). The script does not add a second check.
+- =record image --user rose --file shot.png= uploads into the blog's images directory (created once by hand, =public= on that directory row) via the two-step upload, inserts the images row with ="roles": ["public"]=, and prints the public URL. The script does not wait for the file to appear. A post written in the same breath shows a broken image until the next =/p/= pass, and that is accepted.
+
+The public URL is =/p/files/<hash>.png=. The hash is the first 32 lowercase hex characters of the sha256 of the bytes (the length pinned in the public-pages plan, 2026-10-27). The extension comes from the stored filename, so the script stores the file under a name ending in =.png=; the renderer does not sniff the bytes. The markdown uses that absolute path (=![alt](/p/files/<hash>.png)=), never a relative one and never =/api/file=. The copy happens because the images row is guest-readable and carries the image widget, not because the markdown mentions the URL. =:image= is a widget, not a field type: the bytes live in =:type :file=, and =:widget :image= on a =:column nil= text field displays them. =public= already exists, so a string entry in =:type-roles= attaches it and does not rewrite its permissions.
+
+Credentials live in =/data/data-ui/ai-creds=, mode 600, not in the repo and not in the prompt. One line per user, no JSON, no quoting:
+
+    rose secret
+    grok other-secret
+
+The first word is the username, the rest of the line is the password. A missing user, a missing file, or a login failure exits non-zero and prints the server's error. The script prints the new or updated id and nothing else.
+
+Base URL is an environment variable, not a flag and not a second file. Passwords never appear in argv (they would land in the process list and in the agent's transcript). No database access, no admin override, no new endpoints.
+
+Sits above the video because the video post and the feature posts are written through it.
+
+Notes: [[file:~/workbench/record-notes.org][record-notes.org]]
+
+Plan: [[file:~/workbench/record-cli-plan.org][record-cli-plan.org]]
+
+** TODO Tag chips in view-form                :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-01 Sun]
+:END:
+In the view form, =:list= fields (e.g. =:tags=) render as a comma-separated plaintext string (=renderReadOnlyField= in =web/src/App.tsx= joins the values). List views already render the same values as chips — the =chipFieldMeta= / cell-chip treatment — and the view form should match. Pure frontend: chip spans in the read-only list-field branch; no backend, model, or wire changes.
+** TODO RSS feed                                      :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-02 Mon]
+:END:
+A blog engine without a feed loses the subscribers and tools that poll a URL instead of an account: feed readers, planets, and glue automation. Search ranking does not depend on it; the repeat technical audience does. One feed is enough. Readers accept Atom, but a from-scratch generator should emit RSS 2.0 — the dialect validators, docs, and "paste this URL" habits assume, and the only one podcast clients accept.
+
+- RSS 2.0 at a stable URL (=/feed/= or =/rss.xml=), with autodiscovery in =<head>=: =<link rel="alternate" type="application/rss+xml">=
+- Full post body in =<content:encoded>=, not a teaser
+- Stable =<guid isPermaLink="true">= that does not change when the title does
+- RFC 822 dates, absolute permalinks, and a valid =<channel>= title and link
+- Do not also emit Atom unless it is free
+
+Sits above the video because a finished blog the video can point at should already be subscribable.
+
+
+** TODO 30-second demo video                                      :docs:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Nothing → model → deployed app. Deadline: December 31, 2026.
+
+Montage concept (2026-10-24): ~20 seconds creating and deploying one simple app — nothing → model → deployed, the complete story once — then the remaining ~10 seconds as rapid-fire deployments of a few more apps, 2–3 seconds each. The first 20 seconds carry the claim; the last 10 are repetition at speed, which is the proof. Fits the 30-second ceiling exactly. Beat details live in the video plan: [[file:~/workbench/video-plan.org][video-plan.org]].
+
+**When to shoot:** mid-to-late December — after polish and the features that should appear on camera (search/filtering, sort, static drop-downs, boolean list checkmarks, UI polish, etc.).
+
+* MVP Backlog
 ** TODO Type→widget inference                      :compiler:model:mvp:docs:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -710,14 +879,6 @@ Two template files carry =:model:= placeholder tokens and are not loadable model
 Lisp and test-suite edits need human permission.
 
 Plan: [[file:~/workbench/models-template-dir-plan.org][models-template-dir-plan.org]].
-** TODO CLI client for importing records                       :scripts:mvp:
-:PROPERTIES:
-:CREATED: [2026-10-19 Mon]
-:END:
-A separate client (not a =scripts/data-ui= verb) that logs in like the browser and inserts records over the existing REST API. One =insert= verb: field flags set values directly, or with =--csv= name the CSV headers to read them from. File fields are in scope (the existing two-step upload plus insert, hidden inside the command). Failures print and the run continues; =--stop-on-failure= halts; any failure exits non-zero. Every =inserted: true= id is appended to a transcript, and a separate =undo= invocation deletes exactly those ids. Runs past an hour refresh the access token; no API keys, no new endpoints, no transactions.
-
-Context: [[file:~/workbench/data-ui-import-context.org][data-ui-import-context.org]]
-
 ** TODO Model value vocabulary                         :model:compiler:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-26 Mon]
@@ -729,17 +890,47 @@ Third spelling: =:absent= — /not specified/, exactly equivalent to a dropped k
 Reserved for later: =:none= as the explicit-empty token for value-taking keys (deliberately no value; cancels an injected or inherited default — the =:false= trick generalized, non-nil so it survives =(or new old)= overlay merging), adopted per-key only when a key actually gains an injectable default; no future keyword enum takes =:none= as a member. Deliberately not =:nil=: EQ to =nil= in some implementations (implementation-defined; SBCL keeps them distinct), and it reads as nil to humans and LLMs regardless — a token whose name is another token's name.
 Parked at the bottom of MVP Now deliberately: it churns every model file at once, so it lands after the blog-surface features freeze their fixtures — not mid-stream.
 
-** TODO 30-second demo video                                      :docs:mvp:
+** TODO Date-time picker =:ui= widget                   :model:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-08-29 Sat]
+:END:
+A =:ui= widget (e.g. =:widget :date-time=) that renders a date-time picker on forms and submits ISO 8601 values like =2026-08-29T15:53:12= — the same shape =:created-at= / =:updated-at= use. Pairs with =:type :timestamp= fields. The =:ui= key passes through verbatim, so no backend change is expected beyond possibly validating the format on write.
+** TODO AI-only model reference                                :docs:mvp:ai:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
-Nothing → model → deployed app. Deadline: December 31, 2026.
+Condensed, AI-optimized version of =docs/model-reference.md= (denser, shorter examples, vocabulary-focused, no prose) to serve as the LLM system prompt for the model generator button.
 
-Montage concept (2026-10-24): ~20 seconds creating and deploying one simple app — nothing → model → deployed, the complete story once — then the remaining ~10 seconds as rapid-fire deployments of a few more apps, 2–3 seconds each. The first 20 seconds carry the claim; the last 10 are repetition at speed, which is the proof. Fits the 30-second ceiling exactly. Beat details live in the video plan: [[file:~/workbench/video-plan.org][video-plan.org]].
+Create a condensed version of =docs/model-reference.md= optimized for LLM consumption. The full reference (1157 lines) consumes significant tokens per request. An AI-optimized reference could be denser, use shorter examples, and focus on the vocabulary without prose explanations. This will require many tests to ensure generated models remain valid. Could even be an AI-only reference that is best suited for AIs, even if humans can't make heads or tails of it.
+** TODO Instance knows its environment :backend:scripts:
+:PROPERTIES:
+:CREATED: [2026-09-27 Sun]
+:END:
+A running instance cannot today determine whether it is development, staging, or production — nothing inside the process carries it; the port it binds and the domain HAProxy routes to it are external facts (=model-name= names the app, not the environment; dev and staging Model Bank are both =modelbank=). Surfaced by the generate-button prompt-log design (2026-09-27): the log origin/filename can name the app but not the environment, so dev and staging generations are indistinguishable in the log.
 
-**When to shoot:** mid-to-late December — after polish and the features that should appear on camera (search/filtering, sort, static drop-downs, boolean list checkmarks, UI polish, etc.).
+Environment vocabulary of record: =docs/deployment.md= → "Environments" (the =:domain-stg= item, DONE 2026-09-13). This item gives the *instance* that vocabulary at runtime:
 
-* MVP Backlog
+- Source of truth is ops metadata, not introspection: an env var (e.g. =DATA_UI_ENV=dev|stg|prod=) set by =profile-run.sh= (host profiles → =dev=) and by the deploy script (=stg= / =prod=), read once at startup into a dynamic variable, defaulting to =dev= when unset (bare REPL image keeps working).
+- Surface it: =/api/info= payload, =pl:= log context, and available to hook code (prompt-log origin field first consumer).
+- Decide whether an unset variable is an error in production deploys (fail loud) vs defaulting quietly.
+
+Small item; do it with or just before the generate-button prompt logging.
+
+** TODO More example models                                            :mvp:
+:PROPERTIES:
+:CREATED: [2026-08-09 Sun]
+:END:
+Additional clean, small models (beyond todos, modelbank, chores, books) to prove generality. All models are now fitness functions; Model Bank remains primary.
+
+** TODO CLI client for importing records                       :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-19 Mon]
+:END:
+A separate client (not a =scripts/data-ui= verb) that logs in like the browser and inserts records over the existing REST API. One =import= verb of =data-ui-client=: field flags set values directly, or with =--csv= name the CSV headers to read them from. File fields are in scope (the existing two-step upload plus insert, hidden inside the command). Failures print and the run continues; =--stop-on-failure= halts; any failure exits non-zero. Every =inserted: true= id is appended to a transcript, and a separate =undo= invocation deletes exactly those ids. Runs past an hour refresh the access token; no API keys, no new endpoints, no transactions.
+One Python client, three verbs, shared credentials. =import= is this item; =record= is [[*PLANNING =record= CLI][=record= CLI]]; =archive= is [[*TODO Mass archive][Mass archive]] (Post MVP). Python, not Lisp and not a =scripts/data-ui= verb: the client is the worked example of driving a Data UI app from a language a future developer already has, and it must not sit next to =deploy= and =delete=. Credentials, the base-URL environment variable, login, token refresh, and the rule that a password never appears in argv are agreed across the three items and live in one place.
+
+Context: [[file:~/workbench/data-ui-import-context.org][data-ui-import-context.org]]
+
 ** TODO File / directory move (rename)                        :backend:
 :PROPERTIES:
 :CREATED: [2026-10-20 Tue]
@@ -873,7 +1064,7 @@ If roles are given to the landing page type, then select the one with the least 
 :PROPERTIES:
 :CREATED: [2026-08-15 Sat]
 :END:
-=be-landing-page= today: configured =:landing-page= if the user can see it, else first non-base type they can see, else first =be-types= entry, else =nil=. Step 4 leaves a blank app when =be-types= is empty.
+=be-landing-page= today: configured =:landing-page= if the user can see it, else first non-built-in (author-defined) type they can see (the fallback corrected by "Landing page falls back to :secrets"), else first =be-types= entry, else =nil=. Step 4 leaves a blank app when =be-types= is empty.
 
 Add a fallback that never requires permissions, including a default page that is always reachable. Rollup types (list-plan 07b) use their own =:type-roles= as the only gate; they do not solve this. Existing fallback is enough for users who can see some type. This item is the empty-=be-types= case.
 ** TODO Cursor in first field on Edit forms            :frontend:polish:mvp:
@@ -981,6 +1172,12 @@ Create an app that allows you to upload Markdown and Org-Mode files, and that al
 AGENT.md's deployment bullet still points at =~/.debug/deployment-work.md= for session-by-session history, but that file (and =~/.debug/=) no longer exists. Either restore the file at that location or update AGENT.md to wherever the history actually lives (or drop the reference).
 
 * Post MVP
+** TODO Mass archive                                          :scripts:
+:PROPERTIES:
+:CREATED: [2026-10-28 Wed]
+:END:
+The =archive= verb of =data-ui-client=. =data-ui-client archive --user rose --type comments --before 2024-01-01= removes the =public= role from every row of that type whose =created-at= or =updated-at= is earlier than the date. The row stays in the app. =/p/= drops it on the next render pass, which is why this exists: =/p/<type>/= and a post page's child list are unpaged, and the SPA already pages, so unpublishing old rows is how a large type stays inside the public-pages envelope. One run, so the worker dirties once. A row-at-a-time loop would be a rebuild per row.
+Not a =scripts/data-ui= verb. Same Python client as [[*TODO CLI client for importing records][CLI client for importing records]] (=import=) and [[*PLANNING =record= CLI][=record= CLI]] (=record=): shared credentials file, base-URL environment variable, login, token refresh, and no password in argv. No database access, no new endpoints. The caller must already be allowed to edit those rows' roles. Dry-run prints the count and changes nothing.
 ** TODO Server-side searchable =allowed-values=                :backend:frontend:
 :PROPERTIES:
 :CREATED: [2026-10-19 Mon]

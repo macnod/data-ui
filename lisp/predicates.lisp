@@ -15,10 +15,14 @@
     (:not-ilike "not ilike")
     (:in "in")
     (:not-in "not in")
-    ;; :has-all is never emitted as SQL text — add-where-clause
-    ;; builds one correlated EXISTS per value for it. Inert entry
-    ;; so operator-key-p (and the REST operator parser) accept it.
+    ;; :has-all is never emitted as SQL text. add-where-clause builds one
+    ;; correlated EXISTS per value for it. Inert entry so operator-key-p (and
+    ;; the REST operator parser) accept it.
     (:has-all "has-all")
+    ;; :fk-eq, the same inert entry: never emitted as SQL text. add-where-clause
+    ;; builds its own qualified-storage-column condition for it (the generic op
+    ;; would splice this token).
+    (:fk-eq "fk-eq")
     (otherwise (error "Unsupported operator ~a" operator-key))))
 
 (defun uuid-p (s)
@@ -112,7 +116,15 @@ not a silent miss."
                 (not (equal el :null))
                 (value-type-p type-key field-key el)))
             value))))
-    (value-type-p type-key field-key value)))
+    ;; :fk-eq is string-shaped only. The FK field carries its
+    ;; author-declared display type (existing fixtures have
+    ;; boolean- and timestamp-declared FK fields), so value-type-p
+    ;; would reject a uuid string at shape level and filter-p
+    ;; would deny a legal tuple before any validator ran. Shape
+    ;; here; the uuid-p semantics live in valid-filter.
+    (if (eq op-key :fk-eq)
+      (stringp value)
+      (value-type-p type-key field-key value))))
 
 (defun value-type-p (type-key field-key value)
   ":private: Returns T if VALUE is of the correct type for FIELD-KEY in

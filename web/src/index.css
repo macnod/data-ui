@@ -261,3 +261,20 @@ tr.row-clickable:hover {
   z-index: 900;
   position: relative;
 }
+
+/* --- Markdown blockquotes (:markdown view, reply quotes) --- */
+
+/* Quote transcript: a left rule plus inset text. Nested quotes
+   (one level per reply generation — region.ts composeReply)
+   inherit the rule, so depth reads as speaker history. No margin
+   collapse fights: every quote rides inside the markdown div. */
+blockquote {
+  margin: 0.5rem 0;
+  padding: 0.1rem 0 0.1rem 0.9rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+blockquote p {
+  margin: 0.35rem 0;
+}

@@ -104,8 +104,8 @@ test before any :hide-list variant is compiled."
 (in-suite hide-list-compile)
 
 (test form-keys-closed-set
-  "*form-keys* holds exactly :fields and :hide-list."
-  (is (equal '(:fields :hide-list) *form-keys*)))
+  "*form-keys* holds exactly :fields, :hide-list, and :children."
+  (is (equal '(:fields :hide-list :children) *form-keys*)))
 
 (test hide-list-t-compiles-on-record-forms
   ":hide-list t compiles on each record form and the compiled

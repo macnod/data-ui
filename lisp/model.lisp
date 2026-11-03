@@ -11,9 +11,9 @@
   "^[a-z][a-z0-9-]*[a-z0-9]$")
 
 (defun domain-stg-from-domain (domain)
-  ":private: Derive the staging FQDN from DOMAIN by suffixing -stg
-onto the first DNS label (todo.x.com -> todo-stg.x.com). Assumes
-DOMAIN already passed the :domain validation; no re-check here."
+  ":private: Derive the staging FQDN from DOMAIN by suffixing -stg onto the first
+DNS label (todo.x.com -> todo-stg.x.com). Assumes DOMAIN already passed the
+:domain validation; no re-check here."
   (let ((first (subseq domain 0 (position #\. domain)))
         (rest (subseq domain (position #\. domain))))
     (concatenate 'string first "-stg" rest)))
@@ -97,10 +97,10 @@ returns S. If S is not a string or a number, this function returns NIL."
     (cond
       ((and (or (null value) (equal value :null)) (not not-null))
         nil)
-      ;; :generate-uuid is a reserved default on :uuid fields (same
-      ;; shape as the base-model :id default); runtime values are
-      ;; always real UUID strings, but full-data fills the reserved
-      ;; keyword before validation runs, so exempt it here.
+      ;; :generate-uuid is a reserved default on :uuid fields (same shape as the
+      ;; base-model :id default); runtime values are always real UUID strings,
+      ;; but full-data fills the reserved keyword before validation runs, so
+      ;; exempt it here.
       ((and (equal value :generate-uuid)
          (equal (u:tree-get *compiled-model* type-key :fields
                   field-key :type) :uuid))
@@ -124,10 +124,10 @@ returns S. If S is not a string or a number, this function returns NIL."
               type-key field-key value
               (format nil "must be a valid ~s." field-type-key))))))))
 (defun v-user-name (type-key field-key value user)
-  ":public: Validation hook behind the :user-name validation. Stricter
-than the rbac library's a:valid-user-name-p (which still gates login):
-lowercase letters, digits, and dashes; must start with a letter, end
-with a letter or digit, and respect the rbac length cap."
+  ":public: Validation hook behind the :user-name validation. Stricter than the
+rbac library's a:valid-user-name-p (which still gates login): lowercase letters,
+digits, and dashes; must start with a letter, end with a letter or digit, and
+respect the rbac length cap."
   (declare (ignore user))
   (unless (and (stringp value)
             (<= (length value) (a:user-name-length-max *rbac*))
@@ -173,10 +173,10 @@ with a letter or digit, and respect the rbac length cap."
 (defun rbac-add-user (type-key data user &key roles)
   (declare (ignore type-key))
   (let ((all-roles (add-to-list roles "settings")))
-    ;; FR-11 belt: guard non-REST callers that reach rbac-add-user
-    ;; directly with ai-user / deployer in the membership list. The
-    ;; REST create path is already closed upstream by be-insert's
-    ;; unfiltered valid-user-roles (holder check, admin exempt).
+    ;; FR-11 belt: guard non-REST callers that reach rbac-add-user directly with
+    ;; ai-user / deployer in the membership list. The REST create path is
+    ;; already closed upstream by be-insert's unfiltered valid-user-roles
+    ;; (holder check, admin exempt).
     (valid-admin-only-user-roles user all-roles)
     (pl:pdebug :in "rbac-add-user" :user user
       :roles roles :all-roles all-roles)
@@ -211,8 +211,8 @@ with a letter or digit, and respect the rbac length cap."
   (a:remove-permission *rbac* (getf data :name)))
 
 (defun build-default-setting-plist (type-key username type-def)
-  "Build an insert plist for a user-setting row. Populates :user
-and any field with :default-from :user."
+  "Build an insert plist for a user-setting row. Populates :user and any field
+with :default-from :user."
   (declare (ignore type-key))
   (let ((fields (getf type-def :fields))
          (plist (list :user username)))
@@ -223,8 +223,8 @@ and any field with :default-from :user."
     plist))
 
 (defun add-user-setting-rows (type-key data user &key id roles record)
-  "Generic post-create hook: insert a default row for every
-:user-setting t type in the compiled model."
+  "Generic post-create hook: insert a default row for every :user-setting t type
+in the compiled model."
   (declare (ignore type-key id roles record))
   (let ((username (getf data :name)))
     (pl:pdebug :in "add-user-setting-rows"
@@ -237,8 +237,8 @@ and any field with :default-from :user."
            user))))
 
 (defun remove-user-setting-rows (type-key data user &key id roles record)
-  "Generic pre-delete hook: remove the user's row from every
-:user-setting t type."
+  "Generic pre-delete hook: remove the user's row from every :user-setting t
+type."
   (declare (ignore type-key data user id roles))
   (let ((username (getf record :name)))
     (pl:pdebug :in "remove-user-setting-rows"
@@ -341,8 +341,7 @@ keyword/value pairs.  Signals an error on missing or wrong-type params."
 
 (defun resolve-hook-form (form &key (kind :validation)
                            type-key field-key)
-  "Resolve a single hook FORM into a contract-conforming function.
-FORM may be:
+  "Resolve a single hook FORM into a contract-conforming function. FORM may be:
 
   - A keyword:  :required  → zero-arg registry lookup
   - A plist list: (:max-length :max 20) → parameterized registry lookup
@@ -456,8 +455,8 @@ resolve-hook-form for error messages."
 ;; ---------------------------------------------------------------------------
 
 (defun compose-string-placeholders (format)
-  "Return a list of keyword placeholders found in FORMAT string.
-Placeholders match :[a-z][-a-z0-9]* (colon followed by lowercase word)."
+  "Return a list of keyword placeholders found in FORMAT string. Placeholders
+match :[a-z][-a-z0-9]* (colon followed by lowercase word)."
   (let ((matches nil))
     (cl-ppcre:do-scans (match-start match-end
                          reg-starts reg-ends
@@ -530,9 +529,8 @@ code (or model code), removing only those that precede any Lisp."
 
 (defun validate-deploy-model-text (model-text)
   ":private: Validate model text for the deploy-model hook.
-Returns (:ok model-plist) on success or (:error message) on failure.
-Skips leading ;; comment lines and blank lines before checking for
-the quoted plist."
+Returns (:ok model-plist) on success or (:error message) on failure. Skips
+leading ;; comment lines and blank lines before checking for the quoted plist."
   (flet ((ok (model-plist) (list :ok model-plist))
           (err (msg) (list :error msg)))
     (unless (and model-text (stringp model-text)
@@ -562,10 +560,10 @@ the quoted plist."
               (error (e) (err (format nil "~a" e))))))))))
 
 (defun deploy-model-write-file (model-plist package-root)
-  ":private: Write MODEL-PLIST to models/local/<name>.lisp (stable
-name, overwrite on re-deploy; the directory is gitignored — FR-9:
-VIP-deployed models never enter git history). Returns the relative
-file path (for the deploy script) and the model name."
+  ":private: Write MODEL-PLIST to models/local/<name>.lisp (stable name,
+overwrite on re-deploy; the directory is gitignored — FR-9: VIP-deployed models
+never enter git history). Returns the relative file path (for the deploy script)
+and the model name."
   (let* ((model-name (or (getf model-plist :name) "model"))
           (filename (format nil "~a.lisp" model-name))
           (models-dir (merge-pathnames "models/local/" package-root))
@@ -579,8 +577,7 @@ file path (for the deploy script) and the model name."
     (values (format nil "models/local/~a" filename) model-name model-path)))
 
 (defun deploy-model-git-commit (model-path model-name repo-root)
-  ":private: Stage and commit the model file so the tree is clean
-for deploy."
+  ":private: Stage and commit the model file so the tree is clean for deploy."
   (uiop:run-program (list "git" "add"
                       (namestring model-path))
     :input nil :directory repo-root)
@@ -589,11 +586,10 @@ for deploy."
     :input nil :directory repo-root))
 
 (defun deploy-model-run-script (package-root model-name)
-  ":private: Run scripts/data-ui deploy <model-name> with MODEL_FILE
-pointing at the local model (FR-9: the script compiles the file
-directly; no git commit, no canonical models/<name>.lisp). Returns
-(values stdout stderr exit-code).  Does not signal on non-zero exit —
-the caller inspects exit-code and stderr."
+  ":private: Run scripts/data-ui deploy <model-name> with MODEL_FILE pointing
+at the local model (FR-9: the script compiles the file directly; no git commit,
+no canonical models/<name>.lisp). Returns (values stdout stderr exit-code).
+Does not signal on non-zero exit; the caller inspects exit-code and stderr."
   (let ((script-path (namestring
                        (merge-pathnames "scripts/data-ui" package-root)))
          (repo-root (namestring package-root))
@@ -608,11 +604,11 @@ the caller inspects exit-code and stderr."
                        (sb-unix::posix-environ)))))
 
 (defun deploy-model-find-secret-id (name)
-  ":private: The :id of admin's :secrets row named NAME, or NIL when
-no such row. All rows (:limit nil — the default 20 would page the
-lookup and hide a match on page 2, re-creating the duplicate-row
-bug deploy-model-record-secret upserts away). Same loop shape as
-admin-secret-value, returning the id instead of the value."
+  ":private: The :id of admin's :secrets row named NAME, or NIL when no such
+row. All rows (:limit nil — the default 20 would page the lookup and hide a
+match on page 2, re-creating the duplicate-row bug deploy-model-record-secret
+upserts away). Same loop shape as admin-secret-value, returning the id instead
+of the value."
   (loop
     with admin-secrets = (be-list :secrets "admin"
                           :form :update-form :limit nil)
@@ -622,18 +618,18 @@ admin-secret-value, returning the id instead of the value."
     do (return (getf record :id))))
 
 (defun deploy-model-record-secret (model-name model-domain user)
-  ":private: After a successful deploy, read the generated admin password
-from the deploy state directory and record it in the :secrets table so the
-user can see it in the UI. Upsert by name: update the existing row in
-place when found (preserving its resource uuid, role grants, and
-created-at), insert only when absent."
+  ":private: After a successful deploy, read the generated admin password from
+the deploy state directory and record it in the :secrets table so the user can
+see it in the UI. Upsert by name: update the existing row in place when found
+(preserving its resource uuid, role grants, and created-at), insert only when
+absent."
   (handler-case
     (let ((admin-password (get-deployed-admin-password model-name)))
       (when admin-password
         (let* ((name (format nil "~a admin password" model-name))
                 (data (list :value admin-password
-                         :description (format nil "Admin password for ~a"
-                                        (or model-domain model-name))))
+                        :description (format nil "Admin password for ~a"
+                                       (or model-domain model-name))))
                 (id (deploy-model-find-secret-id name)))
           (if id
             (be-update :secrets id data user
@@ -651,18 +647,17 @@ created-at), insert only when absent."
         :status "failed to record secret"))))
 
 (defun deploy-model-tail (msg)
-  ":private: Last 180 characters of MSG for the status column. The
-deploy script dies at the END of its output — after compiler
-warnings and per-field noise — so the head routinely hides the
-actual error."
+  ":private: Last 180 characters of MSG for the status column. The deploy script
+dies at the END of its output — after compiler warnings and per-field noise — so
+the head routinely hides the actual error."
   (subseq msg (max 0 (- (length msg) 180))))
 
 (defun deploy-model-async (model-plist set-status package-root user)
-  ":private: Worker body for the deploy-model hook. Writes the model file
-(no git commit — FR-9 keeps VIP models out of history), runs the deploy
-script with MODEL_FILE, records the admin password in the :secrets
-table, and updates status.  Wraps everything in a handler-case so errors become
-'failed: <message>' rather than silent thread death."
+  ":private: Worker body for the deploy-model hook. Writes the model file (no git
+commit — FR-9 keeps VIP models out of history), runs the deploy script with
+MODEL_FILE, records the admin password in the :secrets table, and updates
+status.  Wraps everything in a handler-case so errors become 'failed: <message>'
+rather than silent thread death."
   (handler-case
     (multiple-value-bind (model-file model-name model-path)
       (deploy-model-write-file model-plist package-root)
@@ -696,8 +691,8 @@ table, and updates status.  Wraps everything in a handler-case so errors become
 ;; models/local/<name>.lisp and shells out to scripts/data-ui deploy with
 ;; MODEL_FILE set (FR-9; no git commit — VIP models stay out of history).
 ;; Requires the "deployer" role (FR-7); the check precedes validation and
-;; produces an immediate "failed: deployer role required" without spawning
-;; a subprocess.
+;; produces an immediate "failed: deployer role required" without spawning a
+;; subprocess.
 (register-hook :deploy-model :action
   '(:field :keyword)
   (lambda (&key field)
@@ -705,9 +700,9 @@ table, and updates status.  Wraps everything in a handler-case so errors become
               &key roles status-field set-status &allow-other-keys)
       (declare (ignore type-key field-key status-field))
       (block hook
-        ;; Role check: must have deployer role (FR-7). Checked first,
-        ;; before validate-deploy-model-text, mirroring :generate-model
-        ;; so a role failure is a blanket deny regardless of the text.
+        ;; Role check: must have deployer role (FR-7). Checked first, before
+        ;; validate-deploy-model-text, mirroring :generate-model so a role
+        ;; failure is a blanket deny regardless of the text.
         (unless (member "deployer" roles :test #'equal)
           (pl:pinfo :in "deploy-model"
             :status "failed" :reason "deployer role required")
@@ -781,15 +776,14 @@ Optional :temperature (default 0.3) and :max-tokens (default 16384)."
                      :temperature temperature :max-tokens max-tokens))))))
 
 (defun generate-model-user-message (description prior-model)
-  ":private: Build the user message. Order matters — the description
-rides last, as the final signal:
+  ":private: Build the user message. Order matters — the description rides last, as the final signal:
 
-1. The fixed instruction (return ONLY a quoted plist starting with ',
-   no fences, no explanation).
-2. When PRIOR-MODEL is non-blank, the previous model, framed as
-   advisory: the description stays authoritative; reuse structure from
-   the previous model where it still fits. Blank or absent PRIOR-MODEL
-   omits the block (erase = fresh start).
+1. The fixed instruction (return ONLY a quoted plist starting with ', no fences,
+   no explanation).
+2. When PRIOR-MODEL is non-blank, the previous model, framed as advisory: the
+   description stays authoritative; reuse structure from the previous model where
+   it still fits. Blank or absent PRIOR-MODEL omits the block (erase = fresh
+   start).
 3. The description, verbatim."
   (let ((prior
           (when (and prior-model
@@ -817,13 +811,13 @@ no explanation.~%~a~a"
     :nil-value "false"))
 
 (defun generate-model-example-files ()
-  ":private: Paths of the top-level example models in models/, sorted.
-A direct directory walk filtered to depth one — not list-models (which
-returns bare names and excludes models/test/ by a fuzzy search over the
-path string). The depth-one rule excludes models/test/ (regression
-fixtures, not exemplars) and models/local/ (private VIP models) by
-construction. New demos ride every prompt; the generator tests pin the
-set so a new file forces a conscious token-budget re-check."
+  ":private: Paths of the top-level example models in models/, sorted. A direct
+directory walk filtered to depth one — not list-models (which returns bare names
+and excludes models/test/ by a fuzzy search over the path string). The depth-one
+rule excludes models/test/ (regression fixtures, not exemplars) and
+models/local/(private VIP models) by construction. New demos ride every prompt;
+the generator tests pin the set so a new file forces a conscious token-budget
+re-check."
   (u:directory-listing
     (u:join-paths *package-root* "models")
     :files-only t
@@ -831,67 +825,66 @@ set so a new file forces a conscious token-budget re-check."
                   (u:join-paths *package-root* "models"))))
 
 (defun generate-model-example-block (path)
-  ":private: One example-model block: a ;; --- path --- banner followed
-by the file verbatim. NIL when the file is unreadable or empty — one
-stray file never fails a generation."
+  ":private: One example-model block: a ;; --- path --- banner followed by the
+file verbatim. NIL when the file is unreadable or empty — one stray file never
+fails a generation."
   (let ((text (ignore-errors (u:slurp path))))
     (when (and text (plusp (length text)))
       (format nil ";; --- ~a ---~%~a~%" path text))))
 
 (defun generate-model-examples-prose ()
-  ":private: The framing sentence preceding the example blocks (part
-2's opening prose, under the # Examples heading).  Kept as a format
-form so the ~ line continuations fold the source lines into the
-same single-line sentence the old inline text produced."
+  ":private: The framing sentence preceding the example blocks (part 2's opening
+prose, under the # Examples heading).  Kept as a format form so the ~ line
+continuations fold the source lines into the same single-line sentence the old
+inline text produced."
   (format nil "These are complete example models from this ~
 repository's models/ directory. Mirror their shape, field idiom, ~
 and scale. Do not copy their subject matter."))
 
 (defun generate-model-example-blocks ()
-  ":private: One block per example model (see generate-model-example-
-files), blank-line separated. Unreadable or empty files are skipped."
+  ":private: One block per example model (see generate-model-example-files),
+blank-line separated. Unreadable or empty files are skipped."
   (format nil "~{~a~^~%~}"
     (remove nil
       (mapcar #'generate-model-example-block
         (generate-model-example-files)))))
 
 (defun generate-model-examples-text ()
-  ":private: System-prompt part 2 — the # Examples heading, the
-framing prose (generate-model-examples-prose), then every example
-block (generate-model-example-blocks)."
+  ":private: System-prompt part 2 — the # Examples heading, the framing prose
+(generate-model-examples-prose), then every example block
+(generate-model-example-blocks)."
   (format nil "# Examples~%~%~a~%~%~a"
     (generate-model-examples-prose)
     (generate-model-example-blocks)))
 
 (defun generate-model-system-prompt-parts ()
-  ":private: The system prompt's two logical parts as a plist:
-:reference (docs/model-reference.md verbatim — part 1, opening with
-# Model Syntax Reference) and :examples (part 2, opening with
-# Examples; see generate-model-examples-text). Rebuilt per call —
-files are small; no cache."
+  ":private: The system prompt's two logical parts as a plist: :reference
+(docs/model-reference.md verbatim — part 1, opening with # Model Syntax
+Reference) and :examples (part 2, opening with # Examples; see
+generate-model-examples-text). Rebuilt per call — files are small; no cache."
   (list :reference
     (u:slurp (u:join-paths *package-root* "docs/model-reference.md"))
     :examples (generate-model-examples-text)))
 
 (defun generate-model-system-prompt ()
   ":private: System prompt for the LLM: the two parts from
-generate-model-system-prompt-parts joined — reference, blank line,
-examples. Callers needing the parts separately (the org prompt log)
-use generate-model-system-prompt-parts instead."
+generate-model-system-prompt-parts joined — reference, blank line, examples.
+Callers needing the parts separately (the org prompt log) use
+generate-model-system-prompt-parts instead."
   (let ((parts (generate-model-system-prompt-parts)))
     (format nil "~a~%~a"
       (getf parts :reference)
       (getf parts :examples))))
 
 (defvar *generate-model-prompt-log-dir* "/data/k8s/data-ui/generate-log"
-  ":private: Directory every real :generate-model LLM call writes its
-full prompt to (one JSON file per call; see generate-model-log-prompt).
-Constant by design — a knob only on demonstrated need.")
+  ":private: Directory every real :generate-model LLM call writes its full prompt
+to (one JSON file per call; see generate-model-log-prompt).  Constant by design
+— a knob only on demonstrated need.")
 
 (defun sanitize-name-component (s)
-  ":private: S downcased, non-[a-z0-9-] collapsed to dashes, edges
-trimmed, capped at 60.  Record :name is author/LLM data, never path
-data.  \"\" when nothing survives."
+  ":private: S downcased, non-[a-z0-9-] collapsed to dashes, edges trimmed,
+capped at 60.  Record :name is author/LLM data, never path data.  \"\" when
+nothing survives."
   (let ((clean
           (string-trim "-"
             (re:regex-replace-all "[^a-z0-9-]"
@@ -900,30 +893,27 @@ data.  \"\" when nothing survives."
     (subseq clean 0 (min (length clean) 60))))
 
 (defun generate-model-prompt-log-filename (app-name record-name)
-  ":private: <app>-<record>-<timestamp>.org for a prompt-log entry —
-compact, sortable, same-second collisions across environments
-theoretically possible and accepted (log, not data; one file
-survives)."
+  ":private: <app>-<record>-<timestamp>.org for a prompt-log entry — compact,
+sortable, same-second collisions across environments theoretically possible and
+accepted (log, not data; one file survives)."
   (format nil "~a-~a-~a.org"
     (sanitize-name-component app-name)
     (sanitize-name-component record-name)
     (re:regex-replace-all "[-:]" (dt:timestamp-string) "")))
 
 (defun org-escape-src-lines (text)
-  ":private: Prefix lines starting with *, #+, or , with a comma —
-org strips one leading comma on export / C-c ' edit, keeping those
-lines literal instead of parsing as headings or keywords.  The
-system prompt carries model-reference.md verbatim, whose markdown
-bold runs (**) would otherwise read as org headings."
+  ":private: Prefix lines starting with *, #+, or , with a comma — org strips one
+leading comma on export / C-c ' edit, keeping those lines literal instead of
+parsing as headings or keywords.  The system prompt carries model-reference.md
+verbatim, whose markdown bold runs (**) would otherwise read as org headings."
   (re:regex-replace-all "(?m)^(\\*|#\\+|,)" text ",\\1"))
 
 (defun generate-model-log-org
   (config record-name prompt-parts user-message)
-  ":private: Render the prompt-log entry as an org-mode document:
-one level-1 heading per field (the former JSON keys, same order),
-the system prompt's two parts as level-2 children under
-* system-prompt — Model Syntax Reference (markdown src block) and
-Examples (prose + one lisp src block)."
+  ":private: Render the prompt-log entry as an org-mode document: one level-1
+heading per field (the former JSON keys, same order), the system prompt's two
+parts as level-2 children under * system-prompt — Model Syntax Reference
+(markdown src block) and Examples (prose + one lisp src block)."
   (format nil "* timestamp~%~a~%~%~
 * model~%~a~%~%~
 * temperature~%~a~%~%~
@@ -943,17 +933,15 @@ Examples (prose + one lisp src block)."
 
 (defun generate-model-log-prompt
   (config record-name prompt-parts user-message)
-  ":private: Write one org-mode file describing this real LLM call —
-timestamp, model, temperature, record name, full system prompt
-(structured; see generate-model-log-org) and user message — to
-*generate-model-prompt-log-dir*.  PROMPT-PARTS is the plist from
-generate-model-system-prompt-parts, plus :examples-prose /
-:example-blocks for the log's Examples section (the logger splits
-part 2 so the prose stays outside the lisp block).  The prompt
-body is user-data-class (the API key is a header and never rides
-it).  Best-effort: any failure (missing dir, read-only mount, full
-disk) logs a pdebug and returns NIL — a logging failure never
-fails Generate.  Returns the path written, or NIL."
+  ":private: Write one org-mode file describing this real LLM call — timestamp,
+model, temperature, record name, full system prompt (structured; see
+generate-model-log-org) and user message — to *generate-model-prompt-log-dir*.
+PROMPT-PARTS is the plist from generate-model-system-prompt-parts, plus
+:examples-prose / :example-blocks for the log's Examples section (the logger
+splits part 2 so the prose stays outside the lisp block).  The prompt body is
+user-data-class (the API key is a header and never rides it).  Best-effort: any
+failure (missing dir, read-only mount, full disk) logs a pdebug and returns NIL
+— a logging failure never fails Generate.  Returns the path written, or NIL."
   (let ((path
           (u:join-paths *generate-model-prompt-log-dir*
             (generate-model-prompt-log-filename (model-name)
@@ -975,10 +963,10 @@ fails Generate.  Returns the path written, or NIL."
         nil))))
 
 (defun generate-model-llm-call (description prior-model record-name)
-  ":private: Call the LLM to generate a model from DESCRIPTION (with
-PRIOR-MODEL as advisory context; see generate-model-user-message).
-RECORD-NAME (the Model Bank record's :name) rides only the prompt log.
-Returns (:ok model-text) or (:error message)."
+  ":private: Call the LLM to generate a model from DESCRIPTION (with PRIOR-MODEL
+as advisory context; see generate-model-user-message).  RECORD-NAME (the Model
+Bank record's :name) rides only the prompt log.  Returns (:ok model-text)
+or (:error message)."
   (when *generate-model-llm-override*
     (return-from generate-model-llm-call
       (funcall *generate-model-llm-override* description prior-model)))
@@ -1037,9 +1025,8 @@ Returns string or nil."
               content)))))))
 
 (defun gethash-anthropic-content (parsed)
-  ":private: Extract text from Anthropic/GLM-format response.
-content is a list of {type:text, text:...} blocks.  Returns the
-concatenated text or nil."
+  ":private: Extract text from Anthropic/GLM-format response. content is a list
+of {type:text, text:...} blocks.  Returns the concatenated text or nil."
   (let ((content (gethash "content" parsed)))
     (when (and content (listp content) content)
       (let ((first-block (first content)))
@@ -1065,8 +1052,8 @@ Handles both OpenAI format (choices[].message.content) and Anthropic/GLM format
       (list :error (format nil "Failed to parse LLM response: ~a" e)))))
 
 (defun clean-llm-response (raw-text)
-  ":private: Strip markdown code fences and surrounding noise from
-RAW-TEXT.  Returns the cleaned string."
+  ":private: Strip markdown code fences and surrounding noise from RAW-TEXT.
+Returns the cleaned string."
   (let ((trimmed (u:trim raw-text)))
     ;; If there are code fences, extract content between first and last
     (if (re:scan "```" trimmed)
@@ -1090,18 +1077,18 @@ RAW-TEXT.  Returns the cleaned string."
       date prompt)))
 
 (defun generate-model-error-line (error)
-  ":private: One-line form of ERROR for the ;; failed: marker line:
-newlines collapse to spaces so the marker stays a single first line
-(the prefix check on the next Generate depends on that)."
+  ":private: One-line form of ERROR for the ;; failed: marker line: newlines
+collapse to spaces so the marker stays a single first line (the prefix check on
+the next Generate depends on that)."
   (string-trim " "
     (re:regex-replace-all "[\\n\\r]+" (format nil "~a" error) " ")))
 
 (defun failed-model-p (model-text)
-  ":private: T when MODEL-TEXT is nil, empty/blank, or its first line
-is a failed-attempt marker (starts with \";; failed: \").  The states in
-which a failed LLM attempt may replace the field: fresh start, or the
-field already holds a failed attempt.  A working model (any other
-first line) is never clobbered by a failure."
+  ":private: T when MODEL-TEXT is nil, empty/blank, or its first line is a
+failed-attempt marker (starts with \";; failed: \").  The states in which a
+failed LLM attempt may replace the field: fresh start, or the field already
+holds a failed attempt.  A working model (any other first line) is never
+clobbered by a failure."
   (or (null model-text)
     (and (stringp model-text)
       (or (zerop (length (u:trim model-text)))
@@ -1116,15 +1103,18 @@ first line) is never clobbered by a failure."
   (type-key record user model-field description model-text prior-model)
   ":private: Clean + header + validate + write model text. Returns (:ok) or
 (:error message).  Does not touch status. On validation failure:
-- when PRIOR-MODEL is empty or already a failed attempt (failed-model-p),
-  the failed model is written with a \";; failed: <error>\" first line
-  (then the normal header and the cleaned body) — the error lives next
-  to the artifact that caused it;
-- when PRIOR-MODEL is a working model, the field is left untouched
-  (erase it to opt into failure capture).
-Writes go through be-set-field-value (raw column write): the failed
-text is invalid by definition, so the canonical be-update path would
-fail the very validation that just failed."
+
+- when PRIOR-MODEL is empty or already a failed attempt (failed-model-p), the
+  failed model is written with a \";; failed: <error>\" first line (then the
+  normal header and the cleaned body) — the error lives next to the artifact
+  that caused it;
+
+- when PRIOR-MODEL is a working model, the field is left untouched (erase it to
+  opt into failure capture).
+
+Writes go through be-set-field-value (raw column write): the failed text is
+invalid by definition, so the canonical be-update path would fail the very
+validation that just failed."
   (let* ((cleaned (clean-llm-response model-text))
           (header (generate-model-header description))
           (full-text (format nil "~a~%~a" header cleaned))
@@ -1209,19 +1199,18 @@ concurrently)."
           (return-from hook
             (list :status "failed"
               :message "ai-user role required")))
-        ;; Resolve the description and model values from the action
-        ;; :data payload when present, else from the record.  The
-        ;; browser always posts both keys (handleAction sends every
-        ;; string widget); the record-only path is a programmatic
-        ;; be-action with no :data.
+        ;; Resolve the description and model values from the action :data
+        ;; payload when present, else from the record.  The browser always posts
+        ;; both keys (handleAction sends every string widget); the record-only
+        ;; path is a programmatic be-action with no :data.
         (let ((description
                 (or (getf data description-field)
                   (getf record description-field)))
               (model-text
                 (or (getf data model-field)
                   (getf record model-field))))
-          ;; Description must be non-empty (the resolved value — an
-          ;; empty browser description fails fast even unsaved)
+          ;; Description must be non-empty (the resolved value — an empty
+          ;; browser description fails fast even unsaved)
           (unless (and description (stringp description)
                     (> (length (string-trim " " description)) 0))
             (return-from hook
@@ -1233,16 +1222,15 @@ concurrently)."
               (return-from hook
                 (list :status "failed"
                   :message (getf config-result :error)))))
-          ;; Persist form state before generating: when :data carries
-          ;; either field, save exactly those two fields as the acting
-          ;; user — the canonical path (validations, write-through,
-          ;; updated-at) runs as if the user had saved them.  Scoped
-          ;; deliberately: a whole-form save could fail generation on
-          ;; an unrelated blank required field and commit edits Generate
-          ;; was never asked to save.  Skipped entirely when :data is
-          ;; nil (programmatic callers keep today's behavior).  The
-          ;; stale RECORD snapshot below is correct by construction —
-          ;; only :id is read from it downstream.
+          ;; Persist form state before generating: when :data carries either
+          ;; field, save exactly those two fields as the acting user — the
+          ;; canonical path (validations, write-through, updated-at) runs as if
+          ;; the user had saved them.  Scoped deliberately: a whole-form save
+          ;; could fail generation on an unrelated blank required field and
+          ;; commit edits Generate was never asked to save.  Skipped entirely
+          ;; when :data is nil (programmatic callers keep today's behavior).
+          ;; The stale RECORD snapshot below is correct by construction — only
+          ;; :id is read from it downstream.
           (when (and data
                   (or (getf data description-field)
                     (getf data model-field)))
@@ -1345,8 +1333,8 @@ write-through's execute-write-to).  No-op when either row has no resource name."
           do (a:add-resource-role *rbac* new-resource role))))))
 
 (defun spawn-button-status-keys (model type-key)
-  ":private: Field keys of the status companions for every :button
-field on TYPE-KEY in the raw (pre-compile) model."
+  ":private: Field keys of the status companions for every :button field on
+TYPE-KEY in the raw (pre-compile) model."
   (loop with fields = (u:tree-get model type-key :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
@@ -1475,13 +1463,12 @@ index even without :unique t).  Returns ACTION-FORM."
 ;;
 ;; BEGIN Register hook :change-password (self-service password change)
 ;;
-;; Hosted on the built-in :settings type (every app user holds the
-;; "settings" role; guest deliberately does not — the D1 theme-leak
-;; decision).  The :current-password / :new-password fields on
-;; :settings are no-column form fields: they render on the update
-;; form, ride the action payload as :data, and are skipped by
-;; valid-data / validate-fields / local-values-for-update, so a plain
-;; Save can never persist them.  Only the button changes a password.
+;; Hosted on the built-in :settings type (every app user holds the "settings"
+;; role; guest deliberately does not — the D1 theme-leak decision).  The
+;; :current-password / :new-password fields on :settings are no-column form
+;; fields: they render on the update form, ride the action payload as :data, and
+;; are skipped by valid-data / validate-fields / local-values-for-update, so a
+;; plain Save can never persist them.  Only the button changes a password.
 ;;
 
 (defun change-password-blank-p (value)
@@ -1500,15 +1487,14 @@ from a:login on \"\"."
              &key data &allow-other-keys)
       (declare (ignore type-key field-key))
       (block hook
-        ;; Own-row guard.  settings.user stores a UUID, but the record
-        ;; re-read in be-action returns the display value: :source
-        ;; (:view :users :table :users :column :name :agg :first), and
-        ;; view-result-values emits the source alias — so (getf record
-        ;; :user) is the USERNAME STRING, never the UUID.  Compare
-        ;; against USER (the username be-action already passes), not
-        ;; a:get-id.  Settings rows are not record-scoped (scope :user
-        ;; is list-only), so a settings-role user could otherwise
-        ;; reach another user's row by UUID.
+        ;; Own-row guard.  settings.user stores a UUID, but the record re-read
+        ;; in be-action returns the display value: :source (:view :users :table
+        ;; :users :column :name :agg :first), and view-result-values emits the
+        ;; source alias — so (getf record :user) is the USERNAME STRING, never
+        ;; the UUID.  Compare against USER (the username be-action already
+        ;; passes), not a:get-id.  Settings rows are not record-scoped (scope
+        ;; :user is list-only), so a settings-role user could otherwise reach
+        ;; another user's row by UUID.
         (unless (equal (getf record :user) user)
           (return-from hook
             (list :status "failed"
@@ -1520,9 +1506,9 @@ from a:login on \"\"."
                  (change-password-blank-p new))
               (list :status "failed"
                 :message "Current and new password are required"))
-            ;; Old-password gate: a:login returns nil on any mismatch —
-            ;; the same primitive /api/login uses.  A stolen JWT is not
-            ;; enough to take the account over.
+            ;; Old-password gate: a:login returns nil on any mismatch — the same
+            ;; primitive /api/login uses.  A stolen JWT is not enough to take
+            ;; the account over.
             ((not (a:login *rbac* user current))
               (list :status "failed"
                 :message "Current password is incorrect"))
@@ -1530,16 +1516,15 @@ from a:login on \"\"."
               (list :status "failed"
                 :message "New password is not a valid password"))
             (t
-              ;; Admin-elevated write through be-update — the canonical
-              ;; password path (hash, salt, blank-keep), the :tokens
-              ;; carve-out precedent for internal admin writes.  The
-              ;; hook does NOT hash itself: salt derivation lives in
-              ;; local-values-for-update / db-value, keyed on the
-              ;; target user's name; hashing here would become a second
-              ;; salt-derivation site and silently break an admin-reset
-              ;; variant later.  Partial data keeps record values;
-              ;; update-roles only runs when :roles is passed, which
-              ;; this call never does — the user's roles survive.
+              ;; Admin-elevated write through be-update — the canonical password
+              ;; path (hash, salt, blank-keep), the :tokens carve-out precedent
+              ;; for internal admin writes.  The hook does NOT hash itself: salt
+              ;; derivation lives in local-values-for-update / db-value, keyed
+              ;; on the target user's name; hashing here would become a second
+              ;; salt-derivation site and silently break an admin-reset variant
+              ;; later.  Partial data keeps record values; update-roles only
+              ;; runs when :roles is passed, which this call never does — the
+              ;; user's roles survive.
               (be-update :users
                 (a:get-id *rbac* "users" user)
                 (list :password new)
@@ -1553,11 +1538,20 @@ from a:login on \"\"."
 
 (defparameter *forms* '(:list-form :add-form :update-form :view-form))
 
-(defparameter *form-keys* '(:fields :hide-list)
-  "Closed set of legal keys on a form plist (:list-form, :add-form,
-:update-form, :view-form). An author key outside this set is a compile
-error (valid-hide-list). :hide-list is t or nil, legal on :view-form /
-:update-form / :add-form only — never :list-form.")
+(defparameter *form-keys* '(:fields :hide-list :children)
+  "Closed set of legal keys on a form plist (:list-form, :add-form, :update-form,
+:view-form). An author key outside this set is a compile error (valid-hide-list).
+:hide-list is t or nil, legal on :view-form / :update-form / :add-form only —
+never :list-form. :children is a list of exactly one region spec and is legal on
+:view-form only (valid-hide-list rejects it on the other three forms; shape and
+cross-type wiring belong to valid-children). :default-sort is a type-level key,
+not a form key — declare it beside :list-form.")
+
+(defparameter *form-macro-keys* '(:default-sort)
+  "Form-plist keys owned by other validators (valid-default-sort on the
+compiled type-def). valid-hide-list's closed-set loop skips these instead of
+rejecting them; their value shape and placement rules are enforced where the
+compiled type-def is in hand.")
 
 (defparameter *widgets*
   '(:textbox :textarea :code :markdown :stars :checkbox :checkbox-list :select
@@ -1568,13 +1562,20 @@ error (valid-hide-list). :hide-list is t or nil, legal on :view-form /
 (defparameter *ui-keys*
   '(:label :widget :read-only :hide-label :help :precision :options :table
      :filter-with :enabled-when :directory-type)
-  "Closed set of legal keys on a field :ui plist. An author key not in
-this list is a compile error.")
+  "Closed set of legal keys on a field :ui plist. An author key not in this list
+is a compile error.")
+
+(defparameter *default-field-override-keys* '(:ui :sortable)
+  ":private: Closed set of keys an author may redeclare on an injected default
+field (:created-at / :updated-at). A redeclaration is a presentation override,
+never a redefinition: :ui and :sortable only; anything structural (:type,
+:default, :not-null, :update, :source, …)  reshapes the injection's contract and
+is a compile error (valid-default-field-override).")
 
 (defparameter *filter-with-kinds* '(:boolean :reference)
-  "Closed set of :filter-with kinds. Per-kind tail keys and values are
-validated in valid-filter-with-value; adding a kind means adding a
-keyword here, a tail validator there, and a frontend renderer.")
+  "Closed set of :filter-with kinds. Per-kind tail keys and values are validated
+in valid-filter-with-value; adding a kind means adding a keyword here, a tail
+validator there, and a frontend renderer.")
 
 (setq *base-model*
   `(:users
@@ -1643,8 +1644,8 @@ keyword here, a tail validator there, and a frontend renderer.")
                           :ids-table :roles
                           :join-table :resource-roles)))
 
-     ;; TODO: Currently, a default list such as ("create" "read" ...) doesn't work
-     ;; because of some kind of validation issue. Fix.
+     ;; TODO: Currently, a default list such as ("create" "read" ...) doesn't
+     ;; work because of some kind of validation issue. Fix.
      :permissions
      (:table t :base t :built-in t
        :create ,#'rbac-add-permission
@@ -1745,8 +1746,8 @@ keyword here, a tail validator there, and a frontend renderer.")
                                      :widget :button)
                                    :action (:change-password)))
        :list-form (:fields (:user :dark-mode :display-name :bio))
-       :update-form (:fields t)
-       :view-form (:fields t)
+       :update-form (:fields t :hide-list t)
+       :view-form (:fields t :hide-list t)
        :add-form (:fields (:user :dark-mode :display-name :bio)))
 
      :secrets
@@ -1926,6 +1927,23 @@ fields that have non-NIL values for all HAVE-KEYS."
         (getf field-def attribute)
         field-def))))
 
+(defun dml-fields (fields)
+  ":private: Fields eligible for main DML column lists: every field except the
+injected timestamps :created-at / :updated-at. A presentation override adds :ui
+to either timestamp, which the (:column :ui) selection in insert-sql /
+update-sql would enroll in the statements — the timestamps are written by
+:default :now (INSERT) and the set_updated_at_column() trigger (UPDATE), never
+by client DML. Filtering by explicit key, not :base-field (nothing rejects an
+author-spelled :base-field t, so the flag test is not provably scoped to the
+injection); the key filter cannot change any other field's DML. :id's DML
+presence (base-dropped on INSERT, retained on INSERT for rt_ types, appended on
+every UPDATE) does not route through this helper."
+  (loop
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    unless (member field-key '(:created-at :updated-at))
+    append (list field-key field-def)))
+
 (defun joiner-fk-columns (model joiner-type-key)
   "Return (field-key . name-sql) pairs for JOINER-TYPE-KEY's :target columns
 only."
@@ -1955,9 +1973,12 @@ only."
     with res-columns = (list
                          (cons
                            :name
-                           (u:tree-get model :resources :fields :name :name-sql)))
+                           (u:tree-get model
+                             :resources :fields :name :name-sql)))
     with main-columns = (cons '(:id . "id")
-                          (fields-attribute fields '(:column :ui) :name-sql))
+                          (fields-attribute
+                            (dml-fields fields) '(:column :ui)
+                            :name-sql))
     with sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~}) returning id"
     for key in insert-keys
     for table-key = (case key
@@ -1994,7 +2015,8 @@ only."
   (loop
     with fields = (u:tree-get model type-key :fields)
     with update-keys = (update-keys model type-key)
-    with columns = (fields-attribute fields '(:column :ui) :name-sql)
+    with columns = (fields-attribute
+                     (dml-fields fields) '(:column :ui) :name-sql)
     with main-sql = "update ~a set ~{~a = ~a~^, ~} where id = $~d"
     with delete-sql = "delete from ~a where ~{~a = ~a~^ and ~}"
     with insert-sql = "insert into ~a (~{~a~^, ~}) values (~{~a~^, ~})"
@@ -2015,7 +2037,9 @@ only."
                   (cons
                     (format nil sql
                       table-name
-                      (u:zip (mapcar #'cdr table-cols) (placeholders table-cols))
+                      (u:zip
+                        (mapcar #'cdr table-cols)
+                        (placeholders table-cols))
                       (1+ (length table-cols)))
                     (append (mapcar #'car table-cols) '(:id))))
                 (t
@@ -2449,27 +2473,43 @@ model."
                type-key field-key to-table k))
         wt))))
 
-(defun valid-target (model type-key field-key field-def)
+(defun valid-target (model type-key old-field-key field-def)
+  "Validates the :target of FIELD-DEF and returns it. OLD-FIELD-KEY is the
+pre-rename field key: compile-fields renames a joiner's :reference key to
+:<singular-target>-id after this check, so the joiner spelling is visible here.
+Targets must have exactly one identity field, with one narrow storage-edge
+carve-out: a pre-rename :reference field declared on a type that is a joiner
+(:is-joiner t) or internal may target a type with zero author-declared identity
+fields — the joiner row stores bare UUIDs and no display resolution ever runs
+on that edge (fe-fields never sees it; the write path never names its identity
+column). A field merely named :reference on an ordinary type does not qualify,
+and a joiner :reference to a multi-identity target still fails. Target
+existence is required on every path. Signals plain error."
   (let ((target (getf field-def :target)))
     (when target
       (unless (u:has (u:plist-keys model) target)
         (error "Unknown target ~s in type ~s, field ~s"
-          target type-key field-key))
-      (loop with fields = (u:tree-get model target :fields)
-        for f-key in fields by #'cddr
-        for f-def in (cdr fields) by #'cddr
-        when (getf f-def :identity) count f-key into id-field-count
-        finally
-        (unless (= id-field-count 1)
-          (error "Field ~s of type ~s targets type ~s, which has ~d identity ~
+          target type-key old-field-key))
+      (let ((joiner-reference-p
+              (and (equal old-field-key :reference)
+                (or (getf (getf model type-key) :is-joiner)
+                  (getf (getf model type-key) :internal)))))
+        (loop with fields = (u:tree-get model target :fields)
+          for f-key in fields by #'cddr
+          for f-def in (cdr fields) by #'cddr
+          when (getf f-def :identity) count f-key into id-field-count
+          finally
+          (unless (or (= id-field-count 1)
+                  (and (zerop id-field-count) joiner-reference-p))
+            (error "Field ~s of type ~s targets type ~s, which has ~d identity ~
                 fields. However, targets must have exactly 1 identity field."
-            field-key type-key target id-field-count)))
+              old-field-key type-key target id-field-count))))
       target)))
 
 (defun humanize-field-key (field-key)
-  "Convert a field key like :average-rating into a human label
-like \"Average Rating\". Splits on dashes and underscores,
-capitalizes each word, and joins with spaces."
+  "Convert a field key like :average-rating into a human label like \"Average
+Rating\". Splits on dashes and underscores, capitalizes each word, and joins
+with spaces."
   (let ((name (string-downcase (string field-key))))
     (with-output-to-string (out)
       (loop
@@ -2487,8 +2527,8 @@ capitalizes each word, and joins with spaces."
             (write-char ch out)))))))
 
 (defun valid-ui-keys (ui)
-  "Reject dead :ui key aliases (with their migration hint), then reject any
-key not in *ui-keys* (the closed set). Signals via report-e."
+  "Reject dead :ui key aliases (with their migration hint), then reject any key
+not in *ui-keys* (the closed set). Signals via report-e."
   (loop for bad-key in '(:render-as :input-type :form-control)
     when (u:has (u:plist-keys ui) bad-key)
     do (report-e "valid-ui-keys"
@@ -2527,10 +2567,10 @@ otherwise."
         ~hl))))
 
 (defun valid-help-value (ui)
-  "Check that :help, if present, is a non-blank string (blank renders an
-empty panel). Signals via report-ve otherwise. The :missing sentinel is
-load-bearing: getf cannot tell absent from present-nil, and present-nil
-must fail as a non-string."
+  "Check that :help, if present, is a non-blank string (blank renders an empty
+panel). Signals via report-ve otherwise. The :missing sentinel is load-bearing:
+getf cannot tell absent from present-nil, and present-nil must fail as a
+non-string."
   (let ((help (getf ui :help :missing)))
     (unless (eq help :missing)
       (unless (stringp help)
@@ -2565,8 +2605,7 @@ must fail as a non-string."
             ~widget))))))
 
 (defun valid-label-value (ui)
-  "Check that :label, if present, is a string. Signals via report-ve
-otherwise."
+  "Check that :label, if present, is a string. Signals via report-ve otherwise."
   (let ((label (getf ui :label :missing)))
     (unless (or (eq label :missing) (stringp label))
       (report-ve "valid-label-value"
@@ -2574,8 +2613,8 @@ otherwise."
         ~label))))
 
 (defun valid-precision-value (ui)
-  "Check that :precision, if present, is a number (no type gate; it is a
-display hint consumed by toFixed). Signals via report-ve otherwise."
+  "Check that :precision, if present, is a number (no type gate; it is a display
+hint consumed by toFixed). Signals via report-ve otherwise."
   (let ((precision (getf ui :precision :missing)))
     (unless (or (eq precision :missing) (numberp precision))
       (report-ve "valid-precision-value"
@@ -2592,10 +2631,10 @@ though fe-fields overwrites it on the wire. Signals via report-ve otherwise."
         ~table))))
 
 (defun valid-directory-type-value (ui)
-  "Check :directory-type on :ui: a keyword, and only legal with
-:widget :file-path (the :options / :select precedent). Existence of the
-named type is checked in compile-field, which sees the model. Signals via
-report-ve / report-e otherwise."
+  "Check :directory-type on :ui: a keyword, and only legal with :widget
+:file-path (the :options / :select precedent). Existence of the named type is
+checked in compile-field, which sees the model. Signals via report-ve / report-e
+otherwise."
   (let ((directory-type (getf ui :directory-type :missing)))
     (unless (eq directory-type :missing)
       (unless (keywordp directory-type)
@@ -2610,12 +2649,11 @@ report-ve / report-e otherwise."
             ~widget))))))
 
 (defun filter-with-kind (filter-with)
-  "Effective kind of a :filter-with value: the value itself for the
-bare-keyword sugar, the :kind entry for the plist form, :invalid for
-anything else. Does not signal; valid-filter-with-value is the check.
-u:plistp (not bare listp) so this gate and valid-filter-with-value
-agree on what a plist is — a dotted or odd list falls to :invalid
-there instead of dying inside getf / plist-keys."
+  "Effective kind of a :filter-with value: the value itself for the bare-keyword
+sugar, the :kind entry for the plist form, :invalid for anything else. Does not
+signal; valid-filter-with-value is the check.  u:plistp (not bare listp) so this
+gate and valid-filter-with-value agree on what a plist is — a dotted or odd list
+falls to :invalid there instead of dying inside getf / plist-keys."
   (cond
     ((keywordp filter-with) filter-with)
     ((and (u:plistp filter-with) (keywordp (getf filter-with :kind)))
@@ -2623,13 +2661,12 @@ there instead of dying inside getf / plist-keys."
     (t :invalid)))
 
 (defun valid-filter-with-value (ui)
-  "Check :filter-with, if present. Two author shapes per kind: the
-bare keyword :filter-with :boolean / :filter-with :reference (sugar,
-no default) and the plist (:kind <kind> [tail]) — the tail is
-per-kind (:boolean: optional :default :true / :false, where Any is
-the omitted default and is not spellable; :reference: empty — a
-reference filter starts unfiltered, every tail key is rejected).
-The tail key set is closed (:kind, :default); :kind must be in
+  "Check :filter-with, if present. Two author shapes per kind: the bare keyword
+:filter-with :boolean / :filter-with :reference (sugar, no default) and the
+plist (:kind <kind> [tail]) — the tail is per-kind (:boolean: optional :default
+:true / :false, where Any is the omitted default and is not spellable;
+:reference: empty — a reference filter starts unfiltered, every tail key is
+rejected).  The tail key set is closed (:kind, :default); :kind must be in
 *filter-with-kinds*. Signals via report-ve otherwise."
   (let ((fw (getf ui :filter-with :missing)))
     (unless (eq fw :missing)
@@ -2940,7 +2977,31 @@ correct there). Returns the effective :source plist."
               (has-join-table (getf def :join-table))
               (widget (getf ui-val :widget))
               (source (valid-join-table-agg type-key new-field-key
-                        has-join-table (getf new-def :source))))
+                        has-join-table (getf new-def :source)))
+              (other-side (when has-join-table
+                            (u:tree-get source :table))))
+        ;; Zero-identity M2M other side (plan 02): the write path
+        ;; resolves join-table list values through the other side's
+        ;; identity field (insert-join-table-rows / unknown-values
+        ;; call identity-field), so a zero-identity other side would
+        ;; fail at runtime as "Invalid field key NIL". Reject at
+        ;; compile time here — the per-field site that holds the
+        ;; model, the raw field type, the join flag, and the
+        ;; effective :source. Not in valid-target (it examines
+        ;; :target, not the M2M other side) and not in
+        ;; valid-join-table-agg (whose arguments carry neither the
+        ;; model nor the field type).
+        (when (and (equal field-type :list)
+                other-side
+                (zerop (loop for k in (u:tree-get model other-side :fields)
+                         by #'cddr
+                         for d in (cdr (u:tree-get model other-side
+                                        :fields)) by #'cddr
+                         count (getf d :identity))))
+          (report-e "compile-field"
+            "Join-table list field ~s on ~s requires an identity ~
+             field on other side ~s; got zero identity fields"
+            ~new-field-key ~type-key ~other-side))
         ;; :options exclusive with relation sources
         (when (and (not (eq ui-options :missing))
                 (or has-target has-join-table))
@@ -3230,6 +3291,7 @@ Returns nil when the type has no searchable fields."
                        :update nil
                        :not-null t
                        :default :now
+                       :sortable t
                        :base-field t)
                      :updated-at
                      (:type :timestamp
@@ -3238,15 +3300,38 @@ Returns nil when the type has no searchable fields."
                        :update nil
                        :not-null t
                        :default :now
+                       :sortable t
                        :base-field t))))
     (if keys-only
       (u:plist-keys fields)
       fields)))
 
 (defun add-default-fields (type-key model)
-  (append
-    (default-fields :model model :type-key type-key)
-    (u:deep-copy (u:tree-get model type-key :fields))))
+  ":private: Injected default fields first, then the author's fields.
+An author redeclaration of an injected key is a presentation
+override: the author plist merges over the injected def (author
+keys win, add-to-plist) and the author copy is not appended
+again. valid-default-field-override has already rejected every
+non-presentation key and every :id redeclaration, so the merge
+cannot reshape the injection."
+  (let* ((injected (default-fields :model model :type-key type-key))
+         (author (u:deep-copy (u:tree-get model type-key :fields)))
+         (injected-keys (u:plist-keys injected)))
+    (append
+      (loop
+        for field-key in injected by #'cddr
+        for field-def in (cdr injected) by #'cddr
+        for override = (getf author field-key)
+        collect field-key
+        collect (if override
+                  (add-to-plist field-def override)
+                  field-def))
+      (loop
+        for field-key in author by #'cddr
+        for field-def in (cdr author) by #'cddr
+        unless (member field-key injected-keys)
+        collect field-key
+        and collect field-def))))
 
 (defun synthesize-status-fields (type-key fields)
   "For each :button field, inject a companion :<field>-status field if it does
@@ -3306,6 +3391,153 @@ is present on a non-button field."
     (list
       new-field-key
       (compile-field model type-key old-field-key new-field-key field-def))))
+
+(defun target-sibling-key (field-key)
+  ":private: The derived record-permalink sibling key for a
+singular-target FIELD-KEY: \"<field-key>-id\"."
+  (u:make-keyword (format nil "~a-id" field-key)))
+
+(defun singular-target-fields (compiled-fields)
+  ":private: Effective compiled field keys of every singular
+target field on a type (the one predicate's classification),
+excluding the injected :id (base-field)."
+  (loop for field-key in compiled-fields by #'cddr
+    for field-def in (cdr compiled-fields) by #'cddr
+    when (target-singular-p field-def)
+    collect field-key))
+
+(defun valid-target-sibling-keys (type-key compiled-fields)
+  ":private: Record-permalink synthetic-key compile guard: every
+singular target field derives \"<effective-field-key>-id\"
+(target-sibling-key), which must not equal any effective
+compiled field key on the type — a legal model can declare both
+:post and a :post-id target field, and the derived sibling would
+collide with the real field (:reference renaming has already
+happened at this stage, so a :reference to :post evaluates under
+its effective key :post-id; injected defaults and synthesized
+button-status fields are in the set; the injected :id is excluded
+from derivation). Signals report-e naming the colliding sibling
+key (the valid-field-names reserved-key precedent)."
+  (let ((effective-keys (u:plist-keys compiled-fields)))
+    (loop for field-key in (singular-target-fields compiled-fields)
+      for sibling = (target-sibling-key field-key)
+      when (member sibling effective-keys)
+      do (report-e "valid-target-sibling-keys"
+           "Field ~s on type ~s derives the synthetic permalink ~
+            key ~s, which collides with a declared field; ~
+            rename one of them."
+           ~field-key ~type-key ~sibling))))
+
+(defun target-identity-column (model target)
+  ":private: The raw-model identity field key of TARGET (nil when
+TARGET has none — valid-target has already rejected that shape
+by the time suppressed-target-sibling-p runs). A compile-side
+companion to backend's identity-field: the suppression walk
+runs before *compiled-model* exists. Retained: the identity
+column remains the canonical display choice even under the
+column-set rule."
+  (loop with fields = (u:tree-get model target :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (getf field-def :identity)
+    do (return field-key)))
+
+(defun suppressed-target-sibling-p (type-key field-key field-def
+                                     compiled-fields model)
+  ":private: T when FIELD-KEY's sibling emission is suppressed —
+the ambiguous display shapes the view's join walker cannot
+represent honestly: (a) two or more singular-target fields on
+the type sharing one :target type key (the join walker joins
+each target table once; the second field would display the
+first's value), (b) a :target equal to its owning type (no
+self-join alias — a degenerate join), or (c) an effective
+display-source table (the :source :table when present, the
+owning type otherwise) that differs from the :target (the
+display string is unmoored from the FK's referent — the
+pre-existing display-join gap). Deliberately not a compile
+error: the model is legal and must keep rendering; the
+suppression is the fail-closed half of the gap.
+The ambiguous shapes are keyed on the display SOURCE, never on
+the storage alias: two fields may legally read one target table
+through different display sources, and a field whose display
+:source :table equals the :target but whose :source :column is
+not that target's identity column is still unambiguous (the
+join edge is FK → target row; a non-identity display column on
+the target names the same row the storage UUID names)."
+  (declare (ignore field-key))
+  (let ((target (getf field-def :target))
+        (source-table (u:tree-get field-def :source :table))
+        (source-column (u:tree-get field-def :source :column)))
+    (or
+      ;; (a) shared target
+      (> (count target
+           (loop for k in compiled-fields by #'cddr
+             for def in (cdr compiled-fields) by #'cddr
+             when (target-singular-p def)
+             collect (getf def :target)))
+        1)
+      ;; (b) self-referencing target
+      (equal target type-key)
+      ;; (c) cross-source display: the display source table differs
+      ;; from the target. stage 1 compiles a target field's :source
+      ;; :table to the target only when the author wrote it that way;
+      ;; an omitted :source :table falls back to the owning type in
+      ;; stage 2's alias lookup, so an omitted table with a
+      ;; non-identity column must compare by column instead.
+      (and source-table
+        (not (equal source-table target)))
+      (and (null source-table)
+        source-column
+        (not (u:has (view-display-column-keys model target)
+                source-column))))))
+
+(defun view-display-column-keys (model target)
+  ":private: The display-viable field keys of TARGET — every field
+the join-walker's display tables actually expose for a view that
+reaches TARGET through an xref edge: TARGET's own :column fields
+(the single join edge display alias reads one of these) plus the
+default :id / timestamps (table-columns' projection). A display
+:source :column outside this set cannot ride any join edge into
+the owner's view — the field's display is unmoored from the FK's
+referent, the suppression (c) shape. Cached nothing, computed
+per call on the raw model (the compile walk runs once per type)."
+  (append
+    (loop with fields = (u:tree-get model target :fields)
+      for field-key in fields by #'cddr
+      for field-def in (cdr fields) by #'cddr
+      when (getf field-def :column)
+      collect field-key)
+    (default-fields :keys-only t)))
+
+(defun mark-suppressed-target-siblings (model type-key compiled-fields)
+  ":private: Rewrite COMPILED-FIELDS with :suppress-sibling t on
+every singular-target field whose display shape is ambiguous
+(suppressed-target-sibling-p's shapes). The marker is the backend
+emission gate; display strings and every other behavior are
+unchanged. Relationship-specific display joins (the real fix)
+are Post MVP."
+  (loop for field-key in compiled-fields by #'cddr
+    for field-def in (cdr compiled-fields) by #'cddr
+    collect field-key into keys
+    collect
+    (if (and (target-singular-p field-def)
+          (suppressed-target-sibling-p type-key field-key
+            field-def compiled-fields model))
+      (add-to-plist field-def (list :suppress-sibling t))
+      field-def)
+    into values
+    finally (return (mapcan #'list keys values))))
+
+(defun target-singular-p (field-def)
+  ":private: The model-side spelling of the one singular-target
+predicate (target present, no :join-table, not the injected
+:id): backend.lisp's singular-target-field-p is the single
+runtime definition; this local copy exists only for the compile
+walk, before backend functions are meaningful. Keep the two in
+sync."
+  (and (getf field-def :target)
+    (not (getf field-def :join-table))
+    (not (getf field-def :base-field))))
 
 (defun view-aliases (model view-def)
   (loop for table-key in (u:tree-get view-def :tables)
@@ -3784,10 +4016,21 @@ gate here is this validator's own message)."
             "~s on type ~s must be a plist (:fields …), got ~s."
             ~form ~type-key ~form-def))
         (dolist (key (u:plist-keys form-def))
-          (unless (member key *form-keys*)
+          (unless (or (member key *form-keys*)
+                    (member key *form-macro-keys*))
             (report-e "valid-hide-list"
               "Unknown key ~s on ~s of type ~s. Legal keys: ~{~a~^, ~}."
               ~key ~form ~type-key ~*form-keys*)))
+        ;; :default-sort may ride a form plist only to be picked up by
+        ;; valid-default-sort on the compiled type-def (the blog
+        ;; fixture's comments tab spelling); every other macro key is
+        ;; rejected here.
+        (when (and (member :default-sort (u:plist-keys form-def))
+                (not (eq form :list-form)))
+          (report-e "valid-hide-list"
+            ":default-sort on ~s of type ~s is not legal there; ~
+             it orders the list and is legal on :list-form only."
+            ~form ~type-key))
         (when (member :hide-list (u:plist-keys form-def))
           (let ((value (getf form-def :hide-list)))
             (unless (or (eq value t) (null value))
@@ -3799,7 +4042,18 @@ gate here is this validator's own message)."
                 ":hide-list is not legal on :list-form of type ~s; ~
                  it hides the list while another form is open, and ~
                  :list-form is the list."
-                ~type-key))))))))
+                ~type-key))))
+        ;; :children is :view-form-only (the :hide-list-on-:list-form
+        ;; precedent): rejected on the other three forms even as nil.
+        ;; Shape and cross-type wiring belong to valid-children; this
+        ;; is the wrong-form arm only.
+        (when (and (member :children (u:plist-keys form-def))
+                (not (eq form :view-form)))
+          (report-e "valid-hide-list"
+            ":children is not legal on ~s of type ~s; it declares ~
+             the embedded child region and is legal on :view-form ~
+             only (even as nil)."
+            ~form ~type-key))))))
 
 (defun valid-filter-with-list-form (type-key type-def)
   ":private: :filter-with :reference is legal only on a field the
@@ -3847,44 +4101,69 @@ pre-existing documented contract). Signals report-e otherwise."
                ~field-key ~type-key))))))
 
 (defun valid-default-sort (type-key type-def)
-  "Validate a type-level :default-sort declaration against the compiled TYPE-DEF
-(fields are compiled by this point). Skips when no declaration is present. Shape
-is (:field-key) or (:field-key :asc|:desc), the request-sort convention: the
-direction is optional (defaults :asc at SQL-build time), so a direction-less
-declaration is stored verbatim, never normalized. The field must exist and carry
-:sortable t, the same rule the request path enforces (phase-a-order-by-column /
-valid-measure-sort)."
-  (let ((sort (getf type-def :default-sort)))
+  "Validate a :default-sort declaration against the compiled TYPE-DEF
+(fields are compiled by this point). The declaration may sit at type
+level or inside :list-form (the blog tab spelling); both readings are
+collected here. Skips when no declaration is present. Shape is
+(:field-key) or (:field-key :asc|:desc), the request-sort
+convention: the direction is optional (defaults :asc at SQL-build
+time), so a direction-less declaration is stored verbatim, never
+normalized. The field must exist and carry :sortable t, the same
+rule the request path enforces (phase-a-order-by-column /
+valid-measure-sort). Delegates the grammar to
+valid-sort-declaration, the shared rule set the :children :sort
+validator also uses."
+  (let ((sort (or (getf type-def :default-sort)
+                (u:tree-get type-def :list-form :default-sort))))
     (when sort
-      (let ((field-key (first sort))
-             (direction (second sort)))
-        ;; Shape: a proper list of one or two elements, first a keyword. The
-        ;; consp walk also rejects dotted tails ((cdr sort) is a non-nil atom
-        ;; there) and non-lists.
-        (unless (and (consp sort)
-                  (keywordp field-key)
-                  (or (null (cdr sort))
-                    (and (consp (cdr sort))
-                      (null (cddr sort)))))
-          (report-e "valid-default-sort"
-            ":default-sort on type ~s must be (:field :asc|:desc), ~
-             got ~s."
-            ~type-key ~sort))
-        (when (and direction (not (member direction '(:asc :desc))))
-          (report-e "valid-default-sort"
-            ":default-sort direction on type ~s must be :asc or ~
-             :desc, got ~s."
-            ~type-key ~sort))
-        (let ((field-def (u:tree-get type-def :fields field-key)))
-          (cond
-            ((null field-def)
-              (report-e "valid-default-sort"
-                "In type ~s, :default-sort names an unknown field ~s."
-                ~type-key ~field-key))
-            ((not (getf field-def :sortable))
-              (report-e "valid-default-sort"
-                "In type ~s, :default-sort field ~s is not :sortable t."
-                ~type-key ~field-key))))))))
+      (valid-sort-declaration type-key :default-sort
+        (getf type-def :fields) sort))))
+
+(defun valid-sort-declaration (type-key declaration-key fields sort)
+  ":private: The shared sort-grammar validator (extracted from
+valid-default-sort): SHAPE is a proper list of one or two elements,
+first a keyword; a PRESENT direction (cdr sort non-nil) must be
+:asc or :desc — an omitted direction is legal, a present nil is
+not (the deliberate behavior change of the extraction: the old
+(and direction …) arm accidentally accepted (:field nil));
+the field must exist in FIELDS (the compiled type's fields) and
+carry :sortable t. DECLARATION-KEY names the offending key in the
+error messages. Signals report-e."
+  ;; Shape: a proper list of one or two elements, first a keyword.
+  ;; listp first: a keyword sort (:created-at) is not a list, and
+  ;; (cdr keyword) would signal a type error instead of the shape
+  ;; message. The consp walk also rejects dotted tails.
+  (unless (listp sort)
+    (report-e "valid-sort-declaration"
+      "~s on type ~s must be (:field :asc|:desc), got ~s."
+      ~declaration-key ~type-key ~sort))
+  (let ((field-key (first sort))
+         (direction (second sort)))
+    (unless (and (consp sort)
+              (keywordp field-key)
+              (or (null (cdr sort))
+                (and (consp (cdr sort))
+                  (null (cddr sort)))))
+      (report-e "valid-sort-declaration"
+        "~s on type ~s must be (:field :asc|:desc), got ~s."
+        ~declaration-key ~type-key ~sort))
+    ;; Presence-aware direction check: (cdr sort) distinguishes an
+    ;; omitted direction from a present one (including present nil).
+    (when (cdr sort)
+      (unless (member direction '(:asc :desc))
+        (report-e "valid-sort-declaration"
+          "~s direction on type ~s must be :asc or :desc, got ~s."
+          ~declaration-key ~type-key ~sort)))
+    (let ((field-def (u:tree-get fields field-key)))
+      (cond
+        ((null field-def)
+          (report-e "valid-sort-declaration"
+            "In type ~s, ~s names an unknown field ~s."
+            ~type-key ~declaration-key ~field-key))
+        ((not (getf field-def :sortable))
+          (report-e "valid-sort-declaration"
+            "In type ~s, ~s field ~s is not :sortable t."
+            ~type-key ~declaration-key ~field-key))))))
 
 (defun valid-page-description (type-key type-def)
   ":private: Validate :page-description / :page-description-open on
@@ -4405,6 +4684,227 @@ the path after Issue 16 checks). Absent :filter is legal; nil / () are not."
           (valid-model-filter-clause model type-key view-tables
             clause))))))
 
+;;
+;; BEGIN Embedded child regions (plan 02 — :children vocabulary)
+;;
+;; A :children declaration on :view-form embeds one child region in the
+;; parent's reading form. The vocabulary, shape, and cross-type wiring are
+;; validated in a post-stage-1 pass (valid-children): stage-1 compiles each
+;; type against the raw full-model, so a child's injected :sortable t on
+;; :created-at is not visible while the parent compiles — the cross-type
+;; checks must see the compiled child.
+;;
+
+(defun valid-children-region-surface (model parent-key child-key)
+  ":private: The accepted v1 surface contract for a region parent or
+child: a non-base type with a declared non-nil :list-form (the
+frontend's no-data early return and the child's tab both need it),
+a truthy compiled :display and a non-internal compiled def (the
+model-side half of be-types' visibility gate; RBAC allowed stays
+runtime), and a compiled :category of :user (compute-category:
+explicit :category wins, :user-setting → :settings, :built-in →
+:system, everything else :user). The child additionally needs
+declared non-nil :view-form and :add-form (fe-fields emits only
+declared forms; the region renderer has no update-form fallback).
+Signals report-e naming the failing leg."
+  (let ((parent-def (getf model parent-key))
+        (child-def (getf model child-key)))
+    (flet ((check (type-key type-def)
+             (unless type-def
+               (report-e "valid-children-region-surface"
+                 "~s names no type in this model." ~type-key))
+             (when (base-type-p type-key model)
+(report-e "valid-children-region-surface"
+                 "~s must be a non-base type (an author-defined ~
+                  table type); base-model types are not region ~
+                  surfaces."
+                 ~type-key))
+             (unless (getf type-def :list-form)
+               (report-e "valid-children-region-surface"
+                 "~s requires a declared, non-nil :list-form (the ~
+                  region surface needs the list; the frontend ~
+                  returns its no-data shell without one)."
+                 ~type-key))
+             (unless (getf type-def :display)
+               (report-e "valid-children-region-surface"
+                 "~s must be visible: :display t (be-types collects ~
+                  display types only; a region on an invisible type ~
+                  can never render)."
+                 ~type-key))
+             (when (getf type-def :internal)
+               (report-e "valid-children-region-surface"
+                 "~s must not be :internal (be-list / public rec ~
+                  reject internal types; the region could never ~
+                  read its rows)."
+                 ~type-key))
+             (let ((category (getf type-def :category)))
+               (unless (eq category :user)
+                 (report-e "valid-children-region-surface"
+                   "~s must be a user-category type (compiled :category ~
+                    is ~s); settings / system types are app plumbing, ~
+                    not region surfaces."
+                   ~type-key ~category)))))
+      (check parent-key parent-def)
+      (check child-key child-def)
+      (dolist (form '(:view-form :add-form))
+        (unless (getf child-def form)
+          (report-e "valid-children-region-surface"
+            "Child ~s requires a declared, non-nil ~s (fe-fields ~
+             emits only declared forms; the region renderer has no ~
+             fallback)."
+            ~child-key ~form))))))
+
+(defun valid-children (compiled-model)
+  ":private: Post-stage-1 cross-type :children validation. Walks
+every compiled type; a stray TYPE-LEVEL :children is rejected
+(the no-:view-form walker catch - :children is legal only inside
+:view-form), and a view-form-level :children (key membership on
+u:plist-keys - :children nil is rejected here too) is validated:
+exactly one region spec as a proper list; the closed spec
+alphabet (:type, :via, :sort); :type / :via required; the
+parent/child v1 surface contract (valid-children-region-surface
+- list-bearing, visible, non-internal, user-category on both
+sides, child view/add forms); :via naming a singular :target
+field on the compiled child whose target is the declaring parent
+(effective compiled key - the joiner :reference renaming has run
+in stage 1); :sort, when present (key membership; a present-nil
+sort value is a malformed sort, not omission), validated against
+the COMPILED child by the shared valid-sort-declaration rule
+set; and :hide-list t as the required companion on the same
+:view-form (key membership, not truthiness). Tree / fs-backed
+parents are rejected (the tree vocabulary must never grow a
+:children key). Returns COMPILED-MODEL - validate-model's return
+value must remain the compiled model, or compile-model's success
+path returns nil. The omitted-:sort default (:created-at :asc)
+is NOT validated in this pass: injected timestamps are :sortable
+t on every legal type and an author override setting :sortable
+to anything but t is already a compile error, so validating the
+effective default would reject nothing; a present :sort naming
+another field is what the shared validator checks. Deliberate -
+do not fix."
+  (loop for type-key in compiled-model by #'cddr
+    for type-def = (getf compiled-model type-key)
+    do
+    ;; Stray type-level :children: the declaration lives inside
+    ;; :view-form, so a type-level key is either the missing-
+    ;; :view-form mistake or a stray - one catch either way.
+    (when (member :children type-def)
+      (report-e "valid-children"
+        ":children on type ~s is legal only inside :view-form; ~
+         a type-level :children with no :view-form never renders."
+        ~type-key))
+    ;; Stray type-level :via: compile-base-type-def builds final-def
+    ;; with add-to-plist over the author def, so a type-level :via
+    ;; survives into the compiled def. :via lives only inside a
+    ;; region spec.
+    (when (member :via type-def)
+      (report-e "valid-children"
+        "Type ~s carries a type-level :via key; :via names the ~
+         child's FK field and is legal only inside a ~
+         :children region spec."
+        ~type-key))
+    (let ((view-form (getf type-def :view-form)))
+      (when (and view-form (member :children (u:plist-keys view-form)))
+        (let ((children (getf view-form :children)))
+          ;; Tree / fs-backed guard: values, not key presence -
+          ;; compile-base-type-def emits both keys even when nil.
+          (when (or (getf type-def :tree) (getf type-def :fs-backed))
+            (report-e "valid-children"
+              ":children is not legal on tree / fs-backed type ~s; ~
+               the tree vocabulary uses :parent-type and must never ~
+               grow a :children key."
+              ~type-key))
+          ;; Exactly one region spec, as a proper list. Proper-list
+          ;; first: the hazard is getf / plist walks on a dotted
+          ;; spec. (cdr (last x)) is the proper-list test: (last x)
+          ;; returns the final cons, whose cdr is nil exactly when
+          ;; the list is proper.
+          (unless (and (listp children)
+                    (null (cdr (last children))))
+            (report-e "valid-children"
+              ":children on type ~s must be a proper list of ~
+               exactly one region spec ((:type ... :via ...)), ~
+               got ~s."
+              ~type-key ~children))
+(let ((count (length children)))
+            (unless (= count 1)
+              (report-e "valid-children"
+                ":children on type ~s must declare exactly one ~
+                 region spec; got ~d."
+                ~type-key ~count)))
+          (let ((spec (first children)))
+            (unless (and (u:plistp spec) (evenp (length spec)))
+              (report-e "valid-children"
+                "Region spec on type ~s must be a plist; got ~s."
+                ~type-key ~spec))
+            (let ((spec-keys (u:plist-keys spec)))
+              (dolist (key spec-keys)
+                (unless (member key '(:type :via :sort))
+                  (report-e "valid-children"
+                    "Unknown key ~s in :children region spec on ~
+                     type ~s. Legal keys: :type, :via, :sort."
+                    ~key ~type-key)))
+              (unless (member :type spec-keys)
+                (report-e "valid-children"
+                  ":children region spec on type ~s is missing the ~
+                   required :type (the child type)."
+                  ~type-key))
+              (unless (member :via spec-keys)
+                (report-e "valid-children"
+                  ":children region spec on type ~s is missing the ~
+                   required :via (the child's FK field back to the ~
+                   declaring parent)."
+                  ~type-key))
+              (let ((child-key (getf spec :type))
+                    (via-key (getf spec :via)))
+                (valid-children-region-surface compiled-model type-key
+                  child-key)
+                ;; :via names a singular :target field on the
+                ;; compiled child whose target is the declaring
+                ;; parent.
+                (let ((via-def (u:tree-get compiled-model child-key
+                                 :fields via-key)))
+                  (cond
+                    ((null via-def)
+                      (report-e "valid-children"
+                        ":via ~s on type ~s names no field on ~s."
+                        ~via-key ~type-key ~child-key))
+                    ((or (getf via-def :join-table)
+                       (not (getf via-def :target)))
+                      (report-e "valid-children"
+                        ":via ~s on type ~s must name a :target (FK) ~
+                         field on ~s."
+                        ~via-key ~type-key ~child-key))
+((not (equal (getf via-def :target) type-key))
+                      (let ((actual (getf via-def :target)))
+                        (report-e "valid-children"
+                          ":via ~s must target the declaring parent ~s; ~
+                           it targets ~s."
+                          ~via-key ~type-key ~actual)))))
+                ;; :sort, when present, validates against the
+                ;; compiled child (stage-1 runs against the raw
+                ;; model, so the child's injected :sortable t is
+                ;; visible only here).
+                (when (member :sort spec-keys)
+                  (valid-sort-declaration child-key :sort
+                    (u:tree-get compiled-model child-key :fields)
+                    (getf spec :sort)))
+                ;; :hide-list t is the required companion (key
+                ;; membership, not truthiness - an explicit nil is
+                ;; the same error).
+                (unless (and (member :hide-list (u:plist-keys view-form))
+                          (eq (getf view-form :hide-list) t))
+                  (report-e "valid-children"
+                    ":children on type ~s requires :hide-list t on ~
+                     the same :view-form; declare it to suppress the ~
+                     parent table under the reading form."
+                    ~type-key))))))))
+      finally (return compiled-model)))
+
+;;
+;; END Embedded child regions (plan 02)
+;;
+
 (defun valid-rollup-field-types (model type-key raw-fields)
   "Field :type vs :agg checks (07a / Issue 13). The default-to-:text rule
 stands; no inference from grain or agg."
@@ -4589,6 +5089,90 @@ valid-rollup-fields calls this validator)."
           fields); rename the field."
          ~field-key ~type-key)))
 
+(defun valid-default-field-override (type-key field-key field-def)
+  ":private: Author redeclaration of an injected default field
+(:id / :created-at / :updated-at) is a presentation override,
+not a redefinition. :id cannot be redeclared in v1. The two
+timestamps accept :ui and :sortable only; every other key
+reshapes the injection's contract and is a compile error.
+:sortable nil is rejected outright (add-to-plist merges with
+(or new old), so nil cannot beat the injected t; the :false
+spelling arrives with Model value vocabulary). :ui must carry
+:read-only t and :widget :textbox (or omit :widget — finalize-ui
+fills it): the field is :base-field and never writable, so an
+editable widget would submit a value the write path drops.
+An explicit :widget nil is rejected like any other widget
+value (presence via u:plist-keys; getf truthiness would treat
+it as omission). Signals report-e."
+  (when (eq field-key :id)
+    (report-e "valid-default-field-override"
+      "Field ~s on type ~s is injected and cannot be redeclared ~
+       in v1. Presentation overrides are :created-at and ~
+       :updated-at only."
+      ~field-key ~type-key))
+  (dolist (key (u:plist-keys field-def))
+    (unless (member key *default-field-override-keys*)
+      (report-e "valid-default-field-override"
+        "Field ~s on type ~s is injected; only ~{~a~^, ~} may be ~
+         overridden. ~s would reshape the injection."
+        ~field-key ~type-key ~*default-field-override-keys* ~key)))
+  (when (member :sortable (u:plist-keys field-def))
+    (let ((sortable (getf field-def :sortable)))
+      (unless (eq sortable t)
+        (report-e "valid-default-field-override"
+          ":sortable on injected field ~s of type ~s must be t or ~
+           omitted (the injected default is t). An explicit nil ~
+           cannot override it until Model value vocabulary lands ~
+           :false; got ~s."
+          ~field-key ~type-key ~sortable))))
+  (let ((ui (getf field-def :ui)))
+    (unless (and ui (u:plistp ui))
+      (report-e "valid-default-field-override"
+        "Override of injected field ~s on type ~s requires a :ui ~
+         plist (the field has no widget otherwise and never ~
+         reaches the wire); got ~s."
+        ~field-key ~type-key ~ui))
+    ;; Presence via u:plist-keys, not getf truthiness: an explicit
+    ;; :widget nil must report as a bad :widget, not slip through
+    ;; as "omitted" (finalize-ui would fill :textbox silently).
+    (when (member :widget (u:plist-keys ui))
+      (let ((widget (getf ui :widget)))
+        (unless (eq widget :textbox)
+          (report-e "valid-default-field-override"
+            ":widget on injected timestamp ~s of type ~s must be ~
+             :textbox or omitted; got ~s."
+            ~field-key ~type-key ~widget))))
+    (unless (eq (getf ui :read-only) t)
+      (report-e "valid-default-field-override"
+        ":ui on injected timestamp ~s of type ~s requires ~
+         :read-only t (the field is not writable; an editable ~
+         widget would drop the edit on save)."
+        ~field-key ~type-key))))
+
+(defun valid-default-field-override-walk (type-key fields)
+  ":private: Walk the raw author :fields plist and validate every
+redeclaration of an injected default field key. Detects duplicate
+overrides among injected keys (getf-first-wins in the merge would
+otherwise silently drop the second — the silent-lie class this
+validator exists to close). Scoped to injected keys only: the M2M
+joiner :reference idiom repeats keys deliberately and stays
+legal. Signals report-e."
+  (let ((injected-keys (default-fields :keys-only t))
+        (seen nil))
+    (loop
+      for field-key in fields by #'cddr
+      for field-def = (cadr (member field-key fields))
+      when (member field-key injected-keys)
+      do
+      (when (member field-key seen)
+        (report-e "valid-default-field-override-walk"
+          "Field ~s on type ~s is injected and redeclared more ~
+           than once; merge semantics would silently keep only ~
+           the first."
+          ~field-key ~type-key))
+      (push field-key seen)
+      (valid-default-field-override type-key field-key field-def))))
+
 (defun compile-base-type-def (model type-key)
   (valid-non-rollup-keys model type-key)
   ;; valid-page-description runs on the raw author def (type-def
@@ -4602,6 +5186,11 @@ valid-rollup-fields calls this validator)."
   ;; timestamps below; a guard placed there could not tell an
   ;; author key from an injected one).
   (valid-field-names type-key (u:tree-get model type-key :fields))
+  ;; Override guard, same raw-def position: sees the author plist,
+  ;; not the merged one, and rejects duplicate injected keys (a
+  ;; second copy would never reach the merge's getf).
+  (valid-default-field-override-walk
+    type-key (u:tree-get model type-key :fields))
   (let* ((type-def (getf model type-key))
           (built-in (getf type-def :built-in))
           (is-joiner (getf type-def :is-joiner))
@@ -4623,7 +5212,11 @@ valid-rollup-fields calls this validator)."
                                                (list :fields augmented-fields))))
                                (add-to-plist model
                                  (list type-key new-td)))))
-          (fields (compile-fields type-key augmented-model))
+          (fields (let ((compiled (compile-fields type-key
+                                  augmented-model)))
+                    (valid-target-sibling-keys type-key compiled)
+                    (mark-suppressed-target-siblings augmented-model
+                      type-key compiled)))
           (table-name (table-name type-key built-in))
           (tree (getf type-def :tree))
           (is-leaf (getf type-def :is-leaf))
@@ -4691,6 +5284,17 @@ valid-rollup-fields calls this validator)."
     do (cond
          ((or (not sdef) (atom sdef))
            nil)
+         ((and
+            (equal key :children)
+            (listp sdef))
+           ;; :children is a one-element list of region-spec plists,
+           ;; not itself a plist. The walker stops at the region list
+           ;; (the :default-sort precedent): shape, keys, and field
+           ;; existence belong to valid-children's specific messages,
+           ;; and the direction-less sort (:created-at) is not a
+           ;; plist. Present-nil skips the walker entirely; the
+           ;; key-presence rule in valid-children rejects it.
+           t)
          ((and
             (listp sdef)
             (equal (car sdef) 'quote))
@@ -4929,9 +5533,10 @@ mutate *base-model*."
     appending (list type-key new-def)))
 
 (defun validate-model (model)
-  "Pure validation: structural checks + stage-1 compile. No side effects (no DB,
-no RBAC mutation). Returns the stage-1 compiled model or signals an error."
-  (stage-1 model))
+  "Pure validation: structural checks + stage-1 compile + the post-stage-1
+cross-type :children pass (valid-children). No side effects (no DB, no RBAC
+mutation). Returns the stage-1 compiled model or signals an error."
+  (valid-children (stage-1 model)))
 
 (defun compile-model (model)
   (let* ((model-1 (validate-model model))

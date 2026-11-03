@@ -2472,3 +2472,30 @@ compiled model (e.g. test-model)."
 ;;
 ;; END Phase B tests
 ;;
+
+;;
+;; Landing page fallback
+;;
+
+(test be-landing-page-fallback-skips-builtins
+  "be-landing-page's fallback picks the first author-defined
+type, not a built-in one. :secrets is :built-in t :base nil, so
+the old not-base-type-p predicate matched it for every
+settings-role user (admin included); built-in-p skips it."
+  (is (eq (be-landing-page "admin") :todos))
+  (is-false (built-in-p (be-landing-page "admin"))))
+
+(test be-landing-page-fallback-settings-role-user
+  "A user holding the settings role still lands on the first
+author-defined type: :secrets is visible to them, and the
+fallback must skip it anyway. Needs todo-users too — :todos is
+type-role gated on test-model, and without it :secrets is not
+ahead of an author type the user can see (probe-verified:
+settings-only sees just the five built-ins)."
+  (let ((user "lp-settings-user"))
+    (th-make-user user :roles '("settings" "todo-users"))
+    (unwind-protect
+      (is (eq (be-landing-page user) :todos))
+      (ignore-errors
+        (be-delete :users
+          `((:users :name :eq ,user)) "admin")))))

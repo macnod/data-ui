@@ -67,6 +67,59 @@ metadata for TYPE-KEY."
                       do (return field-key))
     when field-key do (return field-key)))
 
+(defun singular-target-field-p (field-def)
+  ":private: T when FIELD-DEF is a singular-target field —
+:target present, no :join-table, not the injected :id (an RBAC
+base type's :id carries :target :resources; a generic rule would
+emit :id-id on every base type). The one predicate classifying
+linkable FKs at every site: derivation, collision checking,
+conversion exclusion, suppression marking, decoration, and the
+fe-fields :target wire key. M2M list fields never count."
+  (and (getf field-def :target)
+    (not (getf field-def :join-table))
+    (not (getf field-def :base-field))))
+
+(defun target-storage-alias-key (type-key field-key)
+  ":private: The singular-target field's storage alias key —
+the compiled <table>_<name-sql> alias under the field's own
+:type-key in :views :main :aliases (a :target field's storage
+column, selected by table-columns; it cannot collide with
+another field's alias). NIL when the field has none."
+  (u:make-keyword
+    (u:tree-get *compiled-model* type-key :views :main :aliases
+      type-key field-key)))
+
+(defun storage-alias-exempt-p (type-key field-key field-def)
+  ":private: T when FIELD-KEY's storage alias is exempt from
+display-type conversion in view-result: the field is a singular
+target field whose storage alias differs from the field's
+compiled display :source :alias-key (the alias-global rule: a
+claimed storage alias holds the FK UUID or :null whenever the
+display value reads another alias; an own-column display keeps
+today's conversion — its display value is genuinely that
+column's). Without the exemption a populated :type :timestamp
+target field signals inside view-result before it returns, and
+a :type :boolean owner turns the UUID and a null FK both into
+:true."
+  (and (singular-target-field-p field-def)
+    (let ((storage (target-storage-alias-key type-key field-key))
+          (display (u:tree-get field-def :source :alias-key)))
+      (and storage
+        (not (equal storage display))))))
+
+(defun exempt-storage-aliases (type-key)
+  ":private: Alias-keyed, alias-global set of every exempt
+storage alias on TYPE-KEY — the aliases view-result must not
+display-convert for ANY field reading them (the wire contract
+for a claimed alias is the raw column value: UUID or :null).
+Built from the singular-target fields whose storage alias
+differs from their display alias."
+  (loop with fields = (u:tree-get *compiled-model* type-key :fields)
+    for field-key in fields by #'cddr
+    for field-def in (cdr fields) by #'cddr
+    when (storage-alias-exempt-p type-key field-key field-def)
+    collect (target-storage-alias-key type-key field-key)))
+
 (defun view-result (type-key query)
   ":private: Runs QUERY against the database and returns the result. QUERY is a
 list whose car is an SQL string with placeholders and whose cdr is a list of the
@@ -77,23 +130,29 @@ that row. TYPE-KEY is used to look up the type of each field, to determine if
 any further transformation of the field's value is necessary, such as
 converting timetstamps from integers to ISO 8601 strings."
   (let ((result (a:with-rbac (*rbac*) (a:rbac-query query))))
-    (loop for row in result
+    (loop with exemptions = (exempt-storage-aliases type-key)
+      for row in result
       collect
       (loop with m = *compiled-model*
         with fields = (u:tree-get m type-key :fields)
-        and aliases = (u:tree-get m type-key :views :main :aliases)
         for key in row by #'cddr
         for value in (cdr row) by #'cddr
         for field-key = (alias-key-to-field-key type-key key)
         for field-type = (u:tree-get fields field-key :type)
-        for final-value = (case field-type
-                            (:timestamp (when (and
-                                                value
-                                                (not (equal value :null)))
-                                          (dt:timestamp-string
-                                            :universal-time value)))
-                            (:boolean (if value :true :false))
-                            (t value))
+        ;; Record permalinks: an exempt storage alias carries
+        ;; the raw UUID / :null — never display-converted for
+        ;; any field reading it (the alias-global rule).
+        for exempt = (and (member key exemptions) t)
+        for final-value = (if exempt
+                            value
+                            (case field-type
+                              (:timestamp (when (and
+                                                  value
+                                                  (not (equal value :null)))
+                                            (dt:timestamp-string
+                                              :universal-time value)))
+                              (:boolean (if value :true :false))
+                              (t value)))
         appending (list key final-value)))))
 
 (defun view-result-values (type-key field-keys view-result &key user)
@@ -169,12 +228,11 @@ See has-all-conditions."
     index))
 
 (defun has-all-conditions (table-key field-key values index)
-  ":private: EXISTS fragments + bind values for one :has-all filter
-tuple (LISTED-TYPE FIELD-KEY :HAS-ALL VALUES). Returns
-(values conditions params): one correlated EXISTS per value through
-the field's :join-table, ANDed by add-where-clause. The grain FK is
-the joiner reference targeting TABLE-KEY; the value FK targets the
-field's :source :table; the display column is the compiled
+  ":private: EXISTS fragments + bind values for one :has-all filter tuple
+(LISTED-TYPE FIELD-KEY :HAS-ALL VALUES). Returns (values conditions params): one
+correlated EXISTS per value through the field's :join-table, ANDed by
+add-where-clause. The grain FK is the joiner reference targeting TABLE-KEY; the
+value FK targets the field's :source :table; the display column is the compiled
 :source :column-name (already stage-2 resolved)."
   (let* ((m *compiled-model*)
          (field-def (u:tree-get m table-key :fields field-key))
@@ -217,6 +275,15 @@ field's :source :table; the display column is the compiled
               grain-fk value-fk display-column grain-table i))
           values)))))
 
+(defun fk-eq-condition-column (type-key field-key)
+  ":private: The table-qualified physical storage column for a singular-target
+FIELD-KEY — the first table-column value from the compiled view's :columns
+metadata (rt_comments.comment_post). Not the select-list output
+alias (<table>_<column>) — PostgreSQL does not expose select-list aliases to the
+same query's WHERE."
+  (u:tree-get *compiled-model* type-key :views :main :columns
+    type-key field-key))
+
 (defun add-where-clause (sql filters user)
   ":private: Given SQL and FILTERS, this function extends the SQL with a where
 clause that includes placeholders and returns a list of the SQL plus the values
@@ -226,10 +293,19 @@ for the placeholders."
       for index = (next-param-index sql)
       then (1+ (length (u:flatten values)))
       for (table-key field-key op-key value) in filters
-      for alias = (to-sql-identifier
-                    (u:tree-get *compiled-model*
-                      table-key :fields field-key
-                      :source :column-name))
+      for fk-eq-p = (eq op-key :fk-eq)
+      for fk-eq-column = (when fk-eq-p
+                           (or (fk-eq-condition-column table-key
+                                 field-key)
+                             (report-ve "add-where-clause"
+                               "No storage column for :fk-eq field ~s ~
+                                on ~s." ~field-key ~table-key)))
+      for alias = (if fk-eq-p
+                    fk-eq-column
+                    (to-sql-identifier
+                      (u:tree-get *compiled-model*
+                        table-key :fields field-key
+                        :source :column-name)))
       for op = (operator-sql op-key)
       for log = (pl:pdebug :in "add-where-clause"
                   :table-key table-key
@@ -279,18 +355,28 @@ for the placeholders."
                 ;; works mechanically but is untested (REST sends
                 ;; bare UUIDs there).
                 (has-all-p has-all-values)
+                ;; :fk-eq binds the wire uuid raw — never through
+                ;; db-value: its target arm routes to
+                ;; resolve-reference-id, whose uuid-p short-circuit
+                ;; is real, but a display string still resolves — a
+                ;; missed validator would become a silent title
+                ;; compare instead of an error.
+                (fk-eq-p value)
                 (t (db-value table-key field-key user value)))
         into values
       ;; The :has-all condition is the parenthesized EXISTS group
       ;; alone — a standalone boolean expression, not the
       ;; "alias op value" shape the other operators produce.
       ;; The null-eq-p translation is "alias is [not] null" with
-      ;; no placeholder.
+      ;; no placeholder. :fk-eq emits the plain "= $N" shape
+      ;; against its qualified physical column.
       collect (cond
                 (has-all-p placeholders)
                 (null-eq-p
                   (format nil "~a is ~:[not ~;~]null" alias
                     (eq op-key :eq)))
+                (fk-eq-p
+                  (format nil "~a = ~a" alias placeholders))
                 (t (format nil "~a ~a ~a" alias op placeholders)))
       into conditions
       finally
@@ -757,23 +843,31 @@ a normal field and unaffected."
                          :not-null (getf field-def :not-null)
                          :sortable (getf field-def :sortable)
                          :searchable (getf field-def :searchable))
-                       ;; :column rides the leading plist only on
-                       ;; :target fields (the target's identity
-                       ;; display column, downcased string — the
-                       ;; reference chip picker's :in row names it).
-                       ;; Never an unconditional nil: add-to-plist
-                       ;; emits every union key, and a nil :column
-                       ;; would serialize as "column":[] through
-                       ;; plist-to-json's nil-value default. column is
-                       ;; not an *ui-keys* member, so the :ui spread
-                       ;; can never collide with it.
-                       (when (getf field-def :target)
-                         (list
-                           :column
-                           (string-downcase
-                             (string
-                               (identity-field
-                                 (getf field-def :target)))))))
+                         ;; :column rides the leading plist only on
+                         ;; :target fields (the target's identity
+                         ;; display column, downcased string — the
+                         ;; reference chip picker's :in row names it).
+                         ;; Never an unconditional nil: add-to-plist
+                         ;; emits every union key, and a nil :column
+                         ;; would serialize as "column":[] through
+                         ;; plist-to-json's nil-value default. column is
+                         ;; not an *ui-keys* member, so the :ui spread
+                         ;; can never collide with it.
+                         (when (getf field-def :target)
+                           (list
+                             :column
+                             (string-downcase
+                               (string
+                                 (identity-field
+                                   (getf field-def :target))))
+                             ;; Record permalinks: the additive
+                             ;; target wire key — the field's
+                             ;; actual :target type key
+                             ;; (singular-target fields only,
+                             ;; including suppression-marked ones;
+                             ;; the sibling's absence withholds the
+                             ;; link on those, not this key).
+                             :target (getf field-def :target))))
                      ui)))
         ;; Form-level :hide-list (sibling of :fields) rides the same
         ;; form object as a boolean — but only when declared. append
@@ -792,31 +886,51 @@ a normal field and unaffected."
 
 (defun user-can-p (user type-key permission)
   ":private: T when USER holds PERMISSION on TYPE-KEY's type resource.
-list-result ANDs this with the model's :create/:update/:delete
-capabilities so the wire flags reflect the actual user (a guest
-who can read a public type must not see Add / Edit / Delete)."
+list-result ANDs this with the model's :create/:update/:delete capabilities so
+the wire flags reflect the actual user (a guest who can read a public type must
+not see Add / Edit / Delete)."
   (a:user-allowed *rbac* user permission
     (type-resource-name type-key)))
 
 (defun user-capability (user type-key capability)
-  ":private: :true when the model grants CAPABILITY (:create, :update,
-:delete) on TYPE-KEY and USER holds the matching RBAC permission on the
-type's resource, :false otherwise. Model nil (e.g. read-only rollups)
-always wins."
+  ":private: :true when the model grants CAPABILITY (:create, :update, :delete)
+on TYPE-KEY and USER holds the matching RBAC permission on the type's resource,
+:false otherwise. Model nil (e.g. read-only rollups) always wins."
   (if (and (u:tree-get *compiled-model* type-key capability)
            (user-can-p user type-key
              (string-downcase capability)))
     :true :false))
 
+(defun region-spec-list (children)
+  ":private: Wire emission of a compiled :view-form :children value (plan 02).
+Returns a one-element list of wire specs: :type and :via become downcased
+strings (plist-to-json preserves strings verbatim, and plain (string :comments)
+would yield \"COMMENTS\"); :sort normalizes to a real two-element string list
+with the direction defaulted and normalized — never a sort plist, which u:plistp
+would send down the plist branch and serialize as {\"field\":\"dir\"} (the
+json-sort-echo trap). The string pair (\"created-at\" \"asc\") has string keys,
+so plist-to-json emits the JSON array [\"created-at\",\"asc\"]. An omitted :sort
+and an explicit (:created-at) both normalize to (\"created-at\" \"asc\"); the
+compiled def keeps the author spec verbatim (asserted by tests) — normalization
+happens here, at attach time only. Pure: takes the children value, so tests pass
+author specs directly."
+  (loop for spec in children
+    for s = (or (getf spec :sort) '(:created-at :asc))
+    collect (list
+              :type (string-downcase (string (getf spec :type)))
+              :via (string-downcase (string (getf spec :via)))
+              :sort (list (string-downcase (string (first s)))
+                      (string-downcase
+                        (string (or (second s) :asc)))))))
+
 (defun json-sort-echo (sort)
-  ":private: Wire shape of the list-result :sort echo (plan 09 Step 5,
-pinned in plan 01). SORT is nil or (:field-key :asc|:desc). Returns
-(:field <field-key> :dir :asc|:desc) or :null. :dir is a keyword:
-plist-to-json downcases symbols into quoted strings, so the JSON is
-byte-identical to the string form it replaced ({"dir":"desc"}). Built
-explicitly: the raw plist would serialize as a single-key object
-{\"field\": \"dir\"}, and bare nil would serialize as [] (the :avg
-trap), both wrong. rest.lisp ships this plist / :null through
+  ":private: Wire shape of the list-result :sort echo (plan 09 Step 5, pinned in
+plan 01). SORT is nil or (:field-key :asc|:desc). Returns (:field <field-key>
+:dir :asc|:desc) or :null. :dir is a keyword: plist-to-json downcases symbols
+into quoted strings, so the JSON is byte-identical to the string form it
+replaced ({\"dir\":\"desc\"}). Built explicitly: the raw plist would serialize
+as a single-key object {\"field\": \"dir\"}, and bare nil would serialize as
+[] (the :avg trap), both wrong. rest.lisp ships this plist / :null through
 plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
   (if sort
     (list :field (first sort)
@@ -826,45 +940,100 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
 (defun list-result (type-key user form &key
                      field-keys view-result total skip-allowed-values
                      records sort)
-  (add-to-plist
-    (list
-      :type-key type-key
-      :total (or total 0)
-      ;; Plan 01 / 09: the user-facing effective sort on every
-      ;; successful list read (base and measure). The measure branch
-      ;; passes the default first-sortable-measure when the request
-      ;; sent none; the base branches pass the effective sort
-      ;; (request or :default-sort) or nil.
-      ;; Never the id / grain-id tiebreaker.
-      :sort (json-sort-echo sort)
-      :create (user-capability user type-key :create)
-      :update (user-capability user type-key :update)
-      :delete (user-capability user type-key :delete)
-      :records (decorate-records-with-caps type-key
-                 (add-roles-to-view
-                   type-key
-                   form
-                   user
-                   (mapcar
-                     (lambda (r) (blank-password-fields type-key r))
-                     ;; 08b measure path: RECORDS are already field-key plists
-                     ;; from the GROUP BY query.  No Phase B collapse.
-                     (or records
-                       (view-result-values type-key field-keys
-                         view-result :user user)))
-                   )
-                 user)
-      :allowed-values (if skip-allowed-values
-                        nil
-                        (allowed-values type-key user))
-      :type-roles (if (equal type-key :users)
-                    (remove-duplicates
-                      (append (u:tree-get *compiled-model* type-key
-                                :type-roles)
-                        (user-defined-type-roles))
-                      :test #'equal)
-                    (u:tree-get *compiled-model* type-key :type-roles)))
-    (fe-fields type-key user)))
+  ;; Record-permalink siblings ride list records too (same
+  ;; decoration, same data on both public read surfaces; list
+  ;; cells ignore the key).
+  (let* ((decorated-records
+           (or records
+             (view-result-values type-key field-keys view-result
+               :user user)))
+         (id-alias
+           (when (and view-result field-keys)
+             (u:tree-get *compiled-model* type-key :fields :id
+               :source :alias-key)))
+         (sibling-keys
+           (when (and view-result field-keys)
+             (loop
+               with m = *compiled-model*
+               for field-key in (cdr field-keys)
+               for field-def = (u:tree-get m type-key :fields
+                                 field-key)
+               for eligible = (and
+                                (singular-target-field-p field-def)
+                                (not (getf field-def
+                                     :suppress-sibling)))
+               for storage = (when eligible
+                               (target-storage-alias-key type-key
+                                 field-key))
+               when storage
+               collect field-key
+               and collect storage
+               and collect (u:tree-get field-def :source :scope-alias)
+               and collect (u:tree-get field-def :source
+                             :scope-kind)))))
+    (add-to-plist
+      (list
+        :type-key type-key
+        :total (or total 0)
+        ;; Plan 01 / 09: the user-facing effective sort on every
+        ;; successful list read (base and measure). The measure
+        ;; branch passes the default first-sortable-measure when
+        ;; the request sent none; the base branches pass the
+        ;; effective sort (request or :default-sort) or nil.
+        ;; Never the id / grain-id tiebreaker.
+        :sort (json-sort-echo sort)
+        :create (user-capability user type-key :create)
+        :update (user-capability user type-key :update)
+        :delete (user-capability user type-key :delete)
+        :records (decorate-records-with-caps type-key
+                   (add-roles-to-view type-key form user
+                     (mapcar
+                       (lambda (r)
+                         (let ((blanked
+                                 (blank-password-fields type-key r)))
+                           (if (and sibling-keys
+                                 (getf blanked :id)
+                                 (not (null view-result)))
+                             (append
+                               (if (listp blanked) blanked
+                                 (list blanked))
+                               (loop
+                                 for (field-key storage scope-alias
+                                        scope-kind)
+                                   on sibling-keys by (lambda (l)
+                                                        (nthcdr 4 l))
+                                 for value = (field-values-for-id
+                                               view-result id-alias
+                                               (getf blanked :id)
+                                               storage :first
+                                               :scope-alias scope-alias
+                                               :scope-value
+                                               (scope-value-for-kind
+                                                 scope-kind user))
+                                 when (and value
+                                        (not (equal value :null)))
+                                 collect (u:make-keyword
+                                           (format nil "~a-id"
+                                             field-key))
+                                 and collect value))
+                             blanked)))
+                       ;; 08b measure path: RECORDS are already
+                       ;; field-key plists from the GROUP BY
+                       ;; query. No Phase B collapse.
+                       decorated-records))
+                   user)
+        :allowed-values (if skip-allowed-values
+                          nil
+                          (allowed-values type-key user))
+        :type-roles (if (equal type-key :users)
+                      (remove-duplicates
+                        (append (u:tree-get *compiled-model* type-key
+                                  :type-roles)
+                          (user-defined-type-roles))
+                        :test #'equal)
+                      (u:tree-get *compiled-model* type-key
+                        :type-roles)))
+      (fe-fields type-key user))))
 
 ;;
 ;; END Internal helper functions
@@ -998,11 +1167,10 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
 
 (defun valid-admin-only-user-roles (user new-roles
                                      &optional existing-roles)
-  ":private: FR-11 gate. Signals a validation error when a non-admin
-actor is *adding* an admin-only role (ai-user / deployer) to a user's
-membership. Stripping a stale grant is allowed (demos cannot lock a
-VIP in). Keyword :roles on a non-:users be-insert / be-update is
-resource roles and must not call this."
+  ":private: FR-11 gate. Signals a validation error when a non-admin actor is
+*adding* an admin-only role (ai-user / deployer) to a user's membership.
+Stripping a stale grant is allowed (demos cannot lock a VIP in). Keyword :roles
+on a non-:users be-insert / be-update is resource roles and must not call this."
   (unless (equal user "admin")
     (let* ((existing (or existing-roles
                        (a:list-user-role-names *rbac* user)))
@@ -1013,20 +1181,19 @@ resource roles and must not call this."
              "Only admin may assign role ~s to a user." ~role)))))
 
 (defun protected-users ()
-  ":private: FR-12. Extra protected user names from the
-PROTECTED_USERS environment variable (comma-separated), read at call
-time so a test can bind it. NIL when unset or empty."
+  ":private: FR-12. Extra protected user names from the PROTECTED_USERS
+environment variable (comma-separated), read at call time so a test can bind
+it. NIL when unset or empty."
   (let ((raw (u:getenv "PROTECTED_USERS")))
     (when (and raw (plusp (length raw)))
       (remove "" (mapcar #'u:trim (re:split "," raw))
         :test #'equal))))
 
 (defun valid-protected-record (type-key record user)
-  ":private: FR-12 gate. Signals a validation error when a non-admin
-actor updates or deletes a record whose identity is in the protected
-set for TYPE-KEY: admin / guest / PROTECTED_USERS on :users,
-*reserved-role-names* on :roles, a:*init-permissions* on
-:permissions. No-op for every other type and for admin."
+  ":private: FR-12 gate. Signals a validation error when a non-admin actor
+updates or deletes a record whose identity is in the protected set for TYPE-KEY:
+admin / guest / PROTECTED_USERS on :users, *reserved-role-names* on :roles,
+a:*init-permissions* on :permissions. No-op for every other type and for admin."
   (unless (or (equal user "admin")
             (not (member type-key '(:users :roles :permissions))))
     (let ((name (getf record :name)))
@@ -1052,7 +1219,7 @@ the update fails."
   (valid-roles roles)
   (if (uuid-p filters)
     (valid-existing-uuid filters)
-    (valid-filters filters :required t))
+    (valid-filters filters :required t :type-key type-key))
   ;; The update-roles function should work for changing the roles associated
   ;; with a user or with a resource.
   (case type-key
@@ -1470,6 +1637,49 @@ hashes never reach the frontend."
           else
             appending (list key val))))
 
+(defun decorate-record-with-target-ids (type-key form field-keys
+                                          view-result user record)
+  ":private: Record-permalink sibling emission: for each
+requested singular-target field on FORM that is not
+suppression-marked, append the pair \"<field-key>-id\" = the
+field's storage alias collapsed with :agg :first from the
+already-computed VIEW-RESULT rows (the same
+field-values-for-id machinery the display value uses), with the
+field's existing scope-args applied (a scoped display whose
+scope filters the viewer out emits no sibling — no label-less
+link). The key is omitted entirely when the value is null (:null
+or nil — never a present nil, which plist-to-json renders as []
+and JS reads as truthy). The field's own key keeps the display
+string. No resolver, no second query."
+  (let ((m *compiled-model*))
+    (loop
+      with id-alias = (u:tree-get m type-key :fields :id
+                        :source :alias-key)
+      for field-key in (cdr field-keys)
+      for field-def = (u:tree-get m type-key :fields field-key)
+      for eligible = (and (singular-target-field-p field-def)
+                       (not (getf field-def :suppress-sibling)))
+      when eligible
+      collect
+      (let* ((storage
+               (target-storage-alias-key type-key field-key))
+             (scope-alias
+               (u:tree-get field-def :source :scope-alias))
+             (scope-kind
+               (u:tree-get field-def :source :scope-kind))
+             (value
+               (field-values-for-id view-result id-alias
+                 (getf record :id) storage :first
+                 :scope-alias scope-alias
+                 :scope-value (scope-value-for-kind scope-kind
+                                user))))
+        (when (and storage value (not (equal value :null)))
+          (list (u:make-keyword
+                  (format nil "~a-id" field-key))
+            value)))
+      into pairs
+      finally (return (apply #'append pairs)))))
+
 (defun rec (id user &key (form :update-form) type-key (public t)
              (blank-passwords t))
   ":private: Returns the TYPE-KEY record with the given ID, provided that it is
@@ -1478,7 +1688,12 @@ optional. However, providing TYPE-KEY helps the function avoid an extra database
 lookup. PUBLIC tells this function to accept only non-internal TYPE-KEYs.
 BLANK-PASSWORDS controls whether password hashes are nilled out before returning
 (default T for frontend safety; pass NIL for internal callers that need the real
-hash, e.g. be-update)."
+hash, e.g. be-update).
+Record permalinks: rec returns a second value — the raw
+view-result rows it already computed — beside the unchanged
+envelope, for be-rec's sibling decoration (nil exactly when the
+record is inaccessible). Internal callers read the first value
+only and never see the sibling key."
   (valid-existing-user user)
   (when type-key (if public
                    (valid-be-type-key type-key)
@@ -1497,19 +1712,21 @@ hash, e.g. be-update)."
                        sql (list (list type-key :id :eq id)) user))
               (view-result (view-result type-key where))
               (field-keys (form-field-keys type-key form)))
-        (list
-          :type type-key
-          :fields (fe-fields type-key user)
-          :record (car
-                    (add-roles-to-view
-                      type-key form user
-                      (mapcar
-                        (if blank-passwords
-                          (lambda (r) (blank-password-fields type-key r))
-                          #'identity)
-                        (view-result-values type-key field-keys view-result
-                          :user user))))
-          :allowed-values (allowed-values type-key user))))))
+        (values
+          (list
+            :type type-key
+            :fields (fe-fields type-key user)
+            :record (car
+                      (add-roles-to-view
+                        type-key form user
+                        (mapcar
+                          (if blank-passwords
+                            (lambda (r) (blank-password-fields type-key r))
+                            #'identity)
+                          (view-result-values type-key field-keys view-result
+                            :user user))))
+          :allowed-values (allowed-values type-key user))
+          view-result)))))
 
 (defun join-field-meta (owner-type-key list-field-key)
   "Return plist :other-type :owner-fk-key :other-fk-key for a
@@ -1919,6 +2136,23 @@ FILTER."
         (report-ve "valid-filter"
           ":has-all targets an M2M list field: ~s on ~s has no ~
            :join-table." ~field-key ~type-key)))
+    ;; :fk-eq semantics (chips 0a doctrine beside :has-all): the
+    ;; field must be a singular-target FK on the tuple's own type
+    ;; and the value a uuid. This arm completes the validation —
+    ;; nothing after it re-examines the value (the generic
+    ;; field-type / filter-value-type-p checks are skipped, so a
+    ;; uuid survives a boolean/timestamp-declared FK).
+    (when (eq op-key :fk-eq)
+      (unless (singular-target-field-p
+                (u:tree-get *compiled-model* type-key :fields field-key))
+        (report-ve "valid-filter"
+          ":fk-eq targets a singular :target field: ~s on ~s is ~
+           not one (no :target, M2M :join-table, injected/base, or ~
+           a non-FK column)." ~field-key ~type-key))
+      (unless (uuid-p value)
+        (report-ve "valid-filter"
+          ":fk-eq takes a row uuid: ~s is not one (nil, :null, and ~
+           display names are rejected)." ~value)))
     (unless (field-type-key-p
               (u:tree-get *compiled-model* type-key :fields field-key :type))
       (report-ve "valid-filter" "Invalid field type key for field ~s ~s ~s."
@@ -1937,12 +2171,23 @@ Expected a value of type ~s, but got value ~s."
                        type-key field-key field-type value))))
         (report-ve "valid-filter" err)))))
 
-(defun valid-filters (filters &key required)
-  ":private: Checks that FILTERS is valid."
+(defun valid-filters (filters &key required (type-key nil type-key-p))
+  ":private: Checks that FILTERS is valid. TYPE-KEY, when supplied,
+is the queried (listed) type: an :fk-eq row whose tuple type differs
+from it is field-scoped to the wrong type and is rejected (the
+tuple-local valid-filter cannot see the queried type; ordinary
+operators keep their cross-type rows)."
   (when (and required (null filters))
     (report-ve "valid-filters" "FILTERS cannot be NIL."))
   (loop for filter in filters
-    do (valid-filter filter :required t)))
+    for tuple-type-key = (when (listp filter) (car filter))
+    for tuple-op-key = (when (listp filter) (caddr filter))
+    do (valid-filter filter :required t)
+    when (and type-key-p (eq tuple-op-key :fk-eq))
+    unless (equal tuple-type-key type-key)
+    do (report-ve "valid-filters"
+         ":fk-eq is field-scoped to the listed type: tuple names ~s ~
+          but the listed type is ~s." ~tuple-type-key ~type-key)))
 
 (defun valid-type-key (type-key)
   ":private: Checks that TYPE-KEY is a valid type key in the model."
@@ -2359,7 +2604,7 @@ error:
   (valid-existing-user user)
   (if (stringp filters)
     (valid-uuid filters)
-    (valid-filters filters :required t))
+    (valid-filters filters :required t :type-key type-key))
   (pl:pdebug :in "be-id" :filters filters)
   (let* ((m *compiled-model*)
           (internal (u:tree-get m type-key :internal))
@@ -2412,17 +2657,46 @@ optional. However, providing TYPE-KEY helps the function avoid an extra database
 lookup. The :record plist carries :update / :delete keyword flags computed from
 USER's permissions on this row's own resource (the /api/item arm; rec stays
 clean — internal callers feed its :record back through valid-data, which would
-reject the injected keys)."
+reject the injected keys).
+Record permalinks: be-rec also decorates the record with a
+\"<field>-id\" UUID sibling for each requested singular-target
+field (omitted when the FK is null or suppression-marked) —
+the public read surface the View-form FK link consumes.
+Embedded child regions (plan 02): on :view-form fetches of a type
+that declares :children, be-rec attaches the emitted region spec
+beside :fields (region-spec-list — :type / :via as strings, :sort
+as a two-element string pair, the json-sort-echo trap avoided).
+Triple-guarded: inside the record guard, only for :view-form, and
+only when the compiled :view-form declares :children — no other
+form, no nil-valued key on childless types. rec's other four
+callers (be-update, be-val, be-delete, be-action) never see it."
   (valid-compiled-model)
   (valid-non-rollup-type-key (if type-key type-key (id-to-type-key id)))
-  (let* ((result (rec id user :form form :type-key type-key :public t))
-         (record (getf result :record))
-         (record-type (or type-key (getf result :type))))
-    (when record
-      (setf (getf result :record)
-        (car (decorate-records-with-caps record-type
-               (list record) user))))
-    result))
+  (multiple-value-bind (result rows)
+    (rec id user :form form :type-key type-key :public t)
+    (let* ((record (getf result :record))
+           (record-type (or type-key (getf result :type))))
+      (when record
+        (setf (getf result :record)
+          (car (decorate-records-with-caps record-type
+                 (list
+                   (append
+                     (if (listp record) record (list record))
+                     (decorate-record-with-target-ids record-type
+                       form
+                       (form-field-keys record-type form)
+                       rows user record)))
+                 user)))
+        (when (and (eq form :view-form) record-type
+                (u:has (u:plist-keys
+                         (u:tree-get *compiled-model* record-type
+                           :view-form))
+                  :children))
+          (setf (getf result :children)
+            (region-spec-list
+              (u:tree-get *compiled-model* record-type
+                :view-form :children)))))
+      result)))
 
 (defun be-val (id field-key user &key (form :update-form) type-key)
   ":public: Returns the value for field FIELD-KEY in the TYPE-KEY record with
@@ -2724,7 +2998,12 @@ The following example returns a list of all the :todos records that have the tag
   ;; reject on the measure path too.
   (phase-a-search-clause type-key search 1)
   (let ((sort (or sort
-                (u:tree-get *compiled-model* type-key :default-sort))))
+                ;; A :list-form :default-sort (the blog tab spelling)
+                ;; is the effective default too; type-level wins when
+                ;; both exist (the compiled def carries it).
+                (or (u:tree-get *compiled-model* type-key :default-sort)
+                  (u:tree-get *compiled-model* type-key :list-form
+                    :default-sort)))))
     (if (eq (u:tree-get *compiled-model* type-key :phase-a-shape) :measure)
       ;; 08b measure Phase A: GROUP BY grain, no Phase B, no
       ;; user-read-type-ids / filters-for-be-list (the rollup has no
@@ -2738,7 +3017,7 @@ The following example returns a list of all the :todos records that have the tag
       (progn
         (if (uuid-p filters)
           (valid-existing-uuid filters)
-          (valid-filters filters))
+          (valid-filters filters :type-key type-key))
         (base-be-list type-key user :form form :filters filters
           :limit limit :offset offset :sort sort :search search
           :skip-allowed-values skip-allowed-values)))))
@@ -2887,6 +3166,13 @@ WHERE on a joined table."
       (valid-filter filter :required t)
       (destructuring-bind (table-key field-key op-key value) filter
         (let ((column (measure-grain-column-filter type-key filter))
+              ;; :fk-eq is rejected before both the generic
+              ;; non-grain-column rejection and the operator-sql
+              ;; splice below (the inert token must never reach the
+              ;; splice). A rollup-self tuple already died in
+              ;; valid-filter's singular-target check; this arm is
+              ;; the belt for tuple-local-valid cross-type FK rows.
+              (fk-eq-p (eq op-key :fk-eq))
               ;; nil :eq / :ne → is [not] null with no placeholder and
               ;; no param appended — the same translation as
               ;; add-where-clause; the index below counts
@@ -2894,6 +3180,10 @@ WHERE on a joined table."
               ;; sides of the numbering in sync.
               (null-eq-p (and (member op-key '(:eq :ne))
                             (or (null value) (equal value :null)))))
+          (when fk-eq-p
+            (report-ve "measure-request-grain-filters"
+              ":fk-eq is not supported on rollups; a rollup row has ~
+               no storage FK." ~table-key ~field-key))
           (unless column
             (report-ve "measure-request-grain-filters"
               "Filter (~s ~s ~s ...) is not a grain-column filter on ~
@@ -3084,7 +3374,7 @@ like BE-LIST, but it returns a list of values instead of a list of records."
   (valid-existing-user user)
   (if (uuid-p filters)
     (valid-existing-uuid filters)
-    (valid-filters filters))
+    (valid-filters filters :type-key type-key))
   (let ((records (getf
                    (be-list type-key user :form form :filters filters
                      :limit limit :offset offset :sort sort
@@ -3309,7 +3599,7 @@ instead)."
   (valid-non-rollup-type-key type-key)
   (if (stringp filters)
     (valid-uuid filters)
-    (valid-filters filters :required t))
+    (valid-filters filters :required t :type-key type-key))
   (valid-data type-key data)
   (valid-user-roles user (remove-existing-non-user-roles user roles))
   ;; Non-resource, non-base built-in types (e.g. :tokens) are invisible
@@ -3435,7 +3725,7 @@ treated as the UUID of the record to be deleted."
   (valid-non-rollup-type-key type-key)
   (if (stringp filters)
     (valid-uuid filters)
-    (valid-filters filters :required t))
+    (valid-filters filters :required t :type-key type-key))
   (valid-existing-user user)
   (let* ((m *compiled-model*)
           (uuid (be-id type-key filters "admin"))
@@ -3673,14 +3963,16 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
 
 (defun be-landing-page (user)
   ":public: Effective landing type-key for USER, or NIL.
-Uses model :landing-page when allowed; else first non-base type
-from be-types; else first be-types entry; else NIL."
+Uses model :landing-page when allowed; else the first non-built-in
+type from be-types (author types only — :base is the RBAC storage
+scheme, not authorship; :secrets is :built-in t :base nil and must
+not win the fallback); else first be-types entry; else NIL."
   (let* ((allowed (mapcar (lambda (e) (getf e :name)) (be-types user)))
          (configured (model-landing-page)))
     (cond
       ((and configured (member configured allowed :test #'eq))
        configured)
-      ((find-if (lambda (k) (not (base-type-p k))) allowed))
+      ((find-if (lambda (k) (not (built-in-p k))) allowed))
       (t (first allowed)))))
 
 (defun be-set-field-value (type-key id field-key value user)

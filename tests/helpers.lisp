@@ -1095,6 +1095,22 @@ view-form-test fixture."
     (explain! results)
     (when collect results)))
 
+(defun run-timestamp-override-tests (&optional collect)
+  "Timestamp presentation overrides: compile probes (no model needed;
+the with-model phase-a probe opens its own context) plus wire /
+behavior probes on the timestamp-override-test fixture."
+  (let ((results
+          (append
+            ;; Compile probes (pure compile_model, no DB) — the
+            ;; phase-a probe inside the suite opens its own
+            ;; with-model context.
+            (run 'timestamp-override-suite)
+            ;; Wire + behavior (needs the fixture and a live DB)
+            (with-model "timestamp-override-test" nil
+              (run 'timestamp-override-suite-wire)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-hide-list-tests (&optional collect)
   ":hide-list tests: compile acceptance / rejection probes (no
 model needed) plus wire emission and backend read checks on the
@@ -1124,6 +1140,44 @@ reference-chip-test fixture."
             ;; Behavior (seeds / deletes rows; own with-model)
             (with-model "reference-chip-test" nil
               (run 'reference-chip-behavior)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-record-permalink-tests (&optional collect)
+  "Record permalink sibling / :target wire key / suppression /
+conversion-exclusion tests on the record-permalink-test fixture
+(seeded by seed-record-permalink-fixture, defined in
+tests/record-permalink-tests.lisp — load it first)."
+  (let ((results
+          (with-model "record-permalink-test"
+              #'seed-record-permalink-fixture
+            (run 'record-permalink-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-fk-eq-tests (&optional collect)
+  ":fk-eq filter operator tests: SQL text, raw binding,
+storage-column matches, cross-type guard, and rejections on the
+fk-eq-test fixture (seeded by seed-fk-eq-fixture, defined in
+tests/fk-eq-tests.lisp — load it first)."
+  (load (u:join-paths *package-root* "tests" "fk-eq-tests.lisp"))
+  (let ((results
+          (with-model "fk-eq-test" #'seed-fk-eq-fixture
+            (run 'fk-eq-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-children-tests (&optional collect)
+  "Embedded child region tests (plan 02). Compile probes run bare
+(against returned models, never set-model); the DB / RBAC / wire
+probes run in one seeded blog-test context (seed-blog-fixture is
+defined in tests/children-tests.lisp — load it first)."
+  (load (u:join-paths *package-root* "tests" "children-tests.lisp"))
+  (let ((results
+          (append
+            (run 'children-compile)
+            (with-model "blog-test" #'seed-blog-fixture
+              (run 'children-suite)))))
     (explain! results)
     (when collect results)))
 
@@ -1181,7 +1235,11 @@ groups."
                    ("field-help"    . run-field-help-tests)
                    ("view-form"     . run-view-form-tests)
                    ("hide-list"     . run-hide-list-tests)
-                   ("reference-chip" . run-reference-chip-tests))
+                   ("reference-chip" . run-reference-chip-tests)
+                   ("timestamp-override" . run-timestamp-override-tests)
+                   ("record-permalink" . run-record-permalink-tests)
+                   ("fk-eq"          . run-fk-eq-tests)
+                   ("children"       . run-children-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

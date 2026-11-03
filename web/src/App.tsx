@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, Fragment }
+  from 'react'
 import { apiFetch, setTokens, clearTokens, getAccessToken,
          onAuthFailure, onTokenRefreshed, restoreSession }
   from './api'
@@ -8,10 +9,16 @@ import ChipPicker from './ChipPicker'
 import FilePath from './FilePath'
 import SearchSelect from './SearchSelect'
 import { parseHash, canonicalize, buildUrlState,
-         urlStatesEqual, writeUrl } from './urlState'
+         urlStatesEqual, writeUrl, parseScope, scopeToParam,
+         SCOPE_NONE } from './urlState'
+import type { RecordMode, ScopeState } from './urlState'
 import { Markdown } from './Markdown'
 import { PageDescription } from './PageDescription'
 import { FieldHelp } from './FieldHelp'
+import { composeReply, normalizeRoles, lastOffset,
+         regionPayloadData, insertOutcome, separateQuotes }
+  from './region'
+import type { InsertOutcome } from './region'
 
 // Apply CSS-relevant settings values to the document.
 // Currently only dark-mode (boolean → toggle .dark class on body).
@@ -89,6 +96,744 @@ interface Field {
   // downcased strings (plist-to-json), so ops arrive as "ne" etc.
   // Absent key means enabled.
   'enabled-when'?: [string, string, any][]
+  // :target wire value (fe-fields, singular-target fields only):
+  // the field's actual :target type key, downcased string. The
+  // View-form FK link gate — emitted on suppressed shapes too
+  // (the sibling id's absence withholds the link, not this key).
+  target?: string
+}
+
+// The shared Add/Reply field renderer for the committed v1
+// region alphabet (plan 03): hidden (nothing), read-only, and
+// markdown/textarea, falling back to renderFormField (stars and
+// textbox/default). Both the region's panel map and any future
+// shared consumer call this; the parent's own form map keeps
+// its select/code/etc. branches (the region alphabet does not
+// widen without a plan). A field outside the alphabet renders
+// nothing — *widgets* is untouched and the fallback logs.
+function renderRegionField(
+  field: Field, value: any,
+  onChange: (v: string) => void
+): React.ReactNode {
+  const widget = field['widget'] || ''
+  if (widget === 'hidden') return null
+  if (field['read-only'] === true) {
+    return renderReadOnlyField(field, value)
+  }
+  if (widget === 'markdown' || widget === 'textarea') {
+    return (
+      <textarea
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        rows={8}
+        style={{ width: '100%', resize: 'vertical' }}
+      />
+    )
+  }
+  return renderFormField(field, value, onChange)
+}
+
+// The region: a slim, region-local reading surface under the
+// parent's view form (plan 03 — "Region renderer"). One
+// component owns its fetch (/api/list on the child type,
+// form=view-form, the fixed fk-eq filter, the region's :sort),
+// its pager, accordion expansion, and the Add/Reply panel. It
+// never touches App state: no setData, no formValues, no query
+// setters, no router — the child payload (rows, forms, create
+// flag) lives in region-local state. Requests are fenced by a
+// region sequence + mounted flag (a superseded or unmounted
+// response assigns nothing); the offset state is the sole
+// effect-driven display-fetch trigger (pager handlers and
+// insert/shrink handoffs synchronously invalidate old work and
+// set the target offset; the effect allocates the next request).
+function Region({ spec, parentId, onShowAll }: {
+  spec: ChildSpec
+  parentId: string
+  // The escape hatch (plan 04): the Region owns the footer
+  // link and its current total; App owns the callback and all
+  // navigation / state writes (the Region never touches the
+  // query setters or the router). Optional — an absent
+  // callback renders no link.
+  onShowAll?: (spec: ChildSpec, parentId: string) => void
+}) {
+  // Child payload + status flags — never an inference from
+  // missing rows.
+  const [region, setRegion] = useState<ListResponse | null>(
+    null)
+  const [inFlight, setInFlight] = useState(true)
+  const [failed, setFailed] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
+  // Offset state: the sole effect-driven display-fetch trigger.
+  const [offset, setOffset] = useState(0)
+  // Expansion / Reply.
+  const [expandedId, setExpandedId] = useState<string | null>(
+    null)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [panelValues, setPanelValues] =
+    useState<Record<string, any>>({})
+  const [panelError, setPanelError] = useState('')
+  const [pending, setPending] = useState(false)
+  // Request fencing: one counter advancing on invalidation and
+  // request allocation; a response commits only when its
+  // captured sequence is still the latest AND the component is
+  // still mounted. Cleanup increments the sequence and clears
+  // the mounted flag, so an old instance's response (a parent
+  // swap remounts the component) can never assign.
+  const seqRef = useRef(0)
+  const mountedRef = useRef(true)
+  // The Add/Reply panel anchor: the panel renders once at the
+  // region's bottom (after the table and the pager), so on a
+  // long list a freshly opened panel can sit below the fold
+  // and its button (Reply, Add) looks dead.
+  const panelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      ++seqRef.current
+    }
+  }, [])
+  const isCurrentList = (seq: number) =>
+    mountedRef.current && seqRef.current === seq
+
+  // Request layer: allocates a sequence, builds and sends the
+  // region's own /api/list request (the child type, the
+  // view-form hydration, the fixed fk-eq row, the region's
+  // :sort, PAGE_SIZE, the given offset), and returns
+  // { seq, json } on success or throws with the sequence
+  // attached. Never assigns region state — every commit goes
+  // through loadRegion's fence or an explicit isCurrentList
+  // check at the commit site.
+  const requestRegionList = async (reqOffset: number) => {
+    const seq = ++seqRef.current
+    const rows = [[spec.type, spec.via, 'fk-eq', parentId]]
+    const url = `/api/list?type=${
+      encodeURIComponent(spec.type)}&form=view-form`
+      + `&limit=${PAGE_SIZE}&offset=${reqOffset}`
+      + `&sort=${spec.sort[0]}:${spec.sort[1]}`
+      + `&filters=${encodeURIComponent(JSON.stringify(rows))}`
+    try {
+      const res = await apiFetch(url)
+      if (!res.ok) {
+        throw new Error(`Request failed (${res.status})`)
+      }
+      const json: ListResponse = await res.json()
+      return { seq, json }
+    } catch (err: any) {
+      ;(err as any).__seq = seq
+      throw err
+    }
+  }
+
+  // Success-commit path shared by loadRegion and the manual
+  // Reload: shrink-aware (an out-of-range page returning zero
+  // rows with total > 0 is a shrink — invalidate that response
+  // without committing it, set the computed last offset, and
+  // let the offset effect own the single clamped-page fetch;
+  // total === 0 is handled before the arithmetic). total === 0
+  // with create false renders nothing at all (the caller's
+  // empty-state rules), so the commit itself only carries the
+  // envelope.
+  const commitRegion = (seq: number, json: ListResponse) => {
+    if (!isCurrentList(seq)) return
+    const total = json?.result?.total ?? 0
+    const records = json?.result?.records || []
+    if (total > 0 && records.length === 0) {
+      // Shrink: do not commit the out-of-range page. A
+      // zero-row response with total > 0 necessarily has an
+      // offending offset greater than the computed last offset,
+      // so the state change below cannot be a same-offset no-op.
+      const target = lastOffset(total, PAGE_SIZE)
+      ++seqRef.current
+      setOffset(target)
+      return
+    }
+    setRegion(json)
+    setFailed(false)
+    setInFlight(false)
+  }
+
+  // Display-fetch loader: sets in-flight, owns success / error
+  // commits through the fence.
+  const loadRegion = async (reqOffset: number) => {
+    setInFlight(true)
+    try {
+      const { seq, json } = await requestRegionList(reqOffset)
+      commitRegion(seq, json)
+    } catch (err: any) {
+      if (!isCurrentList((err as any).__seq ?? -1)) return
+      console.error('region: failed to load',
+        spec.type, err)
+      setRegion(null)
+      setFailed(true)
+      setInFlight(false)
+    }
+  }
+
+  // The one offset effect: the sole effect-driven
+  // display-fetch trigger. Mount, pager, shrink, and post-insert
+  // handoffs all change offset (or the reload tick); nothing
+  // else reloads.
+  useEffect(() => {
+    loadRegion(offset)
+  }, [offset, reloadTick])
+
+  // Scroll a freshly opened Add/Reply panel into view. An
+  // effect (not openPanel) owns the scroll so every open path
+  // is covered once; 'nearest' makes it a no-op when the panel
+  // is already on screen. Closing scrolls nothing — the panel
+  // unmounts with it.
+  useEffect(() => {
+    if (!panelOpen) return
+    panelRef.current?.scrollIntoView(
+      { behavior: 'smooth', block: 'nearest' })
+    // Reply preset: focus the body textarea with the caret at
+    // the end — below the quote and its trailing blank line —
+    // so the first typed character starts a fresh top-level
+    // paragraph. Without this the user must know where typing
+    // is safe: a caret placed on (or a click into) the quote's
+    // last line lazy-joins the quote (CommonMark continuation).
+    // Guarded on the body preset, so the plain Add panel is
+    // untouched; generic add-forms with several textareas take
+    // the first (the preset path is the comment body).
+    // openPanel batches values+open, so the preset is already
+    // in panelValues when this runs.
+    if (panelValues.body !== undefined) {
+      const ta =
+        panelRef.current?.querySelector('textarea')
+      if (ta) {
+        ta.focus()
+        const end = ta.value.length
+        ta.setSelectionRange(end, end)
+      }
+    }
+  }, [panelOpen])
+
+  // Manual Reload: reads the latest current offset at invocation
+  // (never a stale closure), issues a fenced probe, and commits
+  // it through the ordinary success/clamp path; it does not
+  // change offset merely to force a reload.
+  const handleReload = async () => {
+    const cur = offset
+    setInFlight(true)
+    try {
+      const { seq, json } = await requestRegionList(cur)
+      commitRegion(seq, json)
+      // Expansion retention: a same-offset Reload keeps the
+      // expanded row open only when its id is still on the
+      // refreshed page; otherwise close it and its Reply.
+      const records = json?.result?.records || []
+      if (expandedId != null
+          && !records.some((r: any) => r.id === expandedId)) {
+        setExpandedId(null)
+        setPanelOpen(false)
+        setPanelValues({})
+      }
+    } catch (err: any) {
+      if (!isCurrentList((err as any).__seq ?? -1)) return
+      console.error('region: reload failed', spec.type, err)
+      setRegion(null)
+      setFailed(true)
+      setInFlight(false)
+    }
+  }
+
+  // Pager handlers: synchronously invalidate older list work,
+  // close expansion / Reply, and set the target offset — the
+  // offset effect allocates the next request sequence.
+  const pagePrev = () => {
+    ++seqRef.current
+    setExpandedId(null)
+    setPanelOpen(false)
+    setPanelValues({})
+    setOffset(Math.max(0, offset - PAGE_SIZE))
+  }
+  const pageNext = () => {
+    ++seqRef.current
+    setExpandedId(null)
+    setPanelOpen(false)
+    setPanelValues({})
+    setOffset(offset + PAGE_SIZE)
+  }
+
+  // The Add/Reply payload roles: the child's type-roles,
+  // normalized (each string to itself, each array to element
+  // zero) — never verbatim from type-roles (a nested entry
+  // would make the backend's role lookup treat permission names
+  // as role names). Omitted roles means private, so the region
+  // sends the normalized array only when it is nonempty.
+  const create = region?.result?.create === true
+  const viewForm = region?.result?.['view-form']
+  const addForm = region?.result?.['add-form']
+  const records = region?.result?.records || []
+  const total = region?.result?.total ?? 0
+  const roles = normalizeRoles(
+    region?.result?.['type-roles'] || [])
+
+  const openPanel = (presetBody?: string) => {
+    // Sparse init: only actual presets — the hidden FK (the
+    // parent's uuid, never the title; resolve-reference-id
+    // short-circuits on uuid-p so it binds directly) and
+    // Reply's body. An untouched user stays undefined so the
+    // fixture's :autofill :user can supply the current
+    // username. The preset must actually be sent in the JSON
+    // body: full-data fills any missing field with its model
+    // default, so an omitted via becomes the default, not the
+    // parent.
+    const values: Record<string, any> = { [spec.via]: parentId }
+    if (presetBody !== undefined) values.body = presetBody
+    setPanelValues(values)
+    setPanelError('')
+    setPanelOpen(true)
+  }
+
+  // The insert: POST /api/insert from region-local state. Never
+  // submitForm (closeForm on a :hide-list t view form routes
+  // through returnToLanding and strands the post). On a
+  // confirmed new insertion: close the panel, clear
+  // expansion/Reply, probe the fresh total without committing
+  // its rows, and hand off to the last-page offset (the effect
+  // makes the only display fetch; exactly one response owns the
+  // final rows commit). inserted:false is the idempotent no-op:
+  // close, clear pending, same-page Reload. A failed insert
+  // keeps the panel, the body, and the page.
+  const submitPanel = async () => {
+    if (pending) return
+    if (!addForm) return
+    setPending(true)
+    setPanelError('')
+    const payload: any = {
+      type: spec.type,
+      data: regionPayloadData(
+        formFieldKeys(addForm), spec.via,
+        panelValues.body !== undefined
+          ? { ...panelValues,
+              body: separateQuotes(String(panelValues.body)) }
+          : panelValues)
+    }
+    if (roles.length > 0) payload.roles = roles
+    try {
+      const res = await apiFetch('/api/insert', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
+      let body: any = null
+      try { body = await res.json() } catch { /* invalid */ }
+      const outcome: InsertOutcome =
+        insertOutcome(res.ok, body)
+      if (outcome === 'invalid') {
+        // Server message when present, neutral otherwise; the
+        // edited body and the open panel survive.
+        setPanelError(body?.error || 'Failed to post')
+        setPending(false)
+        return
+      }
+      // Close the panel and clear expansion/Reply on every
+      // successful outcome (new insertion and no-op alike).
+      setPanelOpen(false)
+      setPanelValues({})
+      setExpandedId(null)
+      setPending(false)
+      if (outcome === 'noop') {
+        // Same-page Reload — no last-page jump, no new-row
+        // claim.
+        setReloadTick(t => t + 1)
+        return
+      }
+      // Confirmed new insertion: probe the fresh total (same
+      // offset), then either set the last-page offset (the
+      // effect makes the only display fetch) or commit the
+      // probe as the display response under its own fence.
+      try {
+        const { seq, json } =
+          await requestRegionList(offset)
+        const freshTotal = json?.result?.total ?? 0
+        const target = lastOffset(freshTotal, PAGE_SIZE)
+        if (target !== offset) {
+          // Synchronously invalidate the probe (its rows are
+          // never committed) and set the target offset.
+          ++seqRef.current
+          setOffset(target)
+        } else {
+          commitRegion(seq, json)
+        }
+      } catch (err: any) {
+        // A failed probe after a confirmed insertion is a load
+        // failure, not an insert failure: show the region load
+        // error with its Reload control; never retry the POST
+        // or restore the submitted body. The server already
+        // inserted the row.
+        if (!isCurrentList((err as any).__seq ?? -1)) return
+        console.error('region: post-insert probe failed',
+          spec.type, err)
+        setRegion(null)
+        setFailed(true)
+        setInFlight(false)
+      }
+    } catch (err: any) {
+      // Network exception: local error line, panel and body
+      // preserved. (Expired auth goes through apiFetch's global
+      // auth-failure callback instead — the existing logout
+      // path, not a local promise.)
+      setPanelError(err?.message || 'Failed to post')
+      setPending(false)
+    }
+  }
+
+  // Early render: nothing but the container while the first
+  // fetch is in flight (neither the empty conclusion nor the
+  // error).
+  if (inFlight && region == null && !failed) {
+    return <div style={{ marginTop: '1rem',
+                         marginLeft: '1.5rem' }} />
+  }
+  if (failed) {
+    return (
+      <div style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
+        <p style={{ color: 'var(--error)', margin: '0.5rem 0' }}>
+          Failed to load {spec.type}.
+        </p>
+        <button type="button" onClick={handleReload}>
+          Reload
+        </button>
+      </div>
+    )
+  }
+  // Loaded-empty, no create permission: render nothing (no
+  // header, no prose).
+  if (region == null || total === 0) {
+    if (!create) return null
+    // Loaded-empty with create: the Add control is the empty
+    // state (region-side defensive gating still requires the
+    // add-form before rendering the write surface).
+    if (!addForm) return null
+    return (
+      <div style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
+        <button type="button" onClick={() => openPanel()}>
+          Add {spec.type}
+        </button>
+        {panelOpen && (
+          <div ref={panelRef}>
+            <RegionPanel
+              addForm={addForm}
+              spec={spec}
+              values={panelValues}
+              error={panelError}
+              pending={pending}
+              onChange={(k, v) => setPanelValues(
+                { ...panelValues, [k]: v })}
+              onSubmit={submitPanel}
+              onCancel={() => {
+                setPanelOpen(false)
+                setPanelValues({})
+                setPanelError('')
+              }}
+            />
+          </div>
+        )}
+      </div>
+    )
+  }
+  if (!viewForm) return null
+
+  const viewFieldKeys = formFieldKeys(viewForm)
+  const totalPages = Math.max(1,
+    Math.ceil(total / PAGE_SIZE))
+  const page = Math.floor(offset / PAGE_SIZE) + 1
+
+  return (
+    <div style={{ marginTop: '1rem', marginLeft: '1.5rem' }}>
+      <div style={{
+        marginBottom: '0.25rem',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.5rem'
+      }}>
+        <h4 style={{ margin: 0 }}>
+          {spec.type} ({total})
+        </h4>
+        <button type="button" onClick={handleReload}>
+          Reload
+        </button>
+        {create && addForm && (
+          <button type="button"
+            onClick={() => openPanel()}>
+            Add
+          </button>
+        )}
+      </div>
+      <table>
+        <thead>
+          <tr>
+            {viewFieldKeys.map(f => (
+              <th key={f}>{viewForm[f].label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {records.map((rec: any) => (
+            <Fragment key={rec.id}>
+              <tr
+                className="row-clickable"
+                tabIndex={0}
+                role="button"
+                aria-label={expandedId === rec.id
+                  ? `Collapse ${spec.type} record ${rec.id}`
+                  : `Expand ${spec.type} record ${rec.id}`}
+                onClick={e => {
+                  if (window.getSelection()?.toString())
+                    return
+                  const t = e.target as HTMLElement | null
+                  if (t?.closest(INTERACTIVE_SELECTOR))
+                    return
+                  if (expandedId === rec.id) {
+                    // Collapsing a row also closes its Reply.
+                    setExpandedId(null)
+                    setPanelOpen(false)
+                    setPanelValues({})
+                  } else {
+                    setExpandedId(rec.id)
+                  }
+                }}
+                onKeyDown={e => {
+                  if (e.key !== 'Enter') return
+                  const t = e.target as HTMLElement | null
+                  if (t?.closest(INTERACTIVE_SELECTOR))
+                    return
+                  if (expandedId === rec.id) {
+                    setExpandedId(null)
+                    setPanelOpen(false)
+                    setPanelValues({})
+                  } else {
+                    setExpandedId(rec.id)
+                  }
+                }}
+              >
+                {viewFieldKeys.map(f => {
+                  const field = viewForm[f]
+                  const text = cellText(rec[f], field)
+                  return (
+                    <td
+                      key={f}
+                      style={{
+                        maxWidth: '22rem',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                      }}
+                      title={text || undefined}
+                    >
+                      {renderCellValue(rec[f], field)}
+                    </td>
+                  )
+                })}
+              </tr>
+              {expandedId === rec.id && (
+                <tr>
+                  <td
+                    colSpan={viewFieldKeys.length}
+                    style={{ padding: '0.5rem 0.25rem' }}
+                  >
+                    {viewFieldKeys.map(f => (
+                      <FieldRow key={f} field={viewForm[f]}>
+                        {renderReadOnlyField(
+                          viewForm[f], rec[f])}
+                      </FieldRow>
+                    ))}
+                    <div style={{
+                      marginTop: '0.5rem',
+                      display: 'flex',
+                      gap: '0.75rem',
+                      alignItems: 'center'
+                    }}>
+                      {create && addForm && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            openPanel(composeReply(
+                              rec.user,
+                              String(rec.body ?? '')))}
+                        >
+                          Reply
+                        </button>
+                      )}
+                      {/* Review fix 2026-11-03: the record
+                          permalink hop. A plain hash anchor —
+                          the href is byte-identical to the
+                          Best Link URL the child's own view
+                          form manufactures, so the click rides
+                          the existing history listener (the
+                          same path as a pasted permalink):
+                          atomic tab/type switch, strict view-
+                          form open, Back returns to the post.
+                          Native <a> behaviors come free
+                          (middle-click new tab, copy link
+                          address); 'a' is in
+                          INTERACTIVE_SELECTOR, so the click
+                          never toggles the row expansion. No
+                          scope: the list under the opened form
+                          is the child type's full list (the
+                          footer "All N »" link is the scoped
+                          hop). */}
+                      <a
+                        href={`#/app?type=${
+                          encodeURIComponent(spec.type)}&id=${
+                          encodeURIComponent(rec.id)}`}
+                        style={{
+                          color: 'var(--link)',
+                          textDecoration: 'underline'
+                        }}
+                      >
+                        Open »
+                      </a>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+      <div className="list-footer">
+        {totalPages > 1 && (
+          <div className="pagination">
+            <button type="button" onClick={pagePrev}
+              disabled={page <= 1}>
+              ‹ Prev
+            </button>
+            <span>Page {page} of {totalPages}</span>
+            <button type="button" onClick={pageNext}
+              disabled={page >= totalPages}>
+              Next ›
+            </button>
+          </div>
+        )}
+        <span className="record-count">
+          {total} records
+        </span>
+        {/* Footer link (plan 04): the hop to the scoped tab.
+            N is the current successful response's total —
+            hidden while a replacement fetch is in flight and
+            after a failed fetch (never a stale total), and
+            absent in the render-nothing empty/no-create state
+            by construction (that path returns early above). A
+            button styled as a link: neither the Region nor
+            the callback writes the hash. */}
+        {onShowAll != null && !inFlight && !failed && (
+          <button
+            type="button"
+            onClick={() => onShowAll(spec, parentId)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              color: 'var(--link)',
+              textDecoration: 'underline',
+              cursor: 'pointer',
+              font: 'inherit'
+            }}
+          >
+            All {total} {spec.type} »
+          </button>
+        )}
+      </div>
+      {panelOpen && (
+        <div ref={panelRef}>
+          <RegionPanel
+            addForm={addForm!}
+            spec={spec}
+            values={panelValues}
+            error={panelError}
+            pending={pending}
+            onChange={(k, v) =>
+              setPanelValues({ ...panelValues, [k]: v })}
+            onSubmit={submitPanel}
+            onCancel={() => {
+              setPanelOpen(false)
+              setPanelValues({})
+              setPanelError('')
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The Add/Reply panel: a plain <div> with type="button"
+// controls and an explicit Submit handler — never a nested
+// <form> (Enter in a text input must not trigger the parent
+// view form's implicit submission). Skips the preset via field
+// (the FK) and the synthetic :roles field in the visible map;
+// the preset itself rides the payload unconditionally
+// (regionPayloadData).
+function RegionPanel({
+  addForm, spec, values, error, pending,
+  onChange, onSubmit, onCancel
+}: {
+  addForm: Record<string, Field>
+  spec: ChildSpec
+  values: Record<string, any>
+  error: string
+  pending: boolean
+  onChange: (key: string, value: any) => void
+  onSubmit: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div style={{
+      marginTop: '0.75rem',
+      marginBottom: '0.75rem',
+      padding: '0.75rem',
+      border: '1px solid var(--border)',
+      borderRadius: '4px',
+      background: 'var(--tab-inactive-bg)'
+    }}>
+      <div style={{
+        marginBottom: '0.5rem',
+        display: 'flex',
+        gap: '0.5rem'
+      }}>
+        <button
+          type="button" onClick={onSubmit}
+          disabled={pending || !addForm}
+        >
+          {pending ? 'Posting…' : 'Submit'}
+        </button>
+        <button type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+      {error && (
+        <p style={{
+          color: 'var(--error)', margin: '0.5rem 0'
+        }}>
+          {error}
+        </p>
+      )}
+      {formFieldKeys(addForm)
+        // The synthetic :roles checkbox-list (fe-fields'
+        // show-roles-p injects it into every non-base
+        // add-form) is payload-owned, not panel-rendered: the
+        // region sends roles top-level from normalizeRoles,
+        // and regionPayloadData keeps them out of data. The
+        // filter is name-keyed to match that payload
+        // exclusion — a field spelled "roles" never rides
+        // region data either way.
+        .filter(f => f !== spec.via && f !== 'roles')
+        .map(f => {
+          const fieldMeta = addForm[f]
+          return (
+            <FieldRow key={f} field={fieldMeta}>
+              {renderRegionField(
+                fieldMeta, values[f],
+                v => onChange(f, v)
+              )}
+            </FieldRow>
+          )
+        })}
+    </div>
+  )
 }
 
 // Evaluate one :enabled-when row against a record (Lisp
@@ -253,7 +998,12 @@ interface ListResponse {
     // types). Never the id tiebreaker.
     sort?: { field: string, dir: 'asc' | 'desc' } | null
     'allowed-values'?: Record<string, string[]>
-    'type-roles'?: string[]
+    // Plan 02 widened this for the region's normalizeRoles: a
+    // nested :type-roles entry (role-name (perm...)) — legal
+    // model syntax that rides the wire verbatim — serializes as
+    // [string, ...unknown[]]. The parent Add path still copies
+    // it verbatim; the region normalizes element zero.
+    'type-roles'?: Array<string | [string, ...unknown[]]>
     create?: boolean
     delete?: boolean
     update?: boolean
@@ -285,6 +1035,75 @@ interface TypeInfo {
 }
 
 type ViewMode = 'app' | 'admin' | 'settings'
+
+// The /api/item envelope: { type, fields, record,
+// allowed-values } (the type key arrives as "type", never
+// "type-key" — rest.lisp's be-rec handler spells it that way).
+// Plan 03: result.children carries the emitted region spec
+// (beside fields, not inside record) on :view-form fetches of
+// :children-declaring types.
+interface ItemResponse {
+  result?: {
+    type?: string
+    fields?: Record<string, Record<string, Field>>
+    record?: Record<string, any> | any[] | null
+    'allowed-values'?: Record<string, string[]>
+    children?: ChildSpec[]
+  }
+}
+
+// One normalized region spec from the wire: the compiler's
+// exactly-one rule means the frontend reads element zero and
+// never selects among siblings.
+interface ChildSpec {
+  type: string
+  via: string
+  sort: [string, string]
+}
+
+// Desired record target: {generation, type, id, mode} — the
+// URL-facing request. id/mode null when no record is requested
+// (the sentinel spelling; the target object itself is never
+// bare null).
+interface NavTarget {
+  generation: number
+  type: string | null
+  id: string | null
+  mode: RecordMode | null
+}
+
+// An attempted record open: what has actually been sent toward
+// /api/item. attemptId is a monotonic counter (outranks
+// generation); generation/type/id/mode identify the open.
+interface Attempt {
+  attemptId: number
+  generation: number
+  type: string
+  id: string
+  mode: RecordMode
+}
+
+// listError's owner object: only current when
+// err.type === type && err.sequence === currentListSeq.
+interface ListErrorOwner {
+  type: string
+  sequence: number
+  message: string
+}
+
+// A record-open failure: cause decides the Retry protocol
+// ('item' re-fetches the item directly; 'metadata' re-issues
+// the list fetch and lets the arrival effect fetch the item).
+type RecordErrorKind = 'item' | 'metadata'
+interface RecordError {
+  kind: RecordErrorKind
+  message: string
+}
+
+// Lowercase + trim a record id for target comparisons — the
+// one shared normalization rule outside canonical state.
+const normId = (id: string | null): string | null =>
+  id == null ? null : id.trim().toLowerCase()
 
 // Page size for list pagination. Matches the frozen list contract:
 // be-list and /api/list both default limit to 20. The FE always
@@ -333,7 +1152,11 @@ function stripMarkdown(src: string): string {
     .replace(/\*(.+?)\*/g, '$1')                // italic
     .replace(/`+([^`]*)`+/g, '$1')              // inline code
     .replace(/^\s{0,3}#{1,6}\s+/gm, '')         // headings
-    .replace(/^\s{0,3}>+\s?/gm, '')             // blockquotes
+    // The quote strip takes a whole marker run (nested quotes
+    // write "> > >"); [ \t]? not \s? so it never eats the line
+    // terminator — a bare ">" line becomes an empty line and
+    // joins as "·", matching the paragraph break it renders as.
+    .replace(/^\s{0,3}(?:>[ \t]?)+/gm, '')      // blockquotes
     .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, '')    // list markers
     .replace(/\s*\n\s*\n\s*/g, ' · ')           // paragraphs → dot
     .replace(/\s*\n\s*/g, ' ')                  // soft breaks → space
@@ -506,6 +1329,54 @@ function FieldRow({
             </>}
       </div>
       <div className="field-value">{children}</div>
+    </div>
+  )
+}
+
+// RecordErrorBox (step 18): the failed-record surface — one
+// component for both shells (the main return and the no-data /
+// error early return) so they cannot drift. A contained alert
+// box, not inline form chrome: Retry / Dismiss only. Dismiss IS
+// the close — a third Close button here is what commingled with
+// form controls — and its destination is dismissRecordError's
+// stranding rule (single-row view form or landing). role=alert
+// for screen readers; centered max-width box reads as a dialog
+// without an overlay (the list below is legitimate context on
+// non-hide-list types).
+function RecordErrorBox({ message, onRetry, onDismiss }: {
+  message: string
+  onRetry: () => void
+  onDismiss: () => void
+}) {
+  return (
+    <div
+      role="alert"
+      style={{
+        maxWidth: '30rem',
+        margin: '1.5rem auto',
+        padding: '1rem 1.25rem',
+        textAlign: 'center',
+        border: '1px solid var(--error-bright)',
+        borderRadius: '0.375rem',
+        background: 'var(--error-bg, transparent)'
+      }}
+    >
+      <p style={{
+        margin: '0 0 0.75rem',
+        fontWeight: 500,
+        color: 'var(--error-bright)'
+      }}>
+        {message}
+      </p>
+      <div>
+        <button type="button" onClick={onRetry}>
+          Retry
+        </button>
+        <button type="button" onClick={onDismiss}
+          style={{ marginLeft: '0.5rem' }}>
+          Dismiss
+        </button>
+      </div>
     </div>
   )
 }
@@ -826,9 +1697,23 @@ function ThumbnailGrid({
 
 // --- Read-only field rendering ---
 
+// Context for the View-form FK link (step 25): what the link
+// branch needs beyond (field, value) — the field key (to read
+// the "<field>-id" sibling), the full record, the visible-type
+// list (lowercased names), the is-View-form flag (Edit/Add
+// read-only fields stay plain), and the permalink open callback.
+interface ReadOnlyCtx {
+  fieldKey: string
+  record: Record<string, any>
+  viewTypeList: string[]
+  isViewForm: boolean
+  open: ((t: string, id: string) => void) | null
+}
+
 function renderReadOnlyField(
   field: Field,
-  value: any
+  value: any,
+  ctx?: ReadOnlyCtx
 ): React.ReactNode {
   const widget = field['widget'] || ''
 
@@ -913,6 +1798,57 @@ function renderReadOnlyField(
     )
   }
 
+  // FK link (View form only): every gate leg must hold — the
+  // field carries a target, the target names a visible type,
+  // the record carries a string "<field>-id" sibling, and the
+  // display value is a nonempty string (empty renders exactly
+  // today's output, the em dash; whitespace-only text also
+  // stays unlinked but renders as whitespace, exactly as
+  // today; no fallback label is invented). Suppressed shapes
+  // have target but no sibling (backend), invisible targets
+  // fail the type list, and Edit/Add read-only fields never
+  // enter (isViewForm false).
+  if (ctx?.isViewForm && field.target != null) {
+    const targetVisible =
+      ctx.viewTypeList.includes(field.target)
+    const sibling = ctx.record[`${ctx.fieldKey}-id`]
+    const idOk = typeof sibling === 'string'
+      && sibling.trim() !== ''
+    const valOk = typeof value === 'string'
+      && value.trim().length > 0
+    if (targetVisible && idOk && valOk && ctx.open != null) {
+      const target = field.target
+      const href = `#/app?type=${
+        encodeURIComponent(target)}&id=${
+        encodeURIComponent(sibling)}`
+      // A real <a>: modifier-click, middle-click, and open-in-
+      // new-tab keep native behavior; only an unmodified left
+      // click is intercepted into the app's open path (the
+      // same path as a permalink arrival — writeUrl stays the
+      // only hash writer). A link to the record already open
+      // is a no-op (openEditForm's target check).
+      const handleClick = (e: React.MouseEvent) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey
+            || e.button !== 0) return
+        e.preventDefault()
+        ctx.open!(target, sibling)
+      }
+      return (
+        <div style={{ padding: '0.3rem 0', minHeight: '1.2em' }}>
+          <a
+            className="chip"
+            href={href}
+            title={`Open ${value}`}
+            style={{ textDecoration: 'none' }}
+            onClick={handleClick}
+          >
+            {value}
+          </a>
+        </div>
+      )
+    }
+  }
+
   // Default read-only: plain text display
   const text = Array.isArray(value) ? value.join(', ')
     : formatNumber(value, field)
@@ -924,6 +1860,52 @@ function renderReadOnlyField(
     }}>
       {text || '—'}
     </div>
+  )
+}
+
+// The scope control (plan 04): the one clearing surface shared
+// by both shells (the filter-bar chip and the no-data
+// fallback), so the two cannot drift on clearing semantics. A
+// valid scope renders "Post: <title> ×" when the title has
+// resolved and "Post ×" while unresolved or after a failed
+// lookup — never the uuid. The × is clearScope, never
+// toggleChipFilter (the scope is not a listFilters entry).
+function ScopeChip({ title, onClear }: {
+  title: string | null
+  onClear: () => void
+}) {
+  return (
+    <span className="chip chip-active">
+      {title != null ? `Post: ${title}` : 'Post'}
+      <button
+        type="button"
+        className="chip-x"
+        title="Clear post scope"
+        onClick={onClear}
+      >×</button>
+    </span>
+  )
+}
+
+// The invalid-scope surface (plan 04): a neutral error line
+// with its Clear scope action — never a Post chip pretending
+// the field is known. Structurally malformed input only; a
+// structurally valid but server-invalid value takes the
+// ordinary list error path instead.
+function InvalidScopeNotice({ onClear }: {
+  onClear: () => void
+}) {
+  return (
+    <p style={{ color: 'var(--error)', margin: '0.5rem 0' }}>
+      Invalid post scope
+      <button
+        type="button"
+        onClick={onClear}
+        style={{ marginLeft: '0.5rem' }}
+      >
+        Clear scope
+      </button>
+    </p>
   )
 }
 
@@ -952,11 +1934,85 @@ function App() {
     useState<Record<string, string>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [editRecord, setEditRecord] = useState<any>(null)
+  // Plan 03 (region renderer): the normalized single region
+  // spec retained from the open path's /api/item envelope
+  // (result.children[0] ?? null — 02 attaches it beside
+  // fields, and openEditForm's local itemJson is where it is
+  // visible). Cleared everywhere editRecord is; the region
+  // reads it, never data.result.
+  const [childSpec, setChildSpec] =
+    useState<ChildSpec | null>(null)
   // Read-only record view: the open editRecord renders through
   // the read-only field branches instead of inputs. Set by
   // openEditForm(record, true); cleared everywhere editRecord is.
   const [formViewing, setFormViewing] = useState(false)
-  const [listError, setListError] = useState<string | null>(null)
+  // Desired record target (URL-facing): recordId / recordMode
+  // hold the requested record state. Kept distinct from the
+  // loaded form (editRecord / formViewing) so the writer never
+  // erases id during a fetch, and a failed open keeps its
+  // permalink while showing a retryable error.
+  const [recordId, setRecordId] = useState<string | null>(null)
+  const [recordMode, setRecordMode] =
+    useState<RecordMode>('view')
+  // Record-open failure surface, separate from listError.
+  // kind: 'item' (fetch failed / bad shape / edit-not-permitted
+  // — Retry re-fetches the item directly) or 'metadata' (list
+  // metadata failed / the requested form is not declared —
+  // Retry re-issues the list fetch).
+  const [recordError, setRecordError] =
+    useState<RecordError | null>(null)
+  // Navigation refs (record permalinks):
+  //   navGen — persistent clock; advances on every
+  //     invalidation (close, opens, type/view switches, logout,
+  //     no-target rewrites, terminal metadata decisions) so two
+  //     no-target states still differ.
+  //   navRef — the *requested* target {generation, type, id,
+  //     mode} (id/mode null when none; never bare null).
+  //   attemptRef — the *attempted* open (sent toward
+  //     /api/item): {attemptId, generation, type, id, mode}.
+  //     attemptId outranks generation: a direct cross-type open
+  //     can fetch before the target type's list metadata
+  //     resolves, and a metadata Retry can issue a second fetch
+  //     under the still-current generation; only the attempt
+  //     identity fences both.
+  //   attemptSeq — monotonic counter allocating attemptIds.
+  const navGen = useRef(0)
+  const navRef = useRef<NavTarget>(
+    { generation: 0, type: null, id: null, mode: null })
+  const attemptRef = useRef<Attempt | null>(null)
+  const attemptSeq = useRef(0)
+  // Writer cause ref (the echo rule): 'push' pending → the next
+  // writer fire pushes (default); 'replace' pending and no push
+  // → replaceState. Consumed and cleared on every writer fire.
+  const pendingUrlCause = useRef<'push' | 'replace' | null>(null)
+  // Parked-history latch: the latest history arrival
+  // deliberately left app state untouched (a non-app hash or an
+  // unknown/invisible type). While set, the writer suppresses
+  // an automatic replace entirely; an intentional push is
+  // allowed and clears the latch after writing.
+  const parkedHistoryRef = useRef(false)
+  // Settings auto-open suppression latch: the settings type
+  // whose auto-open is suppressed (a record permalink wins over
+  // the one-row convenience, and survives Close/Dismiss so it
+  // cannot reopen-rewrite id in a loop).
+  const settingsAutoOpenSuppressedRef = useRef<string | null>(
+    null)
+  // List-request freshness: one counter advancing on both
+  // invalidation and request allocation; a response commits only
+  // when its captured sequence is still the latest.
+  const listSeq = useRef(0)
+  // Clipboard-operation token for Best Link: fences a pending
+  // writeText so record A's in-flight copy cannot paint
+  // confirmation on record B's button.
+  const clipboardToken = useRef(0)
+  // Best Link confirmation state: null | 'copied' | 'failed',
+  // with its clear timer.
+  const [copyState, setCopyState] =
+    useState<'copied' | 'failed' | null>(null)
+  const copyTimer = useRef<ReturnType<
+    typeof setTimeout> | null>(null)
+  const [listError, setListError] =
+    useState<ListErrorOwner | null>(null)
   const [title, setTitle] = useState('Data UI')
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
   const [elapsed, setElapsed] = useState<number | null>(null)
@@ -1001,6 +2057,38 @@ function App() {
   // with the other refs so the hook order is unconditional — a
   // hooks-order crash here blanks the page on login.
   const boolSeededForRef = useRef<string | null>(null)
+  // Post scope (plan 04): the comments-tab FK scope — its own
+  // state slot and its own URL dimension, never a listFilters
+  // row (display-column chip semantics) and never a reuse of
+  // id (which names the open record; a scoped list may carry
+  // both). none / valid {via, id} / invalid {raw, kept for the
+  // writer / history round trip}. SCOPE_NONE is the shared
+  // constant so the effect deps treat "no scope" as one stable
+  // value.
+  const [scope, setScope] = useState<ScopeState>(SCOPE_NONE)
+  // Resolved scope title: the visible chip text for the
+  // current scope, or null (the generic "Post" chip). Keyed by
+  // the current title key (titleKeyRef, assigned during
+  // render) — an unkeyed string can flash post A's title on
+  // post B.
+  const [scopeTitle, setScopeTitle] = useState<string | null>(
+    null)
+  // Title-resolution session machinery (plan 04): a monotonic
+  // epoch advanced by resetSessionState (logout / auth
+  // failure), a per-session cache and in-flight registry keyed
+  // epoch|targetType|id (the epoch in the key is what makes a
+  // cached guest failure unable to suppress a later session's
+  // lookup), and a request sequence + current-key ref fencing
+  // visible commits. A cache write requires the same epoch; a
+  // visible commit additionally requires the latest sequence
+  // and the same current key.
+  const sessionEpochRef = useRef(0)
+  const titleCacheRef = useRef<
+    Map<string, string | null>>(new Map())
+  const titleInFlightRef = useRef<
+    Map<string, Promise<string | null>>>(new Map())
+  const titleSeqRef = useRef(0)
+  const titleKeyRef = useRef<string | null>(null)
   // Chip picker (searchable chip filtering): which chip field's
   // picker is open, or null. Lifted here, not owned per-picker,
   // so opening one closes any other. Not cleared by
@@ -1023,11 +2111,6 @@ function App() {
   // changeType / switchViewMode / returnToLanding run
   // resetListQuery first, so wantsFormRows is false there.
   const pendingFormRefetchRef = useRef<string | null>(null)
-  // Terminal button statuses (complete / failed: … / idle) are
-  // stale the moment their form is closed; openEditForm blanks them
-  // on the next open. Set for the single re-open handleAction does
-  // right after a press, so the just-earned status still shows.
-  const preserveStatusOnOpenRef = useRef(false)
   // Restore signal: set once by the restore effect before the
   // /api/public-info effect's async callback runs (mount effects
   // fire in declaration order). The public-info effect reads it
@@ -1202,9 +2285,26 @@ function App() {
   const activeForm = isEditMode
     ? data?.result?.[openFormName]
     : showAddForm ? data?.result?.['add-form'] : undefined
+  // The requested form's metadata for a pending or failed
+  // record target (editRecord null → activeForm undefined).
+  // Gated on the envelope being the target type's — a
+  // cross-type transition's stale envelope must not leak its
+  // forms into the decision.
+  const requestedForm: Record<string, any> | undefined =
+    recordId != null && data?.result?.['type-key'] === type
+      ? (data.result as Record<string, any>)[
+          recordMode === 'edit'
+            ? 'update-form' : 'view-form']
+      : undefined
   const hideList =
     (activeForm as Record<string, any> | undefined)
       ?.['hide-list'] === true
+    // A pending or failed record target also hides the list
+    // when the *requested* form says so: the one-row table
+    // would otherwise render under an in-flight open or the
+    // error box on a :hide-list t type (settings).
+    || (!isEditMode && !showAddForm
+        && requestedForm?.['hide-list'] === true)
 
   // Total comes from the last successful fetch envelope; do not
   // derive it from records.length (wrong on any page past 1).
@@ -1220,7 +2320,26 @@ function App() {
     : userTypes
 
   const fetchList = async (): Promise<ListResponse | null> => {
+    // Sequence guard: capture the sequence this request runs
+    // under (allocation advances the same counter invalidation
+    // uses); every commit below re-checks it, so an older
+    // response can never replace newer metadata or regress
+    // newer sort/page/error state.
+    const seq = ++listSeq.current
+    // ListErrorOwner now, not a bare string: setListError(null)
+    // stays a plain clear.
     setListError(null)
+    // An invalid structural scope stands down before any
+    // request (plan 04): the sequence is allocated (older work
+    // invalidated), the error and the old envelope clear, and
+    // nothing is fetched — never an unscoped bootstrap, never
+    // stale rows. A structurally valid but server-invalid
+    // field or non-UUID value takes the ordinary error path
+    // below instead (fail-closed through listError).
+    if (scope.kind === 'invalid') {
+      setData(null)
+      return null
+    }
     const offset = (currentPage - 1) * PAGE_SIZE
     let url = `/api/list?type=${type}&limit=${PAGE_SIZE}&offset=${offset}`
     if (sortField) {
@@ -1249,6 +2368,17 @@ function App() {
     // refetch rebuilds them.
     {
       const rows: (string | string[])[][] = []
+      // The scope row (plan 04): emitted independently of
+      // formReady — the via is already in the scope, so there
+      // is no reason to wait for list-form metadata — and
+      // before the final nonempty check. A cold scoped request
+      // therefore carries fk-eq on the FIRST request; the
+      // form-dependent rows (chips / notq / bool) still ride
+      // the one-shot refetch. Never an unscoped metadata
+      // bootstrap.
+      if (scope.kind === 'valid') {
+        rows.push([type, scope.via, 'fk-eq', scope.id])
+      }
       // Raw non-emptiness — NOT a picker-arm narrowing: the arming
       // path runs only when formReady is false, and chipMeta is {}
       // exactly then (a narrowing is empty precisely where it is
@@ -1344,6 +2474,11 @@ function App() {
         throw new Error(`Request failed (${res.status})`)
       }
       const json: ListResponse = await res.json()
+      // Stale-response fence: every commit in this resolution
+      // (setData, the sort echo, the defaultSortRef cache, the
+      // page clamp) happens only when this response's captured
+      // sequence is still the latest issued.
+      if (seq !== listSeq.current) return json
       setData(json)
       // Plan 09: paint sortField/sortDir from the echoed effective
       // sort on every successful fetch (including null — base types
@@ -1352,9 +2487,25 @@ function App() {
       // header indicator always matches the actual order.
       const echoed = json?.result?.sort ?? null
       if (echoed && typeof echoed.field === 'string') {
+        if (sortField !== echoed.field
+            || sortDir !== (echoed.dir === 'desc'
+              ? 'desc' : 'asc')) {
+          // Echo commit — mark replace (an automatic
+          // reconciliation write earns no Back entry), but
+          // never while a user push is pending (push precedence
+          // for the entire pending writer run).
+          if (pendingUrlCause.current !== 'push') {
+            pendingUrlCause.current = 'replace'
+          }
+        }
         setSortField(echoed.field)
         setSortDir(echoed.dir === 'desc' ? 'desc' : 'asc')
       } else {
+        if (sortField !== null) {
+          if (pendingUrlCause.current !== 'push') {
+            pendingUrlCause.current = 'replace'
+          }
+        }
         setSortField(null)
         setSortDir('asc')
       }
@@ -1372,11 +2523,25 @@ function App() {
       // records.length would report the page size as the total.
       const total = json?.result?.total ?? 0
       const maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE))
-      if (currentPage > maxPage) setCurrentPage(maxPage)
+      if (currentPage > maxPage) {
+        // Echo commit (page clamp) — replace, same precedence.
+        if (pendingUrlCause.current !== 'push') {
+          pendingUrlCause.current = 'replace'
+        }
+        setCurrentPage(maxPage)
+      }
       return json
     } catch (err: any) {
+      // Error commits are sequence-guarded too, and the error
+      // carries its owner (type + sequence + message): readers
+      // treat it as current only under
+      // err.type === type && err.sequence === listSeq.current.
+      if (seq !== listSeq.current) return null
       setData(null)
-      setListError(err.message || 'Failed to load data')
+      setListError({
+        type, sequence: seq,
+        message: err.message || 'Failed to load data'
+      })
       return null
     }
   }
@@ -1391,7 +2556,13 @@ function App() {
   // the list identity changes. Reused by changeType, switchViewMode,
   // and returnToLanding so the new type's first fetch lands on page 1
   // with clean params (no stale sort/search carried over).
+  // Every commit inside is a list-query change: the sequence
+  // bumps synchronously here (a committed change does not issue
+  // its replacement request until the fetch effect runs after
+  // the render, so an older response resolving in that gap still
+  // holds the latest issued sequence).
   const resetListQuery = () => {
+    ++listSeq.current
     setSortField(null)
     setSortDir('asc')
     defaultSortRef.current = null
@@ -1401,6 +2572,11 @@ function App() {
     setDebouncedNotTerm('')
     setListFilters({})
     setBoolFilters({})
+    // The scope clears with the list identity (plan 04): a
+    // scope omitted here would survive a type change and emit
+    // against the wrong type. clearScope is the explicit
+    // user-facing clearer; this is the identity reset.
+    setScope(SCOPE_NONE)
     // Forget the per-type seeding so the next type (or re-entry
     // into this one) re-seeds its authored defaults. This ref is
     // the only thing standing between every list refetch and
@@ -1408,6 +2584,13 @@ function App() {
     // every future {} clearer too, or the next fetch re-seeds
     // and silently undoes the user's Any.
     boolSeededForRef.current = null
+    // Settings auto-open suppression (step 16): a fresh list
+    // identity is an explicit entry (type tab, view switch,
+    // Home, logout, a cross-type open) — the convenience
+    // auto-open resumes there. History arrivals never pass
+    // through here, so a Back into the id-less settings entry
+    // keeps the latch (no reopen-rewrite loop).
+    settingsAutoOpenSuppressedRef.current = null
     // App state in the URL (Step 2.5): a type click between the
     // arming fetch and the arrival must not fire a refetch for a
     // type the user left. Cheap, and keeps the two per-type refs
@@ -1430,23 +2613,76 @@ function App() {
     setTypes([])
     setData(null)
     setShowAddForm(false)
-    setEditRecord(null)
-    setFormViewing(false)
-    setFormValues({})
-    setPasswordConfirm({})
+    clearRecordTarget({ invalidateList: false })
     setListError(null)
     setPageDescOpen({})
+    // Session end invalidates all navigation and list state.
+    ++navGen.current
+    navRef.current =
+      { generation: navGen.current,
+        type: null, id: null, mode: null }
+    attemptRef.current = null
+    ++listSeq.current
     resetListQuery()
+    // Title-resolution session invalidation (plan 04): advance
+    // the epoch, clear the cache / in-flight registry / visible
+    // result, and fence outstanding title work — an old promise
+    // can never repopulate the new session (cache writes
+    // require the captured epoch), and the epoch in every
+    // cache key means a cached guest failure cannot suppress a
+    // later session's lookup.
+    ++sessionEpochRef.current
+    titleCacheRef.current.clear()
+    titleInFlightRef.current.clear()
+    ++titleSeqRef.current
+    titleKeyRef.current = null
+    setScopeTitle(null)
   }
 
   const changeType = (newType: string) => {
+    clearRecordTarget({ invalidateList: false })
     setType(newType)
     setShowAddForm(false)
-    setEditRecord(null)
-    setFormViewing(false)
     setFormValues({})
     setPasswordConfirm({})
     resetListQuery()
+  }
+
+  // The Region's escape hatch (plan 04): one React-batched
+  // state navigation to the child tab scoped to this parent.
+  // changeType's internal resetListQuery clears the old query
+  // and scope, and its clearRecordTarget closes the parent
+  // form (and child 3's childSpec); the scope installs after
+  // that reset, the old list envelope clears synchronously
+  // (no stale unscoped rows under the pending scoped request),
+  // and the writer effect — not this callback — creates the
+  // hash entry. No separate resetListQuery, no hash write, no
+  // hashchange wait; pushState emits no popstate and the
+  // own-write hashchange is rejected by the equality gate, so
+  // the parent form closes through changeType alone.
+  const onShowAll = (spec: ChildSpec, parentId: string) => {
+    pendingUrlCause.current = 'push'
+    changeType(spec.type)
+    setData(null)
+    setScope({ kind: 'valid', via: spec.via, id: parentId })
+  }
+
+  // The scope × and the invalid-scope Clear control (plan 04):
+  // one restart. Synchronously invalidates old list work,
+  // clears the old envelope, marks the user push, sets scope
+  // to none, and resets page and selection. Never
+  // toggleChipFilter, never a fetchList through a closure
+  // holding the old scope — the fetch effect's scope
+  // dependency owns exactly one replacement fetch. Preserves
+  // positive/negative search, ordinary chips, and boolean
+  // choices.
+  const clearScope = () => {
+    ++listSeq.current
+    setData(null)
+    pendingUrlCause.current = 'push'
+    setScope(SCOPE_NONE)
+    setCurrentPage(1)
+    setSelectedIds([])
   }
 
   const handleListSearch = (query: string) => {
@@ -1489,10 +2725,9 @@ function App() {
   }
 
   const switchViewMode = (mode: ViewMode) => {
+    clearRecordTarget({ invalidateList: false })
     setViewMode(mode)
     setShowAddForm(false)
-    setEditRecord(null)
-    setFormViewing(false)
     setFormValues({})
     setPasswordConfirm({})
     resetListQuery()
@@ -1509,35 +2744,229 @@ function App() {
     }
   }
 
-  const openEditForm = async (record: any, viewing = false) => {
-    // Fetch the full record from /api/item so that fields absent
-    // from the form we already hold (e.g. deploy-status,
-    // my-rating) are populated correctly in the open form.
-    // Edit mode reads update-form; view mode reads view-form,
-    // which only exists when the model declares it (no
-    // fallback) — callers gate entry on hasViewForm / the
-    // update flag, so the name resolves here.
+  // clearLoadedForm: the loaded-form-only half of the record
+  // clearing (no navRef / attemptRef / desired-target writes —
+  // the login seed and history listener install the incoming
+  // target AFTER invalidating older work; calling the full
+  // clearer there would fight their assignment).
+  const clearLoadedForm = () => {
+    setEditRecord(null)
+    setFormViewing(false)
+    setFormValues({})
+    setPasswordConfirm({})
+    setRecordError(null)
+    setPendingActions(new Set())
+    // Add-form state rides the loaded-form clears: a terminal
+    // record decision (arrival-effect paths) must not leave an
+    // Add form mounted under the recordError it sets.
+    setShowAddForm(false)
+    // The retained region spec clears with the loaded form
+    // (plan 03): no open record, no region.
+    setChildSpec(null)
+  }
+
+  // clearRecordTarget: the single record-target clearing helper
+  // (steps 5/10). Clears desired id/mode, the loaded form state,
+  // and recordError; rewrites navRef with a new generation
+  // (fencing stale item responses); clears attemptRef. Takes an
+  // explicit list-invalidation option: ordinary record-only
+  // Close/Dismiss, same-type Close → reopen, and Add pass false
+  // (they change no list query and must not strand the only
+  // pending metadata/list response); type/view switches and
+  // logout/login rely on resetListQuery / the session reset for
+  // their own sequence invalidation.
+  const clearRecordTarget = (
+    opts: { invalidateList: boolean }
+  ) => {
+    setRecordId(null)
+    setRecordMode('view')
+    setEditRecord(null)
+    setFormViewing(false)
+    setFormValues({})
+    setPasswordConfirm({})
+    setRecordError(null)
+    setPendingActions(new Set())
+    setChildSpec(null)
+    ++navGen.current
+    navRef.current =
+      { generation: navGen.current,
+        type: null, id: null, mode: null }
+    attemptRef.current = null
+    if (opts.invalidateList) ++listSeq.current
+  }
+
+  // Options for openEditForm — the one open protocol.
+  interface OpenOpts {
+    // The type the record belongs to (defaults to the global
+    // type; an FK link passes its own target type).
+    type?: string
+    // Strict mode: permalink / FK-link opens fail closed to
+    // recordError instead of falling back to the supplied row.
+    strict?: boolean
+    // An already-registered attempt identity (the arrival
+    // effect's registration; direct opens let this function
+    // allocate its own).
+    attempt?: Attempt
+    // URL-facing: assign recordId/recordMode (same-type) or
+    // install the atomic cross-type transition. Non-URL opens
+    // (settings auto-open, post-action reopen) register in
+    // navRef but never write the id into the URL state.
+    url?: boolean
+    // Preserve terminal button statuses on this open (the
+    // post-action reopen's attempt-owned intent).
+    preserveStatus?: boolean
+  }
+
+  // openEditForm: the single open choke point. Every open — row
+  // click, View → Edit, FK link, history/login arrivals, the
+  // settings auto-open, post-action reopens — goes through here.
+  // Registers the requested target in navRef and the attempt in
+  // attemptRef synchronously (before its fetch) unless an
+  // already-registered attempt is passed in; clears the previous
+  // loaded form before the fetch; guards every commit against
+  // the captured attemptId / generation / target.
+  const openEditForm = async (
+    record: any, viewing = false, opts: OpenOpts = {}
+  ) => {
+    const openType = opts.type ?? type
+    const recId = typeof record?.id === 'string'
+      ? record.id : null
+    if (recId == null) return
+    const mode: RecordMode = viewing ? 'view' : 'edit'
+    // Attempt + navigation registration. Direct opens allocate
+    // the generation and attempt identity themselves; the
+    // arrival effect passes its already-registered attempt in
+    // (adopted without allocating a newer generation).
+    const attempt: Attempt = opts.attempt ?? {
+      attemptId: ++attemptSeq.current,
+      generation: ((): number => {
+        ++navGen.current
+        navRef.current = {
+          generation: navGen.current,
+          type: openType, id: normId(recId), mode
+        }
+        return navGen.current
+      })()
+      , type: openType, id: normId(recId)!, mode
+    }
+    if (!opts.attempt) attemptRef.current = attempt
+    // Every new open synchronously clears the previously loaded
+    // record/form state — no old form or Update control survives
+    // into the new request (a throttled A → B open must not
+    // leave A's Update control active under B's URL).
+    setEditRecord(null)
+    setChildSpec(null)
+    setFormValues({})
+    setFormViewing(false)
+    setPasswordConfirm({})
+    setRecordError(null)
+    setPendingActions(new Set())
+    // Add-form state too (plan step: every new open clears the
+    // previously loaded record/form state): without this, an
+    // Add form open when a strict open fails leaves the Add
+    // form mounted beside / instead of the error box.
+    setShowAddForm(false)
+    if (opts.url) {
+      // URL-facing open: same-type assigns the record target;
+      // cross-type is one atomic transition (type, derived
+      // viewMode, record target, list-query reset, selection,
+      // timers, synchronous sequence invalidation — one batch).
+      if (openType !== type) {
+        const target = types.find(
+          t => t.name.toLowerCase() === openType.toLowerCase())
+        setViewMode(
+          target?.category === 'system' ? 'admin'
+          : target?.category === 'settings' ? 'settings'
+          : 'app')
+        setType(openType)
+        resetListQuery()
+        setSelectedIds([])
+      }
+      setRecordId(normId(recId))
+      setRecordMode(mode)
+    } else if (recordId != null) {
+      // A non-URL open (settings auto-open, post-action reopen)
+      // while a URL permalink target stands: the permalink wins.
+      // Keep the URL state; the open still renders (its loaded
+      // target is the recorded non-URL open below).
+    }
     const formName = viewing ? viewFormName : 'update-form'
-    let fullRecord = record
+    let itemJson: ItemResponse | null = null
+    let fetchFailed = false
     try {
       const res = await apiFetch(
-        `/api/item?type=${type}&id=${record.id}&form=${formName}`
-      )
+        `/api/item?type=${encodeURIComponent(openType)}` +
+        `&id=${encodeURIComponent(recId)}` +
+        `&form=${formName}`)
       if (res.ok) {
-        const json = await res.json()
-        fullRecord = json?.result?.record || record
+        itemJson = await res.json()
+      } else {
+        fetchFailed = true
       }
     } catch {
-      // Fall back to list record on error
+      fetchFailed = true
+    }
+    // The once-guard: attemptId first (outranks generation),
+    // then generation + navRef target. After it passes, the
+    // continuation's synchronous commits run unchecked.
+    const current = navRef.current
+    const currentAttempt = attemptRef.current
+    const stillCurrent =
+      currentAttempt != null
+      && currentAttempt.attemptId === attempt.attemptId
+      && current.generation === attempt.generation
+      && current.type === openType
+      && normId(current.id) === normId(recId)
+      && current.mode === mode
+    if (!stillCurrent) return
+    const envelopeRecord = itemJson?.result?.record
+    const envelopeTypeOk =
+      itemJson?.result?.type == null
+      || itemJson.result.type === openType
+      || itemJson.result.type.toLowerCase()
+        === openType.toLowerCase()
+    let fullRecord: any = opts.strict ? null : record
+    if (itemJson && !fetchFailed
+        && envelopeRecord != null
+        && !Array.isArray(envelopeRecord)
+        && typeof envelopeRecord === 'object'
+        && typeof envelopeRecord.id === 'string'
+        && envelopeRecord.id.toLowerCase()
+          === normId(recId)
+        && envelopeTypeOk) {
+      fullRecord = envelopeRecord
+    } else if (opts.strict) {
+      // Strict mode fails closed: non-OK, empty result, absent /
+      // array record, wrong id, wrong type, network exception —
+      // generic not-found/not-accessible, editRecord stays null.
+      // mode=edit with a successful fetch but update !== true:
+      // "Edit not permitted" (the fetched row's own update flag
+      // is the gate, not the mounted page's row).
+      if (mode === 'edit' && envelopeRecord != null
+          && !Array.isArray(envelopeRecord)
+          && typeof envelopeRecord === 'object'
+          && envelopeRecord.update !== true) {
+        setRecordError({
+          kind: 'item',
+          message: 'Edit not permitted'
+        })
+      } else {
+        setRecordError({
+          kind: 'item',
+          message:
+            'Record not found or not accessible'
+        })
+      }
+      return
     }
     // A terminal status written by an earlier action is stale on
     // every fresh open (row Edit/View, the settings auto-open) —
     // clear it so the form never greets the user with an old
     // "complete". Kept when this open is the post-action re-open
-    // (handleAction set the ref) or when a worker is still
-    // running. Display-only: the blank lives in editRecord /
-    // formValues and never reaches the server (submit drops
-    // empty-string fields).
+    // (the attempt-owned preserveStatus option) or when a worker
+    // is still running. Display-only: the blank lives in
+    // editRecord / formValues and never reaches the server
+    // (submit drops empty-string fields).
     // Exception: a field named in some button's :enabled-when
     // rows. evalEnabledWhen (the button render block) evaluates
     // the gate against editRecord, so blanking a gated status
@@ -1548,11 +2977,17 @@ function App() {
     // from button names, so a gate on another button's status
     // companion is covered too; plain-field gates (Deploy's
     // :model) need nothing — only *-status keys are blanked.
-    const keepStatus = preserveStatusOnOpenRef.current
-    preserveStatusOnOpenRef.current = false
+    // Form metadata comes from the fetched item envelope (its
+    // own fields), not the singleton list data — a cross-type
+    // open must not read the source type's forms.
+    const keepStatus = opts.preserveStatus === true
     if (!keepStatus) {
       const cleared: Record<string, any> = { ...fullRecord }
-      const openFormMeta = data?.result?.[formName] || {}
+      const openFormMeta =
+        itemJson?.result?.fields?.[formName]
+        || (data?.result?.['type-key'] === openType
+          ? data?.result?.[formName] : undefined)
+        || {}
       const gatedFields = new Set<string>()
       for (const f of formFieldKeys(openFormMeta)) {
         const rows = openFormMeta[f]?.['enabled-when']
@@ -1571,6 +3006,15 @@ function App() {
     }
     setEditRecord(fullRecord)
     setFormViewing(viewing)
+    // Plan 03: capture the normalized single region spec — only
+    // when viewing (the region is a reading surface), only
+    // after the once-guard passed and the envelope was accepted
+    // (a strict failure or a non-strict fallback leaves it
+    // null; the fallback row never carried children). Absent or
+    // empty array means null — the parent type has no region.
+    setChildSpec(viewing
+      ? (itemJson?.result?.children?.[0] ?? null)
+      : null)
     // Filter out the current user's own exclusive role from the
     // roles — it's injected automatically by the backend and should
     // never appear as a manual checkbox or be sent back. Harmless
@@ -1594,11 +3038,30 @@ function App() {
   }
 
   const closeForm = () => {
-    setEditRecord(null)
-    setFormViewing(false)
+    // Record-only clearing (step 10): no list-sequence bump —
+    // Close changes no fetch-effect dependency and schedules no
+    // replacement request; an unconditional bump would discard
+    // the only in-flight metadata/list response. An intentional
+    // user close that removes a URL id marks push.
+    if (recordId != null) pendingUrlCause.current = 'push'
+    // Hide-list stranding (landing-only): closing the open form
+    // on a type whose form hides the list must not expose the
+    // list the author hid or strand a blank page — route to the
+    // landing page, which performs its own close. Settings mode
+    // never reaches here (handleCancel routes it through
+    // returnToLanding directly); this covers Close / Cancel and
+    // the post-submit / post-action closes on hide-list user
+    // types. Only when a form is actually open (activeForm
+    // defined) — a no-op close keeps today's bare behavior.
+    if (viewMode !== 'settings'
+        && (activeForm as Record<string, any> | undefined)
+          ?.['hide-list'] === true) {
+      setShowAddForm(false)
+      returnToLanding()
+      return
+    }
+    clearRecordTarget({ invalidateList: false })
     setShowAddForm(false)
-    setFormValues({})
-    setPasswordConfirm({})
   }
 
   // Row click opens the read-only View form (guarded on
@@ -1613,7 +3076,11 @@ function App() {
     if (window.getSelection()?.toString()) return
     const t = e.target as HTMLElement | null
     if (t?.closest(INTERACTIVE_SELECTOR)) return
-    openEditForm(rec, true)
+    // Row opens are URL-facing user opens: they register their
+    // own attempt (openEditForm), assign the record target, and
+    // mark push (an intentional navigation).
+    pendingUrlCause.current = 'push'
+    openEditForm(rec, true, { url: true })
   }
 
   // Enter activates the focused row (Space keeps scrolling the
@@ -1630,16 +3097,54 @@ function App() {
     if (e.key !== 'Enter') return
     const t = e.target as HTMLElement | null
     if (t?.closest(INTERACTIVE_SELECTOR)) return
-    openEditForm(rec, true)
+    pendingUrlCause.current = 'push'
+    openEditForm(rec, true, { url: true })
   }
 
   // Return to the landing page (used by settings Submit/Cancel).
   const returnToLanding = () => {
-    closeForm()
+    // Record-only synchronous close (step 10): no list-sequence
+    // invalidation here — the /api/info continuation may hang or
+    // return no landing page, and an immediate bump would strand
+    // the only pending list response with no guaranteed
+    // replacement. resetListQuery inside the delayed arms owns
+    // that invalidation (it bumps synchronously wherever it
+    // runs). The synchronous close writes a source-type list
+    // entry without the record; the delayed landing assignment
+    // writes a second entry when canonically distinct (two
+    // Back-reachable states, each naming the screen it showed).
+    if (recordId != null) pendingUrlCause.current = 'push'
+    clearRecordTarget({ invalidateList: false })
+    // Settings-exit latch: the synchronous close above leaves
+    // exactly the state the settings auto-open hunts (settings
+    // view still current, the type's one-row envelope still
+    // mounted, isEditMode freshly false, suppression latch
+    // null). Without arming here the auto-open refires in the
+    // gap before the /api/info continuation lands, its open
+    // advances navGen, and the continuation's generation guard
+    // then rejects the landing — Home / Cancel / Submit strand
+    // the user in the reopened settings form (only a
+    // synchronous view switch, Admin, escapes). The
+    // continuation's resetListQuery clears the latch after
+    // viewMode flips in the same batch, so a later Settings
+    // entry auto-opens as before; a sync view/type change during
+    // the gap clears it too (an explicit entry resumes the
+    // convenience). A hung /api/info leaves it set — the
+    // auto-open then waits for the next explicit entry, and the
+    // row stays clickable in the list.
+    if (viewMode === 'settings') {
+      settingsAutoOpenSuppressedRef.current = type
+    }
     fetchAndApplyCssVariables()
+    // Generation captured AFTER the synchronous close/generation
+    // advance: the continuation compares against the generation
+    // returnToLanding itself installed, so its own assignments
+    // pass while a newer navigation's do not.
+    const gen = navGen.current
     apiFetch('/api/info')
       .then(r => r.json())
       .then(info => {
+        if (navRef.current.generation !== gen) return
         const t = info.result?.['title']
         if (t) setTitle(String(t))
         const lp = info.result?.['landing-page']
@@ -1652,6 +3157,7 @@ function App() {
         }
       })
       .catch(() => {
+        if (navRef.current.generation !== gen) return
         // Fallback: first user type
         setViewMode('app')
         resetListQuery()
@@ -1722,6 +3228,10 @@ function App() {
   const handleAction = async (fieldKey: string) => {
     if (!editRecord) return
     const id = editRecord.id
+    // The open attempt identity owns this action's
+    // continuations: a newer open or terminal decision clears
+    // attemptRef, fencing the reopen.
+    const openAttempt = attemptRef.current
     // Edit-form field metadata for the open form (update-form when
     // editing; add-form never renders buttons, but the lookup is
     // guarded anyway).
@@ -1792,7 +3302,10 @@ function App() {
         // stale history and invite edits. Same shape as
         // submitForm's success branch (close, then refresh); the
         // order is cosmetic — closeForm only clears React state
-        // and fetchList doesn't read the form.
+        // and fetchList doesn't read the form. Once-guard: a
+        // navigation during the await fences the continuation.
+        if (attemptRef.current?.attemptId
+            !== openAttempt?.attemptId) return
         if (viewMode === 'settings') {
           // Not awaited, and no fetchList: returnToLanding closes
           // the form and triggers its own landing fetch
@@ -1800,23 +3313,52 @@ function App() {
           // fetchList here would race it.
           returnToLanding()
         } else {
+          if (recordId != null) {
+            pendingUrlCause.current = 'push'
+          }
           closeForm()
-          await fetchList()
+          await fetchListRef.current()
         }
       } else {
         // HTTP error, sync "failed", async "accepted", or
         // unparseable body: keep today's behavior. The re-opened
         // form is where the failure message shows and where the
         // running-status spinner / 3s poll live.
+        // Once-guard first: a navigation during the response
+        // (including a terminal metadata decision that advanced
+        // navGen / cleared attemptRef) must not be followed by an
+        // unwanted reopen.
+        if (attemptRef.current?.attemptId
+            !== openAttempt?.attemptId) return
         // Reload the list with the current page/sort/search, then
         // re-open the edit form by id: an action that changes a
         // sort key can move the row off the current page, so the
         // row must not be looked up in the current page's records.
-        await fetchList()
+        // fetchListRef.current, never the captured fetchList
+        // closure — a same-type sort/page change during the
+        // action does not advance navGen, so the once-guard alone
+        // cannot fence it; the ref call issues the current query.
+        await fetchListRef.current()
+        if (attemptRef.current?.attemptId
+            !== openAttempt?.attemptId) return
         // This re-open keeps terminal statuses: the user just
-        // pressed the button and earned the "failed: …" feedback.
-        preserveStatusOnOpenRef.current = true
-        openEditForm({ id })
+        // pressed the button and earned the "failed: …"
+        // feedback. preserveStatus travels as the attempt-owned
+        // option; a discarded/failed reopen leaves nothing for a
+        // later unrelated open to consume. The reopen preserves
+        // the form's URL-facing-ness: a URL-facing reopen
+        // re-installs the target as URL state (same target, one
+        // new push-marked entry only when the id was live); a
+        // non-URL reopen (the settings auto-open) stays id-free
+        // — the hash never gains id.
+        const wasUrlOpen = recordId != null
+          && normId(recordId) === normId(id)
+          && navRef.current.type === type
+        if (wasUrlOpen) pendingUrlCause.current = 'push'
+        openEditForm({ id }, false, {
+          url: wasUrlOpen,
+          preserveStatus: true
+        })
       }
     } catch {
       alert('Network error during action')
@@ -1959,10 +3501,30 @@ function App() {
       })
 
       if (res.ok) {
-        closeForm()
-        fetchList()
+        // Once-guard: capture the navigation generation at
+        // submit; on pass, run the synchronous close/landing/
+        // refresh without further checks (a per-call re-check
+        // would reject the operation's own close, which bumps
+        // the generation the check would compare against).
+        // Refresh goes through fetchListRef.current, never the
+        // captured fetchList closure (the old query under a new
+        // sequence).
+        const gen = navGen.current
+        const submitOk = () =>
+          navRef.current.generation === gen
+        if (viewMode === 'settings') {
+          if (submitOk()) returnToLanding()
+        } else {
+          if (submitOk()) {
+            if (recordId != null) {
+              pendingUrlCause.current = 'push'
+            }
+            closeForm()
+          }
+          if (submitOk()) fetchListRef.current()
+        }
       } else {
-        alert(await errorMessage(res, 'Failed to insert'))
+        alert(await errorMessage(res, isEditMode ? 'Failed to update' : 'Failed to insert'))
       }
       return
     }
@@ -2003,11 +3565,20 @@ function App() {
     }
 
     if (res.ok) {
+      // Same once-guard as the file path (see there).
+      const gen = navGen.current
+      const submitOk = () =>
+        navRef.current.generation === gen
       if (viewMode === 'settings') {
-        returnToLanding()
+        if (submitOk()) returnToLanding()
       } else {
-        closeForm()
-        fetchList()
+        if (submitOk()) {
+          if (recordId != null) {
+            pendingUrlCause.current = 'push'
+          }
+          closeForm()
+        }
+        if (submitOk()) fetchListRef.current()
       }
     } else {
       alert(await errorMessage(res, isEditMode ? 'Failed to update' : 'Failed to insert'))
@@ -2031,6 +3602,10 @@ function App() {
 
     if (!confirm(`Delete ${names}?`)) return
 
+    // Once-guard: capture the navigation generation; the
+    // trailing selection clear + refresh run only when no
+    // navigation superseded the delete.
+    const gen = navGen.current
     for (const id of selectedIds) {
       const payload = { type, filters: id }
       const res = await apiFetch('/api/delete', {
@@ -2042,17 +3617,33 @@ function App() {
         break
       }
     }
-    setSelectedIds([])
-    fetchList()
+    if (navRef.current.generation === gen) {
+      setSelectedIds([])
+      fetchListRef.current()
+    }
   }
 
   useEffect(() => {
     if (!loggedIn) return
     // Fetch landing page + types in parallel on login
+    // The seed's generation: captured before the awaits; the
+    // continuation (resolution OR rejection) applies its
+    // assignments only when the current navRef generation still
+    // is the seed's (logout or newer navigation wins; a
+    // superseded seed assigns nothing — the old .catch(() =>
+    // setTypes([])) would erase a newer session's types).
+    // Capture, not allocation: the seed is not a navigation
+    // invalidator and owns no target until its continuation
+    // installs one, so it must not advance the clock — every
+    // legitimate fence bumps navGen AND writes navRef together,
+    // keeping navRef.generation === navGen.current; a fresh
+    // login has both at 0.
+    const seedGen = navGen.current
     Promise.all([
       apiFetch('/api/info').then(r => r.json()),
       apiFetch('/api/types').then(r => r.json())
     ]).then(([info, typesJson]) => {
+      if (navRef.current.generation !== seedGen) return
       const typeInfos: TypeInfo[] =
         (typesJson.result || []).map((t: any) => ({
           name: typeof t === 'string' ? t : t.name,
@@ -2074,6 +3665,10 @@ function App() {
               : t['page-description-open'] === true
         }))
       setTypes(typeInfos)
+      // Accepted login seed unparks history (step 13): the
+      // browser's initial permalink entry is the live entry and
+      // the echoes may replace into it.
+      parkedHistoryRef.current = false
       const t = info.result?.['title']
       if (t) setTitle(String(t))
       const lp = info.result?.['landing-page']
@@ -2083,7 +3678,9 @@ function App() {
       // first login the live hash IS the parked hash; at a
       // relogin it is the last-written hash — exactly the view
       // the previous session showed. A consume-once ref would
-      // fail the plan's own relogin test.
+      // fail the plan's own relogin test. The seed *requests*
+      // the incoming record target: navRef installs it and
+      // attemptRef clears (the arrival effect attempts).
       const seed = parseHash()
       const byName = (n: string) =>
         typeInfos.find(
@@ -2097,6 +3694,12 @@ function App() {
         console.warn('app-state-url: unknown or invisible type',
                      seed.type)
       }
+
+      // Clear any previous loaded form and pending settings
+      // auto-open before assignment (the seed requests; the
+      // arrival effect attempts).
+      clearLoadedForm()
+      settingsAutoOpenSuppressedRef.current = null
 
       if (target && seed) {
         setType(target.name)
@@ -2112,6 +3715,20 @@ function App() {
         // keys are really absent. target.name folds canonical
         // case in too.
         const c = canonicalize({ ...seed, type: target.name })
+
+        // Record target assignment in the same React batch as
+        // the other URL fields: the requested id/mode ride the
+        // seed exactly like list state, retained across
+        // password, restored-session, and guest login.
+        setRecordId(c.id ?? null)
+        setRecordMode(c.mode ?? 'view')
+        navRef.current = {
+          generation: navGen.current,
+          type: target.name,
+          id: c.id ?? null,
+          mode: c.id != null ? (c.mode ?? 'view') : null
+        }
+        attemptRef.current = null
 
         // Full assignment, not present-key merging: every query
         // field gets exactly one write from one source — c.
@@ -2132,6 +3749,11 @@ function App() {
         setListFilters(c.filters ?? {})
         setBoolFilters(c.bool ?? {})
         setHideExclusive(c.hideExclusive ?? true)
+        // Post scope (plan 04): full assignment, same source
+        // (c) as every other query field — the canonical fk
+        // string re-parsed by the shared pure helper, never a
+        // re-derived grammar.
+        setScope(c.fk != null ? parseScope(c.fk) : SCOPE_NONE)
         const sf = c.sort
           ? (c.sort.startsWith('-')
              ? c.sort.slice(1) : c.sort)
@@ -2189,44 +3811,290 @@ function App() {
             : 'app'
           )
         }
-        // else: no types at all; leave __init__ (empty app)
+        // No record target when the seed carried none or was
+        // dropped: navRef holds the no-target sentinel.
+        setRecordId(null)
+        setRecordMode('view')
+        // Post scope (plan 04): the no-target arm clears it —
+        // a canonical fk never survives without its type.
+        setScope(SCOPE_NONE)
+        navRef.current = {
+          generation: navGen.current,
+          type: null, id: null, mode: null
+        }
+        attemptRef.current = null
       }
     }).catch(() => {
+      // Rejection arm, same generation guard: a superseded
+      // seed assigns nothing (an old session's failure must not
+      // erase a newer session's types).
+      if (navRef.current.generation !== seedGen) return
       setTypes([])
     })
   }, [loggedIn])
+
+  // ---- record-arrival effect (step 15) ----
+  // Runs only while logged in with a desired id, after the
+  // metadata-usable check; owns the attempt registration for
+  // history/login arrivals. Never fetches twice for the same
+  // target (an identical registered attempt means a direct open
+  // or this effect's earlier run already fetched). listError is
+  // an explicit dependency: a repeated metadata failure after a
+  // Retry leaves data already null and changes only listError;
+  // without it in the deps the effect never re-runs and the app
+  // sits in the silent wait step 17 exists to prevent.
+  useEffect(() => {
+    if (!loggedIn) return
+    if (recordId == null) return
+    if (data?.result?.['type-key'] !== type) {
+      // Metadata not arrived yet for the target type — but
+      // first, step 17's ownership check: a *failed* current
+      // list fetch for the target type routes to the metadata
+      // error, never a silent wait. The no-list-form shell (a
+      // type declaring :view-form but no :list-form) cannot
+      // pass the early render return — this error surface is
+      // what renders there.
+      const err = listError
+      const metaFailed =
+        err != null && err.type === type
+        && err.sequence === listSeq.current
+      if (metaFailed && attemptRef.current == null) {
+        // Terminal metadata failure: invalidate the outstanding
+        // item attempt, clear the loaded form, advance the
+        // clock, preserve the target + URL (a direct cross-type
+        // open may already have committed editRecord before the
+        // metadata failed; a generation-only action continuation
+        // must not reopen it afterward; the poller keyed to the
+        // dropped form dies with its editRecordId dependency).
+        attemptRef.current = null
+        clearLoadedForm()
+        ++navGen.current
+        navRef.current = {
+          generation: navGen.current,
+          type, id: recordId, mode: recordMode
+        }
+        setRecordError({
+          kind: 'metadata',
+          message: "Unable to load the record's page metadata"
+        })
+      }
+      return
+    }
+    // Metadata usable. Requested-form check (terminal, step
+    // 15): no view-form for View, no update-form for edit — set
+    // recordError immediately, never a wait, never a fallback
+    // to the other form.
+    const requestedForm = recordMode === 'edit'
+      ? 'update-form' : 'view-form'
+    if (data.result[requestedForm] == null) {
+      attemptRef.current = null
+      clearLoadedForm()
+      ++navGen.current
+      navRef.current = {
+        generation: navGen.current,
+        type, id: recordId, mode: recordMode
+      }
+      setRecordError({
+        kind: 'metadata',
+        message: recordMode === 'edit'
+          ? 'This record cannot be edited here'
+          : 'This record has no view form'
+      })
+      return
+    }
+    // Identical registered attempt = already fetched (a direct
+    // open, this effect's earlier run — StrictMode included —
+    // or an item-failure Retry's direct call).
+    const att = attemptRef.current
+    if (att != null
+        && att.type === type
+        && normId(att.id) === normId(recordId)
+        && att.mode === recordMode) {
+      return
+    }
+    // Register the attempt first, then fetch through it (a
+    // write placed after the call re-registers under a new
+    // attemptId and strands the in-flight guards). The failed
+    // attempt stays marked — no refetch loop; retry only on a
+    // new target, an explicit Retry, or a new login session.
+    const attempt: Attempt = {
+      attemptId: ++attemptSeq.current,
+      generation: navGen.current,
+      type, id: normId(recordId)!, mode: recordMode
+    }
+    attemptRef.current = attempt
+    openEditForm(
+      { id: recordId },
+      recordMode === 'view',
+      { strict: true, attempt, url: false, type })
+  }, [loggedIn, data, type, recordId, recordMode, listError])
+
+  // ---- Best Link copy (step 27) ----
+  // The pending write is fenced by the clipboard-operation
+  // token (record A's in-flight writeText must not paint
+  // confirmation on record B's button); confirmation clears on
+  // its timer, re-click, unmount, and any record or mode
+  // change.
+  useEffect(() => {
+    return () => {
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+      clipboardToken.current++
+    }
+  }, [recordId, recordMode])
+  const copyBestLink = () => {
+    if (recordId == null) return
+    const token = ++clipboardToken.current
+    if (copyTimer.current) clearTimeout(copyTimer.current)
+    const url = `${window.location.origin
+      }${window.location.pathname}#/app?type=${
+      encodeURIComponent(type)}&id=${
+      encodeURIComponent(recordId)}`
+    const finish = (s: 'copied' | 'failed') => {
+      if (clipboardToken.current !== token) return
+      setCopyState(s)
+      if (copyTimer.current) clearTimeout(copyTimer.current)
+      copyTimer.current = setTimeout(() => {
+        if (clipboardToken.current === token) {
+          setCopyState(null)
+        }
+      }, 2000)
+    }
+    try {
+      if (navigator.clipboard == null
+          || typeof navigator.clipboard.writeText
+            !== 'function') {
+        finish('failed')
+        return
+      }
+      navigator.clipboard.writeText(url)
+        .then(() => finish('copied'))
+        .catch(() => finish('failed'))
+    } catch {
+      finish('failed')
+    }
+  }
+
+  // ---- recordError surfaces (step 18) ----
+  // Retry by cause: 'item' re-fetches the item directly through
+  // the strict open (one /api/item request; it registers the
+  // attempt itself, so the arrival effect cannot double-fetch);
+  // 'metadata' re-issues the list fetch (clearing recordError
+  // and the current listError, bumping the sequence) and lets
+  // the arrival effect fetch the item once the new envelope's
+  // gates pass. Every Retry preserves the failed target and the
+  // URL. Dismiss is the ordinary close path and preserves the
+  // settings suppression latch (step 16).
+  const retryRecord = () => {
+    if (recordId == null) return
+    if (recordError?.kind === 'metadata') {
+      setRecordError(null)
+      setListError(null)
+      ++listSeq.current
+      fetchListRef.current()
+    } else {
+      setRecordError(null)
+      attemptRef.current = null
+      pendingUrlCause.current = 'push'
+      openEditForm({ id: recordId },
+        recordMode === 'view',
+        { strict: true, url: true })
+    }
+  }
+  const dismissRecordError = () => {
+    // Dismiss destination (hide-list types): a bare close
+    // strands the page — the requested form hides the list, so
+    // nothing renders under the header. A-then-landing: exactly
+    // one visible row on the current type's envelope with a
+    // declared view-form → open that row's view form (the
+    // auto-open's non-URL pattern: the URL keeps type-only, so
+    // Back revisits the failed permalink; read-only by design,
+    // Edit is one click away on the form). Anything else → the
+    // landing page (returnToLanding performs its own close and
+    // arms the settings-exit latch). Non-hide-list types keep
+    // the bare close — the list renders under where the box was.
+    const meta = data?.result
+    const sameType = meta?.['type-key'] === type
+    const formMeta = (sameType
+      ? (recordMode === 'edit'
+          ? meta['update-form'] : meta['view-form']) || {}
+      : {}) as Record<string, any>
+    if (formMeta['hide-list'] === true) {
+      const rows = sameType ? (meta?.records || []) : []
+      if (rows.length === 1 && meta?.['view-form']) {
+        if (recordId != null) pendingUrlCause.current = 'push'
+        clearRecordTarget({ invalidateList: false })
+        setShowAddForm(false)
+        // Non-URL open: no url option, no push mark. The
+        // closure recordId is still the old (non-null) value,
+        // so openEditForm takes its permalink-wins no-op branch
+        // and writes no URL state — exactly what we want.
+        openEditForm(rows[0], true)
+      } else {
+        returnToLanding()
+      }
+      return
+    }
+    if (recordId != null) pendingUrlCause.current = 'push'
+    clearRecordTarget({ invalidateList: false })
+    setShowAddForm(false)
+  }
 
   useEffect(() => {
     if (!loggedIn || type === '__init__') return
     fetchList()
   }, [loggedIn, type, sortField, sortDir, debouncedSearch,
       debouncedNotTerm, currentPage, listFilters, boolFilters,
-      hideExclusive])
+      hideExclusive, scope])
 
   // App state in the URL, Step 2: mirror state → URL. Same deps
-  // as the main fetch effect above — the URL mirrors committed
-  // state, one history entry per commit (the debounce already
-  // collapses keystrokes; sort clicks, chip toggles, and page
-  // turns are single commits — do not add extra batching).
-  // viewMode is not a dep and not encoded: every view change
-  // lands in the same batch as a type change (switchViewMode
-  // sets the new category's first type, returnToLanding the
-  // landing type), so the type dep covers view switches. The
-  // guards keep the login screen and the empty-app shell from
-  // writing URLs. Echo/clamp commits write correctly (rollup
-  // default sort, clamped page — shared links reproduce the
-  // on-screen order); the canonical compare in writeUrl no-ops
-  // the agreeing ones.
+  // as the main fetch effect above plus the record target — the
+  // URL mirrors committed state, one history entry per commit
+  // (the debounce already collapses keystrokes; sort clicks,
+  // chip toggles, and page turns are single commits — do not add
+  // extra batching). viewMode is not a dep and not encoded:
+  // every view change lands in the same batch as a type change
+  // (switchViewMode sets the new category's first type,
+  // returnToLanding the landing type), so the type dep covers
+  // view switches. The guards keep the login screen and the
+  // empty-app shell from writing URLs. Echo/clamp commits write
+  // correctly (rollup default sort, clamped page — shared links
+  // reproduce the on-screen order); the canonical compare in
+  // writeUrl no-ops the agreeing ones.
+  // The echo rule (automatic reconciliation writes replace; user
+  // writes push): the pending-cause ref is consulted and cleared
+  // on every fire — 'replace' pending and no 'push' →
+  // replaceState; otherwise push. While parkedHistoryRef is
+  // set, an automatic replace is suppressed entirely (the parked
+  // non-app / hand-edited entry must not be overwritten by an
+  // app URL); an intentional push remains allowed and unparks
+  // history after writing. No mark defaults to push (the safe
+  // default).
   useEffect(() => {
     if (!loggedIn || type === '__init__') return
+    const cause = pendingUrlCause.current
+    pendingUrlCause.current = null
+    const replace = cause === 'replace'
+    if (replace && parkedHistoryRef.current) {
+      // Parked history: suppress the automatic replace, keep
+      // the latch (only an accepted app arrival or an
+      // intentional push unparks).
+      return
+    }
     writeUrl(buildUrlState({
-      type, debouncedSearch, debouncedNotTerm,
+      type, recordId, recordMode, scope,
+      debouncedSearch, debouncedNotTerm,
       listFilters, boolFilters, hideExclusive,
       sortField, sortDir, currentPage
-    }))
-  }, [loggedIn, type, sortField, sortDir, debouncedSearch,
-      debouncedNotTerm, currentPage, listFilters, boolFilters,
-      hideExclusive])
+    }), cause === 'replace' ? { replace: true }
+      : undefined)
+    if (cause !== 'replace') {
+      // An intentional push unparks history (a user navigation
+      // is an accepted app write).
+      parkedHistoryRef.current = false
+    }
+  }, [loggedIn, type, recordId, recordMode, sortField, sortDir,
+      debouncedSearch, debouncedNotTerm, currentPage,
+      listFilters, boolFilters, hideExclusive, scope])
 
   // App state in the URL, Step 2.5: fire the one-shot refetch
   // once data belongs to the type whose first fetch went out
@@ -2282,6 +4150,123 @@ function App() {
     }
   }, [data, type])
 
+  // ---- scope title resolution (plan 04) ----
+  // Raw FK metadata from the arrived list form, only when it
+  // belongs to the listed type: Field.target is the
+  // authoritative FK target and Field.column the target
+  // identity field's wire key — never buildChipFieldMeta (a
+  // legal :via need not declare :filter-with :reference) and
+  // never Field.table (the display source table). Missing
+  // metadata means no lookup and the generic "Post" chip (the
+  // accepted v1 limitation for generic :children models).
+  const scopeVia = scope.kind === 'valid' ? scope.via : null
+  const scopeId = scope.kind === 'valid' ? scope.id : null
+  const viaMeta: Field | undefined =
+    scopeVia != null
+    && data?.result?.['type-key'] === type
+      ? data?.result?.['list-form']?.[scopeVia]
+      : undefined
+  const scopeTargetType =
+    typeof viaMeta?.target === 'string'
+      ? viaMeta.target : null
+  const scopeTitleKey =
+    typeof viaMeta?.column === 'string'
+      ? viaMeta.column : null
+  // The current title key, assigned during RENDER (the
+  // fetchListRef pattern): a promise resolving between the
+  // scope-B render and its effect must not commit A's title —
+  // the ref is current before any callback can run. Primitive
+  // inputs only (never the whole data object), so the effect
+  // below re-runs exactly when the lookup identity changes.
+  const currentTitleKey = scopeTargetType != null
+    && scopeTitleKey != null && scopeId != null
+    ? sessionEpochRef.current + '|' + scopeTargetType
+      + '|' + scopeId.toLowerCase()
+    : null
+  titleKeyRef.current = currentTitleKey
+  useEffect(() => {
+    if (!loggedIn) return
+    const key = titleKeyRef.current
+    if (key == null) {
+      // No valid scope, or no metadata for it: the visible
+      // title clears (a same-value null setState bails).
+      setScopeTitle(null)
+      return
+    }
+    const cached = titleCacheRef.current.get(key)
+    if (cached !== undefined) {
+      setScopeTitle(cached)
+      return
+    }
+    // Capture the epoch and request identity before the fetch:
+    // a cache write requires the same epoch (a privileged
+    // response delayed until after guest login writes
+    // nothing); a visible commit additionally requires the
+    // latest title sequence and the same current key (A→B and
+    // A→clear responses may populate only their own
+    // same-session cache entry, never the visible chip).
+    const seq = ++titleSeqRef.current
+    const epoch = sessionEpochRef.current
+    const targetType = scopeTargetType!
+    const titleKey = scopeTitleKey!
+    const id = scopeId!
+    const commit = (title: string | null) => {
+      if (sessionEpochRef.current !== epoch) return
+      if (titleSeqRef.current !== seq) return
+      if (titleKeyRef.current !== key) return
+      setScopeTitle(title)
+    }
+    // In-flight dedup by cache key: "one fetch" is literal
+    // across renders (a re-run for the same key — StrictMode,
+    // an A→B→A return — reuses the pending promise and
+    // registers its own current commit).
+    const pending = titleInFlightRef.current.get(key)
+    if (pending != null) {
+      pending.then(commit)
+      return
+    }
+    const p = (async (): Promise<string | null> => {
+      try {
+        // form=view-form explicitly — the REST default is not
+        // the title contract.
+        const res = await apiFetch(
+          `/api/item?type=${
+            encodeURIComponent(targetType)}` +
+          `&id=${encodeURIComponent(id)}` +
+          `&form=view-form`)
+        if (!res.ok) return null
+        const json = await res.json()
+        const rec = json?.result?.record
+        if (rec == null || Array.isArray(rec)
+            || typeof rec !== 'object') return null
+        if (typeof rec.id !== 'string'
+            || rec.id.toLowerCase()
+              !== id.toLowerCase()) return null
+        const rt = json?.result?.type
+        if (typeof rt === 'string' && rt !== targetType
+            && rt.toLowerCase()
+              !== targetType.toLowerCase()) return null
+        const t = rec[titleKey]
+        if (typeof t !== 'string' || t.trim() === '') {
+          return null
+        }
+        return t
+      } catch {
+        return null
+      }
+    })().then(title => {
+      // Cache success and failure alike, same epoch only.
+      if (sessionEpochRef.current === epoch) {
+        titleCacheRef.current.set(key, title)
+      }
+      titleInFlightRef.current.delete(key)
+      return title
+    })
+    titleInFlightRef.current.set(key, p)
+    p.then(commit)
+  }, [loggedIn, type, scopeVia, scopeId, scopeTargetType,
+      scopeTitleKey])
+
   // App state in the URL, Step 4: the history listener
   // (back / forward). The writer above mirrors state → URL on
   // commit; this mirrors URL → state on history navigation.
@@ -2301,21 +4286,30 @@ function App() {
       // title <a href="#"> link on a missed
       // preventDefault — a modifier or middle click, a future
       // edit that drops the handler). IGNORE, deliberately:
-      // state is never reset on history nav. Back from
-      // #/app?type=todo to '#' leaves the app showing todo
-      // while the address bar shows '#' — the exact shape
-      // logout already produces. Do NOT "helpfully" reset here:
-      // the park-and-restore path lives on state outliving
-      // non-app entries.
-      if (!s) return
+      // state is never reset on history nav, and the arrival
+      // parks automatic replacement (an echo must not replace
+      // the non-app entry with an app URL). Do NOT
+      // "helpfully" reset here: the park-and-restore path
+      // lives on state outliving non-app entries.
+      if (!s) {
+        parkedHistoryRef.current = true
+        return
+      }
       const byName = (n: string) =>
         types.find(
           t => t.name.toLowerCase() === n.toLowerCase())
       const target = s.type ? byName(s.type) : null
-      if (s.type && !target)
-        return  // hand-edited hash: leave state alone
-              // (the login seed warns; here the URL is
-              // already bogus)
+      if (s.type && !target) {
+        // hand-edited / unknown / invisible type: park too —
+        // the URL is not an app entry we may replace.
+        parkedHistoryRef.current = true
+        return
+      }
+      // An accepted app arrival unparks history — BEFORE the
+      // canonical-equality gate, so even a canonically equal
+      // arrival clears the latch and later echoes can replace
+      // normally.
+      parkedHistoryRef.current = false
       // Case-fold by resolution, BEFORE the gate: byName
       // matches case-insensitively and live state is always
       // canonical, so a case-only edit ('#/app?type=Todo' with
@@ -2348,10 +4342,38 @@ function App() {
       if (urlStatesEqual(
             c,
             canonicalize(buildUrlState(
-              { type, debouncedSearch, debouncedNotTerm,
+              { type, recordId, recordMode, scope,
+                debouncedSearch, debouncedNotTerm,
                 listFilters, boolFilters, hideExclusive,
                 sortField, sortDir, currentPage }))))
         return
+      // Invalidate outstanding list work synchronously FIRST
+      // (the sequence bump, before any state assignment — the
+      // listener runs synchronously, the refetch effect later),
+      // then invalidate outstanding opens (navRef rewrite with
+      // the new generation; attemptRef cleared so the arrival
+      // effect will attempt the incoming target — the bug
+      // class the two-ref split closes), then clear the old
+      // form in both arms.
+      ++listSeq.current
+      // A scope transition must not leave the previous query's
+      // records painted while the replacement request is
+      // pending (plan 04): clear the old envelope
+      // synchronously when the incoming scope differs (the
+      // param form compares states; over-clearing on a case
+      // variant is harmless — a refetch lands either way).
+      if (c.fk !== scopeToParam(scope)) {
+        setData(null)
+      }
+      ++navGen.current
+      navRef.current = {
+        generation: navGen.current,
+        type: c.type ?? null,
+        id: c.id ?? null,
+        mode: c.id != null ? (c.mode ?? 'view') : null
+      }
+      attemptRef.current = null
+      clearLoadedForm()
       if (target) {
         // Derive the view from the type's actual category —
         // exactly the [loggedIn] effect's rule. Entries never
@@ -2372,13 +4394,11 @@ function App() {
       // one did): an open edit form is session chrome the
       // history entry did not have — a same-type back from page
       // 2 to page 1 must not leave it mounted over the restored
-      // list. Cross-type entries into settings close too — the
-      // open form belongs to the departed type's record, and
-      // the settings auto-open effect re-opens from the arrived
-      // data. A same-type settings entry never reaches here
-      // (query-equal, the gate returned; settings types have no
-      // list UI, so their entries carry type alone).
-      closeForm()
+      // list. The desired record target is assigned from the
+      // entry (with an id it defers opening to the arrival
+      // effect until the target type's metadata arrives).
+      setRecordId(c.id ?? null)
+      setRecordMode(c.id != null ? (c.mode ?? 'view') : 'view')
       setSelectedIds([])
       // NOT changeType: changeType → resetListQuery, whose
       // setters land in the same batch and fight the seed
@@ -2401,6 +4421,11 @@ function App() {
       setListFilters(c.filters ?? {})
       setBoolFilters(c.bool ?? {})
       setHideExclusive(c.hideExclusive ?? true)
+      // Post scope (plan 04): full assignment from the
+      // canonical entry — the existing full-assignment
+      // protocol, now including scope (an omitted assignment
+      // here would make the scope invisible to Back).
+      setScope(c.fk != null ? parseScope(c.fk) : SCOPE_NONE)
       const sf = c.sort
         ? (c.sort.startsWith('-')
            ? c.sort.slice(1) : c.sort)
@@ -2429,9 +4454,9 @@ function App() {
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('hashchange', onPop)
     }
-  }, [loggedIn, type, types, sortField, sortDir,
-      debouncedSearch, debouncedNotTerm, currentPage,
-      listFilters, boolFilters, hideExclusive])
+  }, [loggedIn, type, types, recordId, recordMode, sortField,
+      sortDir, debouncedSearch, debouncedNotTerm, currentPage,
+      listFilters, boolFilters, hideExclusive, scope])
 
   // Clear the row selection whenever the page changes (button
   // navigation or the post-delete clamp inside fetchList), so
@@ -2454,20 +4479,24 @@ function App() {
          String(editRecord?.[k]).startsWith('running')
   )
 
-  // Manage the running start timestamp
+  // Elapsed time keyed by the loaded record's type + id (not
+  // only by hasRunningStatus — running A → running B keeps that
+  // boolean true and must not show A's elapsed on B).
+  const runningKey = hasRunningStatus
+    ? `${type}:${editRecordId}` : null
   useEffect(() => {
-    if (hasRunningStatus && runningStartRef.current === null) {
+    if (runningKey != null && runningStartRef.current === null) {
       runningStartRef.current = Date.now()
       setElapsed(0)
-    } else if (!hasRunningStatus) {
+    } else if (runningKey == null) {
       runningStartRef.current = null
       setElapsed(null)
     }
-  }, [hasRunningStatus])
+  }, [runningKey])
 
   // 1s ticker for elapsed display
   useEffect(() => {
-    if (!hasRunningStatus) return
+    if (runningKey == null) return
     const ticker = setInterval(() => {
       if (runningStartRef.current !== null) {
         setElapsed(Math.floor(
@@ -2476,13 +4505,19 @@ function App() {
       }
     }, 1000)
     return () => clearInterval(ticker)
-  }, [hasRunningStatus])
+  }, [runningKey])
 
-  // 3s poll for record updates
+  // 3s poll for record updates. Same-record request sequence +
+  // attempt guard: an out-of-order response must not regress a
+  // terminal status back to running, and a stale poll (record
+  // closed / newer open / terminal decision) must not overwrite
+  // a newer open or resurrect a closed form.
   useEffect(() => {
     if (!editRecordId || !type || !hasRunningStatus) return
-
+    const attempt = attemptRef.current
+    let pollSeq = 0
     const interval = setInterval(async () => {
+      const seq = ++pollSeq
       try {
         const res = await apiFetch(
           `/api/item?type=${type}&id=${editRecordId}` +
@@ -2492,6 +4527,9 @@ function App() {
         const json = await res.json()
         const updated = json?.result?.record
         if (!updated) return
+        if (seq !== pollSeq) return  // out-of-order poll
+        if (attemptRef.current?.attemptId
+            !== attempt?.attemptId) return  // stale attempt
         setEditRecord(updated)
         // Merge all fields from the polled record into formValues.
         // This keeps the form synced with server state so fields
@@ -2508,14 +4546,17 @@ function App() {
         // Also refresh the list so list-view statuses stay fresh.
         // Call through the ref so the poll always uses the current
         // page/sort/search (not a stale closure from this render).
-        fetchListRef.current()
+        if (attemptRef.current?.attemptId
+            === attempt?.attemptId) {
+          fetchListRef.current()
+        }
       } catch {
         // Network errors during polling are non-fatal
       }
     }, 3000)
 
     return () => clearInterval(interval)
-  }, [editRecordId, hasRunningStatus, type])
+  }, [editRecordId, hasRunningStatus, type, openFormName])
 
   // In settings mode, auto-enter edit mode with the single record.
   // Depends on `type` too: when switching to settings, viewMode changes
@@ -2523,11 +4564,28 @@ function App() {
   // fetchList delivers the correct record. Without `type` in the deps,
   // the stale-data call sets isEditMode=true and the guard prevents the
   // correct record from ever loading.
+  // A record permalink wins over the one-row convenience behavior:
+  // while recordId is non-null the auto-open returns outright, and
+  // the current settings target's latch is set BEFORE every
+  // data/records early return so a Dismiss before the list arrives
+  // cannot lose it to the no-records guard.
   useEffect(() => {
     if (viewMode !== 'settings') return
+    // Arm the latch only while an explicit record target stands
+    // (step 16's wording): a permalink to this settings record
+    // suppresses the convenience auto-open. Without the
+    // recordId guard the latch arms on the stale-data run of a
+    // plain header entry (switchViewMode commits viewMode/type
+    // before the list swaps) and the auto-open never fires.
+    if (recordId != null
+        && types.find(t => t.name === type)?.userSetting) {
+      settingsAutoOpenSuppressedRef.current = type
+    }
+    if (recordId != null) return
     if (!data?.result?.records?.length) return
     if (data.result['type-key'] !== type) return
     if (isEditMode) return
+    if (settingsAutoOpenSuppressedRef.current === type) return
     // Auto-open only for :user-setting types (one record per user
     // by nature, e.g. preferences). Multi-record settings types
     // like secrets display as a normal list — even when they
@@ -2545,13 +4603,17 @@ function App() {
     // test reads the list record's own per-row flag (base-type
     // degeneration makes it equal to the envelope flag here;
     // the row flag is the honest source the View form's Edit
-    // button also gates on).
+    // button also gates on). The auto-open is a legacy non-URL
+    // open: openEditForm allocates its nav/attempt identity
+    // through the ordinary guarded path, but no url option —
+    // the writer never encodes its id, and no push is marked.
     if (data.result.records[0]?.update === true) {
       openEditForm(data.result.records[0])
     } else if (data.result['view-form']) {
       openEditForm(data.result.records[0], true)
     }
-  }, [data, viewMode, type, types])
+  }, [data, viewMode, type, types, recordId, recordMode,
+      isEditMode])
 
   if (!loggedIn) {
     return (
@@ -2717,8 +4779,40 @@ function App() {
               }))}
           />
         )}
+        {/* recordError surface, no-data/error shell (step 18):
+            a metadata failure or missing-form decision lands
+            while data is null / unusable, so the surface must
+            render here too — the form block belongs to the
+            list-carrying render this shell never reaches.
+            Terminal decisions clear the loaded form before
+            setting recordError, so the box renders alone; Retry
+            is by cause, Dismiss the close path (stranding rule
+            included). */}
+        {recordError != null && (
+          <RecordErrorBox
+            message={recordError.message}
+            onRetry={retryRecord}
+            onDismiss={dismissRecordError}
+          />
+        )}
+        {/* Post-scope surfaces, no-data shell (plan 04): a
+            fail-closed scope needs a surface here — the filter
+            bar below belongs to the list-carrying render. A
+            valid scope renders the generic Post × control
+            (no metadata here to resolve a title); invalid
+            structural input renders the neutral error with its
+            Clear scope action. Both call clearScope; no
+            invalid-scope path renders the previous list or an
+            unscoped list. */}
+        {scope.kind === 'valid' && (
+          <ScopeChip title={null} onClear={clearScope} />
+        )}
+        {scope.kind === 'invalid' && (
+          <InvalidScopeNotice onClear={clearScope} />
+        )}
         <p style={{ color: listError ? 'var(--error)' : undefined }}>
-          {listError || 'No records'}
+          {listError ? (listError as ListErrorOwner).message
+            : 'No records'}
         </p>
       </div>
     )
@@ -2726,6 +4820,17 @@ function App() {
 
   const listFields = formFieldKeys(data.result['list-form'])
   const records = data.result.records
+  // Visible type names (lowercased) for the FK link gate; the
+  // openPermalink callback routes an intercepted link click
+  // through the same open path as a permalink arrival.
+  const viewTypeNames = types.map(t => t.name.toLowerCase())
+  const openPermalink = (t: string, id: string) => {
+    // Already-open no-op: openEditForm's target check handles
+    // it (same type + id re-open is guarded as identical).
+    pendingUrlCause.current = 'push'
+    openEditForm({ id }, true,
+      { type: t, url: true, strict: true })
+  }
   // Page-level ✕ gate: any visible row deletable under its own
   // per-record flag (a creator-delete user holds no type-level
   // delete, so the envelope flag would hide the column over
@@ -2782,9 +4887,12 @@ function App() {
   // { field: [] } in state, which the key count would still report.
   // Boolean selects count too: they are data filters under the
   // same Clear filters button. Hide exclusive stays out of it.
+  // A present scope counts (plan 04): a scope-only list lights
+  // the button.
   const anyFilterActive =
     Object.values(listFilters).some(vals => vals.length > 0)
     || Object.keys(boolFilters).length > 0
+    || scope.kind !== 'none'
 
   return (
     <div>
@@ -2884,7 +4992,13 @@ function App() {
         ))}
       </div>
 
-      {!(showAddForm || isEditMode) && (
+      {/* Toolbar and filter row stand down while a record
+          error owns the page (the dialog is the content; an Add
+          button or filter controls above it are the same
+          commingle the box exists to end). Rows below on
+          non-hide-list types stay — a row click is a new open
+          that clears the error. */}
+      {!(showAddForm || isEditMode) && recordError == null && (
         <div style={{ marginBottom: '0.5rem' }}>
           {typeInfo?.pageDescription && (
             <PageDescription
@@ -2904,6 +5018,15 @@ function App() {
               setShowAddForm(true)
               setEditRecord(null)
               setFormViewing(false)
+              // Parent-type Add clears the retained region spec
+              // with editRecord (plan 03: cleared on the
+              // setShowAddForm(true) sites).
+              setChildSpec(null)
+              // Add is a new form session: a lingering
+              // recordError from a dismissed-then-abandoned
+              // target must not ride along (the error box and
+              // the Add form are mutually exclusive states).
+              setRecordError(null)
               const typeRoles = data.result['type-roles'] || []
               if (typeRoles.length > 0) {
                 setFormValues({ roles: [...typeRoles] })
@@ -2921,8 +5044,9 @@ function App() {
           )}
         </div>
       )}
-      {!(showAddForm || isEditMode) &&
-        (hasSearchable || hasChipFields || boolFilterFields.length > 0) && (
+      {!(showAddForm || isEditMode) && recordError == null &&
+        (scope.kind !== 'none' || hasSearchable
+         || hasChipFields || boolFilterFields.length > 0) && (
         <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
           {hasSearchable && (
             <>
@@ -3041,6 +5165,14 @@ function App() {
               />
             )
           })}
+          {/* Post-scope chip (plan 04): a sibling of the active
+              chip spans with its own × — never an entry in
+              listFilters. "Post: <title> ×" when resolved,
+              "Post ×" while unresolved or after a failed
+              lookup; never the uuid. */}
+          {scope.kind === 'valid' && (
+            <ScopeChip title={scopeTitle} onClear={clearScope} />
+          )}
           {Object.entries(listFilters)
             .filter(([, values]) => values.length > 0)
             .map(([fieldKey, values]) =>
@@ -3061,6 +5193,23 @@ function App() {
             <button
               type="button"
               onClick={() => {
+                // Clear filters (plan 04): clears chips, bools,
+                // AND the scope; restores the authored boolean
+                // defaults; preserves q / notq; resets page and
+                // selection; synchronously invalidates old list
+                // work and marks the user push (both additions
+                // in plan 04 — the old handler relied on the
+                // dep-driven refetch and the writer's no-mark
+                // push default). When it clears a scope it also
+                // clears the old envelope — no stale scoped
+                // rows under the pending unscoped refetch.
+                const hadScope = scope.kind !== 'none'
+                ++listSeq.current
+                if (hadScope) {
+                  setScope(SCOPE_NONE)
+                  setData(null)
+                }
+                pendingUrlCause.current = 'push'
                 setListFilters({})
                 // Restore the authored initial view, not bare Any
                 // (with no defaults on the type this is {}, the
@@ -3075,6 +5224,21 @@ function App() {
             </button>
           )}
         </div>
+      )}
+
+      {/* Failed-target surface (step 18): recordError implies
+          editRecord == null (every error path clears the loaded
+          form, and every new open / Add clears the error), so
+          the box and a real form never coexist — it mounts here,
+          alone, above where the form would sit. On hide-list
+          types the list below is hidden (hideList reads the
+          requested form), making this the page's only content. */}
+      {recordError != null && editRecord == null && (
+        <RecordErrorBox
+          message={recordError.message}
+          onRetry={retryRecord}
+          onDismiss={dismissRecordError}
+        />
       )}
 
       {(showAddForm || isEditMode) && (
@@ -3112,9 +5276,29 @@ function App() {
             {isViewMode && editRecord?.update === true && (
               <button
                 type="button"
-                onClick={() => openEditForm(editRecord)}
+                onClick={() => {
+                  // View → Edit: a direct user open of the
+                  // already-loaded record (URL-facing, same
+                  // target, mode change).
+                  pendingUrlCause.current = 'push'
+                  openEditForm(editRecord, false,
+                    { url: true })
+                }}
               >
                 Edit
+              </button>
+            )}
+            {isViewMode && (
+              <button
+                type="button"
+                onClick={copyBestLink}
+                title="Copies the link to hand someone. The address bar may include filters."
+                style={{ marginLeft: '0.5rem' }}
+              >
+                Best Link{copyState === 'copied'
+                  ? ' — Copied'
+                  : copyState === 'failed'
+                    ? ' — Copy failed' : ''}
               </button>
             )}
             <button
@@ -3147,7 +5331,14 @@ function App() {
               return (
                 <FieldRow key={f} field={fieldMeta}>
                   {renderReadOnlyField(
-                    fieldMeta, formValues[f]
+                    fieldMeta, formValues[f],
+                    {
+                      fieldKey: f,
+                      record: formValues,
+                      viewTypeList: viewTypeNames,
+                      isViewForm: true,
+                      open: openPermalink
+                    }
                   )}
                 </FieldRow>
               )
@@ -3383,6 +5574,8 @@ function App() {
             }
 
             if (fieldMeta['read-only'] === true) {
+              // Edit/Add read-only fields stay exactly as they
+              // are — no ctx, no link branch.
               return (
                 <FieldRow key={f} field={fieldMeta}>
                   {renderReadOnlyField(
@@ -3510,6 +5703,28 @@ function App() {
             </button>
           )}
         </form>
+      )}
+
+      {/* Embedded child region (plan 03): under the parent's
+          view form, outside every !hideList block (the flag
+          suppresses the parent table, not the region). Keyed by
+          the full region identity — parent id + normalized
+          spec — so a parent or spec change unmounts the old
+          instance and mounts a fresh one (page, expansion,
+          Reply, request sequence, error state reset by
+          construction). No footer link here: the scoped-tab
+          hop is item 4. */}
+      {isViewMode && childSpec != null
+        && typeof editRecord?.id === 'string'
+        && editRecord.id !== '' && (
+        <Region
+          key={[childSpec.type, childSpec.via,
+               childSpec.sort.join(':'),
+               editRecord.id].join('|')}
+          spec={childSpec}
+          parentId={editRecord.id}
+          onShowAll={onShowAll}
+        />
       )}
 
       {!hideList && (

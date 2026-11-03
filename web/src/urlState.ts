@@ -3,14 +3,72 @@
 // 2026-10-16): hash params, prefix "#/app?", e.g.
 //   #/app?type=todo&q=x&notq=y&sort=-name&page=2
 //     &filters=<JSON>&bool=<JSON>&hide-exclusive=false
-// Not encoded: view mode (derived from the type's category),
-// modals / lightbox, row selection, the un-trimmed input text.
+// Record state (2026-10-27): &id=<uuid> names the open record;
+// optional &mode=edit requests its Edit form (bare id means
+// View; mode=view is never written). Not encoded: category view
+// mode (derived from the type's category — record mode is a
+// different thing), modals / lightbox, row selection, the
+// un-trimmed input text.
 // No routing library — the frontend stays minimal and
 // schema-driven. This module is the single home of the format;
 // writeUrl is the only hash writer in the app.
 
+export type RecordMode = 'view' | 'edit'
+
+// Post scope (plan 04): the comments-tab FK scope. One
+// discriminated ScopeState — none, valid {via, id}, or invalid
+// {raw} — derived by the pure helpers below, never re-derived
+// inline in the seed / listener. The wire representation inside
+// UrlState is a single optional scalar fk (presence is
+// significant even when the value is empty). The pair grammar
+// is "via:id" with exactly one colon and two nonempty halves;
+// structural validity only — fk=post:garbage is valid here and
+// left to the backend's fk-eq validation (uuid / field
+// semantics), while malformed structure (bare value, empty
+// half, extra colons, duplicate parameters) is invalid and
+// retains its raw value so parse → canonicalize → state →
+// build → write never rewrites it to an unscoped URL.
+export type ScopeState =
+  | { kind: 'none' }
+  | { kind: 'valid', via: string, id: string }
+  | { kind: 'invalid', raw: string }
+
+// The shared none constant: App state and the effect deps
+// treat "no scope" as one stable value (a fresh literal per
+// call would re-fire effects on every render).
+export const SCOPE_NONE: ScopeState = { kind: 'none' }
+
+// The pure pair parser: split on exactly one ':' into two
+// nonempty halves. Everything else — no colon, a bare value,
+// an empty half, extra colons, the empty string — is invalid
+// with the raw value retained.
+export function parseScope(raw: string): ScopeState {
+  const halves = raw.split(':')
+  if (halves.length !== 2 || halves[0] === ''
+      || halves[1] === '') {
+    return { kind: 'invalid', raw }
+  }
+  return { kind: 'valid', via: halves[0], id: halves[1] }
+}
+
+// The pure formatter: ScopeState back to the scalar fk
+// representation (undefined for none — absence, never '').
+export function scopeToParam(
+  s: ScopeState
+): string | undefined {
+  if (s.kind === 'none') return undefined
+  if (s.kind === 'valid') return s.via + ':' + s.id
+  return s.raw
+}
+
 export interface UrlState {
   type?: string
+  id?: string      // uuid of the open record (view form default)
+  mode?: RecordMode // 'edit' requests the edit form
+  fk?: string      // post scope pair "via:id" (plan 04);
+                   // presence is significant even when the
+                   // value is empty (the invalid marker);
+                   // requires type, exactly as id does
   q?: string        // trimmed debounced search commit
   notq?: string     // trimmed debounced Not… commit
   filters?: Record<string, string[]>   // chips
@@ -21,11 +79,15 @@ export interface UrlState {
 }
 
 // The query half of App state, passed in by the callers — type,
-// both debounced terms, listFilters, boolFilters, hideExclusive,
+// the record target (id + mode), the post scope, both debounced
+// terms, listFilters, boolFilters, hideExclusive,
 // sortField, sortDir, currentPage. No App import: urlState.ts
 // stays free of App types.
 export interface QueryFields {
   type: string
+  recordId: string | null
+  recordMode: RecordMode
+  scope: ScopeState
   debouncedSearch: string
   debouncedNotTerm: string
   listFilters: Record<string, string[]>
@@ -67,6 +129,30 @@ export function canonicalize(s: UrlState): UrlState {
   const c: UrlState = {}
   if (typeof s.type === 'string' && s.type !== '') {
     c.type = s.type
+  }
+  // id requires type (a record route needs a type); canonical
+  // ids are lowercase (the one mutation — parsing accepts any
+  // case, so the writer / history gates see lowercase on both
+  // sides by construction). mode rides only with type + id;
+  // canonical URLs omit mode === 'view'.
+  if (typeof s.id === 'string' && s.id !== '' && c.type != null) {
+    c.id = s.id.toLowerCase()
+  }
+  if (c.id != null && s.mode === 'edit') c.mode = 'edit'
+  // fk requires type, exactly as id: a scope without a type is
+  // not applied to whichever type happens to be current. With a
+  // type, a valid scope canonicalizes to via:lowercased-id
+  // (only the id half — the via is a field key, already
+  // canonical from the wire; the id is the one mutation, the
+  // id rule's mirror); an invalid scope stays present with its
+  // raw value, including fk: ''. Never canonicalize malformed
+  // input to absence — the writer / history gates then compare
+  // presence against presence and no loop can rewrite it.
+  if (typeof s.fk === 'string' && c.type != null) {
+    const sc = parseScope(s.fk)
+    c.fk = sc.kind === 'valid'
+      ? sc.via + ':' + sc.id.toLowerCase()
+      : s.fk
   }
   if (typeof s.q === 'string' && s.q !== '') c.q = s.q
   if (typeof s.notq === 'string' && s.notq !== '') c.notq = s.notq
@@ -111,6 +197,9 @@ export function canonicalize(s: UrlState): UrlState {
 export function buildUrlState(q: QueryFields): UrlState {
   return {
     type: q.type,
+    id: q.recordId == null ? undefined : q.recordId,
+    mode: q.recordId != null ? q.recordMode : undefined,
+    fk: scopeToParam(q.scope),
     q: q.debouncedSearch,
     notq: q.debouncedNotTerm,
     filters: q.listFilters,
@@ -180,6 +269,24 @@ export function parseHash(): UrlState | null {
   const s: UrlState = {}
   const t = params.get('type')
   if (typeof t === 'string' && t !== '') s.type = t
+  // id / mode: opaque non-empty strings here; /api/item owns
+  // UUID validation (a non-UUID 400s there). Unknown mode
+  // values map to View (tolerant malformed-param behavior);
+  // canonicalize later drops mode without id and id without
+  // type.
+  const iv = params.get('id')
+  if (typeof iv === 'string' && iv !== '') s.id = iv
+  const mv = params.get('mode')
+  if (mv === 'view' || mv === 'edit') s.mode = mv
+  // fk (post scope, plan 04): getAll, not get — duplicate
+  // parameters are structurally invalid and canonicalize to
+  // the empty invalid marker ('' is a present value, never
+  // absence). Exactly one parameter preserves its decoded raw
+  // string; parseScope owns the pair grammar and UUID / field
+  // semantics stay server-side.
+  const fks = params.getAll('fk')
+  if (fks.length === 1) s.fk = fks[0]
+  else if (fks.length > 1) s.fk = ''
   const qv = params.get('q')
   if (typeof qv === 'string' && qv !== '') s.q = qv
   const nv = params.get('notq')
@@ -245,11 +352,29 @@ export function urlStatesEqual(a: UrlState, b: UrlState): boolean {
 // of every shared link. It also absorbs a hand-edited but
 // semantically equal hash (an explicit page=1) — no-op, no
 // duplicate entry. If the current hash is not ours
-// (parseHash null), always write.
-export function writeUrl(s: UrlState): void {
+// (parseHash null), always write. OPTIONS.replace is the
+// mechanical hook for the App-level echo rule (automatic
+// reconciliation writes replace; user writes push — the pure
+// module only owns the two write shapes; the cause keying is
+// App state). The state argument stays null exactly as today:
+// no history.state is ever stamped.
+export interface WriteUrlOptions {
+  replace?: boolean
+}
+
+export function writeUrl(
+  s: UrlState, options?: WriteUrlOptions
+): void {
   const c = canonicalize(s)
   const params = new URLSearchParams()
   if (c.type != null) params.set('type', c.type)
+  // Serialize id right after type, then mode=edit, before the
+  // list params (the canonical record permalink shape).
+  if (c.id != null) params.set('id', c.id)
+  if (c.mode === 'edit') params.set('mode', 'edit')
+  // Every canonical present fk serializes, including the empty
+  // invalid marker (fk=) — presence is the state.
+  if (c.fk !== undefined) params.set('fk', c.fk)
   if (c.q != null) params.set('q', c.q)
   if (c.notq != null) params.set('notq', c.notq)
   if (c.filters != null) {
@@ -264,6 +389,13 @@ export function writeUrl(s: UrlState): void {
   if (c.sort != null) params.set('sort', c.sort)
   if (c.page != null) params.set('page', String(c.page))
   let qs = params.toString()
+  // Unescape the fk pair's colons after serialization: the
+  // plan's shared-link spelling is fk=post:<uuid> raw, and a
+  // hand-typed entry must look like the writer's output. Safe
+  // on URLSearchParams output — '%' itself is always encoded
+  // to %25, so a %3A in the string can only originate from a
+  // ':' in a value, and ':' is a legal query character.
+  qs = qs.replace(/%3A/g, ':')
   if (qs !== '') qs = '?' + qs
   const next = PREFIX + qs
   const live = parseHash()
@@ -272,9 +404,14 @@ export function writeUrl(s: UrlState): void {
     return  // URL already equals state — no duplicate entry
   }
   try {
-    history.pushState(null, '', next)
+    if (options != null && options.replace) {
+      history.replaceState(null, '', next)
+    } else {
+      history.pushState(null, '', next)
+    }
   } catch {
-    // pushState can throw (security errors in exotic embeds);
-    // URL state is best-effort, never a crash on navigation.
+    // pushState / replaceState can throw (security errors in
+    // exotic embeds); URL state is best-effort, never a crash
+    // on navigation.
   }
 }

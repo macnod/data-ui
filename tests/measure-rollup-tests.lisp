@@ -315,6 +315,35 @@ grain columns all report-ve (one error class)."
     (be-list :user-leaderboard "admin"
       :filters '((:user-leaderboard :email :eq "a@b.c")))))
 
+(test mrb-fk-eq-rollup-self-rejected
+  "A rollup-self :fk-eq tuple dies in valid-filter's singular-target
+check before the measure arm can run (a rollup field is not a
+singular :target field)."
+  (signals validation-error
+    (be-list :user-leaderboard "admin"
+      :filters '((:user-leaderboard :name :fk-eq
+                  "00000000-0000-0000-0000-000000000000")))))
+
+(test mrb-fk-eq-measure-arm-rejects-cross-type
+  "A tuple-local-valid cross-type FK row reaches the new measure
+arm and dies with the rollup message, not the generic
+non-grain-column classifier (the direct helper call also bypasses
+be-list-column's earlier queried-type guard). Deleting or moving
+the arm after the generic classifier makes this test fail."
+  (multiple-value-bind (conds params)
+    (ignore-errors
+      (measure-request-grain-filters :user-leaderboard
+        '((:chores :user :fk-eq "00000000-0000-0000-0000-000000000000"))
+        "admin"))
+    (declare (ignore conds params))
+    (handler-case
+      (measure-request-grain-filters :user-leaderboard
+        '((:chores :user :fk-eq "00000000-0000-0000-0000-000000000000"))
+        "admin")
+      (validation-error (e)
+        (is (re:scan ":fk-eq is not supported on rollups"
+              (format nil "~a" e)))))))
+
 (test mrb-search-rejected
   "Non-empty :search on a rollup report-ve's (zero searchable
 fields)."

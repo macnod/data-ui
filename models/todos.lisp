@@ -36,49 +36,51 @@ description are the only omissions:
 
 ```
 '(:title \"To Do List\"
-  :name \"todos\" :version \"0.1\"
-  :domain \"todo.demo.data-ui.com\" :domain-stg \"todo-stg.demo.data-ui.com\"
-  :repl t :guest-allowed t :guest-auto nil
-  :api-roles (\"logged-in\" \"public\") :landing-page :todos
-  :types
-  (:todos
-    (:table t :create :auto :update :auto :delete :auto :display t
-      :type-roles (\"todo-users\" \"public\") :default-sort (:done :asc)
-      :views (:main (:tables (:todos :todo-tags :tags)) :tags (:tables (:tags)))
-      :fields
-      (:name (:type :text :identity t :sortable t :searchable t
-               :ui (:label \"To Do\" :widget :textbox)
-               :validations (:required (:max-length :max 80))
-               :source (:view :main :column :name :agg :first)
-               :column t :not-null t :unique t)
-        :done (:type :boolean :default :false :sortable t
-                :ui (:label \"Done\" :widget :checkbox :filter-with :boolean)
-                :source (:view :main :column :done :agg :first)
-                :column t :not-null t)
-        :tags (:type :list
-                :ui (:label \"Tags\" :widget :checkbox-list)
-                :validations (:join-items-exist)
-                :source (:view :main :table :tags :column :name :agg :distinct)
-                :source-all (:view :tags :table :tags :column :name :agg :list)
-                :join-table :todo-tags))
-      :list-form (:fields t) :update-form (:fields t) :add-form (:fields t))
-
-    :tags
-    (:table t :create :auto :update :auto :delete :auto :display t
-      :type-roles (\"todo-users\" \"public\")
-      :fields
-      (:name (:type :text :identity t :sortable t
-               :ui (:label \"Tag\" :widget :textbox)
-               :validations (:required)
-               :source (:view :main :table :tags :column :name :agg :first)
-               :column t :not-null t :unique t))
-      :list-form (:fields t) :update-form (:fields t) :add-form (:fields t))
-
-    :todo-tags
-    (:table t :is-joiner t :internal t
-      :fields
-      (:reference (:target :todos)
-        :reference (:target :tags)))
+   :name \"todos\" :version \"0.1\" :domain \"todo.demo.data-ui.com\"
+   :domain-stg \"todo-stg.demo.data-ui.com\" :repl t
+   :guest-allowed t :guest-auto nil :api-roles (\"logged-in\" \"public\")
+   :landing-page :todos
+   :types
+   (:todos
+     (:table t
+       :create :auto :update :auto :delete :auto :display t
+       :type-roles (\"todo-users\" \"public\") :default-sort (:done :asc)
+       :views (:main (:tables (:todos :todo-tags :tags)) :tags (:tables (:tags)))
+       :fields
+       (:name 
+         (:type :text :identity t :sortable t :searchable t
+           :column t :not-null t :unique t :validations (:required (:max-length :max 80))
+           :ui (:label \"To Do\" :widget :textbox)
+           :source (:view :main :column :name :agg :first))
+         :done
+         (:type :boolean :default :false :sortable t :column t :not-null t
+           :ui (:label \"Done\" :widget :checkbox :filter-with :boolean)
+           :source (:view :main :column :done :agg :first))
+         :tags
+         (:type :list :validations (:join-items-exist)
+           :ui (:label \"Tags\" :widget :checkbox-list)
+           :source (:view :main :table :tags :column :name :agg :distinct)
+           :source-all (:view :tags :table :tags :column :name :agg :list)
+           :join-table :todo-tags)
+         :created-at (:ui (:label \"Created\" :widget :textbox :read-only t) :sortable t)
+         :updated-at (:ui (:label \"Updated\" :widget :textbox :read-only t) :sortable t))
+       :list-form (:fields (:name :done :tags :created-at :updated-at))
+       :update-form (:fields t) :view-form (:fields t) :add-form (:fields t))
+     :tags
+     (:table t
+       :create :auto :update :auto :delete :auto :display t
+       :type-roles (\"todo-users\" \"public\")
+       :fields 
+       (:name
+         (:type :text :identity t :sortable t :validations (:required)
+           :ui (:label \"Tag\" :widget :textbox)
+           :source (:view :main :table :tags :column :name :agg :first)
+           :column t :not-null t :unique t))
+       :list-form (:fields t) :update-form (:fields t)
+       :view-form (:fields t) :add-form (:fields t))
+     :todo-tags
+     (:table t :is-joiner t :internal t
+       :fields (:reference (:target :todos) :reference (:target :tags)))
      :users (:type-roles (\"logged-in\" \"public\" \"user-creator\"))
      :roles (:type-roles (\"logged-in\" \"public\" \"role-creator\"))
      :permissions (:type-roles (\"logged-in\" \"public\" \"permission-creator\"))))
@@ -108,8 +110,18 @@ description are the only omissions:
           :validations (:join-items-exist)
           :source (:view :main :table :tags :column :name :agg :distinct)
           :source-all (:view :tags :table :tags :column :name :agg :list)
-          :join-table :todo-tags))
-      :list-form (:fields t)
+          :join-table :todo-tags)
+        ;; Presentation overrides of compiler-injected timestamps
+        ;; (legal keys: :ui, :sortable; :read-only t required).
+        ;; Sortability is injected ambiently — restated here only to
+        ;; demonstrate the override grammar.
+        :created-at
+        (:ui (:label "Created" :widget :textbox :read-only t)
+          :sortable t)
+        :updated-at
+        (:ui (:label "Updated" :widget :textbox :read-only t)
+          :sortable t))
+      :list-form (:fields (:name :done :tags :created-at :updated-at))
       :update-form (:fields t)
       :view-form (:fields t)
       :add-form (:fields t))
