@@ -79,4 +79,5 @@
                 (:file "timestamp-override-tests")
                 (:file "record-permalink-tests")
                 (:file "fk-eq-tests")
-                (:file "children-tests")))))
+                (:file "children-tests")
+                (:file "action-log-tests")))))

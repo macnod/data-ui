@@ -21,7 +21,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 
 ## Key Architecture
 
-- `lisp/model.lisp` – model compilation and the RBAC base model (`*base-model*`)
+- `lisp/model.lisp` – model compilation and the RBAC base model (`*base-model*`); `heal-model` — idempotent schema/RBAC re-sync for a live image (the tail of `set-model` without the table drops)
 - `lisp/backend.lisp` – backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-action`, `be-landing-page`, ...)
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
 - `lisp/predicates.lisp` – type/field predicates; `:button` field type
@@ -63,6 +63,8 @@ Package-local nicknames like `a:` (the rbac library) are available. Read-most: p
 **Full reload:** `(hard-reset)` (from `lisp/startup.lisp`) runs `asdf:load-system :force t` + `init-database` + `reset-database` in one call. Use it (e.g. when `asdf:load-system` resets `*rbac*` to nil) instead of the three steps manually.
 
 **Gotcha — reloading `rest.lisp` with the server running** can nil out `*http-server*` while the OS still holds the port; the next `set-model` → `start-web-server` fails with `ADDRESS-IN-USE-ERROR`. After reloading `rest.lisp`, verify `*http-server*`; if nil, `(stop-web-server)` before the next `set-model`.
+
+**Gotcha — cross-version snapshot restore on a live image.** A restore replaces the entire `public` schema, so tables and RBAC rows introduced by newer code than the dump (e.g. `usage` after the action-log work) silently vanish. Heal with `(heal-model)` — never `set-model`, whose `reset-tables` drops the loaded model's user tables and destroys the just-restored data. Fresh processes self-heal at startup (`*compiled-model*` nil → the drop is skipped), so restarting the app also works.
 
 **Gotcha — 60s Eval timeout on long forms.** `eval-in-data-ui` times out on the Emacs side after 60s; the form keeps running in SBCL and its output is lost. `(run-tests)` runs all 30+ suite groups and takes several minutes. Never poll with sleep loops — after a timeout, probe with `(eval-in-data-ui "(* 2 3)")` before assuming the image is busy. Run long work in a thread that writes a file, then read the file:
 

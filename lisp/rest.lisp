@@ -540,6 +540,11 @@ Optional. Free-text search term matched with ILIKE against fields marked
                         :form form))
                     (error (e)
                       (abort-error e :type type :filters filters :form form)))))
+    ;; Usage log: after be-list returns (a signaled rejection never
+    ;; reaches here). dedup stays at its default, so repeated lists
+    ;; inside the window collapse. rest-list of :usage itself writes
+    ;; nothing — record-usage's self-log guard drops it.
+    (record-usage user :list :on type-key :detail search-val)
     (render-output result)))
 
 (h:define-easy-handler (rest-item :uri "/api/item" :default-request-type :get)
@@ -577,6 +582,14 @@ GET /api/item"
                     (validation-error (e)
                       (abort-bad-request e :type type :id id :form form))
                     (error (e) (abort-error e :type type :id id :form form)))))
+    ;; Usage log: a view is a view-form fetch that returned a record.
+    ;; The edit form fetches this endpoint with update-form too —
+    ;; logging every item fetch would double-count an edit as a view.
+    ;; A nil :record (missing uuid, or unreadable) writes nothing.
+    ;; Detail names the viewed row (identity / uuid).
+    (when (and (eq form-key :view-form) (getf result :record))
+      (record-usage user :view :on type-key
+        :detail (usage-detail-for type-key id) :dedup nil))
     (render-output result)))
 
 (h:define-easy-handler (rest-id :uri "/api/id" :default-request-type :get)
@@ -838,6 +851,15 @@ POST /api/insert"
             e :type type :data data :roles roles :user user))
         (error (e)
           (abort-error e :type type :data data :roles roles :user user)))
+      ;; Usage log: only a real insert (inserted true). A duplicate
+      ;; identity (inserted nil) returns the existing id and is not
+      ;; an insert. Detail names the new row (identity / uuid) —
+      ;; the identity comes from the data the frontend just sent,
+      ;; so it is present even when an out-of-band write (write-to,
+      ;; compose) reshaped it.
+      (when inserted
+        (record-usage user :insert :on type-key
+          :detail (usage-detail-for type-key id) :dedup nil))
       (render-output (list :id id :inserted (if inserted :true :false))))))
 
 (h:define-easy-handler (rest-upload :uri "/api/upload")
@@ -1008,6 +1030,13 @@ POST /api/update"
                     (error (e)
                       (abort-error e
                         :type type :filters filters :data data :roles roles)))))
+    ;; Usage log: after be-update returns (the handler-case abort
+    ;; paths write nothing). be-update returns the uuid; detail
+    ;; names the updated row (identity / uuid) read back after the
+    ;; write. A non-uuid return (base types write in place and the
+    ;; uuid is still returned; anything else) degrades gracefully.
+    (record-usage user :update :on type-key
+      :detail (usage-detail-for type-key result) :dedup nil)
     (render-output result)))
 
 (h:define-easy-handler (rest-delete :uri "/api/delete"
@@ -1047,12 +1076,37 @@ POST /api/delete"
           (type-roles (get-type-roles type-key))
           (user (require-auth type-roles))
           (filters (parse-filters (getf tree :filters) :allow-id t))
+          (record (handler-case
+                    (let ((id (if (stringp filters)
+                                filters
+                                (be-id type-key filters "admin"))))
+                      (when (and id (uuid-p id))
+                        (rec id "admin" :form :update-form
+                          :type-key type-key)))
+                    (error () nil)))
           (result (handler-case
                     (be-delete type-key filters user)
                     (validation-error (e)
                       (abort-bad-request e :type type :filters filters))
                     (error (e)
                       (abort-error e :type type :filters filters)))))
+    ;; Usage log: only a delete that matched (be-delete returns the
+    ;; uuid; nothing matched returns nil and writes nothing). Detail
+    ;; names the deleted row from the pre-fetch above (read before
+    ;; the write — after it, the row is gone); a failed pre-fetch
+    ;; (bad filters, unreadable row) degrades to uuid-only. The
+    ;; pre-fetch resolves the uuid and reads the row as admin (the
+    ;; deleter passed be-delete's own permission gate, and the
+    ;; identity of a row being deleted is not a secret).
+    (when result
+      (record-usage user :delete :on type-key
+        :detail (usage-detail-for type-key result
+                   :identity (let ((raw (and record
+                                          (getf (getf record :record)
+                                            (identity-field type-key)))))
+                               (when raw
+                                 (u:trim (format nil "~a" raw)))))
+        :dedup nil))
     (render-output result)))
 
 (h:define-easy-handler (rest-actions :uri "/api/actions"
@@ -1127,6 +1181,15 @@ POST /api/actions"
                     (error (e)
                       (abort-error
                        e :type type :id id :field field :user user)))))
+    ;; Usage log: log a failed action too — the user did press the
+    ;; button, and :detail names the button (field key) and the row
+    ;; (identity / uuid), not user content. A rejected click
+    ;; (be-action signals; the abort stub is what makes that
+    ;; observable in tests) writes nothing: the handler-case paths
+    ;; return before this line.
+    (record-usage user :action :on type-key
+      :detail (usage-detail-for type-key id :extra field-key)
+      :dedup nil)
     (render-output result)))
 
 (h:define-easy-handler (rest-validate-field :uri "/api/validate-field"
@@ -1382,13 +1445,25 @@ POST /api/login"
                                (login-user-id username password)
                                (error (e) (abort-error e
                                             :reason "Error during login")))))
-                     (unless id (abort-auth "Invalid username or password"))
+                     (unless id
+                       ;; Usage log: a failed login for a known or
+                       ;; unknown name, logged before the abort (the
+                       ;; abort never returns). Only a non-empty
+                       ;; string name — a blank username is not a
+                       ;; person.
+                       (when (and (stringp username)
+                              (plusp (length username)))
+                         (record-usage username :login-failed :dedup nil))
+                       (abort-auth "Invalid username or password"))
                      id))
           (refresh-token (issue-refresh-token user-id))
           (access-token (issue-access-token user-id))
           (result `(:access-token ,access-token
                      :refresh-token ,refresh-token)))
     (store-token username refresh-token)
+    ;; Usage log: guest takes this same success path (login-user-id
+    ;; short-circuits a:login for the guest name).
+    (record-usage username :login :dedup nil)
     (render-output result)))
 
 (h:define-easy-handler (rest-refresh :uri "/api/refresh" :default-request-type :post)

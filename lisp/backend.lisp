@@ -3602,6 +3602,14 @@ instead)."
     (valid-filters filters :required t :type-key type-key))
   (valid-data type-key data)
   (valid-user-roles user (remove-existing-non-user-roles user roles))
+  ;; :usage is append-only: a crafted /api/update from admin must not
+  ;; rewrite the log even though insert-normal attaches admin to every
+  ;; usage resource. A usage-specific gate, not a global :update nil
+  ;; change — :tokens is :update nil and store-token is the internal
+  ;; update path that must keep working.
+  (when (equal type-key :usage)
+    (report-ve "be-update"
+      "Type ~s is append-only and cannot be updated." ~type-key))
   ;; Non-resource, non-base built-in types (e.g. :tokens) are invisible
   ;; to uuid-exists-p / id-to-type-key / user-allowed-resource, so the
   ;; record-level checks below would lock their callers (REST
@@ -3727,6 +3735,12 @@ treated as the UUID of the record to be deleted."
     (valid-uuid filters)
     (valid-filters filters :required t :type-key type-key))
   (valid-existing-user user)
+  ;; :usage is append-only (the be-update gate's twin). be-delete
+  ;; would already signal on the nil compiled delete function, but
+  ;; the public attempt is its own error.
+  (when (equal type-key :usage)
+    (report-ve "be-delete"
+      "Type ~s is append-only and cannot be deleted from." ~type-key))
   (let* ((m *compiled-model*)
           (uuid (be-id type-key filters "admin"))
           (record (when uuid
@@ -4197,6 +4211,217 @@ Signals a validation error if:
                               (min (length err-str) 200)))))
                 (funcall set-status msg)
                 (list :status "failed" :message err-str)))))))))
+
+;;
+;; BEGIN Usage log (:usage)
+;;
+;; A built-in, append-only admin-facing log of app usage. Written
+;; only by record-usage (the REST layer calls it); read through the
+;; ordinary be-list. Every helper here swallows its own errors:
+;; there are no transactions, and a log write must never take the
+;; user's request down with it.
+;;
+
+(defparameter *usage-events*
+  '(:login :login-failed :list :view :insert :update :delete :action)
+  "Closed event vocabulary for :usage rows (record-usage enforces it).")
+
+(defparameter *usage-window-seconds* 60
+  "Dedup window for :list rows: same user + event + type + detail
+inside this many seconds collapses to one row. The window bound is
+interpolated into the interval literal by usage-recent-p (an
+integer this system owns, never user input), not a bind parameter:
+interval $1 does not accept a bare integer.")
+
+(defparameter *usage-detail-max* 80
+  "Character cap on :usage :detail (usage-detail truncates).")
+
+(defun usage-detail (value)
+  ":private: Normalize a :usage :detail value: trim a string,
+truncate to *usage-detail-max* characters, nil for blank,
+non-string, or empty. Keywords downcase to strings (the action
+field key). Nil stays nil. The same normalization runs before the
+dedup query and the insert, so \" Milk \" and \"milk\" are one
+key."
+  (cond
+    ((null value) nil)
+    ((keywordp value) (string-downcase (string value)))
+    ((not (stringp value)) nil)
+    (t (let* ((trimmed (u:trim value))
+              (capped (if (> (length trimmed) *usage-detail-max*)
+                        (subseq trimmed 0 *usage-detail-max*)
+                        trimmed)))
+         (when (plusp (length capped)) capped)))))
+
+(defun usage-identity-string (type-key id)
+  ":private: First non-blank identity value of TYPE-KEY's row with
+uuid ID, as trimmed text, or nil. Direct SQL beside usage-recent-p
+(same rationale: the backend read paths hydrate forms and touch
+handler state — a REST-layer detail enrichment must not depend on
+it, and record-usage would swallow the failure and drop the row).
+Unknown table, unknown uuid, or any error returns nil — the detail
+degrades to uuid-only. Never signals."
+  (when (and (uuid-p id) (type-key-p type-key))
+    (handler-case
+      (let* ((m *compiled-model*)
+             (table (u:tree-get m type-key :table-name))
+             (keys (identity-keys type-key))
+             (cols (loop for k in keys
+                     collect (format nil "nullif(trim(~a::text), '')"
+                               (u:tree-get m type-key :fields k
+                                 :name-sql))))
+             (sql (format nil "select coalesce(~{~a~^, ~}) from ~a ~
+                               where id = $1"
+                     (append cols '("''")) table))
+             (value (a:with-rbac (*rbac*)
+                      (a:rbac-query (list sql id) :single))))
+        (when (and (stringp value) (plusp (length value))) value))
+      (error () nil))))
+
+(defun usage-detail-for (type-key id &key extra identity)
+  ":private: Detail string naming the touched row: \"<identity> /
+<uuid>\" — EXTRA (an action field key) prefixes it, becoming
+\"<extra> / <identity> / <uuid>\". The uuid is always last and
+never truncated: the prefix is pre-fit so the composed string
+never exceeds *usage-detail-max*, and usage-detail's cap can then
+never eat the uuid. IDENTITY, when non-nil, is a pre-fetched
+identity string (the delete path — the row is gone by lookup
+time, so the caller read it before the write); otherwise the
+identity is looked up. A blank or missing identity degrades to
+uuid-only. Nil ID returns nil — record-usage stores a null
+detail."
+  (when id
+    (let* ((uuid (if (uuid-p id) id (format nil "~a" id)))
+           (room (max 0 (- *usage-detail-max* (length uuid) 3)))
+           (identity (or identity (usage-identity-string type-key id)))
+           (parts (remove nil
+                     (list (when extra (string-downcase (string extra)))
+                       identity)))
+           (prefix (when parts
+                     (let ((joined (format nil "~{~a~^ / ~}" parts)))
+                       (subseq joined 0 (min (length joined) room))))))
+      (if prefix (format nil "~a / ~a" prefix uuid) uuid))))
+
+(defun usage-recent-p (user-name event on detail)
+  ":private: T when a :usage row with the same user-name + event +
+on + detail was recorded inside *usage-window-seconds*. Arguments
+are already normalized (record-usage downcases event / on and runs
+detail through usage-detail). Raw SQL, not be-list: listing :usage
+is what the self-log guard exists to avoid, and be-list would
+page, hydrate, and check permissions. Column names come from the
+compiled field defs (:name-sql), so a :force-sql-name rename
+cannot desync the SQL from the type. NULL :on / :detail compare
+with is not distinct from, so a login (both null) matches a prior
+login; NULL binds as :null, never bare Lisp nil (the driver binds
+nil as SQL false). Not atomic — two identical lists in the same
+instant can both pass. Accept the rare duplicate; do not add a
+lock."
+  (let* ((m *compiled-model*)
+         (table (u:tree-get m :usage :table-name))
+         (name-col (u:tree-get m :usage :fields :user-name :name-sql))
+         (event-col (u:tree-get m :usage :fields :event :name-sql))
+         (on-col (u:tree-get m :usage :fields :on :name-sql))
+         (detail-col (u:tree-get m :usage :fields :detail :name-sql))
+         (sql (format nil
+                 "select 1 from ~a where ~a = $1 and ~a = $2 ~
+                  and ~a is not distinct from $3 ~
+                  and ~a is not distinct from $4 ~
+                  and created_at > now() - interval '~a seconds' ~
+                  limit 1"
+                 table name-col event-col on-col detail-col
+                 *usage-window-seconds*)))
+    (a:with-rbac (*rbac*)
+      (a:rbac-query
+        (list sql user-name event (or on :null) (or detail :null))
+        :single))))
+
+(defun usage-insert (data user)
+  ":private: Insert one :usage row and return its resource uuid.
+Inserts as USER (record-usage passes \"admin\" — :create nil
+compiles to a nil create function, so be-insert / be-insert-internal
+cannot write this type; store-token's :tokens precedent). Does not
+call id-from-data: id-from-data filters on every local column, and
+:when is one-second text, so two identical events in the same
+second would return the existing id and drop the second row. The
+resource insert (a:add-resource) supplies the uuid; the compiled
+:insert-sql :main runs through insert-main-query for its side
+effect (do not read the query result as the id — query returns
+((:id \"<uuid>\")), and the uuid is already in hand). The role
+attach mirrors insert-normal's (admin plus the writer's
+exclusive). On any error after a:add-resource succeeded,
+a:remove-resource the new resource before re-signaling, so a
+failed insert does not leak a resources row. Returns the uuid or
+signals; the caller swallows."
+  (let* ((resource-name (make-resource-name :usage data))
+         (uuid (a:add-resource *rbac* resource-name :roles nil))
+         (insert (u:tree-get *compiled-model* :usage :insert-sql)))
+    (handler-case
+      (progn
+        (a:with-rbac (*rbac*)
+          (a:rbac-query (insert-main-query :usage insert uuid data user)))
+        (update-roles :usage uuid user
+          (list "admin" (a:exclusive-role-for user)))
+        uuid)
+      (error (e)
+        (a:remove-resource *rbac* resource-name)
+        (error e)))))
+
+(defun record-usage (user-name event &key on detail (dedup t))
+  ":public: Append one :usage row for USER-NAME, or return nil.
+EVENT is one of *usage-events*, a keyword or a string (\"LIST\" and
+:list are the same event). ON is the target type, a keyword or a
+string, or nil for login. DETAIL is capped by usage-detail. DEDUP,
+the list default, skips the insert when the same user, event,
+type, and detail were recorded inside *usage-window-seconds*.
+Inserts as admin. Swallows every error: a log write must not fail
+the caller's request. Does not call be-insert-internal:
+id-from-data would collapse two identical events in the same
+second into one row (usage-insert is the sanctioned writer — do
+not add :usage writes through any other path). The helper does
+not log itself: on :usage (compared after normalization, so a
+string spelling cannot sneak past) returns before the dedup query,
+and an unknown event is a report-e raised inside the handler-case,
+logged, and returned nil."
+  (handler-case
+    (let* ((event-s (and (or (keywordp event) (stringp event))
+                        (string-downcase (string event))))
+           (event-key (and event-s (u:make-keyword event-s)))
+           (on-s (and on
+                   (or (keywordp on) (stringp on))
+                   (string-downcase (string on))))
+           (detail (usage-detail detail))
+           (name (and (stringp user-name) (u:trim user-name))))
+      (unless (member event-key *usage-events*)
+        (report-e "record-usage"
+          "Unknown usage event ~s." ~event))
+      (unless (equal on-s "usage")
+        (when (and name (plusp (length name))
+                (or (not dedup)
+                  (not (usage-recent-p name event-s on-s detail))))
+          (let ((data (list :user-name name
+                        :event event-s
+                        :when (dt:timestamp-string))))
+            (when on-s (setf (getf data :on) on-s))
+            (when detail (setf (getf data :detail) detail))
+            ;; :user is set to the username, not the uuid:
+            ;; resolve-reference-id accepts a display name, and the
+            ;; username matches every other :target :users writer.
+            ;; An unknown name omits the key entirely — a nullable
+            ;; FK with no default binds NULL, and passing the bad
+            ;; name would signal inside db-value (swallowed, but
+            ;; the row would be dropped).
+            (when (a:get-id *rbac* "users" name)
+              (setf (getf data :user) name))
+            (usage-insert data "admin")))))
+    (error (e)
+      (pl:perror :in "record-usage"
+        :status "usage write failed"
+        :user-name user-name :event event :on on :error e)
+      nil)))
+
+;;
+;; END Usage log
+;;
 
 ;;
 ;; END Public backend functions

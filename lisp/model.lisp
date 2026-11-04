@@ -1801,7 +1801,46 @@ validator there, and a frontend renderer.")
                  :value (:type :text
                           :ui (:label "Value" :widget :textbox)
                           :source (:view :main :column :value :agg :first)
-                          :column t :not-null t :unique t)))))
+                          :column t :not-null t :unique t)))
+
+     :usage
+     (:table t :base nil :built-in t
+       :create nil :update nil :delete nil :display t
+       :type-roles ("usage")
+       :default-sort (:created-at :desc)
+       :views (:main (:tables (:usage :users))
+                :users (:tables (:users)))
+       :fields (:user (:type :text
+                        :ui (:label "User" :widget :textbox :read-only t
+                              :filter-with :reference)
+                        :target :users
+                        :on-delete :set-null
+                        :source (:view :main :table :users
+                                  :column :name :agg :first)
+                        :column t)
+                 :user-name (:type :text
+                              :ui (:label "Name" :widget :textbox :read-only t)
+                              :source (:view :main :column :user-name :agg :first)
+                              :column t :not-null t :sortable t :searchable t)
+                 :event (:type :text
+                          :ui (:label "Event" :widget :textbox :read-only t)
+                          :source (:view :main :column :event :agg :first)
+                          :column t :not-null t :searchable t)
+                 :on (:type :text
+                      :force-sql-name "on_type"
+                      :ui (:label "On" :widget :textbox :read-only t)
+                      :source (:view :main :column :on :agg :first)
+                      :column t :searchable t)
+                 :detail (:type :text
+                           :ui (:label "Detail" :widget :textbox :read-only t)
+                           :source (:view :main :column :detail :agg :first)
+                           :column t :searchable t)
+                 :when (:type :text
+                         :ui (:label "When" :widget :textbox :read-only t)
+                         :source (:view :main :column :when :agg :first)
+                         :column t :not-null t :sortable t :searchable t))
+       :list-form (:fields (:when :user :user-name :event :on :detail))
+       :view-form (:fields t))))
 
 (defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
   (let ((s (format nil "~(~a~)" keyword)))
@@ -2904,8 +2943,11 @@ correct there). Returns the effective :source plist."
     and primary-key = (when (getf field-def :primary-key) "primary key")
     and not-null = (when (getf field-def :not-null) "not null")
     with references = (when target
-                        (format nil "references ~a(id) on delete cascade"
-                          (table-name target (built-in-p target model))))
+                        (format nil "references ~a(id) on delete ~a"
+                          (table-name target (built-in-p target model))
+                          (if (eq (getf field-def :on-delete) :set-null)
+                            "set null"
+                            "cascade")))
     and unique = (when (getf field-def :unique) "unique")
     and default = (when (getf field-def :default)
                     (format nil "default ~a"
@@ -2966,7 +3008,7 @@ correct there). Returns the effective :source plist."
                        :default default-value))
     with attrs = '(:base-field :ui :unique :primary-key :target :join-table
                     :autofill :identity :default-from :css-value :action
-                    :compose :sortable :searchable)
+                    :compose :sortable :searchable :on-delete)
     for attr in attrs
     append (list attr (getf field-def attr)) into def
     finally
@@ -5658,6 +5700,28 @@ efficiently instantiate and support the application described by MODEL."))
 tables associated with user-defined types), then call SET-MODEL with MODEL."
   (reset-database)
   (set-model model))
+(defun heal-model ()
+  ":public: Re-run SET-MODEL's idempotent tail against the currently
+compiled model: create missing tables, indexes, and triggers
+(CREATE-TABLES), ensure declared and model roles exist, add missing type
+resources, system user settings, and root fs resources. Every step probes
+before it writes, so existing tables, rows, roles, and resources are never
+touched — safe to call at any time.
+
+The purpose is healing schema and RBAC drift after a snapshot restore onto a
+running image: a restore swaps the entire public schema, so tables and
+resources introduced by newer code than the dump (e.g. USAGE after the
+action-log work) vanish until this runs. Prefer HEAL-MODEL over SET-MODEL
+for that case — SET-MODEL drops the loaded model's user tables first
+(RESET-TABLES), destroying the just-restored data. A fresh process needs
+neither: with *COMPILED-MODEL* nil, SET-MODEL skips RESET-TABLES and heals
+at startup."
+  (create-tables)
+  (ensure-declared-roles)
+  (ensure-model-roles)
+  (add-type-roles)
+  (add-system-user-settings)
+  (add-root-fs-resources))
 
 (defun create-tables ()
   (loop with m = *compiled-model*
@@ -5730,17 +5794,35 @@ full CRUD)."
     (a:add-role *rbac* role :permissions permissions)))
 
 (defun add-type-roles ()
+  "Attach declared :type-roles to each type's type resource. A
+missing resource is created with the declared roles (plus admin,
+the always-attached default). A pre-existing resource is healed
+add-only: each declared role it is missing is attached; nothing is
+ever removed — runtime grants through be-add-type-roles are a
+second writer whose ceiling the declaration must not revoke, and
+heal-model's never-touch promise holds. Self-converges on every
+existing database at the next set-model / heal-model / restart."
   (loop with m = *compiled-model*
     for type-key in m by #'cddr
     for type-def in (cdr m) by #'cddr
     for roles = (add-to-list (getf type-def :type-roles) "admin")
     for resource-name = (type-resource-name type-key)
-    when (and (type-has-roles type-def)
-           (not (a:get-id *rbac* "resources" resource-name)))
+    when (type-has-roles type-def)
     do
-    (pl:pdebug :in "add-type-roles" :state "adding type role"
-      :type-key type-key :resource-name resource-name :type-roles roles)
-    (a:add-resource *rbac* resource-name :roles roles)))
+    (let ((existing (a:get-id *rbac* "resources" resource-name)))
+      (if (not existing)
+        (progn
+          (pl:pdebug :in "add-type-roles" :state "adding type role"
+            :type-key type-key :resource-name resource-name :type-roles roles)
+          (a:add-resource *rbac* resource-name :roles roles))
+        (let* ((attached (a:list-resource-role-names *rbac* resource-name))
+               (missing (remove-if
+                          (lambda (r) (member r attached :test #'equal))
+                          roles)))
+          (dolist (role missing)
+            (pl:pdebug :in "add-type-roles" :state "attaching type role"
+              :type-key type-key :resource-name resource-name :role role)
+            (a:add-resource-role *rbac* resource-name role)))))))
 
 (defun model-for (type-key)
   (getf *compiled-model* type-key))

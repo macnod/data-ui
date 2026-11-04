@@ -1181,6 +1181,25 @@ defined in tests/children-tests.lisp — load it first)."
     (explain! results)
     (when collect results)))
 
+(defun run-action-log-tests (&optional collect)
+  "Action log (:usage) tests. action-tests.lisp is loaded first so
+test-model's :button actions resolve from the registry at compile
+time (harmless when already loaded). Compile probes run bare;
+behavior runs on test-model; the guest login case runs in its own
+guest-allowed-test context (test-model does not set
+:guest-allowed, so login-user-id would demand a password there)."
+  (load (u:join-paths *package-root* "tests" "action-log-tests.lisp"))
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (let ((results
+          (append
+            (run 'action-log-compile)
+            (with-model "test-model" nil
+              (run 'action-log-suite))
+            (with-model "guest-allowed-test" nil
+              (run 'action-log-guest-suite)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -1239,7 +1258,8 @@ groups."
                    ("timestamp-override" . run-timestamp-override-tests)
                    ("record-permalink" . run-record-permalink-tests)
                    ("fk-eq"          . run-fk-eq-tests)
-                   ("children"       . run-children-tests))
+                   ("children"       . run-children-tests)
+                   ("action-log"     . run-action-log-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)
