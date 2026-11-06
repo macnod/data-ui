@@ -1971,17 +1971,28 @@ function probe_backend_target {
     # container restart and the rendered target would go stale; the
     # 2026-09-30 vof 503). Any HTTP answer counts; the /health gate
     # right after asserts content. The band 30303-31312 is published by
-    # the create block.
+    # the create block. POLLED like the health gates (5s cadence,
+    # DEPLOY_HEALTH_TIMEOUT deadline): a service can stay briefly
+    # unreachable in the moments after its rollout completes, and the
+    # live VIP deploy of 2026-11-06 showed a single-shot probe turning
+    # that transient into a failed deploy with a recovery record. A
+    # genuinely unpublished -p band still fails closed.
     local host_port=$(( NODE_PORT + 1000 ))
-    if curl -s -o /dev/null -m 5 "http://127.0.0.1:${host_port}/" 2>/dev/null; then
-        echo "Loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT}) answers."
-        return 0
-    fi
-    die "loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT})" \
-        "does not answer -- refusing to keep a bridge-IP target" \
-        "(fail-closed since 2026-09-30). Either the -p" \
-        "band is not published (recreate required) or nothing is" \
-        "listening yet (retry)."
+    local deadline="${DEPLOY_HEALTH_TIMEOUT:-300}" waited=0
+    while :; do
+        if curl -s -o /dev/null -m 5 "http://127.0.0.1:${host_port}/" 2>/dev/null; then
+            echo "Loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT}) answers."
+            return 0
+        fi
+        if (( waited >= deadline )); then
+            die "loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT}) did" \
+                "not answer within ${deadline}s -- refusing to keep a bridge-IP" \
+                "target (fail-closed since 2026-09-30). Either the -p band" \
+                "is not published (recreate required) or the service never" \
+                "became reachable."
+        fi
+        sleep 5; waited=$(( waited + 5 ))
+    done
 }
 
 function get_cluster_secret {

@@ -726,6 +726,18 @@ for a in "$@"; do
 done
 port=""
 if [[ "$url" =~ :([0-9]+) ]]; then port="${BASH_REMATCH[1]}"; fi
+# Simulated connection refusal: a countdown file curl-refuse-<port>
+# makes each call on that port exit 1 while the count lasts (a service
+# briefly unreachable right after rollout -- the hop probe's transient
+# case). Checked before the hook and the responses: a refused
+# connection has neither.
+if [[ -n "$port" && -f "$STUB/curl-refuse-$port" ]]; then
+    n=$(cat "$STUB/curl-refuse-$port" 2>/dev/null)
+    if [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )); then
+        echo $(( n - 1 )) > "$STUB/curl-refuse-$port"
+        exit 1
+    fi
+fi
 if [[ -n "$port" && -x "$STUB/hooks/curl-$port" ]]; then
     bash "$STUB/hooks/curl-$port" "$url" || true
 fi
@@ -1711,6 +1723,58 @@ test_recovery_post_rollout_failure_writes_record() {
     assert_eq "$(stat -c %a "$rec")" 600 "recovery record mode 600"
     assert_contains "$out" "MODEL_FILE='${rec}'"
     assert_contains "$out" "scripts/data-ui delete 'vipr2'"
+}
+
+test_hop_probe_polls_past_transient_refusal() {
+    default_fields
+    expect_ok run_cli deploy todos
+    # A service can be briefly unreachable in the moments after its
+    # rollout completes; the hop probe must poll past it (5s cadence,
+    # DEPLOY_HEALTH_TIMEOUT deadline) and the deploy must finish. The
+    # live VIP deploy of 2026-11-06 died exactly here when the probe
+    # was single-shot.
+    local name=hopp1
+    local vip; vip=$(make_vip_model_file "$name")
+    set_fields "$name" name="$name" "title=H" version=1 \
+        domain=hopp1.demo.data-ui.com repl=NIL
+    # Deterministic port: ports.lock is the cache assign_node_port
+    # reads first; 30377 sits far above anything suite deploys assign.
+    echo "$name demo 30377" >> "$H/state/deploy/ports.lock"
+    echo 1 > "$STUB/curl-refuse-31377"    # one refused attempt, then reachable
+    local out st
+    out=$(run_cmdline env MODEL_FILE="$vip" run_cli deploy "$name" 2>&1); st=$?
+    assert_eq "$(cat "$STUB/curl-refuse-31377")" 0 \
+        "the refusal was consumed (the probe retried)"
+    rm -f "$STUB/curl-refuse-31377"
+    (( st == 0 )) || fail "a transient hop refusal must not fail the deploy: $out"
+    assert_contains "$out" "Reusing NodePort 30377"
+    assert_contains "$out" "Loopback hop 127.0.0.1:31377 (nodePort 30377) answers."
+    assert_contains "$out" "NodePort /health gate passed"
+    assert_file "$(stable_copy "$name")" "VIP promotion completed"
+}
+
+test_hop_probe_unreachable_band_fails_closed() {
+    default_fields
+    expect_ok run_cli deploy todos
+    # A genuinely unpublished -p band: every attempt refused; the probe
+    # polls to its deadline, then dies fail-closed into the recovery
+    # path (no HAProxy update -- the route is never added).
+    local name=hopp2
+    local vip; vip=$(make_vip_model_file "$name")
+    set_fields "$name" name="$name" "title=H" version=1 \
+        domain=hopp2.demo.data-ui.com repl=NIL
+    echo "$name demo 30378" >> "$H/state/deploy/ports.lock"
+    echo 99 > "$STUB/curl-refuse-31378"
+    local out st
+    out=$(run_cmdline env CLI_HEALTH_TIMEOUT=3 MODEL_FILE="$vip" run_cli deploy "$name" 2>&1); st=$?
+    rm -f "$STUB/curl-refuse-31378"
+    (( st != 0 )) || fail "an unreachable hop must fail the deploy closed"
+    assert_contains "$out" "did not answer within 3s"
+    assert_contains "$out" "refusing to keep a bridge-IP target"
+    assert_not_contains "$out" "Updating HAProxy"
+    local rec
+    rec=$(ls "$H"/state/deploy/$name/recovery/*.lisp 2>/dev/null | head -1)
+    [[ -n "$rec" ]] || fail "no recovery record written"
 }
 
 test_recovery_record_drives_delete_and_route_removal() {
@@ -2770,6 +2834,8 @@ main() {
 
     t recovery_post_rollout_failure_writes_record
     t recovery_record_drives_delete_and_route_removal
+    t hop_probe_polls_past_transient_refusal
+    t hop_probe_unreachable_band_fails_closed
     t leftovers_move_to_orphaned_candidates
     t remote_transfer_never_writes_production_before_clean_check
 
