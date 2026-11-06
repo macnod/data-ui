@@ -359,7 +359,7 @@ For a detailed comparison of Data UI's approach against existing tools, see [Com
 - `:user-setting t` (type-level) to mark per-user settings types; auto-sets `:suppress-roles t` and derives category `:settings` if omitted
 - `:suppress-roles t` (type-level) to suppress the injected `roles` field in forms
 - `:category` (type-level) to place a type in the selector: `:user`, `:settings` (Settings tab), or `:system`. Author key, not reserved to built-ins
-- `:type-roles` to declare which roles can access a type (also overrides defaults on built-in types)
+- `:type-roles` to declare which roles may create a row of a type (also overrides defaults on built-in types). Not the same thing as the roles a row carries — see [Type Roles and Row Roles](docs/roles.md)
 - `:sortable t` / `:searchable t` on a field to enable list sorting (clickable headers) and free-text search (ILIKE)
 - `:default-sort` (type-level) to declare the sort used when a request sends none
 - `:rollup t` + `:grain` for read-only analytical types (SQL `GROUP BY` aggregates, no physical table)
@@ -520,9 +520,11 @@ and one command turns that into a running, public application:
 scripts/data-ui deploy todos
 ```
 
-Behind that command: the model is compile-checked against a throwaway database, the release is tagged from the model's version plus the git hash, a Docker image is built (React frontend compiled in one stage, precompiled SBCL runtime in another), Kubernetes manifests are rendered from templates and applied to a k3d cluster (each instance in its own namespace, with its own PostgreSQL and persistent volumes), and HAProxy routing is updated so the model's `:domain` serves the app over TLS, a wildcard Let's Encrypt certificate that renews itself.
+Behind that command: the production checkout (an independent clone at `/data/data-ui/repos/production`) is fetched and fast-forwarded to `public/master` and its script re-executed; the model is compile-checked against a throwaway database, the release is tagged from the model's version plus the selected commit's hash, a Docker image is built from a curated `git archive` context (React frontend compiled in one stage, precompiled SBCL runtime in another), Kubernetes manifests are rendered from templates and applied to a k3d cluster (each instance in its own namespace, with its own PostgreSQL and persistent volumes), and HAProxy routing is updated so the model's `:domain` serves the app over TLS, a wildcard Let's Encrypt certificate that renews itself — with NodePort and public-domain health gates before anything is promoted.
 
-The deploy is deterministic and repeatable: every fact is derived from the model and the git commit. Secrets and port assignments are generated once and thereafter recovered from the live cluster, so a deploy can be re-run from a fresh machine without breaking a running instance.
+The deploy is deterministic and repeatable: every fact is derived from the model and the selected commit. Secrets and port assignments are generated once and thereafter recovered from the live cluster, so a deploy can be re-run from a fresh machine without breaking a running instance.
+
+There are exactly three source checkouts — development (`~/common-lisp/data-ui`, may be dirty; no production build reads it), staging (`/data/data-ui/repos/staging`, updated by `scripts/data-ui staging update`, default `private/master`, and loaded by every host profile), and production (`/data/data-ui/repos/production`, what every `deploy`/`delete` runs). Everything else under `/data/data-ui` is runtime state (profiles, databases, files, snapshots, credentials, deploy state). Model Bank's Deploy button deploys through the same production pipeline via an immutable per-worker handoff file. See [docs/deployment.md](docs/deployment.md) → Source Environments.
 
 `:repl t` works and exposes Swank for the instance (reachable over an SSH tunnel). Prefer `:repl nil` in production, it is an extra attack surface even behind a tunnel.
 

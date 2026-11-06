@@ -21,6 +21,9 @@ Type=oneshot
 # root and runuser inherits nothing interactive; pin the state root
 # so the reset and every dataui@ unit see the same state.
 Environment=DATA_UI_STATE=/data/data-ui
+# The reset runs the staging clone's script (absolute path), never a
+# developer checkout.
+Environment=DATA_UI_CHECKOUT=/data/data-ui/repos/staging
 ExecStart=/usr/local/lib/data-ui/petting-zoo-reset.sh
 
 [Install]

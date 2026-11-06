@@ -20,7 +20,7 @@ DNS label (todo.x.com -> todo-stg.x.com). Assumes DOMAIN already passed the
 
 (defparameter *top-level-keys*
   '(:title :name :version :domain :domain-stg :repl :guest-allowed
-    :guest-auto :api-roles :landing-page :new-roles))
+    :guest-auto :api-roles :landing-page :new-roles :usage))
 
 (defun parse-number (s)
   ":private: Parses S into a number. Returns the number upon success, or NIL if
@@ -536,45 +536,274 @@ leading ;; comment lines and blank lines before checking for the quoted plist."
     (unless (and model-text (stringp model-text)
               (> (length (string-trim " " model-text)) 0))
       (return-from validate-deploy-model-text (err "model text is empty")))
-    (let ((stripped (u:trim (strip-leading-lisp-comments model-text))))
-      (unless (plusp (length stripped))
-        (return-from validate-deploy-model-text
-          (err "model text contains only comments")))
-      (unless (char= (char stripped 0) #\')
-        (return-from validate-deploy-model-text
-          (err "model text must be a quoted plist (leading ')")))
-      (let ((model-plist (ignore-errors (read-from-string stripped))))
-        (unless model-plist (return-from validate-deploy-model-text
-                              (err "parse error in model text")))
-        (let ((model-plist (cadr model-plist)))
-          (unless (and model-plist (u:plistp model-plist))
+    ;; read-model-text validates the ORIGINAL text (length cap and line
+    ;; numbers stay honest under a leading comment header), under a
+    ;; closed lexical vocabulary — no reader macros, no deep nesting.
+    ;; Its length cap fires before any content-based message below.
+    (let ((result (handler-case
+                    (list :ok (read-model-text model-text))
+                    (validation-error (e)
+                      (list :error (format nil "~a" e))))))
+      (when (getf result :error)
+        (return-from validate-deploy-model-text result))
+      (let* ((model-plist (cadr (getf result :ok)))
+             (stripped (u:trim (strip-leading-lisp-comments model-text))))
+        (unless (plusp (length stripped))
+          (return-from validate-deploy-model-text
+            (err "model text contains only comments")))
+        (unless (char= (char stripped 0) #\')
+          (return-from validate-deploy-model-text
+            (err "model text must be a quoted plist (leading ')")))
+        (unless (and model-plist (u:plistp model-plist))
+          (return-from validate-deploy-model-text
+            (err "parse error in model text")))
+        (let ((types (getf model-plist :types)))
+          (unless types
             (return-from validate-deploy-model-text
-              (err "parse error in model text")))
-          (let ((types (getf model-plist :types)))
-            (unless types
-              (return-from validate-deploy-model-text
-                (err "model has no :types key")))
-            (handler-case
-              (progn (validate-model types)
-                (ok model-plist))
-              (error (e) (err (format nil "~a" e))))))))))
+              (err "model has no :types key")))
+          (handler-case
+            (progn (validate-model types)
+              (ok model-plist))
+            (error (e) (err (format nil "~a" e)))))))))
 
-(defun deploy-model-write-file (model-plist package-root)
-  ":private: Write MODEL-PLIST to models/local/<name>.lisp (stable name,
-overwrite on re-deploy; the directory is gitignored — FR-9: VIP-deployed models
-never enter git history). Returns the relative file path (for the deploy script)
-and the model name."
+(defvar *deploy-model-token-generator* nil
+  ":private: When non-nil, deploy-model-generate-token calls this function
+instead of generating a random token. Used by tests to force collisions and
+prove the exclusive-create retry.")
+
+(defun deploy-model-generate-token ()
+  ":private: A fresh incoming-file token matching [A-Za-z0-9_-]+ (16 chars from
+a 64-symbol alphabet)."
+  (if *deploy-model-token-generator*
+    (funcall *deploy-model-token-generator*)
+    (let ((*random-state* (make-random-state t))
+          (alphabet "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"))
+      (coerce (loop repeat 16 collect (char alphabet (random 64)))
+              'string))))
+
+(defun deploy-model-token-p (token)
+  ":private: True when TOKEN matches [A-Za-z0-9_-]+ — the handoff path grammar
+shared with scripts/data-ui's envelope."
+  (and (stringp token)
+       (plusp (length token))
+       (every (lambda (c)
+                (or (alphanumericp c)
+                    (char= c #\-)
+                    (char= c #\_)))
+              token)))
+
+(defun deploy-model-token-from-path (model-file)
+  ":private: The token encoded in a models/local/deploy-incoming/<token>.lisp
+relative path."
+  (pathname-name (parse-namestring model-file)))
+
+(defun deploy-model-incoming-dir (package-root)
+  ":private: The per-checkout incoming directory for deploy handoffs."
+  (merge-pathnames "models/local/deploy-incoming/" package-root))
+
+(defun deploy-model-self-pid ()
+  ":private: This process's PID from /proc/self/stat — Linux-only by design (the
+registry's liveness rule reads /proc too) and free of any sb-posix dependency."
+  (let ((line (with-open-file (in "/proc/self/stat")
+                (read-line in))))
+    (parse-integer (subseq line 0 (position #\Space line)))))
+
+(defun deploy-model-write-file (model-text model-plist package-root)
+  ":private: Write MODEL-TEXT verbatim (the exact text that passed
+read-model-text — comments preserved, float spelling preserved; never a prin1 of
+the plist) to a UNIQUE models/local/deploy-incoming/<token>.lisp by exclusive
+create: a same-directory temp file opens with :if-exists nil so a collision
+returns NIL instead of truncating, and the rename onto the final path happens
+only when the final path is absent. On any collision, temp or final, a fresh
+token is tried (about ten times), then the write signals.  No worker ever
+mutates another's input. Returns the relative path (for the deploy script), the
+model name, and the absolute path."
   (let* ((model-name (or (getf model-plist :name) "model"))
-          (filename (format nil "~a.lisp" model-name))
-          (models-dir (merge-pathnames "models/local/" package-root))
-          (model-path (merge-pathnames filename models-dir))
-          (model-string (with-output-to-string (s)
-                          (write-char #\' s)
-                          (prin1 model-plist s))))
-    (ensure-directories-exist models-dir)
-    (with-open-file (out model-path :direction :output :if-exists :supersede)
-      (write-string model-string out))
-    (values (format nil "models/local/~a" filename) model-name model-path)))
+         (incoming-dir (deploy-model-incoming-dir package-root)))
+    (ensure-directories-exist incoming-dir)
+    (loop for attempt below 10
+          for token = (deploy-model-generate-token)
+          for rel = (format nil "models/local/deploy-incoming/~a.lisp" token)
+          for tmp = (merge-pathnames (format nil ".~a.lisp.tmp" token)
+                                     incoming-dir)
+          for final = (merge-pathnames (format nil "~a.lisp" token)
+                                       incoming-dir)
+          for stream = (and (deploy-model-token-p token)
+                            (not (probe-file final))
+                            (open tmp :direction :output
+                                  :if-exists nil
+                                  :if-does-not-exist :create))
+          when stream
+            do (let ((stream stream))
+                 (unwind-protect
+                      (write-string model-text stream)
+                   (close stream))
+                 ;; A final path appearing between the probe and the
+                 ;; rename means a concurrent writer won the token; the
+                 ;; rename would clobber it, so retreat to a fresh token.
+                 (cond ((probe-file final)
+                        (delete-file tmp))
+                       (t (rename-file tmp final)
+                          (return-from deploy-model-write-file
+                            (values rel model-name final))))))
+    (error "deploy-model-write-file: could not claim a unique incoming file ~
+after 10 attempts in ~a" incoming-dir)))
+
+;;
+;; The per-worker registry: <token>.registry beside <token>.lisp, holding
+;; key=value lines with no quoting, comments, or blank lines, every key present,
+;; in this order:
+;;
+;;   state token worker-pid child-pid path
+;; 
+;; state is pending (file written, not spawned), ready (child PID recorded), or
+;; done (script exited). child-pid is '-' only when pending. Every write is a
+;; same-directory temp file (.<token>.registry.tmp) plus rename. The record is
+;; never in a Docker context (the context is a fresh git archive).
+;;
+
+(defun deploy-model-registry-contents (state token worker-pid child-pid path)
+  (format nil "state=~a~%token=~a~%worker-pid=~a~%child-pid=~a~%path=~a~%"
+          state token worker-pid child-pid path))
+
+(defun deploy-model-registry-write (state token worker-pid child-pid path
+                                 package-root)
+  ":private: Atomically (temp + rename) write the complete registry record."
+  (let* ((dir (deploy-model-incoming-dir package-root))
+         (final (merge-pathnames (format nil "~a.registry" token) dir))
+         (tmp (merge-pathnames (format nil ".~a.registry.tmp" token) dir)))
+    (ensure-directories-exist dir)
+    (with-open-file (out tmp :direction :output :if-exists :supersede)
+      (write-string (deploy-model-registry-contents state token worker-pid
+                                                     child-pid path)
+                    out))
+    (rename-file tmp final)))
+
+(defun deploy-model-registry-create (token worker-pid path package-root)
+  ":private: Create the record in state pending."
+  (deploy-model-registry-write "pending" token worker-pid "-" path
+                               package-root))
+
+(defun deploy-model-registry-set-child (token child-pid package-root)
+  ":private: Record the spawned script's PID; the state becomes ready."
+  (multiple-value-bind (state worker _child _path ok reason)
+      (parse-deploy-registry-record
+       (merge-pathnames (format nil "~a.registry" token)
+                        (deploy-model-incoming-dir package-root)))
+    (declare (ignore _child _path))
+    (unless (and ok (equal state "pending"))
+      (error "deploy-model-registry-set-child: record for ~a is ~a (~a)"
+             token (if ok state "unreadable") reason))
+    (deploy-model-registry-write "ready" token worker child-pid
+                                 (format nil
+                                         "models/local/deploy-incoming/~a.lisp"
+                                         token)
+                                 package-root)))
+
+(defun deploy-model-registry-done (token package-root)
+  ":private: Ack completion: state done, keeping the recorded PIDs."
+  (multiple-value-bind (state worker child _path ok reason)
+      (parse-deploy-registry-record
+       (merge-pathnames (format nil "~a.registry" token)
+                        (deploy-model-incoming-dir package-root)))
+    (declare (ignore _path))
+    (unless (and ok (member state '("pending" "ready") :test #'equal))
+      (error "deploy-model-registry-done: record for ~a is ~a (~a)"
+             token (if ok state "unreadable") reason))
+    (let ((child-pid (if (equal state "ready") child "-")))
+      (deploy-model-registry-write "done" token worker child-pid
+                                   (format nil
+                                           "models/local/deploy-incoming/~a.lisp"
+                                           token)
+                                   package-root))))
+
+(defun deploy-model-registry-remove (token package-root)
+  ":private: Remove this worker's own record. ENOENT from a concurrent
+reaper is tolerated (the record is provably done)."
+  (handler-case
+      (delete-file (merge-pathnames (format nil "~a.registry" token)
+                                    (deploy-model-incoming-dir package-root)))
+    (file-error ())))
+
+(defun parse-deploy-registry-record (path)
+  ":private: Strict parse of a <token>.registry record — the contract shared
+with the shell scanner (staging modelbank-orphans) and tested for parity. Any
+deviation makes the record UNRECOGNIZABLE: unknown, missing, or duplicate keys;
+a bad state; a non-numeric worker-pid; child-pid '-' outside pending; a numeric
+child-pid in pending; or a token/path mismatch.  Returns (values state
+worker-pid child-pid path t) on success and (values nil nil nil nil reason) on
+failure, where worker-pid is an integer, child-pid is an integer or NIL (pending
+only), and path is the string from the record."
+  (let ((token (pathname-name path)))
+    (flet ((bail (reason)
+             (return-from parse-deploy-registry-record
+               (values nil nil nil nil nil reason))))
+      (let ((lines nil)
+            (reason nil))
+        (handler-case
+            (setf lines (uiop:read-file-lines path))
+          (file-error (e) (setf reason (format nil "unreadable: ~a" e))))
+        (when reason (bail reason))
+        (unless (= (length lines) 5)
+          (bail (format nil "expected 5 lines, got ~a" (length lines))))
+        (let ((pairs
+                (mapcar
+                 (lambda (line)
+                   (let ((pos (position #\= line)))
+                     (if pos
+                       (cons (subseq line 0 pos) (subseq line (1+ pos)))
+                       nil)))
+                 lines)))
+          (unless (every #'identity pairs)
+            (bail "a line has no '='"))
+          (destructuring-bind (p1 p2 p3 p4 p5) pairs
+            (unless (equal (car p1) "state")
+              (bail "first key is not state"))
+            (unless (equal (car p2) "token")
+              (bail "second key is not token"))
+            (unless (equal (car p3) "worker-pid")
+              (bail "third key is not worker-pid"))
+            (unless (equal (car p4) "child-pid")
+              (bail "fourth key is not child-pid"))
+            (unless (equal (car p5) "path")
+              (bail "fifth key is not path"))
+            (let ((state (cdr p1))
+                  (token* (cdr p2))
+                  (worker (cdr p3))
+                  (child (cdr p4))
+                  (path (cdr p5)))
+              (unless (member state '("pending" "ready" "done")
+                              :test #'equal)
+                (bail (format nil "bad state '~a'" state)))
+              (unless (and (deploy-model-token-p token*)
+                           (equal token* token))
+                (bail (format nil "bad token '~a'" token*)))
+              (let ((worker-pid
+                      (ignore-errors (parse-integer worker))))
+                (unless (and worker-pid (plusp worker-pid))
+                  (bail (format nil "bad worker-pid '~a'" worker)))
+                (let ((child-pid
+                        (if (equal child "-")
+                          nil
+                          (ignore-errors (parse-integer child)))))
+                  (cond
+                    ((equal state "pending")
+                     (when child-pid
+                       (bail (format nil
+                                     "numeric child-pid '~a' in pending"
+                                     child))))
+                    ((null child-pid)
+                     (bail (format nil
+                                   "child-pid '~a' must be numeric outside ~
+pending"
+                                   child))))
+                  (unless (equal path
+                                 (format nil
+                                         "models/local/deploy-incoming/~a.lisp"
+                                         token*))
+                    (bail (format nil
+                                  "path '~a' does not match the token" path)))
+                  (values state worker-pid child-pid path t))))))))))
 
 (defun deploy-model-git-commit (model-path model-name repo-root)
   ":private: Stage and commit the model file so the tree is clean for deploy."
@@ -585,23 +814,88 @@ and the model name."
                       (format nil "Deploy ~a" model-name))
     :input nil :directory repo-root))
 
-(defun deploy-model-run-script (package-root model-name)
+(defun deploy-model-run-script (package-root model-name model-file token)
   ":private: Run scripts/data-ui deploy <model-name> with MODEL_FILE pointing
-at the local model (FR-9: the script compiles the file directly; no git commit,
-no canonical models/<name>.lisp). Returns (values stdout stderr exit-code).
-Does not signal on non-zero exit; the caller inspects exit-code and stderr."
-  (let ((script-path (namestring
-                       (merge-pathnames "scripts/data-ui" package-root)))
+at the UNIQUE incoming file (accepted as given; never reconstructed). Spawns
+without waiting, records the child PID (registry: ready), then waits, and
+returns (values stdout stderr exit-code). Never :output :stream pipes read after
+exit: the script writes far more than the 64 KiB pipe buffer (--no-cache docker
+build, compiler warnings, rollout output) and would block forever with the
+status stuck at 'running' and the production lock held. stdout/stderr go to two
+private temp files under (uiop:temporary-directory), created exclusively, then
+slurped and deleted.  The environment contract is verbatim: :environment
+replaces the whole environment with
+
+(cons \"MODEL_FILE=...\" (sb-unix::posix-environ))
+
+The private symbol is deliberate (it carries the Docker credentials); do not
+'clean it up'. Does not signal on non-zero exit; the caller inspects exit-code
+and stderr."
+  (let* ((script-path (namestring
+                        (merge-pathnames "scripts/data-ui" package-root)))
          (repo-root (namestring package-root))
-         (model-file (u:join-paths "models/local"
-                       (format nil "~a.lisp" model-name))))
-    (uiop:run-program (list script-path "deploy" model-name)
-      :input nil
-      :output :string :error-output :string
-      :ignore-error-status t
-      :directory repo-root
-      :environment (cons (format nil "MODEL_FILE=~a" model-file)
-                       (sb-unix::posix-environ)))))
+         (tmp-dir (ensure-directories-exist
+                    (merge-pathnames "data-ui/"
+                                     (uiop:temporary-directory))))
+         (out-stream nil) (err-stream nil)
+         (out-path nil) (err-path nil))
+    ;; Exclusive create: an open returns NIL on collision instead of
+    ;; truncating another run's output.
+    (loop for attempt below 10
+          for suffix = (deploy-model-generate-token)
+          for o = (open (merge-pathnames
+                         (format nil "deploy-~a-out.txt" suffix) tmp-dir)
+                        :direction :output
+                        :if-exists nil :if-does-not-exist :create)
+          do (let ((e (and o
+                           (open (merge-pathnames
+                                  (format nil "deploy-~a-err.txt" suffix)
+                                  tmp-dir)
+                                 :direction :output
+                                 :if-exists nil :if-does-not-exist :create))))
+               (cond
+                 ((and o e)
+                  (setf out-stream o err-stream e
+                        out-path (pathname o) err-path (pathname e))
+                  (return))
+                 (o (close o)
+                    (delete-file (pathname o)))
+                 (e (close e)
+                    (delete-file (pathname e)))))
+          finally
+             (unless out-stream
+               (error "deploy-model-run-script: could not create private ~
+temp output files in ~a" tmp-dir)))
+    (unwind-protect
+         (let ((proc
+                 (uiop:launch-program
+                   (list script-path "deploy" model-name)
+                   :input nil
+                   :output out-stream
+                   :error-output err-stream
+                   :directory repo-root
+                   :environment (cons (format nil "MODEL_FILE=~a" model-file)
+                                      (sb-unix::posix-environ)))))
+           (deploy-model-registry-set-child token
+             (uiop:process-info-pid proc) package-root)
+           (let ((exit-code (uiop:wait-process proc)))
+             (close out-stream)
+             (close err-stream)
+             (let ((stdout (handler-case
+                             (uiop:read-file-string out-path)
+                             (file-error () "")))
+                   (stderr (handler-case
+                             (uiop:read-file-string err-path)
+                             (file-error () ""))))
+               (values stdout stderr exit-code))))
+      (handler-case (and out-stream (open-stream-p out-stream)
+                         (close out-stream))
+        (error ()))
+      (handler-case (and err-stream (open-stream-p err-stream)
+                         (close err-stream))
+        (error ()))
+      (handler-case (and out-path (delete-file out-path)) (error ()))
+      (handler-case (and err-path (delete-file err-path)) (error ())))))
 
 (defun deploy-model-find-secret-id (name)
   ":private: The :id of admin's :secrets row named NAME, or NIL when no such
@@ -652,44 +946,60 @@ dies at the END of its output — after compiler warnings and per-field noise �
 the head routinely hides the actual error."
   (subseq msg (max 0 (- (length msg) 180))))
 
-(defun deploy-model-async (model-plist set-status package-root user)
-  ":private: Worker body for the deploy-model hook. Writes the model file (no git
-commit — FR-9 keeps VIP models out of history), runs the deploy script with
-MODEL_FILE, records the admin password in the :secrets table, and updates
-status.  Wraps everything in a handler-case so errors become 'failed: <message>'
-rather than silent thread death."
+(defun deploy-model-async (model-text model-plist set-status package-root
+                           user)
+  ":private: Worker body for the deploy-model hook. Writes the UNIQUE
+incoming file (exclusive create; the text is the validated text verbatim),
+creates its registry record (pending), runs the deploy script with
+MODEL_FILE (recording the child PID as ready, then waiting), writes done,
+removes its own incoming file, then its record — in that order, so a
+reaper that observes done may finish the cleanup concurrently (ENOENT is
+tolerated on both removals). Records the admin password in the :secrets
+table and updates status. Wraps everything in a handler-case so errors
+become 'failed: <message>' rather than silent thread death."
   (handler-case
     (multiple-value-bind (model-file model-name model-path)
-      (deploy-model-write-file model-plist package-root)
-      (declare (ignore model-file model-path))
-      (multiple-value-bind (stdout stderr exit-code)
-        (deploy-model-run-script package-root model-name)
-        (declare (ignore stdout))
-        (if (zerop exit-code)
-          (progn
-            (deploy-model-record-secret model-name
-              (getf model-plist :domain) user)
-            (funcall set-status "complete"))
-          (let ((msg (format nil "deploy exited ~a: ~a"
-                       exit-code
-                       (string-trim '(#\Newline #\Space) stderr))))
-            (pl:pinfo :in "deploy-model-async"
-              :status "failed" :reason msg)
-            (funcall set-status
-              (format nil "failed: ~a" (deploy-model-tail msg))))))))
+        (deploy-model-write-file model-text model-plist package-root)
+      (let ((token (deploy-model-token-from-path model-file)))
+        (deploy-model-registry-create token (deploy-model-self-pid)
+                                      model-file package-root)
+        (multiple-value-bind (stdout stderr exit-code)
+            (deploy-model-run-script package-root model-name model-file
+                                     token)
+          (declare (ignore stdout))
+          (deploy-model-registry-done token package-root)
+          (handler-case (delete-file model-path) (file-error ()))
+          (deploy-model-registry-remove token package-root)
+          (if (zerop exit-code)
+            (progn
+              (deploy-model-record-secret model-name
+                (getf model-plist :domain) user)
+              (funcall set-status "complete"))
+            (let ((msg (format nil "deploy exited ~a: ~a"
+                         exit-code
+                         (string-trim '(#\Newline #\Space) stderr))))
+              (pl:pinfo :in "deploy-model-async"
+                :status "failed" :reason msg)
+              (funcall set-status
+                (format nil "failed: ~a" (deploy-model-tail msg))))))))
     (error (e)
       (let ((msg (format nil "~a" e)))
         (pl:pinfo :in "deploy-model-async"
           :status "failed" :reason msg)
         (funcall set-status
-          (format nil "failed: ~a" (deploy-model-tail msg))))))
+          (format nil "failed: ~a" (deploy-model-tail msg)))))))
 
 ;; :deploy-model — async deploy hook for Model Bank.
 ;;
 ;; Reads model text from a field (param :field), validates it in-process via
-;; validate-model, then spawns a worker thread that writes the model to
-;; models/local/<name>.lisp and shells out to scripts/data-ui deploy with
-;; MODEL_FILE set (FR-9; no git commit — VIP models stay out of history).
+;; validate-model, then spawns a worker thread that writes the model to a
+;; UNIQUE models/local/deploy-incoming/<token>.lisp (exclusive create) with
+;; a <token>.registry record beside it, and shells out to scripts/data-ui
+;; deploy with MODEL_FILE set (no git commit — VIP models stay out of
+;; history). The outer deploy arm snapshots and validates the handoff,
+;; installs its own candidate in the PRODUCTION checkout under the
+;; production lock, and promotes it to models/local/<name>.lisp only after
+;; both health gates; workers never write the stable copy.
 ;; Requires the "deployer" role (FR-7); the check precedes validation and
 ;; produces an immediate "failed: deployer role required" without spawning a
 ;; subprocess.
@@ -719,7 +1029,8 @@ rather than silent thread death."
               (sb-thread:make-thread
                 (lambda ()
                   (deploy-model-async
-                    model-plist set-status *package-root* user))
+                    (getf record field) model-plist
+                    set-status *package-root* user))
                 :name "data-ui-deploy-model")
               (list :async t :message "Deploy started"))))))))
 
@@ -749,7 +1060,9 @@ Optional :temperature (default 0.3) and :max-tokens (default 16384)."
                        raw
                        (format nil "(~a)" raw))))
           (parsed (when wrapped
-                    (ignore-errors (read-from-string wrapped))))
+                    (ignore-errors
+                      (let ((*read-eval* nil))
+                        (read-from-string wrapped)))))
           (is-plist (when parsed (u:plistp parsed)))
           (url (when is-plist (getf parsed :url)))
           (model (when is-plist (getf parsed :model)))
@@ -1825,21 +2138,25 @@ validator there, and a frontend renderer.")
                  :event (:type :text
                           :ui (:label "Event" :widget :textbox :read-only t)
                           :source (:view :main :column :event :agg :first)
-                          :column t :not-null t :searchable t)
+                          :column t :not-null t :searchable t :sortable t)
                  :on (:type :text
                       :force-sql-name "on_type"
                       :ui (:label "On" :widget :textbox :read-only t)
                       :source (:view :main :column :on :agg :first)
-                      :column t :searchable t)
+                      :column t :searchable t :sortable t)
                  :detail (:type :text
                            :ui (:label "Detail" :widget :textbox :read-only t)
                            :source (:view :main :column :detail :agg :first)
-                           :column t :searchable t)
+                           :column t :searchable t :sortable t)
+                 :ip (:type :text
+                      :ui (:label "IP" :widget :textbox :read-only t)
+                      :source (:view :main :column :ip :agg :first)
+                      :column t :searchable t :sortable t)
                  :when (:type :text
                          :ui (:label "When" :widget :textbox :read-only t)
                          :source (:view :main :column :when :agg :first)
                          :column t :not-null t :sortable t :searchable t))
-       :list-form (:fields (:when :user :user-name :event :on :detail))
+       :list-form (:fields (:when :user :user-name :ip :event :on :detail))
        :view-form (:fields t))))
 
 (defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
@@ -4207,6 +4524,32 @@ error messages. Signals report-e."
             "In type ~s, ~s field ~s is not :sortable t."
             ~type-key ~declaration-key ~field-key))))))
 
+(defun valid-title-field (type-key type-def)
+  ":private: Validate a :title-field declaration against the
+compiled TYPE-DEF (fields are compiled by this point). :title-field
+names the row-titling column for the :usage detail (the
+usage-identity-string lookup runs raw SQL, so the field must have a
+real column); it must be a keyword naming an existing field with
+:column t. Skips when no declaration is present. Signals report-e."
+  (let ((field-key (getf type-def :title-field)))
+    (when (member :title-field type-def)
+      (unless (keywordp field-key)
+        (report-e "valid-title-field"
+          ":title-field on type ~s must be a field keyword, got ~s."
+          ~type-key ~field-key))
+      (let ((field-def (u:tree-get type-def :fields field-key)))
+        (cond
+          ((null field-def)
+            (report-e "valid-title-field"
+              ":title-field on type ~s names an unknown field ~s."
+              ~type-key ~field-key))
+          ((not (getf field-def :column))
+            (report-e "valid-title-field"
+              ":title-field ~s on type ~s must be a :column t ~
+               field (the usage detail reads it with direct SQL ~
+               against the table)."
+              ~field-key ~type-key)))))))
+
 (defun valid-page-description (type-key type-def)
   ":private: Validate :page-description / :page-description-open on
 TYPE-DEF. :page-description, when present, must be a string that
@@ -4424,6 +4767,11 @@ the first violation."
   (when (getf type-def :write-to)
     (report-e "valid-rollup-matrix"
       ":write-to is not allowed on rollup type ~s."
+      ~type-key))
+  (when (u:has (u:plist-keys type-def) :title-field)
+    (report-e "valid-rollup-matrix"
+      ":title-field is not allowed on rollup type ~s; usage ~
+       events never target a rollup."
       ~type-key))
   (when (and (u:has (u:plist-keys type-def) :suppress-roles)
           (null (getf type-def :suppress-roles)))
@@ -5313,6 +5661,7 @@ legal. Signals report-e."
       (valid-form-fields type-key final-def)
       (valid-hide-list type-key final-def)
       (valid-default-sort type-key final-def)
+      (valid-title-field type-key final-def)
       ;; Belt-only on today's rollup matrix (:target is forbidden on
       ;; rollup fields, so has-reference finds nothing); kept so a
       ;; future relaxation does not silently lose the check.
@@ -5683,10 +6032,12 @@ models/test/ are test fixtures and are excluded."
   (:method ((file string))
     "Accepts a file name (no path and no extension), resolves the path via
 RESOLVE-MODEL-PATH (checking models/ then models/test/), reads the model from
-that file, and sets that model with SET-MODEL."
+that file, and sets that model with SET-MODEL. Model text is read under the
+closed lexical vocabulary of READ-MODEL-TEXT — a file that violates it (reader
+macros, disallowed tokens, deep nesting) signals before any table work, so a
+rejected file changes nothing."
     (let ((path (resolve-model-path file)))
-      (with-open-file (in path)
-        (set-model (cadr (read in))))))
+      (set-model (cadr (read-model-text (u:slurp path))))))
   (:documentation ":public: Sets the model to the given plist. If given a
 string instead of a plist, resolves the string to a file in the `models`
 directory, loads the plist from there, and then sets the model that
@@ -6006,6 +6357,38 @@ names. Returns VALUE unchanged."
       do (error "~(~s~) value ~s does not look like a ~(~a~)."
            key value key))))
 
+(defvar *usage-states* '(:on :off)
+  ":private: Closed state vocabulary for the top-level :usage key.")
+
+(defun valid-usage (value)
+  "Validate a :usage VALUE: a plist whose only recognized key
+is :state, one of :on or :off. Both () and (:state :on) mean
+logging on — an absent :state is the :on default, so the
+empty plist is legal and must stay that way. A present :state
+of nil or any unknown keyword, or any non-:state key, signals
+report-e with the raw value shown. Returns VALUE unchanged."
+  (unless (u:plistp value)
+    (report-e "valid-usage"
+      ":usage value must be a plist, e.g. (:state :off), got ~s."
+      ~value))
+  ;; Key presence via u:plist-keys, not getf truthiness: getf
+  ;; cannot tell absent from (:state nil), and (:state nil) is
+  ;; exactly the raw-boolean spelling the future purge removes —
+  ;; it must signal with nil in the message, not default to :on.
+  (when (member :state (u:plist-keys value))
+    (let ((state (getf value :state)))
+      (unless (member state *usage-states*)
+        (report-e "valid-usage"
+          ":usage :state must be one of :on or :off, or absent. ~
+           Got ~s."
+          ~state))))
+  (let ((extra (remove :state (u:plist-keys value))))
+    (when extra
+      (report-e "valid-usage"
+        ":usage has unknown keys ~{~s~^, ~}."
+        ~extra)))
+  value)
+
 (defun valid-top-level-field (model key)
   (let ((value (getf model key)))
     (case key
@@ -6069,7 +6452,22 @@ names. Returns VALUE unchanged."
         (valid-top-level-value key value nil
           :predicates (list #'u:plistp)))
       (:new-roles
-        (when value (valid-new-roles value))))))
+        (when value (valid-new-roles value)))
+      (:usage
+        ;; getf cannot distinguish "key present, value nil" from "key
+        ;; absent" — an explicit nil is rejected here with its own
+        ;; message (valid-usage's plist check alone would accept nil:
+        ;; u:plistp nil is t, the legal empty plist), while an absent
+        ;; key defaults to :on in model-usage-state (the :api-roles
+        ;; member-gate precedent).
+        (if (getf model :usage)
+          (valid-usage value)
+          (when (member :usage model)
+            (report-e "valid-top-level-field"
+              ":usage value must be a plist, e.g. (:state :off); ~
+               an explicit nil is not the :on default. Omit the ~
+               key entirely."
+              ~key)))))))
 
 (defun top-level-settings (model)
   (loop for k in *top-level-keys*
@@ -6136,6 +6534,16 @@ css-variables). Defaults to (\"logged-in\") when the model omits
 the key."
   (or (getf *top-level-settings* :api-roles) '("logged-in")))
 
+(defun model-usage-state ()
+  "Usage logging state for the current model: :on or :off. The
+gate test is (eq (model-usage-state) :off) — the keyword, never a
+boolean. An absent :usage key or an omitted :state inside the
+plist both mean :on (today's behavior, the default); :off is the
+only spelling of off. record-usage consults this before any
+work."
+  (or (u:tree-get *top-level-settings* :usage :state) :on))
+
 (defun model-landing-page ()
   "Configured (not user-resolved) landing type, or NIL."
   (getf *top-level-settings* :landing-page))
+

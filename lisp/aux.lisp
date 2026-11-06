@@ -195,6 +195,304 @@ function returns NIL. This is useful for dealing the values that the database
 returns for fields that are null."
   (if (equal value :null) nil value))
 
+(defparameter *model-text-max-length* 262144
+  ":private: Cap on model text accepted by READ-MODEL-TEXT (characters,
+comments included). The largest model today is about 17K; 256K leaves room
+for heavily spaced and commented large models.")
+
+(defparameter *model-text-max-depth* 64
+  ":private: Cap on nesting depth accepted by READ-MODEL-TEXT. The deepest
+model today is 8; this cap, not the length cap, keeps a paren nest from
+exhausting the stack.")
+
+(defparameter *model-text-max-float-digits* 7
+  ":private: Most digits (both sides of the point combined) a float literal
+may carry in model text. Seven survive single precision exactly.")
+
+(defun model-text-shadow (text)
+  ":private: Shadow copy of TEXT for lexical checks: every string becomes
+\"\" (plus any newlines it contained), every ; comment is dropped, and a
+comment's newline is kept — so shadow line N is line N of TEXT. Iterative,
+one pass, O(n). Signals report-ve on an unterminated string. The shadow is
+what VALID-MODEL-SHADOW and VALID-MODEL-TOKENS scan: because all suspicious
+characters live only inside strings and comments, and those are blanked
+here, the shadow's view of string/comment boundaries matches the reader's."
+  (with-output-to-string (out)
+    (let ((len (length text))
+          (state :code)
+          (i 0)
+          (line 1))
+      (declare (ignorable state))
+      (loop
+        while (< i len)
+        for ch = (char text i)
+        do
+        (ecase state
+          (:code
+            (cond
+              ((char= ch #\") (write-char #\" out) (setf state :string))
+              ((char= ch #\;) (setf state :comment))
+              (t (when (char= ch #\Newline) (incf line))
+                 (write-char ch out))))
+          (:string
+            (cond
+              ((char= ch #\\)
+               (let ((next (and (< (1+ i) len) (char text (1+ i)))))
+                 (when (char= (or next #\Null) #\Newline)
+                   (write-char #\Newline out))
+                 (incf i)))
+              ((char= ch #\") (write-char #\" out) (setf state :code))
+              ((char= ch #\Newline) (write-char #\Newline out))))
+          (:comment
+            (when (char= ch #\Newline)
+              (write-char #\Newline out)
+              (setf state :code))))
+        (incf i))
+      (when (eq state :string)
+        (report-ve "model-text-shadow"
+          "model text line ~a: unterminated string" ~line)))))
+
+(defun valid-model-char-p (ch)
+  ":private: T when CH is allowed in a model-text shadow: ASCII letters and
+digits, dash, colon, dot, parens, the shadow's own \"\" pair, whitespace
+(space, tab, newline, return), or the one leading quote."
+  (or (char<= #\a ch #\z)
+      (char<= #\A ch #\Z)
+      (char<= #\0 ch #\9)
+      (member ch '(#\- #\: #\. #\( #\) #\" #\' #\Space #\Tab #\Newline
+                   #\Return)
+              :test #'char=)))
+
+(defun valid-model-quote (shadow)
+  ":private: Check the leading quote on SHADOW: the first non-whitespace
+character must be ', the next non-whitespace character after it must be (,
+and ' must not appear again. Signals report-ve otherwise. Returns T. Runs
+last in VALID-MODEL-SHADOW — the atom-after-quote shape ('not-a-plist
+(...)) has balanced parens, so only the quote rule catches the trailing
+list."
+  (flet ((reject ()
+           (report-ve "valid-model-quote"
+             "model text must be one quoted plist '(...)'")))
+    (let ((start (position-if
+                  (lambda (ch) (not (member ch '(#\Space #\Tab #\Newline
+                                                 #\Return)
+                                      :test #'char=)))
+                  shadow)))
+      (unless (and start (char= (char shadow start) #\'))
+        (reject))
+      (let ((open (position-if
+                   (lambda (ch) (not (member ch '(#\Space #\Tab #\Newline
+                                                  #\Return)
+                                       :test #'char=)))
+                   shadow :start (1+ start))))
+        (unless (and open (char= (char shadow open) #\()) (reject))
+        (when (position #\' shadow :start (1+ start)) (reject)))
+      t)))
+
+(defun valid-model-shadow (shadow)
+  ":private: Character, quote, paren and trailing-content checks on SHADOW
+(the output of MODEL-TEXT-SHADOW). Signals report-ve on the first violation
+with the line number; returns T otherwise. Newlines survive MODEL-TEXT-SHADOW
+from comments and strings, so shadow line N is line N of the original text."
+  (loop
+    with line = 1
+    with depth = 0
+    with closed = nil
+    for ch across shadow
+    do
+    (unless (valid-model-char-p ch)
+      (let ((display
+              (handler-case (format nil "~a" ch)
+                (error () (format nil "~a" (char-name ch))))))
+        (report-ve "valid-model-shadow"
+          "model text line ~a: disallowed character ~a" ~line ~display)))
+    (when (char= ch #\Newline) (incf line))
+    (cond
+      ((char= ch #\() (incf depth)
+        (let ((max *model-text-max-depth*))
+          (when (> depth max)
+            (report-ve "valid-model-shadow"
+              "model text line ~a: nesting deeper than ~a" ~line ~max))))
+      ((char= ch #\))
+        (decf depth)
+        (when (< depth 0)
+          (report-ve "valid-model-shadow"
+            "model text line ~a: unbalanced ')'" ~line))
+        (when (and (zerop depth) (not closed))
+          (setf closed t)))
+      ((and closed (not (member ch '(#\Space #\Tab #\Newline #\Return)
+                            :test #'char=)))
+        (report-ve "valid-model-shadow"
+          "model text line ~a: content after the model's closing ')'" ~line)))
+    finally
+    (unless (zerop depth)
+      (report-ve "valid-model-shadow"
+        "model text: ~a unclosed '('" ~depth))
+    (return (valid-model-quote shadow))))
+
+(defun model-text-token-p (token)
+  ":private: T when TOKEN matches an allowed model-text token shape:
+keyword (colon + letters/digits/dashes, no second colon), integer
+(-?digits), simple float (-?digits.digits with at most
+*MODEL-TEXT-MAX-FLOAT-DIGITS* digits total), or t / nil (either case).
+Anything else — 1e3, .5, 1., +1, foo, a:b, ::x — is NIL."
+  (flet ((digit-p (ch) (char<= #\0 ch #\9)))
+    (cond
+      ((member token '("t" "T" "nil" "NIL") :test #'equal) t)
+      ((and (>= (length token) 2)
+            (char= (char token 0) #\:)
+            (notevery (lambda (ch) (char= ch #\:)) token)
+            (every
+              (lambda (ch)
+                (or (char<= #\a ch #\z)
+                    (char<= #\A ch #\Z)
+                    (digit-p ch)
+                    (char= ch #\-)))
+              (subseq token 1)))
+       t)
+      (t
+       (let* ((dash-p (and (> (length token) 1)
+                           (char= (char token 0) #\-)))
+              (body (if dash-p (subseq token 1) token))
+              (dot (position #\. body)))
+         (if dot
+           ;; simple float: digits.digits, one dot, digit on both sides
+           (and (every
+                  (lambda (ch)
+                    (or (char<= #\0 ch #\9) (char= ch #\.)))
+                  body)
+             (= (count #\. body :test #'char=) 1)
+             (/= dot 0)
+             (/= dot (1- (length body)))
+             (<= (count-if
+                   (lambda (ch) (char<= #\0 ch #\9)) body)
+               *model-text-max-float-digits*))
+           ;; integer: digits only
+           (and (plusp (length body))
+             (every (lambda (ch) (char<= #\0 ch #\9)) body))))))))
+
+(defun model-text-float-shape-p (token)
+  ":private: T when TOKEN matches -?digits.digits regardless of digit
+count (the shape alone). VALID-MODEL-TOKENS uses this to give floats with
+too many digits their own message."
+  (let* ((dash-p (and (> (length token) 1)
+                      (char= (char token 0) #\-)))
+         (body (if dash-p (subseq token 1) token))
+         (dot (position #\. body)))
+    (and dot
+      (every
+        (lambda (ch) (or (char<= #\0 ch #\9) (char= ch #\.)))
+        body)
+      (= (count #\. body :test #'char=) 1)
+      (/= dot 0)
+      (/= dot (1- (length body))))))
+
+(defun model-text-token-digit-count (token)
+  ":private: Digits (0-9) in TOKEN."
+  (count-if (lambda (ch) (char<= #\0 ch #\9)) token))
+
+(defun model-text-token-error (token line)
+  ":private: Signal the right report-ve for an invalid TOKEN on LINE: a
+float shape with more than *MODEL-TEXT-MAX-FLOAT-DIGITS* digits gets the
+digit-count message; anything else is an invalid token. Long tokens are
+never embedded — the message names their length instead."
+  (let* ((digits (model-text-token-digit-count token))
+         (shown (if (<= (length token) 40) token
+                  (format nil "(~a characters)" (length token))))
+         (max *model-text-max-float-digits*))
+    (if (and (model-text-float-shape-p token) (> digits max))
+      (report-ve "valid-model-tokens"
+        "model text line ~a: float ~a has more than ~a digits" ~line ~shown
+        ~max)
+      (report-ve "valid-model-tokens"
+        "model text line ~a: invalid token ~a" ~line ~shown))))
+
+(defun valid-model-tokens (shadow)
+  ":private: Check every token in SHADOW against the allowed shapes (see
+MODEL-TEXT-TOKEN-P): keywords, integers, simple floats of at most
+*MODEL-TEXT-MAX-FLOAT-DIGITS* digits, t, nil. Signals report-ve on the first
+violation with its line. Runs only after VALID-MODEL-SHADOW, so the shadow
+holds only allowed characters. Bare symbols never reach the reader, so they
+are never interned. Returns T."
+  (loop
+    with line = 1
+    with start = nil
+    for i from 0 to (length shadow)
+    for done = (= i (length shadow))
+    for ch = (and (not done) (char shadow i))
+    do
+    (when (or done
+              (member ch '(#\( #\) #\" #\' #\Space #\Tab #\Newline #\Return)
+                :test #'char=))
+      (when start
+        (let ((token (subseq shadow start i)))
+          (unless (model-text-token-p token)
+            (model-text-token-error token line)))
+        (setf start nil))
+      (when (and ch (char= ch #\Newline)) (incf line)))
+    (unless (or done start)
+      (when (and ch (not (member ch '(#\( #\) #\" #\' #\Space #\Tab
+                                      #\Newline #\Return)
+                            :test #'char=)))
+        (setf start i))))
+  t)
+
+(defun valid-model-data (form)
+  ":private: Walk FORM (the plist read by READ-MODEL-TEXT) and signal
+report-ve on any value that is not model data: strings, integers,
+single-floats, keywords, t, nil, or lists of those. A backstop behind the
+token rule — it fires only if the token grammar and the reader disagree.
+Lists are walked with dolist and recursion is only into list elements, so
+recursion depth equals paren depth (at most *MODEL-TEXT-MAX-DEPTH*); a list
+with 100,000 elements does not deepen the stack. Returns T."
+  (labels
+    ((bad (value)
+       (let* ((kind (format nil "~a" (type-of value)))
+              (text (format nil "~s" value))
+              (short (when (<= (length text) 40)
+                       (format nil " ~a" text))))
+         (report-ve "valid-model-data"
+           "model text: ~a~a not allowed in model data" ~kind ~short)))
+     (valid-value (value)
+       (typecase value
+         (null t)
+         ((or keyword string integer) t)
+         (single-float t)
+         (symbol (if (member value '(t nil)) t (bad value)))
+         (cons (dolist (element value) (valid-value element)) t)
+         (otherwise (bad value)))))
+    (valid-value form)))
+
+(defun read-model-text (text)
+  ":public: Read model text (an LLM or user artifact) under a closed
+lexical vocabulary, returning (quote <plist>) like a plain READ of '(...).
+The text is capped at *MODEL-TEXT-MAX-LENGTH* characters; a shadow copy
+(strings and ; comments blanked, newlines kept — see MODEL-TEXT-SHADOW) is
+checked for allowed characters, exactly one leading ' before (, balanced
+and depth-capped parens, and nothing after the closing paren; every token
+must be a keyword, an integer, a simple float of at most
+*MODEL-TEXT-MAX-FLOAT-DIGITS* digits, t or nil. The original text is then
+read with *READ-EVAL* nil as a backstop, and the plist read is walked by
+VALID-MODEL-DATA. Signals report-ve (validation-error) on any violation.
+Callers take CADR, as with plain READ."
+  (unless (and (stringp text) (<= (length text)
+                                 *model-text-max-length*))
+    (report-ve "read-model-text"
+      "model text exceeds ~a characters"
+      ~*model-text-max-length*))
+  (let* ((shadow (model-text-shadow text))
+         (valid-shadow (valid-model-shadow shadow))
+         (valid-tokens (valid-model-tokens shadow))
+         (form (handler-case
+                 (let ((*read-eval* nil))
+                   (read-from-string text))
+                 (error ()
+                   (report-ve "read-model-text"
+                     "model text could not be read")))))
+    (declare (ignore valid-shadow valid-tokens))
+    (valid-model-data (cadr form))
+    (list 'quote (cadr form))))
+
 (defun get-deployed-admin-password (model-name)
   ":private: ADMIN_PASSWORD from the deploy script's secrets.env for
 MODEL-NAME, or NIL when there is no such file. The path must match

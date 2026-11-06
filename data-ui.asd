@@ -80,4 +80,7 @@
                 (:file "record-permalink-tests")
                 (:file "fk-eq-tests")
                 (:file "children-tests")
-                (:file "action-log-tests")))))
+                (:file "action-log-tests")
+                (:file "api-type-roles-access-tests")
+                (:file "model-text-tests")
+                (:file "deploy-incoming-tests")))))

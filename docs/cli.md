@@ -8,7 +8,7 @@ For the surrounding machinery — environments, HAProxy, TLS — see [deployment
 
 ## `data-ui`
 
-All commands are run from the repository root.
+Commands may be run from any directory. Each verb runs from the invoking script's own canonical checkout (the parent of `scripts/`), so caller cwd never selects another checkout's SQL, models, or ASDF system; the routine staging verbs (`profile`, `e-demo`, `demo`, named `repl`/`db`/`psql`, `staging activate-modelbank` / `modelbank-orphans` / `modelbank-running`, and snapshot verbs with a `stg:` address) route to the staging checkout at `$STAGING_CHECKOUT` automatically and never fetch — if no staging clone exists yet they tell you to run `scripts/data-ui staging update` first. `tests`, `debug`, `compile`, `docs`, and `field` never route; snapshot `dev:` and `prd:` addresses stay on the invoking script.
 
 ### Synopsis
 
@@ -177,25 +177,29 @@ Reads a top-level field from `models/<model-name>.lisp`. Used internally by the 
 
 #### `deploy`
 
-Builds the Docker image for `models/<model-name>.lisp`, generates Kubernetes manifests, deploys to the k3d cluster, and configures HAProxy routing for the model's domain.
+    scripts/data-ui deploy <model-name> [--from REMOTE/BRANCH]
+    scripts/data-ui deploy-bootstrap
+
+Always deploys the **production checkout** (`$DEPLOY_CHECKOUT`, default `/data/data-ui/repos/production`): it fetches and fast-forwards a clean clone to `public/master` — or exactly `REMOTE/BRANCH` with `--from` (canonical remotes `public` and `private`) — prints the source and full SHA, and re-executes the production script there for the actual build (Docker image, manifests, k3d rollout, HAProxy routing). No production build uses the caller's HEAD, branch, working tree, or remotes; development dirt is irrelevant, and the production clone's dirt aborts selection. A checkout lock (`$CHECKOUT_LOCK_ROOT`) serializes deploys, deletes, and dry runs.
+
+A Model Bank worker instead sets `MODEL_FILE` (a unique file under `models/local/deploy-incoming/`, ≤1 MiB, snapshotted + SHA-256-verified before any Git or network mutation); it is installed as a candidate and promoted to the stable `models/local/<name>.lisp` only after rollout plus both health gates. `DRY_RUN=1` still fetches, fast-forwards, compiles, and writes deploy state — it is **not** side-effect-free; it skips tagging, image build, and cluster mutation. `deploy-bootstrap` is the bootstrap-only mode for a fresh host: create/validate the production clone (and migrate legacy VIP identities, at cutover) without compiling, building, or touching the cluster.
 
 Requirements:
-- Clean git working tree (unless `DRY_RUN=1`)
 - `sudo` access (for HAProxy configuration)
-- When run on a machine other than `DEPLOY_HOST`, pushes the current branch and tag to origin, then re-runs the deploy on `DEPLOY_HOST` over SSH
+- A clean production clone (created by `deploy-bootstrap` on a fresh host)
+- When run on a machine other than `DEPLOY_HOST`, the script forwards over ssh (`-t`) to a host-side launcher; the caller's repo is never inspected, cleaned, or pushed
 
-Set `DRY_RUN=1` to generate manifests without deploying — useful for verifying template changes.
-
-Deployment state (rendered manifests, `ports.lock`, per-instance secrets) lives outside the repo in `/data/data-ui/deploy/`.
+Deployment state (rendered manifests, `ports.lock`, per-instance secrets, orphaned candidates, recovery records) lives outside every repo in `/data/data-ui/deploy/`.
 
 **Examples:**
 
     scripts/data-ui deploy todos
+    scripts/data-ui deploy todos --from private/master
     DRY_RUN=1 scripts/data-ui deploy todos
 
 #### `delete`
 
-Undeploys the named model's app. Before destroying anything, it saves a **farewell snapshot** of the instance's last state to the shared snapshot pool as `prd-<name>-last` (same `-last` slot shape as the staging stop verb; the `prd-` prefix keeps the two apart in the one flat pool, and it rotates if the same name is ever redeployed and deleted again). Then it deletes the Kubernetes namespace and persistent volumes, wipes application data on the host, removes the HAProxy backend and map entry, and removes deploy state (including secrets). Asks for confirmation unless `FORCE=1` is set.
+Undeploys the named model's app, always through the **production checkout's** script (it never fetches, switches, or requires a clean tree; run from any cwd, it validates checkout and host, takes the production lock, and re-executes). Identity comes from the explicit `MODEL_FILE`, else the canonical `models/<name>.lisp` in the production clone, else the stable `models/local/<name>.lisp`; it is validated before any snapshot, confirmation, or destructive step. Before destroying anything, it saves a **farewell snapshot** of the instance's last state to the shared snapshot pool as `prd-<name>-last` (same `-last` slot shape as the staging stop verb; the `prd-` prefix keeps the two apart in the one flat pool, and it rotates if the same name is ever redeployed and deleted again). Then it deletes the Kubernetes namespace and persistent volumes, wipes application data on the host, removes the HAProxy backend and map entry, and removes deploy state (including secrets). Asks for confirmation unless `FORCE=1` is set.
 
 A failed farewell save aborts the delete with the data still intact — re-run with `FORCE=1` to delete without the snapshot. A re-run after a partial delete skips the farewell (nothing left to save) and proceeds. Docker images and git release tags are left in place, as is the farewell snapshot itself.
 
@@ -203,6 +207,21 @@ A failed farewell save aborts the delete with the data still intact — re-run w
 
     scripts/data-ui delete todos
     FORCE=1 scripts/data-ui delete todos
+
+#### `staging`
+
+    scripts/data-ui staging update [--from REMOTE/BRANCH]
+    scripts/data-ui staging activate-modelbank [--leave-unexposed|--expose]
+    scripts/data-ui staging modelbank-orphans
+    scripts/data-ui staging modelbank-running
+
+Manages the staging environment at `$STAGING_CHECKOUT` (default `/data/data-ui/repos/staging`). `update` (default `private/master`) bootstraps/selects the staging clone under the staging + production locks, quiesces Model Bank first (unexpose + drain; the unit itself is never restarted by an update — it keeps its old loaded code until activation), builds the frontend there (`npm ci` + `npm run build`), pre-warms SBCL, installs the host ops files, and plainly restarts active non-Model-Bank profiles behind per-profile health gates. Model Bank activates separately via `activate-modelbank`, which takes both locks itself, restarts the unit, verifies journal/loopback/Swank identity, and with `--expose` restores the originally recorded exposure (the fast path revalidates without restarting when already activated at the current staging HEAD; a public/private protocol mismatch blocks `--expose`). `modelbank-orphans` is a read-only report of deploy-incoming orphans; `modelbank-running` is the private drain query. See [deployment.md](deployment.md) and [ops/README.md](../ops/README.md) for the quiescence barrier, the `activation.state` contract, and the timer catch-up rules.
+
+**Examples:**
+
+    scripts/data-ui staging update
+    scripts/data-ui staging update --from private/feature/x
+    scripts/data-ui staging activate-modelbank --expose
 
 #### `traffic`
 
@@ -307,6 +326,10 @@ Demo lifecycle verbs for host profiles. `e-demo` is the *ephemeral* class (data 
 
 Both drive the `dataui@<profile>` systemd units. See [Host profiles](#host-profiles) and [snapshots.md](snapshots.md).
 
+### Publication order
+
+`profile create <model>` runs in the staging checkout, so it reads staging's `models/<model>.lisp`: a new model must be committed and published to the staging upstream (normally `private/master`) *before* `profile create` can see it. There is no `models/local/` fallback for profiles — VIP (uncommitted) models are Docker deploys only, never host profiles.
+
 ### Host profiles
 
 Named local instances live under `/data/data-ui/profiles/` (the `DATA_UI_STATE` root, env-overridable; snapshots under `/data/data-ui/snapshots/`, deploy state under `/data/data-ui/deploy/`). A profile exists if and only if `<name>/profile.env` exists. Profile identity is the directory name. Create profiles with `profile create` and destroy them with `profile delete`. A primary profile can be made publicly reachable through HAProxy with `profile expose` (staging hostname: the model's `:domain-stg`, or the `-stg`-suffixed `:domain`; see [Environments](deployment.md#environments)) and removed again with `profile unexpose`.
@@ -339,7 +362,7 @@ Per-profile runtime files live beside `profile.env`:
 
 Postgres data for a named profile lives in the bind-mounted `<profile>/pgdata/` directory (D16; mode 700, owned by the unit user — the container runs as that uid via `user:` in `ops/pg-profile.yaml`, and the DB port publishes loopback-only). Profile databases use `ops/pg-profile.yaml`; the old `tests/docker-compose-pg-data-ui-repl.yaml` remains for the dev `repl` verb only.
 
-Demo profiles run as systemd units (`ops/dataui@.service` + `/usr/local/lib/data-ui/profile-run.sh`), started with the lifecycle verbs — `e-demo start/stop/reset <p>` (nightly-reset class) and `demo start/stop/reset <p>` (no-reset class). `reset` is the nightly golden reset on demand: no args (e-demo only) runs the enabled set through `dataui-reset.service`; explicit profiles (either verb) run the grungy-day restore, any class. It reinstalls `ops/petting-zoo-reset.sh` to `/usr/local/lib/data-ui/` first when the installed copy is stale — the 04:10 timer runs the installed copy, not the checkout's. `repl` is a development verb for the throwaway 5444 database; there is no REPL path into a demo profile — Slime attaches as a passenger to the unit's swank port.
+Demo profiles run as systemd units (`ops/dataui@.service` + `/usr/local/lib/data-ui/profile-run.sh`), started with the lifecycle verbs — `e-demo start/stop/reset <p>` (nightly-reset class) and `demo start/stop/reset <p>` (no-reset class). `reset` is the nightly golden reset on demand: no args (e-demo only) runs the enabled set through `dataui-reset.service`; explicit profiles (either verb) run the grungy-day restore, any class. Ops installation belongs to `staging update` alone: `reset` never reinstalls `ops/petting-zoo-reset.sh`, and explicit-name resets keep running the installed `/usr/local/lib/data-ui/` copy unchanged — the 04:10 timer runs the installed copy, not the checkout's. `repl` is a development verb for the throwaway 5444 database; there is no REPL path into a demo profile — Slime attaches as a passenger to the unit's swank port.
 
 ### Environment Variables
 

@@ -4666,8 +4666,8 @@ function App() {
     const shellTypeInfo = types.find(t => t.name === type)
     return (
       <div>
-        <div style={{ position: 'relative' }}>
-          <h1 style={{ margin: 0 }}>
+        <div className="app-header">
+          <h1>
             <a href="#" onClick={(e) => {
               e.preventDefault()
               returnToLanding()
@@ -4675,7 +4675,7 @@ function App() {
               {title}
             </a>
           </h1>
-          <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <div className="view-switcher">
             {/* View switcher: Home/Admin/user (Settings) select
                 viewMode (Home via returnToLanding); the username
                 button doubles as Settings. Not the type tab row. */}
@@ -4896,8 +4896,8 @@ function App() {
 
   return (
     <div>
-      <div style={{ position: 'relative' }}>
-        <h1 style={{ margin: 0 }}>
+      <div className="app-header">
+        <h1>
           <a href="#" onClick={(e) => {
             e.preventDefault()
             returnToLanding()
@@ -4905,7 +4905,7 @@ function App() {
             {title}
           </a>
         </h1>
-        <div style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div className="view-switcher">
           {/* View switcher: Home/Admin/user (Settings) select
               viewMode (Home via returnToLanding); the username
               button doubles as Settings. Not the type tab row. */}

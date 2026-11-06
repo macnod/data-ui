@@ -7,8 +7,12 @@ This document explains everything about how Data UI deployment works: the big pi
 ## Table of Contents
 
 - [The Big Picture](#the-big-picture)
+- [Source Environments: Three Checkouts](#source-environments-three-checkouts)
 - [Quick Start](#quick-start)
 - [What `deploy` Actually Does, Step by Step](#what-deploy-actually-does-step-by-step)
+- [Selection, Locks, and Rollback](#selection-locks-and-rollback)
+- [The Build Context: a Curated Archive](#the-build-context-a-curated-archive)
+- [VIP Deploys: Handoff, Promotion, Recovery](#vip-deploys-handoff-promotion-recovery)
 - [The Model Drives Everything](#the-model-drives-everything)
 - [Environments](#environments)
 - [Deployment State: Where Things Live](#deployment-state-where-things-live)
@@ -40,6 +44,18 @@ The deploy pipeline reads those five keys and derives *everything* from them: th
 
 The target environment is deliberately modest: a single machine (the "deploy host") running a [k3d](https://k3d.io) cluster (k3s in Docker), with HAProxy in front terminating TLS. No cloud bill, no managed Kubernetes, no Helm charts. One box, one command.
 
+## Source Environments: Three Checkouts
+
+There are exactly three source checkouts, and only the first is ever dirty:
+
+- **Development** — `~/common-lisp/data-ui`, wherever you are hacking. It may be dirty, detached, or on a feature branch; none of that ever reaches production, because no production build reads it.
+- **Staging** — an independent clone at `/data/data-ui/repos/staging`. Host profiles (`dataui@*` units) load their Lisp, models, and `scripts/data-ui` from here. It is updated only by `scripts/data-ui staging update` (default `private/master`), which also builds its frontend and installs the host ops files.
+- **Production** — an independent clone at `/data/data-ui/repos/production`. Every `deploy` and `delete` runs *this* checkout's script, after fetching and fast-forwarding it to `public/master` (or to `--from REMOTE/BRANCH`). Canonical remotes: `public` = `git@github.com:macnod/data-ui.git`, `private` = `git@github.com:macnod/data-ui-private.git`.
+
+Neither deployment clone lives beneath `~/common-lisp` (ASDF's default source-registry search tree), and neither is a worktree, a copy of a `.git`, or a second `.asd` — each is a real clone. `/data/data-ui` otherwise holds *runtime state* (profiles, databases, uploaded files, snapshots, credentials, exposure configuration, deploy state); the only source code under it is these two clones. Selection keeps one local branch per upstream (`deploy/REMOTE/BRANCH`), so switching sources switches branches and never resets one branch across unrelated histories.
+
+`deploy MODEL` therefore always means: fetch and fast-forward a *clean* production clone to the selected revision, print the source and the full SHA, then **re-execute the production script** there for the actual build. `DRY_RUN=1` changes none of that (see [Dry Runs](#dry-runs)).
+
 ## Quick Start
 
 On the deploy host (or any machine with ssh access to it; see [Deploying From Another Machine](#deploying-from-another-machine)):
@@ -50,21 +66,22 @@ On the deploy host (or any machine with ssh access to it; see [Deploying From An
 That's it. The output ends with:
 
     Deployed To Do List todos-0.1-6d8f586.
-      Domain:   https://todo.demo.data-ui.com
-      NodePort: http://172.18.0.2:30303
-      Swank:    kubectl -n dataui-todos port-forward deploy/dataui-todos 4005:4005
+      Source:    public/master @ <full SHA>
+      Domain:    https://todo.demo.data-ui.com
+      NodePort:  http://172.18.0.2:30303
+      Swank:     kubectl -n dataui-todos port-forward deploy/dataui-todos 4005:4005
 
 Open the domain, log in as `admin` with the password from [Secrets](#secrets-and-how-to-get-the-admin-password), and you are looking at your deployed application.
 
 Requirements:
 
-- A clean git tree (the deploy tags the exact commit it ships; uncommitted changes would make the tag a lie).
+- A **clean production clone** at `$DEPLOY_CHECKOUT` — the deploy fast-forwards it to the selected revision and refuses to touch a dirty tree (your development checkout is never inspected, cleaned, or pushed). `deploy-bootstrap` creates the clone on a fresh host.
 - `sudo` access on the deploy host (for the HAProxy update, nothing else).
 - The one-time host setup already done: k3d cluster, HAProxy, TLS certificate (see [TLS](#tls-certificates-that-renew-themselves)).
 
 ## What `deploy` Actually Does, Step by Step
 
-`scripts/data-ui deploy` runs the following phases, in order. Each phase is a shell function in `scripts/data-ui`, so the script is the authoritative reference; this is the guided tour.
+`scripts/data-ui deploy` runs the following phases, in order. Each phase is a shell function in `scripts/data-ui`, so the script is the authoritative reference; this is the guided tour. (Phase 0, before all of these: the outer arm selects the production checkout and re-executes its script — see [Source Environments](#source-environments-three-checkouts); what follows is the inner, production-side body.)
 
 ### 1. Compile the model (the gate)
 
@@ -417,31 +434,71 @@ That kills gpg-agent first on purpose: a warm cache can mask a broken setup, whi
 
 ## Deploying From Another Machine
 
-You don't have to be on the deploy host. If `hostname` doesn't match `$DEPLOY_HOST` (default `evo-x2`), the script:
+You don't have to be on the deploy host. If `hostname` doesn't match `$DEPLOY_HOST` (default `evo-x2`), the script becomes a **thin forwarder** — nothing more:
 
-1. requires a clean tree and a non-detached branch,
-2. creates the release tag locally (so its provenance is *your* machine) and pushes branch + tag to origin,
-3. ssh-es to the deploy host and re-runs itself in a dedicated **deploy clone** at `$DEPLOY_CHECKOUT` (default `~/deploy/data-ui`), checked out at your exact commit.
+1. it validates its arguments (the same fail-fast grammar as a local deploy),
+2. optionally snapshots + SHA-256-checks a `MODEL_FILE`, transfers it non-interactively to a fresh mode-700 host temp directory *outside both checkouts*, and verifies type, size, and hash there (a host-side trap cleans the temp directory; cleanup after a network partition is best-effort),
+3. ssh-es to the deploy host (`-t`, so sudo and delete confirmations can prompt) and runs a host-side launcher: `/data/data-ui/repos/production/scripts/data-ui` if it exists and is executable, otherwise `$DEPLOY_BOOTSTRAP_CHECKOUT/scripts/data-ui`. A missing launcher fails before any mutation.
 
-The deploy clone exists so a remote deploy can never disturb whatever work-in-progress lives in the deploy host's development checkout. The ssh session allocates a tty (`-t`) for one reason only: the HAProxy step needs to ask for your sudo password.
+The caller never selects a local production clone, never inspects or clean-checks its own repo, and never derives a SHA, writes facts or tags, pushes, or queries `origin` — including under `DRY_RUN=1`. The host-side outer deploy then does everything a local invocation does. After first bootstrap, the bootstrap checkout is never consulted; its dirt and branch are never inspected.
+
+The whole remote command travels as one `bash -c <quoted>` argument through exactly one reparse, and only an environment allowlist is forwarded (`DRY_RUN`, `FORCE`, checkout/state/source overrides, cluster configuration) — never secrets on a command line.
+
+### One host, for now
+
+Staging and production must name the same host (`STAGING_HOST` == `DEPLOY_HOST`; a differing pair is rejected before any lockfile, Git, npm, SSH, or systemd mutation). This is load-bearing, not a simplification: `get-deployed-admin-password` is a plain local read of `$DATA_UI_STATE/deploy/<name>/secrets.env` written by the deploy on the deploy host, so Model Bank's `deploy-model-record-secret` works only on one machine; profile HAProxy operations are host-local too. Splitting the hosts (including remote secret retrieval) is a separate item.
+
+### Legacy VIP identity migration
+
+`deploy-bootstrap` (beyond creating/validating the production clone) also migrates legacy VIP identities: it inventories `models/local/*.lisp` in every checkout production historically deployed from (the bootstrap/development checkout, plus any existing production clone), cross-checks them against live `dataui-*` namespaces, and copies each file bytes-intact (SHA-256 verified) to the production clone's `models/local/<declared-name>.lisp` under the production lock. It refuses to overwrite a different destination file, rejects malformed names, declared-name mismatches, conflicting duplicates, and symlink sources for operator resolution, and never modifies the legacy checkout. An empty inventory is printed and is fine. An instance whose identity cannot be inventoried requires `MODEL_FILE=<archived model file> scripts/data-ui delete NAME`.
 
 Configuration knobs (environment variables, all with defaults):
 
 | Variable          | Default                          | Meaning                       |
 |-------------------|----------------------------------|-------------------------------|
-| `DEPLOY_HOST`     | `evo-x2`                         | ssh destination & hostname    |
-| `DEPLOY_CHECKOUT` | `$HOME/deploy/data-ui`           | deploy clone location         |
+| `DEPLOY_HOST`     | `evo-x2`                         | ssh destination & hostname (production) |
+| `STAGING_HOST`    | `evo-x2`                         | staging host (must equal `DEPLOY_HOST`) |
+| `DEPLOY_CHECKOUT` | `/data/data-ui/repos/production` | production clone              |
+| `STAGING_CHECKOUT`| `/data/data-ui/repos/staging`    | staging clone                 |
+| `DEPLOY_BOOTSTRAP_CHECKOUT` | `~/common-lisp/data-ui`  | last-resort launcher on a host with no production clone |
+| `CHECKOUT_LOCK_ROOT` | `/data/data-ui/repos`         | deploy/staging lock directory |
+| `DATA_UI_PUBLIC_URL` / `DATA_UI_PRIVATE_URL` | canonical GitHub URLs | clone URLs (overridable for tests) |
 | `DEPLOY_STATE_DIR`| `/data/data-ui/deploy`           | state directory               |
 | `DATA_UI_STATE`   | `/data/data-ui`                  | root for deploy state         |
-| `MODEL_FILE`      | `models/<name>.lisp`             | override model path (VIP deploys) |
+| `MODEL_FILE`      | (unset)                          | explicit model file (VIP deploys and delete identity) |
 | `K3D_CLUSTER`     | `evo-x2`                         | k3d cluster name              |
-| `DRY_RUN`         | (unset)                          | stop after rendering manifests|
+| `DRY_RUN`         | (unset)                          | see Dry Runs                  |
+| `STAGING_HEALTH_TIMEOUT` | `300`                     | per-profile restart gate deadline (seconds) |
+| `MODELBANK_DRAIN_TIMEOUT` | `600`                    | Model Bank drain deadline (seconds) |
+
+## Selection, Locks, and Rollback
+
+- **Clean means clean.** Selection requires `git status --porcelain --untracked-files=all` to be empty in the production clone (ignored files like `web/dist`, `web/node_modules`, and `models/local/` are fine). A dirty clone aborts with no build, no `git clean`, no `reset --hard`, no auto-stash, and no force — including under `DRY_RUN` and `MODEL_FILE`. A local branch that is ahead, diverged, or whose upstream rewound aborts (the fast-forward merge exits 0 even when the local branch is ahead, so a post-merge recheck of branch, upstream, and HEAD is the gate).
+- **One lock per role.** `production.lock` (deploy, delete, the production half of staging update and activation) and `staging.lock` live under `$CHECKOUT_LOCK_ROOT`. A deploy holds the production lock across selection, compile, build, rollout, both health gates, and promotion; `DRY_RUN=1` takes it like a real deploy (the compile database on port 5446 is one global resource, and the lock serializes a developer's dry run against a Model Bank worker's deploy). The lock is a `flock` on a descriptor that is inherited across the production re-exec; it is released when the last descriptor closes.
+- **Rollback is a revert.** Application-code rollback means a revert commit on the same upstream that supplied the bad release, published there, followed by a normal update/deploy. Never select an older SHA or tag, force checkout, or reset a shared deployment checkout. Local annotated deploy tags are diagnostics only.
+
+## The Build Context: a Curated Archive
+
+The Docker context is never the raw checkout (`Dockerfile` uses `COPY .`, and ignored stale VIP models under `models/local/` would ride into canonical images). Instead the inner deploy builds a fresh restrictive temp directory populated by `git archive <full SHA>`:
+
+- Any `models/local` path in the archive listing aborts the build — the tracked root `.dockerignore` exists and rides along in the archive, but it never excluded `models/local/`; it is not isolation.
+- A VIP deploy (Model Bank's Deploy button) creates `models/local/` *in the context*, copies the immutable handoff candidate there as `models/local/<name>.lisp`, SHA-256-checks it against the snapshot the outer arm took, and asserts the archived canonical `models/<name>.lisp` is absent; a canonical deploy asserts no `models/local/` path exists in the context.
+
+## VIP Deploys: Handoff, Promotion, Recovery
+
+A VIP deploy's model text crosses as *data*: the Model Bank worker writes a unique file `models/local/deploy-incoming/<token>.lisp` in its staging checkout (exclusive create; no worker ever mutates another's input), and the outer deploy snapshots and validates it (regular file, ≤1 MiB, no symlinks, SHA-256) *before* any Git or network mutation, then installs its own candidate at the same relative path in the production checkout — under the production lock, the only writer. The inner arm compiles, builds, and rolls out from that candidate.
+
+- **Collision refusal.** If `models/<cli-name>.lisp` exists in the selected revision, the deploy is refused right after selection and before compilation: `resolve-model-path` prefers the canonical file, so the image would silently run it instead of the VIP model. Never delete or overwrite the canonical file to make a VIP deploy fit.
+- **Adoption.** When a VIP-deployed name later gains a canonical file upstream, the next bare `deploy <name>` is canonical and succeeds; a VIP re-deploy of that name is refused, naming the upstream canonical file as the reason; and the canonical promotion removes the now-stale stable `models/local/<name>.lisp`, reporting the removal, so a bare `delete` resolves the canonical identity.
+- **Promotion.** Only after image import, rollout, `update_haproxy`, and **both** production health gates (the NodePort `/health` gate and the public-domain `/health` gate) does a VIP deploy rename its candidate onto the stable `models/local/<name>.lisp`; workers never write the stable copy. Failures and dry runs leave any prior stable copy byte-identical.
+- **Recovery records.** A failure *before* `apply_manifests` removes the candidate. A failure *after* `apply_manifests` begins preserves it as `$DEPLOY_STATE_DIR/<name>/recovery/<SHA>-<token>.lisp` (mode 600) and prints `MODEL_FILE=<recovery path> scripts/data-ui delete <name>` — a failed `:domain` change may have left a route only the record describes. Only an operator removes recovery records; a later successful deploy prints any it finds but never deletes them.
+- **Leftovers.** Right after acquiring the lock, every deploy/delete moves any file already sitting in production's `deploy-incoming/` (bytes intact) to `$DEPLOY_STATE_DIR/orphaned-candidates/<UTC timestamp>-<basename>` — it may be the only identity of an instance a killed deploy rolled out.
 
 ## Dry Runs
 
     DRY_RUN=1 scripts/data-ui deploy todos
 
-Runs the model compile, fact gathering, port assignment, secrets handling, and manifest rendering, then stops. No tag, no image, no cluster changes, no HAProxy. The rendered manifests sit in the release directory for your inspection. Make this a habit before any deploy that changes templates.
+A dry run is **not side-effect-free**: it still fetches and fast-forwards the production checkout, compiles the model through the throwaway database, and writes deploy state (manifests, `ports.lock`, secrets cache). It skips tagging, image build, and cluster mutation, and never waives cleanliness or source verification. With a handoff it runs the same validation path and its exit trap removes the temporary candidate, so `models/local/deploy-incoming/` ends byte-identical and nothing is promoted.
 
 ## Connecting a REPL to the Live App
 

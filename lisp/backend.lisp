@@ -2991,36 +2991,48 @@ The following example returns a list of all the :todos records that have the tag
     `(be-list :todos \"admin\" :filters '((:tags :name :eq \"chores\")))`"
   (valid-compiled-model)
   (valid-be-type-key type-key)
-  (valid-user-permissions user type-key "read")
-  ;; Validate search early so empty-rbac short-circuit still 400s on
-  ;; non-empty search against a type with zero searchable fields.
-  ;; Rollups compile to zero searchable fields, so this is the 07d
-  ;; reject on the measure path too.
-  (phase-a-search-clause type-key search 1)
-  (let ((sort (or sort
-                ;; A :list-form :default-sort (the blog tab spelling)
-                ;; is the effective default too; type-level wins when
-                ;; both exist (the compiled def carries it).
-                (or (u:tree-get *compiled-model* type-key :default-sort)
-                  (u:tree-get *compiled-model* type-key :list-form
-                    :default-sort)))))
-    (if (eq (u:tree-get *compiled-model* type-key :phase-a-shape) :measure)
-      ;; 08b measure Phase A: GROUP BY grain, no Phase B, no
-      ;; user-read-type-ids / filters-for-be-list (the rollup has no
-      ;; per-row resources; the type-level role check above already
-      ;; ran on the rollup). The bare-UUID rewrite also lives here:
-      ;; valid-existing-uuid looks at resources / base tables and
-      ;; would 400 an unknown grain id.
-      (measure-be-list type-key user :form form :filters filters
-        :limit limit :offset offset :sort sort
-        :skip-allowed-values skip-allowed-values)
-      (progn
-        (if (uuid-p filters)
-          (valid-existing-uuid filters)
-          (valid-filters filters :type-key type-key))
-        (base-be-list type-key user :form form :filters filters
-          :limit limit :offset offset :sort sort :search search
-          :skip-allowed-values skip-allowed-values)))))
+  (let* ((shape (u:tree-get *compiled-model* type-key :phase-a-shape))
+         (measure-p (eq shape :measure)))
+    ;; Authorization (the API type-roles access fix): rollups (no
+    ;; per-row resources), built-in types (their system contracts),
+    ;; and the Page projection shape keep the type-resource read
+    ;; gate. An ordinary author-defined resource-backed type needs
+    ;; only an authenticated existing user — base-be-list's
+    ;; user-read-type-ids filtering then decides which rows are
+    ;; visible, so a row-level grant is reachable without holding
+    ;; any of the type's roles.
+    (if (or measure-p (built-in-p type-key) (eq shape :page))
+      (valid-user-permissions user type-key "read")
+      (valid-existing-user user))
+    ;; Validate search early so empty-rbac short-circuit still 400s on
+    ;; non-empty search against a type with zero searchable fields.
+    ;; Rollups compile to zero searchable fields, so this is the 07d
+    ;; reject on the measure path too.
+    (phase-a-search-clause type-key search 1)
+    (let ((sort (or sort
+                    ;; A :list-form :default-sort (the blog tab spelling)
+                    ;; is the effective default too; type-level wins when
+                    ;; both exist (the compiled def carries it).
+                    (or (u:tree-get *compiled-model* type-key :default-sort)
+                        (u:tree-get *compiled-model* type-key :list-form
+                          :default-sort)))))
+      (if measure-p
+        ;; 08b measure Phase A: GROUP BY grain, no Phase B, no
+        ;; user-read-type-ids / filters-for-be-list (the rollup has no
+        ;; per-row resources; the type-level role check above already
+        ;; ran on the rollup). The bare-UUID rewrite also lives here:
+        ;; valid-existing-uuid looks at resources / base tables and
+        ;; would 400 an unknown grain id.
+        (measure-be-list type-key user :form form :filters filters
+          :limit limit :offset offset :sort sort
+          :skip-allowed-values skip-allowed-values)
+        (progn
+          (if (uuid-p filters)
+            (valid-existing-uuid filters)
+            (valid-filters filters :type-key type-key))
+          (base-be-list type-key user :form form :filters filters
+            :limit limit :offset offset :sort sort :search search
+            :skip-allowed-values skip-allowed-values))))))
 
 (defun base-be-list (type-key user
                       &key (form :list-form) filters
@@ -4253,23 +4265,40 @@ key."
                         trimmed)))
          (when (plusp (length capped)) capped)))))
 
+(defun usage-title-column (type-key)
+  ":private: The :title-field column expression of TYPE-KEY (a
+declared row-titling field with :column t), or nil when the type
+declares none (valid-title-field guarantees shape and the column
+when the key is present). A single nullif/trim expression, same
+shape as the identity expressions in usage-identity-string."
+  (let* ((m *compiled-model*)
+         (field-key (u:tree-get m type-key :title-field)))
+    (when field-key
+      (format nil "nullif(trim(~a::text), '')"
+        (u:tree-get m type-key :fields field-key :name-sql)))))
+
 (defun usage-identity-string (type-key id)
-  ":private: First non-blank identity value of TYPE-KEY's row with
-uuid ID, as trimmed text, or nil. Direct SQL beside usage-recent-p
-(same rationale: the backend read paths hydrate forms and touch
-handler state — a REST-layer detail enrichment must not depend on
-it, and record-usage would swallow the failure and drop the row).
-Unknown table, unknown uuid, or any error returns nil — the detail
-degrades to uuid-only. Never signals."
+  ":private: Row-titling value of TYPE-KEY's row with uuid ID, as
+trimmed text, or nil: the :title-field value when the type
+declares one, else the first non-blank identity value. Direct SQL
+beside usage-recent-p (same rationale: the backend read paths
+hydrate forms and touch handler state — a REST-layer detail
+enrichment must not depend on it, and record-usage would swallow
+the failure and drop the row). Unknown table, unknown uuid, or
+any error returns nil — the detail degrades to uuid-only. Never
+signals."
   (when (and (uuid-p id) (type-key-p type-key))
     (handler-case
       (let* ((m *compiled-model*)
              (table (u:tree-get m type-key :table-name))
              (keys (identity-keys type-key))
-             (cols (loop for k in keys
-                     collect (format nil "nullif(trim(~a::text), '')"
-                               (u:tree-get m type-key :fields k
-                                 :name-sql))))
+             (cols (append
+                     (when (usage-title-column type-key)
+                       (list (usage-title-column type-key)))
+                     (loop for k in keys
+                       collect (format nil "nullif(trim(~a::text), '')"
+                                 (u:tree-get m type-key :fields k
+                                   :name-sql)))))
              (sql (format nil "select coalesce(~{~a~^, ~}) from ~a ~
                                where id = $1"
                      (append cols '("''")) table))
@@ -4301,6 +4330,22 @@ detail."
                      (let ((joined (format nil "~{~a~^ / ~}" parts)))
                        (subseq joined 0 (min (length joined) room))))))
       (if prefix (format nil "~a / ~a" prefix uuid) uuid))))
+
+(defun usage-identity-from-record (type-key record)
+  ":private: Row-titling value from a pre-fetched RECORD plist
+(the delete path — the row is gone by detail time, so the caller
+read it before the write): the :title-field value when the type
+declares one and the value is non-blank, else the identity-field
+value. Same precedence as usage-identity-string's SQL coalesce,
+per row. Nil / blank degrade to nil (uuid-only detail)."
+  (labels ((non-blank (key)
+             (let* ((raw (and record key (getf record key)))
+                    (s (and raw
+                         (not (equal raw :null))
+                         (u:trim (format nil "~a" raw)))))
+               (when (and s (plusp (length s))) s))))
+    (or (non-blank (u:tree-get *compiled-model* type-key :title-field))
+      (non-blank (identity-field type-key)))))
 
 (defun usage-recent-p (user-name event on detail)
   ":private: T when a :usage row with the same user-name + event +
@@ -4348,10 +4393,13 @@ resource insert (a:add-resource) supplies the uuid; the compiled
 effect (do not read the query result as the id — query returns
 ((:id \"<uuid>\")), and the uuid is already in hand). The role
 attach mirrors insert-normal's (admin plus the writer's
-exclusive). On any error after a:add-resource succeeded,
-a:remove-resource the new resource before re-signaling, so a
-failed insert does not leak a resources row. Returns the uuid or
-signals; the caller swallows."
+exclusive) plus the type's own \"usage\" role — :type-roles
+(\"usage\") gates the type, but a user granted it reads rows only
+when each row's resource carries the role; without it, be-list
+returns them an empty list. On any error after a:add-resource
+succeeded, a:remove-resource the new resource before
+re-signaling, so a failed insert does not leak a resources row.
+Returns the uuid or signals; the caller swallows."
   (let* ((resource-name (make-resource-name :usage data))
          (uuid (a:add-resource *rbac* resource-name :roles nil))
          (insert (u:tree-get *compiled-model* :usage :insert-sql)))
@@ -4360,28 +4408,37 @@ signals; the caller swallows."
         (a:with-rbac (*rbac*)
           (a:rbac-query (insert-main-query :usage insert uuid data user)))
         (update-roles :usage uuid user
-          (list "admin" (a:exclusive-role-for user)))
+          (list "admin" "usage" (a:exclusive-role-for user)))
         uuid)
       (error (e)
         (a:remove-resource *rbac* resource-name)
         (error e)))))
 
-(defun record-usage (user-name event &key on detail (dedup t))
+(defun record-usage (user-name event &key ip on detail (dedup t))
   ":public: Append one :usage row for USER-NAME, or return nil.
 EVENT is one of *usage-events*, a keyword or a string (\"LIST\" and
 :list are the same event). ON is the target type, a keyword or a
-string, or nil for login. DETAIL is capped by usage-detail. DEDUP,
-the list default, skips the insert when the same user, event,
-type, and detail were recorded inside *usage-window-seconds*.
-Inserts as admin. Swallows every error: a log write must not fail
-the caller's request. Does not call be-insert-internal:
-id-from-data would collapse two identical events in the same
-second into one row (usage-insert is the sanctioned writer — do
-not add :usage writes through any other path). The helper does
-not log itself: on :usage (compared after normalization, so a
-string spelling cannot sneak past) returns before the dedup query,
-and an unknown event is a report-e raised inside the handler-case,
-logged, and returned nil."
+string, or nil for login. DETAIL is capped by usage-detail. IP is
+the original caller address, trimmed but never truncated (a
+truncated address is a lie); nil / blank / non-string store NULL.
+It is not in the dedup key (shared NAT must keep collapsing
+repeated lists). DEDUP, the list default, skips the insert when
+the same user, event, type, and detail were recorded inside
+*usage-window-seconds*. Inserts as admin. Swallows every error:
+a log write must not fail the caller's request. Does not call
+be-insert-internal: id-from-data would collapse two identical
+events in the same second into one row (usage-insert is the
+sanctioned writer — do not add :usage writes through any other
+path). The helper does not log itself: on :usage (compared after
+normalization, so a string spelling cannot sneak past) returns
+before the dedup query, and an unknown event is a report-e raised
+inside the handler-case, logged, and returned nil. Models with
+:usage (:state :off) stop at the top: the state gate returns nil
+before any work — no insert, no dedup read, no error (the log is
+off, not broken); the unknown-event report-e fires only when
+logging is on."
+  (when (eq (model-usage-state) :off)
+    (return-from record-usage nil))
   (handler-case
     (let* ((event-s (and (or (keywordp event) (stringp event))
                         (string-downcase (string event))))
@@ -4390,6 +4447,8 @@ logged, and returned nil."
                    (or (keywordp on) (stringp on))
                    (string-downcase (string on))))
            (detail (usage-detail detail))
+           (ip (let ((s (and (stringp ip) (u:trim ip))))
+                 (and s (plusp (length s)) s)))
            (name (and (stringp user-name) (u:trim user-name))))
       (unless (member event-key *usage-events*)
         (report-e "record-usage"
@@ -4403,6 +4462,7 @@ logged, and returned nil."
                         :when (dt:timestamp-string))))
             (when on-s (setf (getf data :on) on-s))
             (when detail (setf (getf data :detail) detail))
+            (when ip (setf (getf data :ip) ip))
             ;; :user is set to the username, not the uuid:
             ;; resolve-reference-id accepts a display name, and the
             ;; username matches every other :target :users writer.

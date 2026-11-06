@@ -2,6 +2,8 @@
 
 All endpoints are defined in `lisp/rest.lisp` using Hunchentooth `define-easy-handler`. Authentication is JWT-based (access + refresh tokens via `/api/login` and `/api/refresh`). Most data endpoints require a valid access token in the `Authorization` header.
 
+**Authorization.** Authentication (a valid access token, or a query token on `/api/file`) is required on every data endpoint — a missing or invalid token is a 401. Authorization then depends on the operation. Reads, updates, deletes, and actions on *existing* rows are decided by the caller's permissions on that row's own resource (`docs/roles.md`): a caller holding none of a type's roles still reaches a row a role on that row grants. `/api/list` and `/api/column` on an ordinary type return only the rows the caller can read (an authenticated caller with no readable rows gets a successful empty result, not an error); rollup and built-in types keep their type-level list gate, and a denied list there surfaces as the backend's 400. Create stays gated on the type resource (`POST /api/insert`, `POST /api/upload` — no row resource exists yet), as do the pre-row validation endpoints (`/api/validate-*`), app-level metadata (`/api/types`, `/api/info`, `/api/css-variables`), and type-tab visibility. "Public" in this document always means a role held by an authenticated user, never anonymous access.
+
 ## Data retrieval
 
 ### `GET /api/list`
@@ -38,21 +40,21 @@ Fetch a single record by UUID. The `record` object carries the same per-record `
 
 ### `GET /api/id`
 
-Resolve a record UUID by identity field value.
+Resolve a record UUID from filters (or pass a bare UUID through). Row-level: the caller needs `read` on the matched row's own resource; a match the caller cannot read resolves to a null result.
 
-**Parameters:** `type`, `field`, `value`.
+**Parameters:** `type`; `filters` (a JSON filter list, or a single UUID string).
 
 ### `GET /api/value`
 
-Fetch a single column value from a record.
+Fetch a single column value from a record. Row-level: the caller needs `read` on the record's own resource; a denied read returns a null value.
 
-**Parameters:** `type`, `id`, `field`.
+**Parameters:** `type`, `id`, `field`; optional `form` naming a valid form (`update-form`, `view-form`, …).
 
 ### `GET /api/value-id`
 
-Fetch a column value, resolving the record by identity field.
+Resolve a record UUID by a field value — the identity-lookup arm of `/api/id`, through `be-value-id`; it returns an ID and does not read any column's value. Same row-level read gate: a value the caller cannot read resolves to a null result.
 
-**Parameters:** `type`, `field`, `value`, `column`.
+**Parameters:** `type`, `field`, `value`.
 
 ### `GET /api/column`
 
@@ -84,7 +86,7 @@ Update an existing record. Validation runs before the SQL update. Lifecycle hook
 
 ### `POST /api/delete`
 
-Delete a record. For filesystem-backed types, deletes files/directories recursively. Lifecycle hooks (`:pre-delete` / `:post-delete`) run around the delete.
+Delete a record. Row-level: the caller needs `delete` on the target row's own resource; a denied delete returns success with a null result and deletes nothing. For filesystem-backed types, deletes files/directories recursively. Lifecycle hooks (`:pre-delete` / `:post-delete`) run around the delete.
 
 **Body:** JSON with `type` and `id`.
 
@@ -113,9 +115,9 @@ File upload via `multipart/form-data`. Returns a `file-token` used in the subseq
 
 ### `GET /api/file`
 
-Serve an uploaded file (with token auth).
+Serve an uploaded file. Authentication via the `Authorization: Bearer` header or a `?token=` query parameter (browser-native `<img src>` loading). Row-level: after authenticating, the caller needs `read` on the file row's own resource — 403 when the file exists but the caller cannot read it, 404 for a missing file or resource, 401 without a token.
 
-**Parameters:** `token` (file token).
+**Parameters:** `type`, `path`.
 
 ## Validation
 

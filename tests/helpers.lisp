@@ -1200,6 +1200,54 @@ guest-allowed-test context (test-model does not set
     (explain! results)
     (when collect results)))
 
+(defun run-api-type-roles-access-tests (&optional collect)
+  "API type-roles access bug tests: existing-row endpoints authorize
+on the row's own resource, not type-role membership. Ordinary-type
+behavior runs on the api-type-roles-access-test fixture (guest +
+row-writer vs admin-only Notes with a shared row); the rollup
+negative control runs under measure-rollup-test — the relaxation is
+category-gated. The fixture's :test-sync button resolves from the
+registry at compile time, so action-tests.lisp must be loaded
+before set-model (harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (load (u:join-paths *package-root* "tests"
+          "api-type-roles-access-tests.lisp"))
+  (let ((results
+          (append
+            (with-model "api-type-roles-access-test" #'th-atr-seed
+              (run 'api-type-roles-access-suite))
+            (with-model "measure-rollup-test" nil
+              (run 'api-type-roles-rollup-control-suite)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-model-text-tests (&optional collect)
+  "read-model-text lexical-vocabulary tests (the read-time eval
+fix). Compatibility and lexical-rule tests are pure; the
+read-llm-config and set-model adversarial tests need a live
+:secrets type (a base type, present under test-model). The
+test-model fixture's :button actions resolve from the registry at
+compile time, so action-tests.lisp must be loaded before set-model
+(harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (load (u:join-paths *package-root* "tests" "model-text-tests.lisp"))
+  (let ((results
+          (with-model "test-model" nil
+            (run 'model-text-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-deploy-incoming-tests (&optional collect)
+  "Deploy handoff machinery (models/local/deploy-incoming/):
+exclusive-create tokens, the <token>.registry contract, spawn without
+pipe deadlock, and the startup reaper. Pure file/process tests, wrapped
+in the shared model context per house convention."
+  (let ((results
+          (with-model "test-model" nil
+            (run 'deploy-incoming))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -1259,7 +1307,11 @@ groups."
                    ("record-permalink" . run-record-permalink-tests)
                    ("fk-eq"          . run-fk-eq-tests)
                    ("children"       . run-children-tests)
-                   ("action-log"     . run-action-log-tests))
+                   ("action-log"     . run-action-log-tests)
+                   ("api-type-roles-access"
+                                     . run-api-type-roles-access-tests)
+                   ("model-text"    . run-model-text-tests)
+                    ("deploy-incoming" . run-deploy-incoming-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

@@ -23,6 +23,10 @@ Environment=HOME=/home/macnod
 # inherit nothing interactive; pin the state root so the reset
 # script's runuser and any manual sudo see the same state.
 Environment=DATA_UI_STATE=/data/data-ui
+# Host apps load the staging clone, never a developer checkout (the
+# wrapper's own default matches; this pin survives an installed copy
+# drifting from the source).
+Environment=DATA_UI_CHECKOUT=/data/data-ui/repos/staging
 ExecStart=/usr/local/lib/data-ui/profile-run.sh %i
 Restart=always
 RestartSec=5s

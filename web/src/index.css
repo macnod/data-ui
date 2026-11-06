@@ -70,6 +70,43 @@ th {
   background: var(--header-bg);
 }
 
+/* --- App header (title + view switcher) --- */
+
+/* Title left, view switcher pinned to the right of the same
+   row, aligned to the title's text line (top + half the h1
+   line box), not the vertical center of the header box — the
+   bottom margin that separates the title from the type tabs
+   would otherwise pull the buttons down with it. On a phone
+   the switcher (Home / Admin / user / Logout) is wider than
+   the leftover space and paints on top of the title, so below
+   640px it drops to its own row under the title and the
+   absolute positioning stands down. */
+.app-header {
+  position: relative;
+}
+
+.app-header h1 {
+  margin: 0 0 0.67em;
+  line-height: 1.2;
+}
+
+.view-switcher {
+  position: absolute;
+  right: 0;
+  top: 0.6em;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@media (max-width: 640px) {
+  .view-switcher {
+    position: static;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+  }
+}
+
 /* Clickable list rows: whole-row click opens the View form
    (hover tint + pointer cursor is the affordance; the class
    rides the same hasViewForm condition as the handler, so a

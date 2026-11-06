@@ -76,14 +76,25 @@ garbage")))
     (is (getf result :error))))
 
 (test validate-deploy-model-text-parse-error
-  "Parse errors stay one-line messages (the model text is not
-embedded — it lives in the :model field via the failed-attempt
-write).  Both parse sites: unreadable text and a readable form
-whose body is not a plist."
+  "Parse failures stay one-line :error messages (the model text is
+not embedded — it lives in the :model field via the failed-attempt
+write).  Under read-model-text the scanner speaks first: an
+unclosed paren gets the balance message, an atom after the quote
+the quoted-plist message."
   (let ((result (validate-deploy-model-text "'(:types (:foo")))
-    (is (equal "parse error in model text" (getf result :error))))
+    (is (getf result :error))
+    (is (search "unclosed" (getf result :error))
+        "unclosed paren is named")
+    (is (null (search "
+" (getf result :error)))
+        "message is one line"))
   (let ((result (validate-deploy-model-text "'not-a-plist")))
-    (is (equal "parse error in model text" (getf result :error)))))
+    (is (getf result :error))
+    (is (search "quoted plist" (getf result :error))
+        "atom after quote is named")
+    (is (null (search "
+" (getf result :error)))
+        "message is one line")))
 
 (test first-line
   "first-line returns text up to the first newline."

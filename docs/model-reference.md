@@ -71,11 +71,27 @@ Conventions (`models/README.md`):
 
 Because the form starts with a quote, Lisp can `read` it. That is useful for paren-balance checks; it is not how the compiler is invoked.
 
+### Lexical rules
+
+Model text is read by `read-model-text` (`lisp/aux.lisp`), which enforces a **closed lexical vocabulary** — the text can never execute code when read (no reader macros) and can never exhaust the stack (depth cap). Every site that reads model text goes through it: `set-model`, Deploy and Generate (`validate-deploy-model-text`), and `compile_model` in `scripts/data-ui`. Violations are one-line validation errors naming the line number.
+
+- **Outside strings and comments**, only these characters are allowed: ASCII letters and digits, `-`, `:`, `.`, `(`, `)`, and whitespace. Anything else — `#` (so all reader macros: `#.`, `#|...|#`, `#\a`), `|`, `\`, backquote, comma, non-ASCII letters — is rejected.
+- **Strings** may contain anything; `\"` and `\\` are the escapes. A `\` outside a string is rejected.
+- **Comments** are `;` to end of line only. No block comments (`#|...|#`).
+- **Exactly one leading `'`**, followed by `(`. No second quote anywhere.
+- **Tokens** are keywords (`:name`, `:create` — no second colon), integers (`-42`), simple floats (`digits.digits`, at most 7 digits in total, e.g. `0.0005`, `-0.25`; single precision — no exponents like `1e3`, no `1d0`/`1f0` suffixes, no bare points `.5` or `1.`), and `t` / `nil`. No other symbols, no package prefixes (`a:b`), no dotted pairs.
+- **Nothing after the closing paren** — a plain `read` silently ignores trailing forms; the scanner rejects them.
+- **Caps**: 262,144 characters (comments count) and nesting depth 64.
+
+Adding new syntax or value kinds means a deliberate change to the allow-lists in `valid-model-shadow`, `valid-model-tokens`, and `valid-model-data` (all `lisp/aux.lisp`).
+
+What a number literal may look like: see the token rule above — the "any number" in the discrete-filter row and the "`:precision` must be a number" rule both mean a **simple float or integer literal**, not arbitrary Common Lisp number syntax.
+
 ---
 
 ## Top-level keys
 
-Recognized keys: `*top-level-keys*` = `(:title :name :version :domain :domain-stg :repl :guest-allowed :guest-auto :api-roles :landing-page :new-roles)`.
+Recognized keys: `*top-level-keys*` = `(:title :name :version :domain :domain-stg :repl :guest-allowed :guest-auto :api-roles :landing-page :new-roles :usage)`.
 
 `:types` is required alongside those settings but is handled separately by `compile-model`. Any other root key is ignored by `top-level-settings`.
 
@@ -92,6 +108,7 @@ Recognized keys: `*top-level-keys*` = `(:title :name :version :domain :domain-st
 | `:api-roles` | no (default `("logged-in")`) | non-empty list of role-name strings, no duplicates | app-level REST endpoints; see [API roles](#api-roles) |
 | `:landing-page` | no | type keyword present in `:types`, or nil | `/api/info` via `be-landing-page`; falls back to first non-built-in type the user can access |
 | `:new-roles` | no | plist: role-name keyword → non-empty list of permission strings | `ensure-declared-roles` at `set-model` time |
+| `:usage` | no (default `(:state :on)`) | plist; `:state` `:on` / `:off`, the only recognized key | `record-usage` gate; see the [`:usage` type](#built-in-types) paragraph |
 | `:types` | yes | plist of type-key → type-def | compiler |
 
 `:name` values `profile` and `profile-*` are reserved for host-profile HAProxy backends (`scripts/data-ui profile expose`); models using them fail compilation. Similar words (e.g. `profiles`) are fine.
@@ -141,6 +158,7 @@ Under `:types`, each entry is `type-key` → plist.
 | `:display` | Show in type selector | `t`/`nil`. Also requires not `:internal` and read permission |
 | `:type-roles` | RBAC roles for the type | list of role-name strings, or `(role-name perm…)` forms. Missing roles are created. `"admin"` is always added |
 | `:default-sort` | Sort used when a list request sends none | `(:field :asc\|:desc)`; direction optional, defaults `:asc` (**always write the direction**: omitted means `:asc` even on measures, where the automatic policy is `:desc`). Field must exist and be `:sortable t` (compile error otherwise). Absent = current behavior (id-ASC on base types, first-sortable-measure `:desc` on rollups). An explicit request sort always wins. Applies to every `be-list` read of the type with no request sort, including `allowed-values` FK option lists targeting it |
+| `:title-field` | Names a row for the `:usage` log detail | a field keyword; the field must exist and be `:column t` (compile error otherwise; forbidden on rollups — usage events never target one). The `:usage` `:detail` prefix for `view` / `insert` / `update` / `delete` / `action` becomes `"<title-field value> / <uuid>"` (plus the button key for `action`) when the row's value is non-blank; per-row fallback to the identity coalesce when blank, and models without `:title-field` keep the identity coalesce unchanged |
 | `:views` | Named join views | plist; see [Views](#views). Default if omitted (non-joiner): `(:main (:tables (<type-key>)))` |
 | `:fields` | Field definitions | plist; see [Fields](#fields) |
 | `:list-form` / `:add-form` / `:update-form` / `:view-form` | FE form specs | `(:fields t)` or `(:fields (:a :b))`; absent/nil → no form. Absent `:view-form` means no row click opens a record (no fallback); forbidden on rollups |
@@ -178,7 +196,7 @@ For author models, use `:auto` or `nil`:
 
 String form gets full CRUD permissions when the role is created. Every type that participates in RBAC also receives `"admin"`.
 
-A `:type-roles` entry gates *creating* a row of the type (`be-insert`) and *seeing the type*; operations on an existing row are decided by the roles on that row, not by the type resource (`be-update` / `be-action` / `be-delete` are row-only). A role declared with `:create` and `:read` but not `:update` can still edit the rows it sits on — and it sits on the rows that user creates, because insert attaches the type's roles to the new row's resource along with the creator's exclusive role; it does not sit on rows created by others. Type-level create does not imply row update on rows the user did not create.
+A `:type-roles` entry gates *creating* a row of the type (`be-insert`) and *seeing the type* (the type selector); operations on an existing row — reads included — are decided by the roles on that row, not by the type resource (`be-rec` / `be-id` / `be-update` / `be-action` / `be-delete` are row-level, and the REST endpoints behind them authorize the same way). A list of an ordinary type needs only an authenticated caller and returns exactly that caller's readable rows; rollups and built-in types keep a type-level list gate (`be-list`). The backend does not copy `:type-roles` onto a new row: it attaches only the roles explicitly supplied by the caller, plus `"admin"` and the creator's exclusive role. The built-in Add form preselects the type's roles as a convenience, and the user may change them before submission; an API caller must name any desired row roles explicitly. Consequently, type-level create does not imply update on rows created by others, and a role with `:create` and `:read` but not `:update` can still edit an existing row when that role is attached to the row's resource.
 
 #### Default type-roles for built-in types
 
@@ -243,7 +261,7 @@ Optional boolean, default `nil`. When `t`, `POST /api/login` accepts the seeded 
 
 - The model is the switch: `t` opens the door even if an admin later changes the guest password, and removing the key (or setting `nil`) closes it again — guest login then requires the actual password.
 - Guest stays read-only: it carries only the seeded `public` and `guest:exclusive` roles, and roles are resolved from the database per request, not baked into the token.
-- Login is not access. Guest still sees only types whose resources carry a guest-readable role — resources created by `add-type-roles` are admin-plus-declared-roles only, so without `:type-roles` (or admin role-editing) that names a guest role, guest sees an empty type selector. Combine with [`:api-roles`](#api-roles) (so guest can even reach `/api/types`) and `"public"` in a type's `:type-roles` (so guest can read that type) for a browse-only guest demo. Row visibility is still per-record: rows created via the UI copy the type's roles, so new rows carry `public` too, but pre-existing rows need their resources edited.
+- Login is not access. Guest still sees only types whose resources carry a guest-readable role — resources created by `add-type-roles` are admin-plus-declared-roles only, so without `:type-roles` (or admin role-editing) that names a guest role, guest sees an empty type selector. That selector is tab visibility, not access: a row whose resource carries `public` is directly readable by guest through the item / id / value / column / list endpoints even when the type itself is admin-only. Combine with [`:api-roles`](#api-roles) (so guest can even reach `/api/types`) and `"public"` in a type's `:type-roles` (so guest can read that type) for a browse-only guest demo. Row visibility is still per-record: the built-in Add form preselects the type's roles, so leaving `public` checked submits it with the insert and attaches it to the new row; the user may change that selection before submission, the backend does not copy `:type-roles` automatically, API callers must name row roles explicitly, and pre-existing rows need their resources edited.
 - The flag flows to the frontend through `/api/public-info` (no auth) as `guest-allowed` (JSON boolean), so the login screen can offer — and the app auto-run — a guest sign-in without further backend support.
 
 ### API roles (`:api-roles`)
@@ -255,7 +273,7 @@ Optional boolean, default `nil`. When `t`, `POST /api/login` accepts the seeded 
 Optional list of role-name strings, default `("logged-in")` (via `model-api-roles`; the default lives in the accessor, the model plist stays verbatim). Names the roles required by the **app-level** REST endpoints that have no type to consult: `/api/types`, `/api/info`, and `/api/css-variables`. A request whose user holds none of the roles gets **401**.
 
 - Shape validation only: non-empty list of non-empty, unique strings. Role *existence* is not checked at `set-model` time (`:new-roles` / `:type-roles` roles are created after top-level validation runs, so an existence check would reject first loads). `"logged-in"` and `"public"` always exist after database initialization.
-- Type-gated endpoints (`/api/list`, `/api/item`, `/api/insert`, ...) are untouched — they read the type's own roles (`get-type-roles`).
+- Data endpoints are outside this gate. Create and pre-row validation consult the type's own roles (`get-type-roles` — `/api/insert`, `/api/upload`, `/api/validate-field`, `/api/validate-form`); existing-row reads and writes authorize on the row's own resource, and ordinary lists return the caller's readable rows (see `docs/roles.md` → REST entry points).
 - `/api/login`, `/api/refresh`, and `/api/public-info` stay unauthenticated / token-only.
 - Adding `"public"` here does not open any type or row: it only lets the seeded guest user past the app-level gates. Pair it with `"public"` in `:type-roles` (see [Guest login](#guest-login)).
 
@@ -347,7 +365,7 @@ Always a list of 4-tuples, `(table column op value)`, even for one clause. No si
 
 | Family | Operators | Rules |
 |--------|-----------|-------|
-| Discrete (boolean / text / integer / real / uuid) | `:eq`, `:ne` | value is a real literal matching the column type (any number for real columns); booleans are Lisp `t`/`nil`; password columns count as text |
+| Discrete (boolean / text / integer / real / uuid) | `:eq`, `:ne` | value is a real literal matching the column type (any number for real columns — a [lexical-rules](#lexical-rules) simple float or integer); booleans are Lisp `t`/`nil`; password columns count as text |
 | Rolling date (timestamp) | `:last-days` | integer `1..1825`; `ratings.created_at >= NOW() - INTERVAL 'n days'` |
 | Calendar date (timestamp) | `:calendar` | value `:month` only (the value slot is the extension point) |
 
@@ -449,7 +467,7 @@ A type may declare `:default-sort` (see the type-key table above). When a reques
 
 ### Ordering of operations
 
-RBAC read permissions → view scope → request filters + search → sort → page. Filtering always runs on the id-selection query, never on the collapsed result; paging is the last step.
+Authorization → RBAC read permissions → view scope → request filters + search → sort → page. Filtering always runs on the id-selection query, never on the collapsed result; paging is the last step. The authorization step is category-gated: rollups and built-in types require `read` on the type resource (rollup rows have no resources; built-in types keep their system contracts — a denied list is a validation error), while an ordinary author-defined type needs only an authenticated caller and proceeds straight to the RBAC row filter, so the result contains exactly the rows that caller can read — possibly none, which is a successful empty result, not an error.
 
 ### Phase A / Phase B (normal types)
 
@@ -579,7 +597,7 @@ For M2M list fields, the column used for options and join lookup must be the **s
 
 ### `:ui` subkeys
 
-The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:read-only` and `:hide-label` must be `t` or `nil`, `:help` must be a non-blank string, `:precision` must be a number, `:table` must be a keyword, `:filter-with` must be `:boolean`, `:reference`, or a plist `(:kind <kind> [tail])` (`:boolean` takes an optional `:default :true | :false`; the `:reference` tail is empty), `:enabled-when` must be a non-empty list of `(<field> <op> <value>)` rows (see the row in the table below).
+The `:ui` plist is passed through to the frontend **verbatim** (plus a few keys injected by `fe-fields`). The key set is **closed** (`*ui-keys*` in `lisp/model.lisp`): an unknown subkey is a compile error naming the key and the legal set. Per-key value rules: `:label` must be a string, `:read-only` and `:hide-label` must be `t` or `nil`, `:help` must be a non-blank string, `:precision` must be a number (a [lexical-rules](#lexical-rules) simple float or integer literal), `:table` must be a keyword, `:filter-with` must be `:boolean`, `:reference`, or a plist `(:kind <kind> [tail])` (`:boolean` takes an optional `:default :true | :false`; the `:reference` tail is empty), `:enabled-when` must be a non-empty list of `(<field> <op> <value>)` rows (see the row in the table below).
 
 | Subkey | Values / meaning |
 |--------|------------------|
@@ -1236,9 +1254,9 @@ Always merged into every compiled model:
 | `:settings` | base, built-in, user-setting | dark-mode, display-name, bio; view scope `:user`; no-column `:current-password` (`:widget :password-read`) / `:new-password` (`:widget :password-new`) + `:change-password` button (self-service password change — see `docs/hook-registry.md` → `:change-password`; the password fields never persist via a normal Save) |
 | `:secrets` | built-in, not base, suppress-roles, category `:settings` | per-user secrets; `:name` is `:searchable t` |
 | `:tokens` | built-in, not base, no display | internal token store |
-| `:usage` | built-in, not base, `:type-roles ("usage")`, append-only, category `:system` | admin-facing action log |
+| `:usage` | built-in, not base, `:type-roles ("usage")`, append-only, category `:system` | admin-facing action log; `:ip` records the original caller address |
 
-`:usage` is the append-only action log. A helper (`record-usage`, called from the REST layer) writes one row per app event — `login`, `login-failed`, `list`, `view`, `insert`, `update`, `delete`, `action` — with the actor's name (`:user-name`, always filled, guest included), the actor's `:user` FK when the name is a real user (nullable; `on delete set null`, so deleting a user keeps their rows), the target type (`:on`), a capped 80-char `:detail`, and `:when`, the full UTC timestamp as text (`2026-11-02T10:14:03`). `:detail` names the touched row for every write-shaped event: `view` / `insert` / `update` / `delete` store `"<identity> / <uuid>"`, `action` stores `"<field-key> / <identity> / <uuid>"` (which button, which row), and `list` stores the search string (the listing is many rows — no single identity; an absent search stores NULL, as do `login` / `login-failed`). The uuid is always last and never truncated; a missing identity degrades to uuid-only. Read access is the `usage` role (`:type-roles ("usage")`; `admin` is force-attached to every type at compile time) — grant the role to widen who can read the log; the type's caps keep it read-only. Search is one ILIKE across every searchable column, so an hour search must be typed as a prefix of the stored spelling — `2026-11-02T10:` is 10:00 UTC; a bare `10` matches anything containing those characters, not the hour. Repeated lists by the same user with the same event + type + detail collapse inside 60 seconds (sort and offset are not in the key); every other event always writes. No add or update forms; `be-update` / `be-delete` reject the type. A REPL `be-insert` writes no usage row — the log is about people using the app. The e-demo nightly reset destroys the table with everything else; the journal remains the record that survives the night.
+`:usage` is the append-only action log. A helper (`record-usage`, called from the REST layer) writes one row per app event — `login`, `login-failed`, `list`, `view`, `insert`, `update`, `delete`, `action` — with the actor's name (`:user-name`, always filled, guest included), the actor's `:user` FK when the name is a real user (nullable; `on delete set null`, so deleting a user keeps their rows), the target type (`:on`), a capped 80-char `:detail`, and `:when`, the full UTC timestamp as text (`2026-11-02T10:14:03`). `:detail` names the touched row for every write-shaped event: `view` / `insert` / `update` / `delete` store `"<identity> / <uuid>"`, `action` stores `"<field-key> / <identity> / <uuid>"` (which button, which row), and `list` stores the search string (the listing is many rows — no single identity; an absent search stores NULL, as do `login` / `login-failed`). The identity segment is the row-titling value: the type's `:title-field` value when one is declared and non-blank (per row), else the first non-blank `:identity t` value in declaration order. The uuid is always last and never truncated; a missing identity degrades to uuid-only. Read access is the `usage` role (`:type-roles ("usage")`; `admin` is force-attached to every type at compile time) — grant the role to widen who can read the log; the type's caps keep it read-only. Search is one ILIKE across every searchable column, so an hour search must be typed as a prefix of the stored spelling — `2026-11-02T10:` is 10:00 UTC; a bare `10` matches anything containing those characters, not the hour. All six text columns are also `:sortable t` (`:user-name`, `:event`, `:on`, `:detail`, `:ip`, `:when`), sorted lexicographically like any text column — no IP-aware collation; the `:user` FK stays unsortable (`:sortable t` on `:target` fields is a compile error). Repeated lists by the same user with the same event + type + detail collapse inside 60 seconds (sort and offset are not in the key); every other event always writes. `:ip` is the original caller address (`real-remote-addr`, the HAProxy `X-Forwarded-For` value), nullable text, searchable and sortable (text-column lexicographic order — `9.x` sorts after `203.x`; no IP-aware collation), not in the dedup key, and NULL on rows written before the column and on non-REST writes; an existing `usage` table does not gain the column from `heal-model` or `create-tables` (both stop when the table is present), so deploying this code onto an unmigrated database silently stops logging (`record-usage` swallows the undefined-column error). A top-level `:usage (:state :off)` stops `record-usage` before any query — no insert, no dedup read — while everything else stays: the table is never dropped, the tab remains, history freezes rather than vanishes, and admin-only visibility is unchanged; turning logging back on is a model edit + reload. Absent key or `(:state :on)` means on; unknown `:state` values and unknown keys in the plist are compile errors. No add or update forms; `be-update` / `be-delete` reject the type. A REPL `be-insert` writes no usage row — the log is about people using the app. The e-demo nightly reset destroys the table with everything else; the journal remains the record that survives the night.
 
 RBAC types are treated like user-defined types at the API level (e.g. assign roles the same way you assign tags). `:users`, `:roles`, `:permissions`, `:settings`, and `:secrets` carry `:view-form (:fields t)` beside their `:update-form` (the built-in reading surfaces); `:resources` declares no forms at all.
 
@@ -1471,9 +1489,9 @@ One click closes the record (close fields written to the old row, which becomes 
 
 ## Quick key index
 
-**Top-level:** `:title` `:name` `:version` `:domain` `:domain-stg` `:repl` `:guest-allowed` `:guest-auto` `:api-roles` `:landing-page` `:new-roles` `:types`
+**Top-level:** `:title` `:name` `:version` `:domain` `:domain-stg` `:repl` `:guest-allowed` `:guest-auto` `:api-roles` `:landing-page` `:new-roles` `:usage` `:types`
 
-**Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles` `:default-sort` `:views` `:fields` `:list-form` `:add-form` `:update-form` `:view-form` `:tree` `:is-leaf` `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category` `:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter` `:page-description` `:page-description-open` lifecycle slots
+**Type:** `:table` `:create` `:update` `:delete` `:display` `:type-roles` `:default-sort` `:title-field` `:views` `:fields` `:list-form` `:add-form` `:update-form` `:view-form` `:tree` `:is-leaf` `:parent-type` `:fs-backed` `:user-setting` `:suppress-roles` `:category` `:base` `:built-in` `:internal` `:is-joiner` `:rollup` `:grain` `:filter` `:page-description` `:page-description-open` lifecycle slots
 
 **Form:** `:fields` `:hide-list` `:children` (`:view-form` only)
 

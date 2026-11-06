@@ -33,6 +33,15 @@ DATA_UI_STATE="${DATA_UI_STATE:-/data/data-ui}"
 HOST_STATE_DIR="$DATA_UI_STATE/profiles"
 SNAPSHOT_DIR="$DATA_UI_STATE/snapshots"
 
+# Shared checkout machinery (source environments, selection, locks, the
+# re-exec envelope), sourced through THIS script's canonical root so
+# every clone runs its own copy. It defines die only if unset, so the
+# die below later in this file simply overrides it.
+SCRIPT_CANONICAL_ROOT="$(dirname "$(dirname "$(readlink -f "$0")")")"
+# shellcheck source=scripts/lib/checkout.sh
+source "${SCRIPT_CANONICAL_ROOT}/scripts/lib/checkout.sh" \
+    || { echo "ERROR: cannot source ${SCRIPT_CANONICAL_ROOT}/scripts/lib/checkout.sh" >&2; exit 1; }
+
 function profile_dir {
     echo "${HOST_STATE_DIR}/${1}"
 }
@@ -158,24 +167,71 @@ field <model-name> <field-name>
 debug
     Runs the tests, printing all output from postgres and docker compose.
 
-deploy <model-name>
-    Builds the model's Docker image, generates the Kubernetes manifests, deploys
-    the app to k3d, and routes the model's domain to the app via HAProxy.
-    Requires a clean git tree and sudo (for HAProxy). Set DRY_RUN=1 to stop
-    after generating the manifests. The model is read from
-    models/<model-name>.lisp. When run on a machine other than \$DEPLOY_HOST
-    (default evo-x2), pushes the current branch and tag to origin and re-runs
-    the deploy on \$DEPLOY_HOST over ssh, in the deploy clone at
-    \$DEPLOY_CHECKOUT (default \$HOME/deploy/data-ui). Deployment state
-    (manifests, ports.lock, secrets) lives outside the repo in
-    \$DEPLOY_STATE_DIR (default ~/.local/state/data-ui-deploy).
+deploy <model-name> [--from REMOTE/BRANCH]
+    deploy always builds the PRODUCTION checkout: it fetches and
+    fast-forwards a clean clone at \$DEPLOY_CHECKOUT (default
+    /data/data-ui/repos/production) to public/master — or exactly
+    REMOTE/BRANCH with --from (canonical remotes: public
+    git@github.com:macnod/data-ui.git, private
+    git@github.com:macnod/data-ui-private.git) — prints the source and
+    full SHA, and re-executes the production script there. No
+    production build uses the caller's HEAD, branch, working tree, or
+    remotes. Requires sudo (HAProxy) and must end up on \$DEPLOY_HOST
+    (default evo-x2); from any other host it forwards over ssh (the
+    caller's repo is never inspected, cleaned, or pushed). The model
+    is read from models/<model-name>.lisp in the selected revision; a
+    Model Bank worker instead sets MODEL_FILE (a unique file under
+    models/local/deploy-incoming/, <=1 MiB, snapshot + SHA-256
+    verified) which is installed as a candidate and promoted to
+    models/local/<name>.lisp only after rollout plus both health
+    gates (NodePort and public domain). DRY_RUN=1 still fetches,
+    fast-forwards, compiles, and writes deploy state — it is NOT
+    side-effect-free; it skips tagging, image build, and cluster
+    mutation. A checkout lock (\$CHECKOUT_LOCK_ROOT, default
+    /data/data-ui/repos) serializes every deploy/delete against dry
+    runs and Model Bank workers. Deployment state (manifests,
+    ports.lock, secrets, orphaned candidates, recovery records) lives
+    in \$DEPLOY_STATE_DIR (default \$DATA_UI_STATE/deploy), outside
+    every repository.
+
+deploy-bootstrap
+    Bootstrap-only production mode: create/validate the production
+    clone and its remotes (and, at cutover, migrate legacy VIP
+    identities) without compiling, building, or touching the cluster.
+    This, not a dry run, is the first production action on a fresh
+    host.
 
 delete <model-name>
-    Undeploys the model's app: deletes its Kubernetes namespace and PVs, wipes
-    its data on the host, removes its HAProxy backend and map entry, and removes
-    its deploy state (including secrets). Asks for confirmation unless FORCE=1
-    is set. Requires sudo (for HAProxy). Docker images and git release tags are
-    left in place.
+    Undeploys the model's app from the PRODUCTION checkout's script:
+    deletes its Kubernetes namespace and PVs, wipes its data on the
+    host, removes its HAProxy backend and map entry, and removes its
+    deploy state (including secrets). Asks for confirmation unless
+    FORCE=1 is set (forwarded over ssh -t when run remotely). It never
+    fetches, switches, or requires a clean tree. Identity comes from
+    the explicit MODEL_FILE, else the canonical models/<name>.lisp,
+    else the stable models/local/<name>.lisp. Requires sudo (for
+    HAProxy). Docker images and git release tags are left in place.
+
+staging update [--from REMOTE/BRANCH]
+staging activate-modelbank [--leave-unexposed|--expose]
+staging modelbank-orphans
+staging modelbank-running
+    Manage the staging environment at \$STAGING_CHECKOUT (default
+    /data/data-ui/repos/staging). update (default private/master)
+    bootstraps/selects the staging clone under the staging +
+    production locks, quiesces Model Bank first (unexpose + drain;
+    never restarted by update), builds the frontend there (npm ci +
+    npm run build), pre-warms SBCL, installs the host ops files, and
+    plainly restarts active non-Model-Bank profiles behind per-profile
+    health gates (\$STAGING_HEALTH_TIMEOUT, default 300s). Model Bank
+    activates separately via activate-modelbank, which takes both
+    locks itself, restarts the unit, verifies journal/loopback/Swank
+    identity, and with --expose restores the originally recorded
+    exposure. modelbank-orphans is a read-only report;
+    modelbank-running is the private drain query. Routine profile /
+    e-demo / demo / named repl/db/psql commands route to the staging
+    checkout automatically and never fetch; snapshot stg: addresses
+    route too; dev: and prd: never do.
 
 traffic
     Shows HAProxy's per-IP rate-limit counters (concurrent connections,
@@ -263,6 +319,20 @@ function profile_exposed_host {
                  '$2 == b { print $1; exit }' "$HAPROXY_MAP")
     [[ -n "$domain" ]] || return 0
     echo "${domain%.demo.data-ui.com}"
+}
+
+function profile_routed_domain {
+    # The FULL first field of the map line whose second field is the
+    # profile's backend — the same lookup profile_exposed_host does,
+    # but without stripping. This is the hostname actually routed; it
+    # differs from profile_domain whenever a staging update brings a
+    # changed :domain, so health gates on an already-exposed profile
+    # use this, never profile_exposed_host (not a URL source) and
+    # never profile_domain (recomputed from the model file).
+    local name="$1"
+    [[ -f "$HAPROXY_MAP" ]] || return 1
+    awk -v b="$(profile_backend_name "$name")" \
+        '$2 == b { print $1; exit }' "$HAPROXY_MAP"
 }
 
 function show_profiles {
@@ -548,7 +618,7 @@ function profile_domain {
     if [[ ! -f "$(model_file_path "$model")" ]]; then
         die "No top-level model '${model}' (looked for $(model_file_path "$model"))."
     fi
-    MODEL_NAME="$model" FIELD_NAME="domain" get_model_field >/dev/null 2>&1 \
+    MODEL_NAME="$model" DATA_UI_FIELD_NAME="domain" get_model_field >/dev/null 2>&1 \
         || die "Could not read :domain from $(model_file_path "$model")."
     domain=$(MODEL_NAME="$model" model_field domain-stg)
     if [[ -z "$domain" || "$domain" == "NIL" ]]; then
@@ -1389,23 +1459,39 @@ function start_psql {
 }
 
 function start_repl {
-    echo
-    echo "Building frontend."
-    CURRENT=$(pwd)
-    cd web && npm install && npm run build
-    cd $CURRENT
+    # Unnamed development keeps its frontend build; named (staging)
+    # REPLs run no npm — only 'staging update' builds web/dist — and
+    # fail with the update instruction when dist is missing. The ASDF
+    # load contract pins the checkout, and the orphan reap runs after
+    # (init): a REPL can be the first process after an unclean
+    # shutdown, and the reap must finish before the REPL prompt (Swank
+    # is already listening by then, which is intended — it is an
+    # operator channel).
+    if [[ -n "${REPL_PROFILE:-}" ]]; then
+        if [[ ! -d "web/dist" ]]; then
+            die "web/dist is missing in $(canonical_checkout_root); run 'scripts/data-ui staging update' first (named REPLs never build the frontend)."
+        fi
+    else
+        echo
+        echo "Building frontend."
+        local current
+        current=$(pwd)
+        ( cd web && npm install && npm run build ) || die "frontend build failed."
+        cd "$current" || die "cannot cd back to ${current}"
+    fi
     echo
     echo "Loading data-ui and starting Swank server on port $SWANK_PORT."
     local -a evals
-    evals=(
-        --eval "(require :data-ui)"
-        --eval "(in-package :data-ui)"
-        --eval "(init)"
-    )
+    build_load_contract_evals
+    evals=("${LOAD_CONTRACT_EVALS[@]}"
+           --eval '(in-package :data-ui)'
+           --eval '(init)'
+           --eval '(reap-deploy-incoming-orphans)'
+           --eval '(in-package :data-ui)')
     if [[ -n "${MODEL_NAME:-}" ]]; then
         evals+=(--eval "(set-model \"${MODEL_NAME}\")")
     fi
-    ros run -- "${evals[@]}"
+    DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" ros run -- "${evals[@]}"
 }
 
 function run_tests {
@@ -1413,14 +1499,18 @@ function run_tests {
     echo "Running tests"
     # Tests ship inside the :data-ui system (tests/helpers.lisp → run-tests).
     # TEST_FILE was never assigned in this script; invoke the helper directly.
+    # The ASDF load contract pins the run to this checkout (a plain
+    # central-registry push is not enough; see build_load_contract_evals).
     local out status
     out=$(mktemp)
-    ros run -- --disable-debugger \
-        --eval "(require :data-ui)" \
-        --eval "(in-package :data-ui)" \
-        --eval "(init)" \
-        --eval "(run-tests)" \
-        --eval "(uiop:quit 0)" 2>&1 | tee "$out"
+    build_load_contract_evals
+    DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" \
+        ros run -- --disable-debugger \
+            "${LOAD_CONTRACT_EVALS[@]}" \
+            --eval '(in-package :data-ui)' \
+            --eval '(init)' \
+            --eval '(run-tests)' \
+            --eval '(uiop:quit 0)' 2>&1 | tee "$out"
     status=${PIPESTATUS[0]}
     if grep -qE '^[0-9]+/[0-9]+ checks FAILED' "$out"; then
         export REPORT="FAIL"
@@ -1521,17 +1611,25 @@ function export_docs_environment {
 }
 
 function get_model_field {
-    # top-level-model-field takes just the basename without extension.
-    # MODEL_FILE (FR-9) overrides the canonical models/<name>.lisp path;
-    # VIP deploys pass models/local/<name>.lisp so facts come from the
-    # local model without it being committed.
-    local model_path="${MODEL_FILE:-models/${MODEL_NAME}.lisp}"
-    local model_base
-    model_base=$(basename "$model_path" .lisp)
-    ros run -- --disable-debugger \
+    # Data, not code: the model path and the field name cross to SBCL as
+    # environment variables read by constant --eval forms — never
+    # spliced into the eval text (the old "${FIELD_NAME}" spellings
+    # were a shell-quoting injection hole; paths containing quotes,
+    # backslashes, parentheses, or newlines must compile or fail
+    # cleanly, with nothing injected). DATA_UI_MODEL_PATH defaults to
+    # the canonical models/${MODEL_NAME}.lisp; handoff deploys point it
+    # at the candidate. The basename-derived second argument is the
+    # deploy token under a handoff — harmless only because
+    # top-level-model-field ignores it when :model-path is given; keep
+    # it that way.
+    local model_path="${DATA_UI_MODEL_PATH:-models/${MODEL_NAME}.lisp}"
+    DATA_UI_MODEL_PATH="$model_path" \
+        ros run -- --disable-debugger \
         --load "lisp/deployment.lisp" \
         --eval '(in-package :deployment)' \
-        --eval "(top-level-model-field \"${FIELD_NAME}\" \"${model_base}\" :model-path \"${model_path}\")" \
+        --eval '(let* ((path (uiop:getenv "DATA_UI_MODEL_PATH"))
+                       (base (and path (pathname-name (parse-namestring path)))))
+                  (top-level-model-field (uiop:getenv "DATA_UI_FIELD_NAME") base :model-path path))' \
         --quit
 }
 
@@ -1544,24 +1642,29 @@ function haproxy_env {
     # profile expose/unexpose verbs (which call it directly). DEPLOY_HOST
     # is the machine hosting the k3d cluster and HAProxy; it must be
     # both a valid ssh destination (see ~/.ssh/config) and the machine's
-    # hostname, since the latter decides local vs remote deploy.
+    # hostname, since the latter decides local vs remote deploy. The
+    # path variables keep pre-set values so test harnesses (and other
+    # front doors) can redirect them; defaults are the production host's.
     export DEPLOY_HOST="${DEPLOY_HOST:-evo-x2}"
-    export HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
-    export HAPROXY_CONF_D="/etc/haproxy/conf.d"
-    export HAPROXY_MAP="/etc/haproxy/data-ui.map"
-    export HAPROXY_DEFAULTS="/etc/default/haproxy"
+    export HAPROXY_CFG="${HAPROXY_CFG:-/etc/haproxy/haproxy.cfg}"
+    export HAPROXY_CONF_D="${HAPROXY_CONF_D:-/etc/haproxy/conf.d}"
+    export HAPROXY_MAP="${HAPROXY_MAP:-/etc/haproxy/data-ui.map}"
+    export HAPROXY_DEFAULTS="${HAPROXY_DEFAULTS:-/etc/default/haproxy}"
 }
 
 function export_deploy_environment {
     export DEPLOY_ENV="demo"
     haproxy_env
-    # Deploy clone on DEPLOY_HOST used by remote deploys; kept separate
-    # from any development checkout so a remote deploy never disturbs
-    # work in progress. $HOME is escaped so it expands on the remote.
-    export DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-\$HOME/deploy/data-ui}"
+    # DEPLOY_CHECKOUT defaults to the production clone under
+    # /data/data-ui/repos (scripts/lib/checkout.sh owns the default).
+    # A deploy always selects and re-executes that checkout's script;
+    # the caller's HEAD, branch, working tree, and remotes are never
+    # production inputs.
+    export DEPLOY_CHECKOUT
     # Machine-local deployment state (rendered manifests, ports.lock,
-    # per-instance secrets). Deliberately outside the repository: it is
-    # derived output and cluster-state cache, not source.
+    # per-instance secrets, orphaned candidates, recovery records).
+    # Deliberately outside every repository: it is derived output and
+    # cluster-state cache, not source.
     export DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-$DATA_UI_STATE/deploy}"
     export K3D_CLUSTER="${K3D_CLUSTER:-evo-x2}"
     export IMAGE_REPO="macnod/data-ui"
@@ -1587,13 +1690,17 @@ function export_deploy_environment {
 }
 
 function model_field {
-    FIELD_NAME="$1" get_model_field | tail -1
+    # $1 = field name, crossing as data (see get_model_field).
+    DATA_UI_FIELD_NAME="$1" get_model_field | tail -1
 }
 
 function require_clean_tree {
-    if [[ -n "$(git status --porcelain)" ]]; then
-        die "Working tree is not clean. Commit or stash your changes first."
-    fi
+    # Retired: the deploy body never checks the caller's tree. Outer
+    # selection runs the strict check on the production checkout
+    # (require_checkout_clean in scripts/lib/checkout.sh), and
+    # development is never required to be clean. Kept as a hard error
+    # so stale callers surface immediately.
+    die "require_clean_tree is retired; selection owns cleanliness (scripts/lib/checkout.sh)."
 }
 
 function export_deploy_db_environment {
@@ -1608,12 +1715,53 @@ function export_deploy_db_environment {
     export PGPASSWORD="$DB_PASSWORD"
 }
 
+function build_load_contract_evals {
+    # The ASDF load contract, shared by start_repl, run_tests,
+    # compile_model, and the staging pre-warm. Every load site runs a
+    # FRESH SBCL ((asdf:clear-system :data-ui) cannot undo a load
+    # already performed), pushes this checkout onto
+    # asdf:*central-registry* BEFORE (require :data-ui), then
+    # canonicalizes (asdf:system-source-directory :data-ui) AND
+    # data-ui::*package-root* and aborts (exit 3) unless both equal the
+    # invoking checkout. A plain push is not enough: ~/common-lisp is in
+    # the default source-registry tree and Quicklisp local-projects can
+    # resolve the development clone first. *package-root* is not an
+    # independent witness (it is system-relative), but it is the path
+    # the image uses for models/, the deploy script, and the registry,
+    # so it is compared anyway. The two format lines are diagnostics —
+    # the comparison is the guard. All inputs cross as environment
+    # variables read by constant --eval forms; nothing is spliced.
+    local checkout
+    checkout=$(canonical_checkout_root)
+    LOAD_CONTRACT_EVALS=(
+        --eval '(let ((c (uiop:getenv "DATA_UI_EXPECTED_CHECKOUT")))
+                  (push (uiop:ensure-directory-pathname c)
+                        asdf:*central-registry*))'
+        --eval '(asdf:clear-system :data-ui)'
+        --eval '(require :data-ui)'
+        --eval '(let* ((expected (uiop:getenv "DATA_UI_EXPECTED_CHECKOUT"))
+                       (want (concatenate (quote string) (string-right-trim "/" expected) "/"))
+                       (src (namestring (truename (asdf:system-source-directory :data-ui))))
+                       (root (namestring (truename data-ui::*package-root*))))
+                  (format t "DATA-UI-ASDF-SOURCE=~a~%" src)
+                  (format t "DATA-UI-PACKAGE-ROOT=~a~%" root)
+                  (unless (and (equal src want) (equal root want))
+                    (format *error-output* "FATAL: ASDF resolved :data-ui outside this checkout (source=~a package-root=~a wanted=~a)~%" src root want)
+                    (uiop:quit 3)))'
+    )
+    LOAD_CONTRACT_CHECKOUT="$checkout"
+}
+
 function compile_model {
-    # MODEL_FILE (FR-9) overrides the canonical path; VIP deploys
-    # compile models/local/<name>.lisp directly, no commit, no copy.
-    local model_file="${MODEL_FILE:-models/${MODEL_NAME}.lisp}"
+    # MODEL identity crosses as data: DATA_UI_MODEL_PATH (canonical
+    # models/<name>.lisp or the handoff candidate) is read by constant
+    # --eval forms — the old "${model_file}" splice is gone. The read
+    # stays behind read-model-text (the read-time-eval fix; a plain
+    # read would reopen the #. hole), and the ASDF load contract pins
+    # the compile to this checkout.
+    local model_path="${DATA_UI_MODEL_PATH:-models/${MODEL_NAME}.lisp}"
     echo
-    echo "Compiling model from ${model_file}..."
+    echo "Compiling model from ${model_path}..."
     # Runs the compilation phase of SET-MODEL (validation, SQL generation,
     # lambda compilation) against a throwaway database, skipping the
     # cluster-facing side effects (CREATE-TABLES, START-WEB-SERVER, etc).
@@ -1626,16 +1774,19 @@ function compile_model {
     start_postgres_quietly
     initialize_database_quietly
     local status=0
-    # Pin ASDF to this checkout so the deploy clone compiles its own
-    # source rather than whatever other data-ui checkout is registered
-    # in local-projects.
-    ros run -- --disable-debugger \
-        --eval "(push (uiop:getcwd) asdf:*central-registry*)" \
-        --eval "(require :data-ui)" \
-        --eval "(in-package :data-ui)" \
-        --eval "(init-database)" \
-        --eval "(let ((model (cadr (with-open-file (in \"${model_file}\") (read in))))) (top-level-settings model) (compile-model (getf model :types)) (format t \"Model compiled OK.~%\"))" \
-        --quit || status=1
+    build_load_contract_evals
+    DATA_UI_MODEL_PATH="$model_path" \
+    DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" \
+        ros run -- --disable-debugger \
+            "${LOAD_CONTRACT_EVALS[@]}" \
+            --eval '(in-package :data-ui)' \
+            --eval '(init-database)' \
+            --eval '(let* ((path (uiop:getenv "DATA_UI_MODEL_PATH"))
+                           (model (cadr (read-model-text (u:slurp path)))))
+                      (top-level-settings model)
+                      (compile-model (getf model :types))
+                      (format t "Model compiled OK.~%"))' \
+            --quit || status=1
     stop_database_quietly
     (( status == 0 )) \
         || die "Model failed to compile; aborting deployment."
@@ -1654,7 +1805,7 @@ function gather_deploy_facts {
     [[ -n "$TITLE" && "$TITLE" != "NIL" ]] || die "Model has no :title."
     [[ -n "$VERSION" && "$VERSION" != "NIL" ]] || die "Model has no :version."
     [[ -n "$DOMAIN" && "$DOMAIN" != "NIL" ]] || die "Model has no :domain."
-    SHORT_HASH=$(git rev-parse --short HEAD)
+    SHORT_HASH="${DEPLOY_FULL_SHA:0:7}"
     TAG="${NAME}-${VERSION}-${SHORT_HASH}"
     IMAGE="${IMAGE_REPO}:${TAG}"
     RELEASE_NAME="${TITLE} ${TAG}"
@@ -1672,32 +1823,87 @@ function gather_deploy_facts {
 }
 
 function create_deploy_tag {
-    # FR-9: a git tag <name>-<version>-<hash> in the public repo names
-    # the deploying VIP's model — a radar trace even though the file is
-    # gitignored. Skip under MODEL_FILE; keep the docker tag.
-    if [[ -n "${MODEL_FILE:-}" ]]; then
-        echo "MODEL_FILE set; skipping git tag (FR-9)."
+    # FR-9: a git tag <name>-<version>-<hash> in the production clone
+    # names the deploying VIP's model — a radar trace even though the
+    # file is gitignored. Skip under a handoff; keep the docker tag.
+    # The tag is local to the production clone, created AT the
+    # envelope's full SHA (never a HEAD reread), and is never pushed to
+    # public, private, or origin. Operators identify a release by the
+    # printed source + full SHA and the image tag; rollback is a revert
+    # commit, never a tag checkout.
+    if [[ -n "${DEPLOY_HANDOFF_KIND:-}" && "${DEPLOY_HANDOFF_KIND}" != "none" ]]; then
+        echo "Handoff deploy (MODEL_FILE); skipping git tag (FR-9)."
         return
     fi
-    if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-        if [[ "$(git rev-parse "${TAG}^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+    if checkout_git "$DEPLOY_CHECKOUT" rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+        if [[ "$(checkout_git "$DEPLOY_CHECKOUT" rev-parse "${TAG}^{commit}")" != "$DEPLOY_FULL_SHA" ]]; then
             die "Tag ${TAG} exists but points at a different commit."
         fi
-        echo "Tag ${TAG} already exists for HEAD; reusing it."
+        echo "Tag ${TAG} already exists at ${DEPLOY_FULL_SHA}; reusing it."
     else
-        git tag -a "$TAG" -m "$RELEASE_NAME"
+        checkout_git "$DEPLOY_CHECKOUT" tag -a "$TAG" -m "$RELEASE_NAME" "$DEPLOY_FULL_SHA" \
+            || die "Cannot create tag ${TAG} in ${DEPLOY_CHECKOUT}."
         echo "Created tag ${TAG} (\"${RELEASE_NAME}\")."
     fi
 }
 
 function build_image {
+    # The Docker context is a fresh restrictive temporary directory
+    # populated by `git archive FULL_SHA` — never the raw checkout
+    # (Dockerfile uses COPY ., and ignored stale VIP models under
+    # models/local/ would ride into canonical images). Any models/local
+    # path in the archive listing aborts the build. A handoff deploy
+    # then creates models/local/ IN THE CONTEXT, copies the immutable
+    # candidate there as models/local/<cli-name>.lisp, SHA-256-checks it
+    # against the envelope handoff SHA, and asserts the archived
+    # canonical models/<cli-name>.lisp is absent; a canonical deploy
+    # asserts no models/local/ path exists in the context. The context
+    # is cleaned by the inner arm's trap. The tracked root .dockerignore
+    # rides in the archive (harmless; it never excluded models/local/).
+    local context listing archive
+    context=$(mktemp -d "${TMPDIR:-/tmp}/data-ui-build-context.XXXXXX") \
+        || die "cannot create a build context directory"
+    DEPLOY_BUILD_CONTEXT="$context"
+    chmod 700 "$context"
+    archive=$(mktemp "${TMPDIR:-/tmp}/data-ui-build-archive.XXXXXX.tar") \
+        || die "cannot create a build archive temp file"
+    DEPLOY_BUILD_ARCHIVE="$archive"
+    checkout_git "$DEPLOY_CHECKOUT" archive --format=tar "$DEPLOY_FULL_SHA" > "$archive" \
+        || { rm -f "$archive"; die "git archive of ${DEPLOY_FULL_SHA} failed."; }
+    listing=$(tar -tf "$archive") \
+        || { rm -f "$archive"; die "cannot list the git archive (corrupt?)."; }
+    if grep -q '^models/local/' <<<"$listing"; then
+        die "Refusing to build: the selected revision tracks files under models/local/ (never a build input)."
+    fi
+    tar -xf "$archive" -C "$context" \
+        || die "cannot extract the git archive into the build context."
+    rm -f "$archive"
+    DEPLOY_BUILD_ARCHIVE=""
+    if [[ "${DEPLOY_HANDOFF_KIND:-none}" != "none" ]]; then
+        local ctx_model="models/local/${MODEL_NAME}.lisp" got
+        if [[ -e "${context}/models/${MODEL_NAME}.lisp" ]]; then
+            die "Refusing to build: canonical models/${MODEL_NAME}.lisp exists in ${DEPLOY_FULL_SHA}; the image would run it instead of the VIP model (see VIP collision)."
+        fi
+        mkdir -p "${context}/models/local"
+        cp -- "$DEPLOY_CANDIDATE_ABS" "${context}/${ctx_model}" \
+            || die "cannot copy the handoff candidate into the build context."
+        got=$(sha256sum "${context}/${ctx_model}" | cut -d' ' -f1)
+        [[ "$got" == "$ENVELOPE_HANDOFF_SHA" ]] \
+            || die "Handoff SHA mismatch in the build context (wanted ${ENVELOPE_HANDOFF_SHA}, got ${got})."
+        echo "Build context: git archive ${DEPLOY_FULL_SHA:0:12} + handoff ${ctx_model}"
+    else
+        if find "$context" -path '*/models/local/*' -print -quit | grep -q .; then
+            die "Refusing to build: models/local/ present in a canonical build context."
+        fi
+        echo "Build context: git archive ${DEPLOY_FULL_SHA:0:12} (canonical; no models/local/)"
+    fi
     echo
     echo "Building Docker image ${IMAGE}"
     # --no-cache: cached RUN layers (e.g. `ros install macnod/*`) can hold
     # old dependency versions while COPY picks up fresh data-ui source,
     # producing an image that mixes new code with stale deps. Deploys are
     # rare; always pay for a clean build.
-    docker build --no-cache -t "$IMAGE" . || die "Docker build failed."
+    docker build --no-cache -t "$IMAGE" "$context" || die "Docker build failed."
     echo
     echo "Importing image into k3d cluster ${K3D_CLUSTER}"
     k3d image import "$IMAGE" -c "$K3D_CLUSTER" \
@@ -1747,30 +1953,35 @@ function assign_node_port {
 }
 
 function assign_backend_target {
-    # HAProxy target for the backend snippet: fail-closed on the
-    # k3d-published loopback hop (127.0.0.1:<nodePort+1000>, stable
-    # across bridge-IP drift and cluster recreation). If the hop does
-    # not answer, die -- never fall back to the node's bridge IP:
-    # docker reassigns bridge IPs on container restart and the
-    # rendered target goes stale (the 2026-09-30 vof 503). Any HTTP
-    # response counts as "answers" -- we are probing routing, not
-    # content. The band 30303-31312 is published by the create block
-    # (verified post-recreate 2026-09-30: 13/13 PortBindings on
-    # 127.0.0.1). Twin of k3d_backend_target
-    # (~/r/k3d-tools/nodeport.sh); this script cannot source that
-    # lib -- the deploy clone must stay self-contained.
+    # Early arithmetic ONLY: the k3d-published loopback hop
+    # 127.0.0.1:<nodePort+1000>, stable across bridge-IP drift and
+    # cluster recreation, needed by generate_manifests. The probe that
+    # the hop actually answers moved AFTER rollout
+    # (probe_backend_target), so a first deploy of a new name does not
+    # fail closed before an image exists. Twin of k3d_backend_target
+    # (~/r/k3d-tools/nodeport.sh); this script cannot source that lib —
+    # the deploy clone must stay self-contained.
+    NODE_TARGET="127.0.0.1:$(( NODE_PORT + 1000 ))"
+    echo "HAProxy target (rendered): ${NODE_TARGET} (published loopback hop; verified after rollout)."
+}
+
+function probe_backend_target {
+    # Post-rollout verification: the loopback hop must answer — never
+    # fall back to the node's bridge IP (docker reassigns bridge IPs on
+    # container restart and the rendered target would go stale; the
+    # 2026-09-30 vof 503). Any HTTP answer counts; the /health gate
+    # right after asserts content. The band 30303-31312 is published by
+    # the create block.
     local host_port=$(( NODE_PORT + 1000 ))
-    if curl -s -o /dev/null -m 2 "http://127.0.0.1:${host_port}/"; then
-        NODE_TARGET="127.0.0.1:${host_port}"
-        echo "HAProxy target: ${NODE_TARGET} (published loopback hop)."
-    else
-        die "loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT})" \
-            "does not answer -- refusing to render a bridge-IP target" \
-            "(fail-closed since 2026-09-30; see" \
-            "~/workbench/service-network-plan.org). Either the -p" \
-            "band is not published (recreate required) or nothing is" \
-            "listening yet (retry)."
+    if curl -s -o /dev/null -m 5 "http://127.0.0.1:${host_port}/" 2>/dev/null; then
+        echo "Loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT}) answers."
+        return 0
     fi
+    die "loopback hop 127.0.0.1:${host_port} (nodePort ${NODE_PORT})" \
+        "does not answer -- refusing to keep a bridge-IP target" \
+        "(fail-closed since 2026-09-30). Either the -p" \
+        "band is not published (recreate required) or nothing is" \
+        "listening yet (retry)."
 }
 
 function get_cluster_secret {
@@ -1912,14 +2123,20 @@ function haproxy_bootstrap {
 function haproxy_validate_and_reload {
     # Validate the whole config, then restart (conf.d just enabled) or
     # reload. Dies on validation failure unless the second arg is
-    # "tolerant" (profile delete only: warn and continue).
+    # "tolerant" (profile delete only: warn and continue). A failed
+    # restart or reload DIES for every caller: removing a conf.d file
+    # or map line changes nothing until the reload, so a silent reload
+    # failure would leave routes serving from stale config — the exact
+    # window the Model Bank quiescence barrier closes (running HAProxy
+    # routes from its loaded config and in-memory map; disk state
+    # goes false BEFORE routing stops).
     local need_restart="$1"
     if sudo haproxy -c -f "$HAPROXY_CFG" -f "$HAPROXY_CONF_D" >/dev/null; then
         if [[ -n "$need_restart" ]]; then
-            sudo systemctl restart haproxy
+            sudo systemctl restart haproxy || die "HAProxy restart failed; routing unchanged (config files on disk do not take effect until a successful restart)."
             echo "HAProxy restarted (conf.d newly enabled)."
         else
-            sudo systemctl reload haproxy
+            sudo systemctl reload haproxy || die "HAProxy reload failed; routing unchanged (config files on disk do not take effect until a successful reload)."
             echo "HAProxy reloaded."
         fi
     elif [[ "$2" == "tolerant" ]]; then
@@ -1968,56 +2185,487 @@ function update_haproxy {
     haproxy_validate_and_reload "$need_restart"
 }
 
-function remote_deploy {
-    echo "Not on ${DEPLOY_HOST}; deploying remotely via ssh."
-    require_clean_tree
-    local branch sha origin_url
-    branch=$(git branch --show-current)
-    sha=$(git rev-parse HEAD)
-    origin_url=$(git remote get-url origin)
-    [[ -n "$branch" ]] || die "Detached HEAD; check out a branch to deploy."
-    # Create the tag here, so its provenance is the machine the deploy
-    # was run from, and push it along with the branch. The remote side
-    # finds the tag already present and reuses it.
-    if [[ -z "$DRY_RUN" ]]; then
-        gather_deploy_facts
-        create_deploy_tag
-        git push origin "$branch" "refs/tags/${TAG}" || die "git push failed."
-    else
-        git push origin "$branch" || die "git push failed."
-    fi
-    # -t allocates a tty so the HAProxy step's sudo can prompt. Note that
-    # $DEPLOY_CHECKOUT contains a literal \$HOME, expanded on the remote.
-    ssh -t "$DEPLOY_HOST" "
-        set -e
-        if [[ ! -d \"$DEPLOY_CHECKOUT/.git\" ]]; then
-            echo \"Creating deploy clone at $DEPLOY_CHECKOUT\"
-            git clone '$origin_url' \"$DEPLOY_CHECKOUT\"
-        fi
-        cd \"$DEPLOY_CHECKOUT\"
-        git fetch origin '+refs/heads/*:refs/remotes/origin/*' --tags --force
-        git checkout --detach $sha
-        DRY_RUN='$DRY_RUN' scripts/data-ui deploy '$MODEL_NAME'
-    " || die "Remote deploy failed."
+#
+# Deploy candidates (production's models/local/deploy-incoming/)
+#
+
+function new_deploy_token {
+    # Random token matching [A-Za-z0-9_-]+ (hex here).
+    printf 't%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 }
 
-function deploy {
+function snapshot_model_file {
+    # $1 = original cwd. Validate MODEL_FILE and copy it to a private
+    # mode-600 temp snapshot; sets DEPLOY_HANDOFF_SHA; echoes the
+    # snapshot path. Regular file, non-empty, <=1 MiB, not a symlink,
+    # SHA-256 recorded — all BEFORE any Git or network mutation
+    # (bootstrap clone included). A missing, changed, oversized,
+    # directory, or symlink-escape input aborts with no canonical-model
+    # fallback and no cluster mutation. Relative paths resolve against
+    # the ORIGINAL cwd (e.g. Model Bank's staging root), never the
+    # script directory.
+    local orig_cwd="$1" path="${MODEL_FILE}" abs real size snap
+    if [[ "$path" = /* ]]; then abs="$path"; else abs="${orig_cwd}/${path}"; fi
+    [[ -e "$abs" ]] || die "MODEL_FILE '${path}' not found (resolved against the original cwd: ${abs})."
+    [[ ! -L "$abs" ]] || die "MODEL_FILE must not be a symlink: ${abs}."
+    real=$(readlink -f "$abs") || die "cannot resolve MODEL_FILE ${abs}."
+    [[ -f "$real" ]] || die "MODEL_FILE is not a regular file: ${abs}."
+    size=$(stat -c %s "$real")
+    (( size > 0 )) || die "MODEL_FILE is empty: ${abs}."
+    (( size <= 1048576 )) || die "MODEL_FILE is larger than 1 MiB (${size} bytes): ${abs}."
+    snap=$(mktemp "${TMPDIR:-/tmp}/data-ui-handoff.XXXXXX") \
+        || die "cannot create the handoff snapshot."
+    cp -- "$real" "$snap" || { rm -f "$snap"; die "cannot snapshot MODEL_FILE ${abs}."; }
+    chmod 600 "$snap"
+    DEPLOY_HANDOFF_SHA=$(sha256sum "$snap" | cut -d' ' -f1)
+    # Both values, because callers run this through a command
+    # substitution: an assignment here cannot cross that boundary, and
+    # a caller reading $DEPLOY_HANDOFF_SHA afterward used to get an
+    # EMPTY sha — every handoff then failed its hash verification.
+    # take_model_snapshot consumes this pair.
+    echo "$snap"
+    echo "$DEPLOY_HANDOFF_SHA"
+}
+
+function take_model_snapshot {
+    # take_model_snapshot ORIG_CWD — snapshot_model_file with the
+    # subshell boundary handled: captures its two-line output (snapshot
+    # path, SHA-256) into MODEL_SNAPSHOT_PATH and DEPLOY_HANDOFF_SHA
+    # in THIS shell. A failure inside snapshot_model_file already
+    # printed its error from the subshell; exit with its status.
+    local out st
+    out=$(snapshot_model_file "$1")
+    st=$?
+    (( st == 0 )) || exit "$st"
+    DEPLOY_HANDOFF_SHA=${out##*$'\n'}
+    MODEL_SNAPSHOT_PATH=${out%%$'\n'*}
+}
+
+function handle_deploy_leftovers {
+    # Right after acquiring the production lock and before installing
+    # its own candidate: move every file already present in
+    # production's deploy-incoming/, bytes intact, to the
+    # orphaned-candidates area, printing each move. Never delete one —
+    # it may be the only identity of an instance a killed deploy rolled
+    # out.
+    local dir="${DEPLOY_CHECKOUT}/models/local/deploy-incoming" f ts dest
+    [[ -d "$dir" ]] || return 0
+    mkdir -p "${DEPLOY_STATE_DIR}/orphaned-candidates"
+    while IFS= read -r -d '' f; do
+        ts=$(date -u +%Y%m%dT%H%M%SZ)
+        dest="${DEPLOY_STATE_DIR}/orphaned-candidates/${ts}-$(basename "$f")"
+        mv "$f" "$dest" || die "cannot move the leftover candidate ${f}."
+        echo "Moved leftover candidate $(basename "$f") to ${dest}."
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
+}
+
+function install_deploy_candidate {
+    # $1 = snapshot path. Installs the immutable candidate (mode 600,
+    # SHA-256 verified against the snapshot) at
+    # models/local/deploy-incoming/<token>.lisp in the production
+    # checkout, under the production lock (the only writer; the
+    # Model Bank worker's incoming file lives in STAGING and is never
+    # touched). Sets DEPLOY_CANDIDATE (checkout-relative),
+    # DEPLOY_CANDIDATE_ABS, DEPLOY_CANDIDATE_TOKEN.
+    local snapshot="$1" dir tok tmp got
+    require_incoming_ignored "$DEPLOY_CHECKOUT"
+    dir="${DEPLOY_CHECKOUT}/models/local/deploy-incoming"
+    mkdir -p "$dir" || die "cannot create ${dir}."
+    tok=$(new_deploy_token)
+    while [[ -e "${dir}/${tok}.lisp" || -e "${dir}/.${tok}.lisp.tmp" ]]; do
+        tok=$(new_deploy_token)
+    done
+    tmp="${dir}/.${tok}.lisp.tmp"
+    cp -- "$snapshot" "$tmp" || die "cannot stage the candidate."
+    chmod 600 "$tmp"
+    got=$(sha256sum "$tmp" | cut -d' ' -f1)
+    [[ "$got" == "$DEPLOY_HANDOFF_SHA" ]] \
+        || { rm -f "$tmp"; die "candidate hash mismatch after the copy."; }
+    mv "$tmp" "${dir}/${tok}.lisp" || { rm -f "$tmp"; die "cannot install the candidate."; }
+    DEPLOY_CANDIDATE="models/local/deploy-incoming/${tok}.lisp"
+    DEPLOY_CANDIDATE_ABS="${DEPLOY_CHECKOUT}/${DEPLOY_CANDIDATE}"
+    DEPLOY_CANDIDATE_TOKEN="$tok"
+}
+
+function deploy_check_identity {
+    # After selection, before compilation/tagging/rendering/building:
+    # the :name equality check (CLI operand vs the model's declared
+    # :name), and — for a handoff — the canonical-collision refusal
+    # (resolve-model-path prefers models/<name>.lisp, so the image
+    # would silently run the canonical model). Never remove or
+    # overwrite the canonical file to make a VIP deploy fit.
+    local model="$1" snapshot="$2" name
+    if [[ -n "$snapshot" ]]; then
+        if checkout_git "$DEPLOY_CHECKOUT" cat-file -e "${SELECTED_FULL_SHA}:models/${model}.lisp" 2>/dev/null; then
+            die "models/${model}.lisp exists in ${CHECKOUT_REMOTE}/${CHECKOUT_BRANCH} (${SELECTED_FULL_SHA}); a VIP deploy would silently run that canonical model. Publish the model under another name, or make this deploy canonical."
+        fi
+        name=$(MODEL_NAME="$model" DATA_UI_MODEL_PATH="$snapshot" model_field name)
+    else
+        name=$(MODEL_NAME="$model" model_field name)
+    fi
+    [[ -n "$name" && "$name" != "NIL" ]] || die "Model has no :name."
+    [[ "$name" == "$model" ]] \
+        || die "Model :name is '${name}' but the deploy operand is '${model}'; they must match."
+}
+
+function wait_for_health_200 {
+    # $1 url, $2 label, $3 deadline seconds (default 300). Poll every
+    # 5 seconds with a 5-second request timeout.
+    local url="$1" label="$2" deadline="${3:-300}" waited=0 code
+    while :; do
+        code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$url" 2>/dev/null) || code=000
+        [[ "$code" == "200" ]] && return 0
+        if (( waited >= deadline )); then
+            echo "ERROR: ${label}: no HTTP 200 from ${url} within ${deadline}s (last: ${code:-none})." >&2
+            return 1
+        fi
+        sleep 5; waited=$(( waited + 5 ))
+    done
+}
+
+#
+# Remote deploy/delete forwarder (step 3): a thin forwarder, nothing
+# more. The caller never selects a local production clone, never
+# inspects or clean-checks its own repo, and never derives a SHA,
+# writes facts or tags, pushes, or queries origin — including under
+# DRY_RUN=1. The host-side launcher is chosen on the host: the
+# production checkout's script if present and executable, otherwise the
+# bootstrap checkout's; after first bootstrap the bootstrap checkout is
+# never consulted. Under the one-host rule this path never fires
+# outside tests; a forwarder failure in production means DEPLOY_HOST is
+# misconfigured.
+#
+
+function remote_forward_env_string {
+    # The environment allowlist: DRY_RUN, checkout/state/source
+    # overrides, cluster configuration, and delete's FORCE. Never
+    # secrets. Emitted as shell-quoted VAR=... words for the remote
+    # bash; the whole remote script travels as ONE argument that
+    # survives exactly one reparse.
+    local -a fwd=()
+    local v
+    for v in DRY_RUN FORCE \
+             DEPLOY_CHECKOUT STAGING_CHECKOUT CHECKOUT_LOCK_ROOT \
+             DEPLOY_HOST STAGING_HOST DEPLOY_BOOTSTRAP_CHECKOUT \
+             DEPLOY_STATE_DIR DATA_UI_STATE \
+             DATA_UI_PUBLIC_URL DATA_UI_PRIVATE_URL \
+             K3D_CLUSTER OPS_LIB_DIR SYSTEMD_UNIT_DIR \
+             HAPROXY_CFG HAPROXY_CONF_D HAPROXY_MAP HAPROXY_DEFAULTS \
+             STAGING_HEALTH_TIMEOUT; do
+        [[ -n "${!v:-}" ]] && fwd+=("$v=$(printf '%q' "${!v}")")
+    done
+    local IFS=' '
+    printf '%s' "${fwd[*]}"
+}
+
+function remote_launcher_script {
+    # $@ = validated argv for the launcher. Prints the host-side bash
+    # script (launcher choice + exec) — a single string, embedded into
+    # one `bash -c <quoted>` argument.
+    local prod_q boot_q args_q=""
+    prod_q=$(printf '%q' "${DEPLOY_CHECKOUT}/scripts/data-ui")
+    boot_q=$(printf '%q' "${DEPLOY_BOOTSTRAP_CHECKOUT}/scripts/data-ui")
+    local a
+    for a in "$@"; do
+        args_q+=" $(printf '%q' "$a")"
+    done
+    cat <<EOF
+set -e
+launcher=""
+if [[ -x $prod_q ]]; then launcher=$prod_q
+elif [[ -x $boot_q ]]; then launcher=$boot_q
+else
+    echo "ERROR: no deploy launcher on this host (tried ${DEPLOY_CHECKOUT}/scripts/data-ui and ${DEPLOY_BOOTSTRAP_CHECKOUT}/scripts/data-ui); run bootstrap first." >&2
+    exit 1
+fi
+# No exec: an EXIT trap installed above (remote MODEL_FILE cleanup)
+# must survive the launcher's exit; set -e preserves its status.
+"\$launcher"$args_q
+EOF
+}
+
+function remote_run_script {
+    # $1 = remote bash script text. Sends it as ONE argument through
+    # one reparse: ssh passes "bash -c <quoted>" to the remote login
+    # shell, which reparses exactly once. -t so sudo and delete
+    # confirmation can prompt. Never run with an inherited checkout
+    # lock descriptor (ssh may leave a ControlMaster behind).
+    local script="$1" quoted
+    quoted=$(printf '%q' "$script")
+    checkout_run_without_locks ssh -t "$DEPLOY_HOST" "bash -c $quoted" \
+        || die "Remote ${REMOTE_KIND:-operation} failed."
+}
+
+function remote_transfer_model_file {
+    # Remote MODEL_FILE: the same 1 MiB + SHA-256 validation locally,
+    # then the IMMUTABLE local snapshot (not the original file, which
+    # could change between validation and transfer) is transferred
+    # non-interactively to a fresh mode-700 host temp directory
+    # OUTSIDE both checkouts, verified (type, size, hash) there BEFORE
+    # any source mutation. A host-side trap cleans the temp directory
+    # on normal exit and on partial transfer; cleanup after a network
+    # partition is best-effort, and that is documented. Sets
+    # REMOTE_TEMP_DIR / REMOTE_MODEL_FILE and marks the handoff's
+    # provenance (DEPLOY_HANDOFF_ORIGIN=remote) so the host-side outer
+    # arm emits HANDOFF_KIND=remote.
+    local snap sha tdir remote_tmp
+    take_model_snapshot "$(pwd)"
+    snap="$MODEL_SNAPSHOT_PATH"
+    sha="$DEPLOY_HANDOFF_SHA"
+    tdir=$(ssh "$DEPLOY_HOST" 't=$(mktemp -d "${TMPDIR:-/tmp}/data-ui-remote-handoff.XXXXXX") && chmod 700 "$t" && echo "$t"') \
+        || { rm -f "$snap"; die "cannot create a host temp directory on ${DEPLOY_HOST}."; }
+    [[ -n "$tdir" ]] || { rm -f "$snap"; die "empty temp dir answer from ${DEPLOY_HOST}."; }
+    local remote_file="${tdir}/model.lisp"
+    if ! scp -q "$snap" "${DEPLOY_HOST}:${remote_file}"; then
+        rm -f "$snap"
+        ssh "$DEPLOY_HOST" "rm -rf $(printf '%q' "$tdir")" >/dev/null 2>&1
+        die "transfer of MODEL_FILE to ${DEPLOY_HOST} failed."
+    fi
+    rm -f "$snap"
+    local got
+    got=$(ssh "$DEPLOY_HOST" "f=$(printf '%q' "$remote_file"); [[ -f \"\$f\" && ! -L \"\$f\" ]] || exit 3; s=\$(stat -c %s \"\$f\"); [[ \$s -le 1048576 ]] || exit 4; sha256sum \"\$f\" | cut -d' ' -f1") \
+        || { ssh "$DEPLOY_HOST" "rm -rf $(printf '%q' "$tdir")" >/dev/null 2>&1; die "MODEL_FILE verification on ${DEPLOY_HOST} failed (type/size)."; }
+    if [[ "$got" != "$sha" ]]; then
+        ssh "$DEPLOY_HOST" "rm -rf $(printf '%q' "$tdir")" >/dev/null 2>&1
+        die "MODEL_FILE hash mismatch after transfer to ${DEPLOY_HOST}; aborting with no mutation."
+    fi
+    REMOTE_TEMP_DIR="$tdir"
+    REMOTE_MODEL_FILE="$remote_file"
+    DEPLOY_HANDOFF_ORIGIN="remote"
+}
+
+function remote_deploy {
+    # Thin forwarder for deploy when hostname != DEPLOY_HOST.
+    local model="$1"
+    echo "Not on ${DEPLOY_HOST}; forwarding the deploy there."
+    local -a fwd_args=(deploy "$model")
+    [[ -n "${DEPLOY_FROM_SPEC:-}" ]] && fwd_args+=(--from "$DEPLOY_FROM_SPEC")
+    local env_str cleanup_pre=""
+    env_str=$(remote_forward_env_string)
+    if [[ -n "${MODEL_FILE:-}" ]]; then
+        remote_transfer_model_file
+        cleanup_pre="trap 'rm -rf $(printf '%q' "$REMOTE_TEMP_DIR")' EXIT
+"
+        env_str="${env_str} MODEL_FILE=$(printf '%q' "$REMOTE_MODEL_FILE") DEPLOY_HANDOFF_ORIGIN=remote"
+    fi
+    local launcher_args
+    launcher_args=$(remote_launcher_script "${fwd_args[@]}")
+    REMOTE_KIND="deploy"
+    # `export`, never `env`: the forwarded assignments must apply to
+    # THIS remote bash before the launcher lines below. The separator
+    # matters too — the launcher script begins with `set -e`, and
+    # without the `;` export would treat `set` and `-e` as more
+    # NAME=VALUE arguments (`export: '-e': not a valid identifier`),
+    # while `env VAR=... set -e` cannot work either (env cannot exec
+    # the builtin `set`). Either way the launcher would run with the
+    # login shell's inherited environment — no forwarded vars at all.
+    remote_run_script "${cleanup_pre}${env_str:+export ${env_str}; }${launcher_args}"
+}
+
+function remote_delete {
+    # Thin forwarder for delete; -t carries the confirmation prompt.
+    local model="$1"
+    echo "Not on ${DEPLOY_HOST}; forwarding the delete there."
+    local -a fwd_args=(delete "$model")
+    local env_str cleanup_pre=""
+    env_str=$(remote_forward_env_string)
+    if [[ -n "${MODEL_FILE:-}" ]]; then
+        remote_transfer_model_file
+        cleanup_pre="trap 'rm -rf $(printf '%q' "$REMOTE_TEMP_DIR")' EXIT
+"
+        env_str="${env_str} MODEL_FILE=$(printf '%q' "$REMOTE_MODEL_FILE") DEPLOY_HANDOFF_ORIGIN=remote"
+    fi
+    local launcher_args
+    launcher_args=$(remote_launcher_script "${fwd_args[@]}")
+    REMOTE_KIND="delete"
+    # `export`, never `env`: the forwarded assignments must apply to
+    # THIS remote bash before the launcher lines below. The separator
+    # matters too — the launcher script begins with `set -e`, and
+    # without the `;` export would treat `set` and `-e` as more
+    # NAME=VALUE arguments (`export: '-e': not a valid identifier`),
+    # while `env VAR=... set -e` cannot work either (env cannot exec
+    # the builtin `set`). Either way the launcher would run with the
+    # login shell's inherited environment — no forwarded vars at all.
+    remote_run_script "${cleanup_pre}${env_str:+export ${env_str}; }${launcher_args}"
+}
+
+#
+# Deploy: outer selection + re-execution, inner body
+#
+
+function deploy_outer {
+    # The outer arm: parse (already done by the dispatcher), snapshot
+    # MODEL_FILE before any Git/network mutation, take the production
+    # lock (DRY_RUN included: the compile database on 5446 is one
+    # global resource and the lock serializes a developer's dry run
+    # against a Model Bank worker's deploy), handle leftovers,
+    # bootstrap/validate the clone, select, run the :name and collision
+    # checks, install the candidate, then exec the production script
+    # with the envelope. No production build ever uses the caller's
+    # HEAD, branch, working tree, or remotes.
     export_deploy_environment
     if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
-        remote_deploy
+        remote_deploy "$DEPLOY_MODEL_NAME"
         return
     fi
-    # MODEL_FILE (FR-9): the local model is untracked by design, so a
-    # clean tree is neither expected nor required; the canonical path
-    # keeps the strict check.
+    local model="$DEPLOY_MODEL_NAME"
+    local orig_cwd snapshot="" kind=none sha="-"
+    orig_cwd=$(pwd)
     if [[ -n "${MODEL_FILE:-}" ]]; then
-        echo "MODEL_FILE set (${MODEL_FILE}); skipping clean-tree check."
-    else
-        [[ -n "$DRY_RUN" ]] || require_clean_tree
+        take_model_snapshot "$orig_cwd"
+        snapshot="$MODEL_SNAPSHOT_PATH"
+        sha="$DEPLOY_HANDOFF_SHA"
+        kind="${DEPLOY_HANDOFF_ORIGIN:-local}"
     fi
+    with_checkout_lock production
+    local lockfd
+    lockfd=$(checkout_lock_fd production)
+    handle_deploy_leftovers
+    ensure_checkout "$DEPLOY_CHECKOUT" "$DATA_UI_PUBLIC_URL" "$DATA_UI_PRIVATE_URL"
+    parse_source_spec "$DEPLOY_FROM_SPEC"
+    require_checkout_clean "$DEPLOY_CHECKOUT"
+    checkout_fetch_source "$DEPLOY_CHECKOUT" "$CHECKOUT_REMOTE" "$CHECKOUT_BRANCH"
+    checkout_move_to_source "$DEPLOY_CHECKOUT" "$CHECKOUT_REMOTE" "$CHECKOUT_BRANCH" "$SELECTED_FULL_SHA"
+    cd "$DEPLOY_CHECKOUT" || die "cannot cd to the production checkout ${DEPLOY_CHECKOUT}."
+    deploy_check_identity "$model" "$snapshot"
+    local cand="-"
+    if [[ -n "$snapshot" ]]; then
+        install_deploy_candidate "$snapshot"
+        cand="$DEPLOY_CANDIDATE"
+        rm -f "$snapshot"
+        if [[ -n "${DRY_RUN:-}" ]]; then
+            echo "DRY_RUN: would promote the stable copy to models/local/${model}.lisp (the candidate ${cand} is temporary; removed at exit)."
+        fi
+    else
+        [[ -f "models/${model}.lisp" ]] \
+            || die "No canonical model 'models/${model}.lisp' in ${DEPLOY_CHECKOUT} at ${SELECTED_FULL_SHA}."
+    fi
+    print_checkout_identity production "$DEPLOY_CHECKOUT" "$CHECKOUT_REMOTE" "$CHECKOUT_BRANCH" "$SELECTED_LOCAL_BRANCH" "$SELECTED_FULL_SHA"
+    unset MODEL_FILE
+    local marker
+    marker=$(checkout_envelope_marker)
+    exec "${DEPLOY_CHECKOUT}/scripts/data-ui" \
+        "$marker" production "$CHECKOUT_REMOTE" "$CHECKOUT_BRANCH" "$SELECTED_FULL_SHA" \
+        "$lockfd" - "$kind" "$cand" "$sha" deploy "$model"
+}
+
+function deploy_inner_exit_trap {
+    # The inner arm owns cleanup for what it keeps open: the build
+    # context and the candidate. A promoted candidate is already
+    # renamed; a dry run removes its candidate (nothing persists:
+    # deploy-incoming/ ends byte-identical, no registry record, and a
+    # following real deploy is unaffected); a failure before
+    # apply_manifests removes the candidate; a failure after
+    # apply_manifests began preserves it as the recovery record and
+    # prints the delete command (only an operator removes recovery
+    # records — a failed :domain change may have left a route only the
+    # record describes). Dry runs and failures leave any prior stable
+    # copy byte-identical.
+    local status=$?
+    trap - EXIT
+    if [[ -n "${DEPLOY_BUILD_CONTEXT:-}" && -d "${DEPLOY_BUILD_CONTEXT:-}" ]]; then
+        rm -rf "$DEPLOY_BUILD_CONTEXT"
+    fi
+    if [[ -n "${DEPLOY_BUILD_ARCHIVE:-}" && -f "${DEPLOY_BUILD_ARCHIVE:-}" ]]; then
+        rm -f "$DEPLOY_BUILD_ARCHIVE"
+    fi
+    if [[ -n "${DEPLOY_PROMOTED:-}" ]] \
+       || [[ -z "${DEPLOY_CANDIDATE_ABS:-}" || ! -e "${DEPLOY_CANDIDATE_ABS:-}" ]]; then
+        exit "$status"
+    fi
+    if [[ -n "${DRY_RUN:-}" ]]; then
+        rm -f "$DEPLOY_CANDIDATE_ABS"
+        echo "DRY_RUN: removed the temporary candidate; deploy-incoming/ left as it was." >&2
+        exit "$status"
+    fi
+    if [[ -z "${DEPLOY_MANIFESTS_APPLIED:-}" ]]; then
+        rm -f "$DEPLOY_CANDIDATE_ABS"
+        echo "Removed the deploy candidate (failure before rollout)." >&2
+        exit "$status"
+    fi
+    local rec_dir rec
+    rec_dir="${DEPLOY_STATE_DIR}/${NAME:-unknown}/recovery"
+    mkdir -p "$rec_dir" 2>/dev/null
+    rec="${rec_dir}/${DEPLOY_FULL_SHA}-${DEPLOY_CANDIDATE_TOKEN}.lisp"
+    if cp -- "$DEPLOY_CANDIDATE_ABS" "$rec" 2>/dev/null; then
+        chmod 600 "$rec"
+        rm -f "$DEPLOY_CANDIDATE_ABS"
+        echo "Recovery record: ${rec}" >&2
+        echo "If a route was created and must be removed: MODEL_FILE='${rec}' scripts/data-ui delete '${NAME:-?}'" >&2
+    else
+        echo "WARNING: could not write the recovery record; candidate left in place: ${DEPLOY_CANDIDATE_ABS}" >&2
+    fi
+    exit "$status"
+}
+
+function promote_deploy_candidate {
+    # The promotion point: after image import, rollout,
+    # update_haproxy, and BOTH production health gates. A VIP deploy
+    # renames its candidate onto the stable models/local/<name>.lisp
+    # (workers never write the stable copy); a canonical deploy removes
+    # any stale stable copy and reports the removal, so a later bare
+    # delete resolves the canonical identity (VIP-to-canonical
+    # adoption). Failures and dry runs never reach here.
+    local stable="models/local/${MODEL_NAME}.lisp"
+    if [[ "${DEPLOY_HANDOFF_KIND:-none}" != "none" ]]; then
+        mv -- "$DEPLOY_CANDIDATE_ABS" "$stable" \
+            || die "cannot promote the candidate onto ${stable}."
+        DEPLOY_PROMOTED=1
+        echo "Promoted the candidate to ${stable} (stable VIP identity)."
+    else
+        if [[ -f "$stable" ]]; then
+            rm -f "$stable" \
+                || die "cannot remove the stale stable copy ${stable}."
+            echo "Removed the stale stable copy ${stable} (canonical model adopted upstream)."
+        fi
+        DEPLOY_PROMOTED=1
+    fi
+}
+
+function report_recovery_records {
+    # A later successful deploy prints any recovery records it finds
+    # but never deletes them: a failed :domain change may have left a
+    # route only the record describes. Only an operator removes them.
+    local rec_dir="${DEPLOY_STATE_DIR}/${NAME}/recovery" f
+    [[ -d "$rec_dir" ]] || return 0
+    for f in "$rec_dir"/*.lisp; do
+        [[ -f "$f" ]] || continue
+        echo "NOTE: recovery record present (operator-only removal): ${f}"
+    done
+}
+
+function deploy_selected {
+    # The deploy body, run by the production script under a verified
+    # envelope: compile, facts, tag, node port, backend-target
+    # arithmetic, secrets, manifests (the dry run stops here),
+    # curated-context build, rollout, the loopback probe + NodePort
+    # /health gate, HAProxy update, the public-domain /health gate, and
+    # only then promotion.
+    DEPLOY_FULL_SHA="$ENVELOPE_FULL_SHA"
+    DEPLOY_HANDOFF_KIND="$ENVELOPE_HANDOFF_KIND"
+    # Exported: the field reads below shell out to ros with the
+    # candidate as DATA_UI_MODEL_PATH, and MODEL_NAME is what
+    # identifies the model when the path is an unpredictable token.
+    export MODEL_NAME="${ENVELOPE_ARGS[0]}"
+    if [[ "$DEPLOY_HANDOFF_KIND" != "none" ]]; then
+        # The handoff file exists and hash-matches the envelope (the
+        # outer arm installed it under the lock; a dry run's candidate
+        # exists too and its EXIT trap removes it).
+        [[ -f "$DEPLOY_CANDIDATE_ABS" && ! -L "$DEPLOY_CANDIDATE_ABS" ]] \
+            || die "handoff candidate ${DEPLOY_CANDIDATE} is missing in the production checkout."
+        local got
+        got=$(sha256sum "$DEPLOY_CANDIDATE_ABS" | cut -d' ' -f1)
+        [[ "$got" == "$ENVELOPE_HANDOFF_SHA" ]] \
+            || die "handoff candidate hash mismatch (${DEPLOY_CANDIDATE})."
+        export DATA_UI_MODEL_PATH="$DEPLOY_CANDIDATE"
+    else
+        export DATA_UI_MODEL_PATH="models/${MODEL_NAME}.lisp"
+    fi
+    echo
+    echo "Deploying ${MODEL_NAME} from the production checkout (source ${ENVELOPE_REMOTE}/${ENVELOPE_BRANCH}, SHA ${DEPLOY_FULL_SHA})."
     compile_model
     gather_deploy_facts
-    [[ -n "$DRY_RUN" ]] || create_deploy_tag
+    [[ -n "${DRY_RUN:-}" ]] || create_deploy_tag
     NODE_IP=$(kubectl get nodes -o \
         jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
     [[ -n "$NODE_IP" ]] || die "Could not determine the k3d node IP."
@@ -2025,27 +2673,144 @@ function deploy {
     assign_backend_target
     ensure_instance_secrets
     generate_manifests
-    if [[ -n "$DRY_RUN" ]]; then
+    if [[ -n "${DRY_RUN:-}" ]]; then
         echo
-        echo "DRY_RUN set; stopping after manifest generation."
+        echo "DRY_RUN set; stopping after manifest generation (fetch, fast-forward, compile, and deploy state were real; no tag, image, or cluster mutation)."
         return 0
     fi
     build_image
+    DEPLOY_MANIFESTS_APPLIED=1
     apply_manifests
+    # Production health gate 1: the loopback hop answers and the
+    # NodePort /health returns 200.
+    probe_backend_target
+    if ! wait_for_health_200 "http://${NODE_TARGET}/health" \
+            "NodePort /health gate (${NAMESPACE})" "${DEPLOY_HEALTH_TIMEOUT:-300}"; then
+        die "NodePort /health gate failed; taking the recovery path."
+    fi
+    echo "NodePort /health gate passed (http://${NODE_TARGET}/health)."
     update_haproxy
+    # Production health gate 2: the public domain routes and answers.
+    # It must follow update_haproxy (a new name or :domain is not
+    # routed until then). The failure message names the domain and says
+    # it did not resolve or route — *.demo.data-ui.com wildcard DNS and
+    # certificate cover only that zone.
+    if ! wait_for_health_200 "https://${DOMAIN}/health" \
+            "public-domain /health gate" "${DEPLOY_HEALTH_TIMEOUT:-300}"; then
+        die "Domain ${DOMAIN} did not resolve or route within ${DEPLOY_HEALTH_TIMEOUT:-300}s (the wildcard DNS/certificate covers *.demo.data-ui.com only). Taking the recovery path; the trap prints the delete command for any route this created."
+    fi
+    echo "Public-domain /health gate passed (https://${DOMAIN}/health)."
+    promote_deploy_candidate
+    report_recovery_records
     echo
     echo "Deployed ${RELEASE_NAME}."
-    echo "  Domain:   https://${DOMAIN}"
-    echo "  NodePort: http://${NODE_IP}:${NODE_PORT}"
+    echo "  Source:    ${ENVELOPE_REMOTE}/${ENVELOPE_BRANCH} @ ${DEPLOY_FULL_SHA}"
+    echo "  Domain:    https://${DOMAIN}"
+    echo "  NodePort:  http://${NODE_IP}:${NODE_PORT}"
     # Convenience during MVP development; remove before this is used for
     # anything sensitive. The password also lives in $SECRETS_ENV and in
     # the cluster Secret (see docs/deployment.md).
-    echo "  Admin:    admin / ${ADMIN_PASSWORD}"
+    echo "  Admin:     admin / ${ADMIN_PASSWORD}"
     if [[ "$REPL" == "true" ]]; then
-        echo "  Swank:    kubectl -n ${NAMESPACE} port-forward" \
+        echo "  Swank:     kubectl -n ${NAMESPACE} port-forward" \
              "deploy/dataui-${NAME} 4005:4005"
     fi
 }
+
+#
+# Bootstrap-only production mode
+#
+
+function migrate_legacy_vip_identities {
+    # Step-12 cutover action (dormant until then): inventory
+    # models/local/*.lisp in every checkout production has deployed
+    # from (the bootstrap/development checkout, plus any existing
+    # production clone), cross-check against live dataui-* namespaces,
+    # and copy each file bytes-intact (SHA-256 verified) to the
+    # production clone's models/local/<declared-name>.lisp. Refuse to
+    # overwrite a different destination file; reject malformed names,
+    # declared-name mismatches, conflicting duplicates, and symlink
+    # sources for operator resolution. Never modify the legacy
+    # checkout. An empty inventory is printed and is fine. These files
+    # never enter an archive build context.
+    local -a sources=() migrated=()
+    local src f name got dest ns
+    [[ -d "${DEPLOY_BOOTSTRAP_CHECKOUT}/models/local" ]] && sources+=("$DEPLOY_BOOTSTRAP_CHECKOUT")
+    [[ -d "${DEPLOY_CHECKOUT}/models/local" ]] && sources+=("$DEPLOY_CHECKOUT")
+    if (( ${#sources[@]} == 0 )); then
+        echo "Legacy VIP identity inventory: empty (no models/local/ under ${DEPLOY_BOOTSTRAP_CHECKOUT} or ${DEPLOY_CHECKOUT})."
+        return 0
+    fi
+    for src in "${sources[@]}"; do
+        for f in "${src}/models/local/"*.lisp; do
+            [[ -f "$f" ]] || continue
+            [[ ! -L "$f" ]] || { echo "ERROR: symlink source ${f} — operator resolution required." >&2; exit 1; }
+            name=$(basename "$f" .lisp)
+            valid_model_operand "$name" "legacy VIP identity file name"
+            got=$(cd "$src" && MODEL_NAME="$name" \
+                  DATA_UI_MODEL_PATH="models/local/${name}.lisp" \
+                  model_field name 2>/dev/null | tail -1)
+            [[ "$got" == "$name" ]] \
+                || { echo "ERROR: ${f} declares :name '${got}' but its file name is '${name}' — operator resolution required." >&2; exit 1; }
+            dest="${DEPLOY_CHECKOUT}/models/local/${name}.lisp"
+            if [[ -f "$dest" ]]; then
+                if [[ "$(sha256sum "$f" | cut -d' ' -f1)" != "$(sha256sum "$dest" | cut -d' ' -f1)" ]]; then
+                    echo "ERROR: ${dest} already exists with different bytes than ${f} — refusing to overwrite; operator resolution required." >&2
+                    exit 1
+                fi
+                echo "Identity ${name}: already in production (identical bytes)."
+                migrated+=("$name")
+                continue
+            fi
+            mkdir -p "${DEPLOY_CHECKOUT}/models/local"
+            cp -- "$f" "$dest" || { echo "ERROR: copying ${f} failed." >&2; exit 1; }
+            [[ "$(sha256sum "$f" | cut -d' ' -f1)" == "$(sha256sum "$dest" | cut -d' ' -f1)" ]] \
+                || { echo "ERROR: SHA-256 mismatch copying ${f}." >&2; exit 1; }
+            echo "Migrated legacy VIP identity: ${f} -> ${dest} ($(sha256sum "$f" | cut -d' ' -f1))"
+            migrated+=("$name")
+        done
+    done
+    echo "Legacy VIP identity inventory complete: ${#migrated[@]} migrated (${migrated[*]:-none})."
+    # Cross-check: every live dataui-* namespace must resolve to an
+    # identity production can find (canonical in HEAD or a stable
+    # local copy); anything else requires an explicit archived
+    # MODEL_FILE delete and must be resolved before cutover completes.
+    local -a unexplained=()
+    while read -r ns; do
+        [[ -n "$ns" ]] || continue
+        name="${ns#dataui-}"
+        if [[ ! -f "${DEPLOY_CHECKOUT}/models/${name}.lisp" && ! -f "${DEPLOY_CHECKOUT}/models/local/${name}.lisp" ]]; then
+            unexplained+=("$name")
+        fi
+    done < <(kubectl get ns -o name 2>/dev/null | sed 's|^namespace/||' | grep '^dataui-')
+    if (( ${#unexplained[@]} > 0 )); then
+        echo "ERROR: live instances with no inventoryable identity: ${unexplained[*]}." >&2
+        echo "Each requires: MODEL_FILE=<archived model file> scripts/data-ui delete <name>. Resolve before completing cutover." >&2
+        exit 1
+    fi
+}
+
+function deploy_bootstrap_only {
+    # deploy-bootstrap: create the production clone, verify remotes,
+    # and (at cutover) migrate legacy VIP identities — without
+    # compiling, building, or touching the cluster. This, not a dry
+    # run, is the first production action.
+    export_deploy_environment
+    [[ "$(hostname)" == "$DEPLOY_HOST" ]] \
+        || die "deploy-bootstrap must run on ${DEPLOY_HOST} (this is $(hostname))."
+    with_checkout_lock production
+    ensure_checkout "$DEPLOY_CHECKOUT" "$DATA_UI_PUBLIC_URL" "$DATA_UI_PRIVATE_URL"
+    migrate_legacy_vip_identities
+    echo "Bootstrap-only mode complete: no fetch, compile, build, or cluster mutation."
+}
+
+function deploy {
+    # Legacy entry: the dispatcher routes deploy through
+    # parse_deploy_args + deploy_outer; this function only exists so a
+    # stale direct call dies loudly instead of half-deploying.
+    die "internal: deploy() reached directly; the dispatcher owns the outer/inner split."
+}
+
 
 function traffic {
     # Show the HAProxy per-IP rate-limit counters (stick-table in the
@@ -2098,38 +2863,85 @@ function traffic {
     echo "but never rejected. Entries expire after 10 minutes idle."
 }
 
-function undeploy {
+function delete_outer {
+    # Delete routes to the existing production checkout's script from
+    # any cwd. It does not fetch, switch, require cleanliness, or
+    # require a branch. Validates checkout and host, takes the
+    # production lock, moves leftovers, optionally installs an identity
+    # candidate from an explicit MODEL_FILE, and re-executes with a
+    # delete envelope. Delete never advances source to find a model.
+    local model="$1"
     export_deploy_environment
     if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
-        echo "Not on ${DEPLOY_HOST}; deleting remotely via ssh."
-        # -t so the HAProxy step's sudo and the confirmation prompt work.
-        ssh -t "$DEPLOY_HOST" "
-            set -e
-            cd \"$DEPLOY_CHECKOUT\"
-            FORCE='$FORCE' scripts/data-ui delete '$MODEL_NAME'
-        " || die "Remote delete failed."
+        remote_delete "$model"
         return
     fi
-    # Model Bank deploys (FR-9) have no models/<name>.lisp -- the
-    # :deploy-model hook writes models/local/<name>.lisp -- so a
-    # bare 'delete <name>' dies on FILE-DOES-NOT-EXIST. Fall back
-    # to the local file for identity (set-model's lookup order).
-    # INTERIM: remove this block when the Undeploy Model button
-    # (MVP Backlog) lands -- it passes MODEL_FILE explicitly and
-    # delete gains a cluster-identity fallback.
-    if [[ -z "${MODEL_FILE:-}" ]] \
-       && [[ ! -f "$(model_file_path "$MODEL_NAME")" ]] \
-       && [[ -f "models/local/${MODEL_NAME}.lisp" ]]; then
-        export MODEL_FILE="models/local/${MODEL_NAME}.lisp"
-        echo "No models/${MODEL_NAME}.lisp; reading identity from"
-        echo "${MODEL_FILE} (Model Bank deploy)."
+    [[ -x "${DEPLOY_CHECKOUT}/scripts/data-ui" ]] \
+        || die "No production checkout at ${DEPLOY_CHECKOUT}; run 'scripts/data-ui deploy-bootstrap' first."
+    local snapshot="" kind=none sha="-"
+    if [[ -n "${MODEL_FILE:-}" ]]; then
+        take_model_snapshot "$(pwd)"
+        snapshot="$MODEL_SNAPSHOT_PATH"
+        sha="$DEPLOY_HANDOFF_SHA"
+        kind="${DEPLOY_HANDOFF_ORIGIN:-local}"
     fi
-    # Identity comes from the model, exactly as in deploy.
+    with_checkout_lock production
+    local lockfd
+    lockfd=$(checkout_lock_fd production)
+    handle_deploy_leftovers
+    local cand="-"
+    if [[ -n "$snapshot" ]]; then
+        install_deploy_candidate "$snapshot"
+        cand="$DEPLOY_CANDIDATE"
+        rm -f "$snapshot"
+    fi
+    unset MODEL_FILE
+    local marker
+    marker=$(checkout_envelope_marker)
+    exec "${DEPLOY_CHECKOUT}/scripts/data-ui" \
+        "$marker" production - - - "$lockfd" - "$kind" "$cand" "$sha" delete "$model"
+}
+
+function delete_selected {
+    # The inner delete arm: cd before identity lookup, resolve identity
+    # (explicit handoff candidate, canonical models/<name>.lisp, or the
+    # stable models/local/<name>.lisp — undeploy's lookup order),
+    # validate it fully (NAME == operand, profile/profile-* refusal)
+    # BEFORE any snapshot, confirmation, or destructive step, then run
+    # the destructive body under the inherited lock.
+    cd "$DEPLOY_CHECKOUT" || die "cannot cd to the production checkout ${DEPLOY_CHECKOUT}."
+    local model="${ENVELOPE_ARGS[0]}"
+    # Exported for the same reason as in deploy_selected: identity
+    # reads shell out to ros with the candidate as
+    # DATA_UI_MODEL_PATH, and MODEL_NAME identifies the model when
+    # the path is an unpredictable deploy token.
+    export MODEL_NAME="$model"
+    local source_path=""
+    if [[ "$ENVELOPE_HANDOFF_KIND" != "none" ]]; then
+        export MODEL_FILE="$DEPLOY_CHECKOUT/$ENVELOPE_HANDOFF_PATH"
+        source_path="$ENVELOPE_HANDOFF_PATH"
+        echo "Identity from the explicit handoff: ${source_path}"
+    else
+        unset MODEL_FILE
+        if [[ -f "models/${model}.lisp" ]]; then
+            source_path="models/${model}.lisp"
+        elif [[ -f "models/local/${model}.lisp" ]]; then
+            source_path="models/local/${model}.lisp"
+            echo "No models/${model}.lisp; reading identity from ${source_path} (stable VIP copy)."
+        else
+            die "No identity for '${model}': neither models/${model}.lisp nor models/local/${model}.lisp exists in ${DEPLOY_CHECKOUT}. An archived MODEL_FILE is the fallback: MODEL_FILE=<path> scripts/data-ui delete ${model}"
+        fi
+    fi
+    export DATA_UI_MODEL_PATH="$source_path"
+    # Identity comes from the model, exactly as in deploy; validated
+    # before any snapshot, confirmation, or destructive step.
     NAME=$(model_field name)
     DOMAIN=$(model_field domain)
     [[ -n "$NAME" && "$NAME" != "NIL" ]] || die "Model has no :name."
     [[ -n "$DOMAIN" && "$DOMAIN" != "NIL" ]] || die "Model has no :domain."
-    # Same predicate the compiler enforces on :name (model.lisp); undeploy
+    [[ "$NAME" == "$model" ]] \
+        || die "Model :name is '${NAME}' but the delete operand is '${model}'; they must match."
+    # Same predicate the compiler enforces on :name (model.lisp); delete
     # reads the model file without compiling, so the check lives here too.
     # Reserved names can only ever be host-profile exposures.
     if [[ "$NAME" == "profile" || "$NAME" == profile-* ]]; then
@@ -2215,6 +3027,12 @@ function undeploy {
     rm -rf "$state_dir"
     if [[ -f "$PORTS_LOCK" ]]; then
         sed -i "/^${NAME} ${DEPLOY_ENV} /d" "$PORTS_LOCK"
+    fi
+    # The identity candidate (explicit MODEL_FILE deletes) is identity
+    # only; remove it. A mid-delete death leaves it for the next
+    # invocation's leftover handler.
+    if [[ -n "${DEPLOY_CANDIDATE_ABS:-}" && -e "${DEPLOY_CANDIDATE_ABS:-}" ]]; then
+        rm -f "$DEPLOY_CANDIDATE_ABS"
     fi
     echo
     echo "Deleted instance '${NAME}' (${DEPLOY_ENV})."
@@ -2848,8 +3666,10 @@ function snapshot_migrate {
 }
 
 function setup_repl_env {
-    # $1 = optional profile name
+    # $1 = optional profile name. Sets REPL_PROFILE so start_repl can
+    # tell a named (staging) REPL from an unnamed development one.
     local profile="$1"
+    REPL_PROFILE="$profile"
     if [[ -n "$profile" ]]; then
         load_profile "$profile"
         preflight_ports "$profile"
@@ -3050,18 +3870,14 @@ function verb_reset {
     # On-demand golden reset through the nightly's own machinery
     # (Phase 7). No args (e-demo only) = the enabled set via
     # dataui-reset.service — the same run the 04:10 timer makes,
-    # journald as the log of record. Explicit names bypass the
-    # enabled check, any class (D13 grungy-day; e.g.
-    # 'demo reset modelbank'). The ops reset script is reinstalled
-    # from the checkout before running when the installed copy is
-    # stale: the timer executes the /usr/local/lib copy, and a stale
-    # copy (e.g. after a CLI change like Snapshot 2) is exactly how
-    # "unit left stopped" mornings happen. Validation precedes the
-    # heal so error paths stay side-effect-free.
+    # journald as the log of record. Explicit names bypass the enabled
+    # check, any class (D13 grungy-day; e.g. 'demo reset modelbank').
+    # Ops installation belongs to 'staging update' ALONE: this verb
+    # never reinstalls the reset script, and explicit-name resets keep
+    # running the installed copy unchanged.
     local class="$1"; shift
-    local repo_ops="ops/petting-zoo-reset.sh"
-    local installed_ops="/usr/local/lib/data-ui/petting-zoo-reset.sh"
-    local p
+    local installed_ops="${OPS_LIB_DIR:-/usr/local/lib/data-ui}/petting-zoo-reset.sh"
+    local p lock fd
     if (( $# == 0 )) && [[ "$class" != "e-demo" ]]; then
         die "${class} profiles are never in the nightly set — name" \
             "one, e.g. '$SCRIPT_NAME demo reset modelbank'."
@@ -3070,13 +3886,29 @@ function verb_reset {
         valid_profile_name "$p"
     done
     cd "$(dirname "$(readlink -f "$0")")/.." || die "cannot cd to checkout"
-    [[ -f "$repo_ops" ]] || die "No ${repo_ops} in the checkout."
-    if ! cmp -s "$repo_ops" "$installed_ops"; then
-        sudo install -D -m 755 "$repo_ops" "$installed_ops" \
-            || die "Reinstalling ${installed_ops} failed (sudo?)."
-        echo "Reinstalled ${installed_ops} (was stale or missing)."
-    fi
     if (( $# == 0 )); then
+        # Courtesy probe only (accepted race): the no-args reset refuses
+        # when a non-blocking flock finds the staging lock held, but the
+        # updater can still acquire the lock between probe and
+        # systemctl start. Recovery for a reset that ran against a
+        # half-updated tree is rerunning 'staging update'. No second
+        # lifecycle lock.
+        lock=$(checkout_lock_file staging)
+        fd=""
+        # No 2>/dev/null on this open: redirections on a bare exec
+        # persist in the shell, so it would swallow every error
+        # message for the rest of the invocation (the refusal below
+        # included). A failed open prints one honest line and falls
+        # back — bash does not exit on a {fd} redirection error.
+        exec {fd}<>"$lock" || fd=""
+        if [[ -n "$fd" ]]; then
+            if flock -n -x "$fd"; then
+                exec {fd}>&-
+            else
+                exec {fd}>&-
+                die "A staging update appears to be in progress (the staging lock is held); refusing to start the nightly reset. Re-run after it finishes, or rerun 'staging update' afterwards if it already raced."
+            fi
+        fi
         echo "Running the nightly set on demand; blocks until done."
         if ! sudo systemctl start dataui-reset.service; then
             journalctl -u dataui-reset.service -n 15 --no-pager >&2 || true
@@ -3114,8 +3946,1139 @@ function demo_verb {
     esac
 }
 
+#
+# Staging environment: dispatcher verbs, the update supervisor/child,
+# Model Bank quiescence + activation, and the orphan scanner.
+#
+
+function staging_one_host_check {
+    # Canonical STAGING_HOST and DEPLOY_HOST must name the same host.
+    # Load-bearing, not a simplification: get-deployed-admin-password
+    # (lisp) is a plain local read of $DATA_UI_STATE/deploy/<name>/
+    # secrets.env written by the deploy on the deploy host, so Model
+    # Bank's deploy-model-record-secret works only on one machine;
+    # profile HAProxy operations are host-local too. A differing pair
+    # is rejected before lockfile, Git, npm, SSH, or systemd mutation.
+    [[ "$STAGING_HOST" == "$DEPLOY_HOST" ]] \
+        || die "STAGING_HOST (${STAGING_HOST}) and DEPLOY_HOST (${DEPLOY_HOST}) must name the same host (one-host rule); splitting them is a separate item."
+}
+
+function modelbank_activation_state_path {
+    echo "$DATA_UI_STATE/profiles/modelbank/activation.state"
+}
+
+function write_modelbank_activation_state {
+    # Atomic (temp + rename) write of the COMPLETE record: exact key
+    # set, mode 600. Field ownership: only original-exposed is
+    # operator-authoritative (written once, at step 0); every phase and
+    # SHA transition belongs to staging update / activate-modelbank,
+    # which never treat a hand-written phase as proof that a locked
+    # drain happened.
+    local original="$1" phase="$2" target="$3" activated="$4"
+    local path tmp
+    path=$(modelbank_activation_state_path)
+    tmp="${path}.tmp.$$"
+    mkdir -p "$(dirname "$path")" || die "cannot create $(dirname "$path")."
+    {
+        echo "original-exposed=${original}"
+        echo "phase=${phase}"
+        echo "target-staging-sha=${target}"
+        echo "activated-staging-sha=${activated}"
+    } > "$tmp" || die "cannot write ${tmp}."
+    chmod 600 "$tmp"
+    mv "$tmp" "$path" || { rm -f "$tmp"; die "cannot install ${path}."; }
+}
+
+function read_modelbank_activation_state {
+    # Strict parse of activation.state: exact key set, valid values, no
+    # duplicates — parsed, never sourced. Sets MB_STATE_original_exposed,
+    # MB_STATE_phase, MB_STATE_target, MB_STATE_activated; returns 1 when
+    # the file is absent and dies on any deviation.
+    local path line key val
+    path=$(modelbank_activation_state_path)
+    MB_STATE_original_exposed=""
+    MB_STATE_phase=""
+    MB_STATE_target=""
+    MB_STATE_activated=""
+    [[ -f "$path" ]] || return 1
+    local -A seen=()
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[a-z-]+=[-0-9a-zA-Z]+$ ]] \
+            || die "malformed activation.state line: '${line}'"
+        key="${line%%=*}"
+        val="${line#*=}"
+        [[ -z "${seen[$key]:-}" ]] || die "duplicate key '${key}' in activation.state"
+        seen[$key]=1
+        case "$key" in
+            original-exposed)
+                [[ "$val" == "0" || "$val" == "1" ]] \
+                    || die "bad original-exposed='${val}' in activation.state"
+                MB_STATE_original_exposed="$val"
+                ;;
+            phase)
+                [[ "$val" == "quiesced" || "$val" == "activated" ]] \
+                    || die "bad phase='${val}' in activation.state"
+                MB_STATE_phase="$val"
+                ;;
+            target-staging-sha)
+                [[ "$val" == "-" || "$val" =~ ^[0-9a-f]{40}$ ]] \
+                    || die "bad target-staging-sha='${val}' in activation.state"
+                MB_STATE_target="$val"
+                ;;
+            activated-staging-sha)
+                [[ "$val" == "-" || "$val" =~ ^[0-9a-f]{40}$ ]] \
+                    || die "bad activated-staging-sha='${val}' in activation.state"
+                MB_STATE_activated="$val"
+                ;;
+            *)
+                die "unknown key '${key}' in activation.state"
+                ;;
+        esac
+    done < "$path"
+    local k
+    for k in original-exposed phase target-staging-sha activated-staging-sha; do
+        [[ -n "${seen[$k]:-}" ]] || die "missing key '${k}' in activation.state"
+    done
+    return 0
+}
+
+function staging_modelbank_running_query {
+    # The drain query: plain rows, loud failure (ON_ERROR_STOP). The
+    # columns are Model Bank's stored status companions (verified live
+    # 2026-11-05). A query or connection failure is a failed drain,
+    # never empty. Requires the modelbank profile already loaded.
+    psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+        -v ON_ERROR_STOP=1 -Atc \
+        "select model_name from rt_models where model_deploy_status = 'running' or model_generate_status = 'running'"
+}
+
+function staging_modelbank_running {
+    # Private query helper (staging modelbank-running): not a public
+    # SQL verb. Loads the modelbank profile through the profile loader
+    # and prints the running rows.
+    cd "$(canonical_checkout_root)" || die "cannot cd to $(canonical_checkout_root)"
+    load_profile modelbank
+    staging_modelbank_running_query
+}
+
+function modelbank_drain {
+    # Drain without the production lock, up to MODELBANK_DRAIN_TIMEOUT
+    # seconds (default 600 = 10 minutes; the override exists for tests,
+    # like STAGING_HEALTH_TIMEOUT): a running worker's script needs the
+    # production lock to finish, so taking production first would
+    # deadlock. Safe because admission is HTTP through the HAProxy
+    # route and the confirmed reload already cut it: no new row can
+    # become running, so the set only shrinks. On timeout, report every
+    # model_name and abort; never reset a stranded row.
+    local deadline="${MODELBANK_DRAIN_TIMEOUT:-600}"
+    local waited=0 rows
+    while :; do
+        if ! rows=$(staging_modelbank_running_query); then
+            die "modelbank drain query failed (connection or SQL error); a failed drain is never empty."
+        fi
+        if [[ -z "$rows" ]]; then
+            echo "modelbank drained (no rt_models rows running)."
+            return 0
+        fi
+        if (( waited >= deadline )); then
+            echo "ERROR: modelbank drain timed out after ${deadline}s; still running:" >&2
+            printf '%s\n' "$rows" >&2
+            die "Never reset a stranded row; investigate the models above."
+        fi
+        echo "modelbank drain: waiting on running rows ($(printf '%s' "$rows" | tr '\n' ' '))..."
+        sleep 10
+        waited=$(( waited + 10 ))
+    done
+}
+
+function modelbank_quiesce {
+    # Shared by staging update and activate-modelbank, in this order:
+    #  1. absent profile: print it, write nothing, skip (the caller
+    #     still takes its locks normally)
+    #  2. unit state: active and inactive proceed (a stopped unit still
+    #     needs unexpose + drain — a crash may have stranded rows and
+    #     its Postgres stays up); anything else fails closed BEFORE any
+    #     checkout mutation
+    #  3. state file: absent → capture current exposure as
+    #     original-exposed (complete record); present → preserve it and
+    #     require current unexposure when phase says quiesced. Then, in
+    #     update mode only, set phase=quiesced and clear both SHA
+    #     fields before any checkout mutation
+    #  4. unexpose, confirmed at the reload (the reload, not disk
+    #     state, is what cuts admission)
+    #  5. drain without the production lock (<=10 min)
+    #  6. THEN take production (staging is already held — the item's
+    #     only two-role order) and recheck both statuses once; abort
+    #     before checkout mutation if any row is running
+    # $1 = update | activate.
+    local mode="$1" env_file unit_state original
+    env_file=$(profile_env_path modelbank)
+    if [[ ! -f "$env_file" ]]; then
+        echo "No modelbank profile (${env_file}); skipping quiescence."
+        return 0
+    fi
+    unit_state=$(systemctl is-active dataui@modelbank 2>/dev/null)
+    case "$unit_state" in
+        active|inactive)
+            echo "dataui@modelbank is ${unit_state}; proceeding with quiescence."
+            ;;
+        *)
+            die "dataui@modelbank is '${unit_state}' (expected active or inactive); failing closed before any checkout mutation."
+            ;;
+    esac
+    if read_modelbank_activation_state; then
+        original="$MB_STATE_original_exposed"
+        if [[ "$MB_STATE_phase" == "quiesced" ]]; then
+            haproxy_env
+            if profile_is_exposed modelbank; then
+                die "activation.state says quiesced but modelbank is exposed; failing closed (the drain's admission assumption would not hold)."
+            fi
+        fi
+    else
+        haproxy_env
+        if profile_is_exposed modelbank; then original=1; else original=0; fi
+        echo "Captured modelbank original-exposed=${original} (first quiescence)."
+        write_modelbank_activation_state "$original" quiesced - -
+    fi
+    if [[ "$mode" == "update" ]]; then
+        write_modelbank_activation_state "$original" quiesced - -
+    fi
+    haproxy_env
+    require_haproxy_host "modelbank quiescence"
+    unexpose_profile modelbank
+    if profile_is_exposed modelbank; then
+        die "modelbank still reads as exposed after unexpose; failing closed."
+    fi
+    cd "$(canonical_checkout_root)" || die "cannot cd to $(canonical_checkout_root)"
+    load_profile modelbank
+    modelbank_drain
+    with_checkout_lock production
+    local rows
+    if ! rows=$(staging_modelbank_running_query); then
+        die "modelbank drain recheck query failed; aborting before any checkout mutation."
+    fi
+    if [[ -n "$rows" ]]; then
+        echo "ERROR: rows still running after the drain (a request was inside Hunchentoot when the route was cut):" >&2
+        printf '%s\n' "$rows" >&2
+        die "Aborting before checkout mutation; never reset a stranded row."
+    fi
+    echo "modelbank quiesced and drained; holding both locks."
+}
+
+#
+# Timer supervision (staging update)
+#
+
+function staging_capture_timer_state {
+    # BEFORE any wait or mutation; the capture is the restoration
+    # truth. Accept only enabled/disabled and active/inactive; any
+    # other state (masked, runtime, not-found, unknown) or a command
+    # error fails untouched.
+    STAGING_TIMER_ENABLED=$(systemctl is-enabled dataui-reset.timer 2>/dev/null)
+    STAGING_TIMER_ENABLED_STATUS=$?
+    STAGING_TIMER_ACTIVE=$(systemctl is-active dataui-reset.timer 2>/dev/null)
+    STAGING_TIMER_ACTIVE_STATUS=$?
+    [[ "$STAGING_TIMER_ENABLED" == "enabled" || "$STAGING_TIMER_ENABLED" == "disabled" ]] \
+        || die "dataui-reset.timer is-enabled returned '${STAGING_TIMER_ENABLED}'; only enabled/disabled are acceptable — leaving everything untouched."
+    [[ "$STAGING_TIMER_ACTIVE" == "active" || "$STAGING_TIMER_ACTIVE" == "inactive" ]] \
+        || die "dataui-reset.timer is-active returned '${STAGING_TIMER_ACTIVE}'; only active/inactive are acceptable — leaving everything untouched."
+    echo "Timer captured: enabled=${STAGING_TIMER_ENABLED} active=${STAGING_TIMER_ACTIVE}."
+}
+
+function staging_restore_timer_state {
+    # After every stop attempt — including one whose stop returned
+    # nonzero — restore the captured state, verify it, fail loudly.
+    # Stop only the timer; never start dataui-reset.service as cleanup
+    # and never invoke the nightly reset manually. Catch-up:
+    # Persistent=true means restoring an originally active timer after
+    # crossing 04:10 fires the reset at once, on success or failure —
+    # accepted (documented systemd behavior).
+    if [[ "${STAGING_TIMER_ENABLED:-}" == "enabled" ]]; then
+        sudo systemctl enable dataui-reset.timer >/dev/null 2>&1
+    else
+        sudo systemctl disable dataui-reset.timer >/dev/null 2>&1
+    fi
+    if [[ "${STAGING_TIMER_ACTIVE:-}" == "active" ]]; then
+        sudo systemctl start dataui-reset.timer
+    fi
+    local en ac
+    en=$(systemctl is-enabled dataui-reset.timer 2>/dev/null)
+    ac=$(systemctl is-active dataui-reset.timer 2>/dev/null)
+    [[ "$en" == "$STAGING_TIMER_ENABLED" && "$ac" == "$STAGING_TIMER_ACTIVE" ]] \
+        || { echo "ERROR: timer restoration failed (wanted enabled=${STAGING_TIMER_ENABLED} active=${STAGING_TIMER_ACTIVE}, got ${en}/${ac})." >&2; return 1; }
+    echo "Timer restored: enabled=${en} active=${ac}."
+}
+
+function staging_supervisor_exit {
+    # Preserves the original exit status unless restoration itself
+    # fails. Restoration happens only after the selected child exits
+    # (this trap is the only restoration path).
+    local status=$?
+    trap - EXIT
+    staging_restore_timer_state || exit 1
+    exit "$status"
+}
+
+function staging_wait_reset_service_idle {
+    # dataui-reset.service is Type=oneshot without RemainAfterExit, so
+    # a running reset reads active or activating; inactive means
+    # finished; anything else fails closed. Wait up to 15 minutes for
+    # inactive (never stop it).
+    local state waited=0
+    state=$(systemctl is-active dataui-reset.service 2>/dev/null)
+    case "$state" in
+        inactive)
+            return 0
+            ;;
+        active|activating)
+            echo "dataui-reset.service is ${state}; waiting up to 15 minutes (never stopping it)."
+            while :; do
+                sleep 10
+                waited=$(( waited + 10 ))
+                state=$(systemctl is-active dataui-reset.service 2>/dev/null)
+                [[ "$state" == "inactive" ]] && return 0
+                if (( waited >= 900 )); then
+                    die "dataui-reset.service still ${state} after 15 minutes; aborting untouched."
+                fi
+            done
+            ;;
+        *)
+            die "dataui-reset.service is '${state}' (expected active/activating/inactive); failing closed, untouched."
+            ;;
+    esac
+}
+
+function staging_pause_timer {
+    if ! sudo systemctl stop dataui-reset.timer; then
+        echo "WARNING: stopping dataui-reset.timer returned nonzero; continuing (restoration is still verified)." >&2
+    fi
+}
+
+function staging_recheck_reset_service {
+    # The pre-pause wait can cross 04:10; after pausing, recheck once.
+    # A reset that started during the wait ran normally; one that is
+    # running NOW aborts for a later retry.
+    local state
+    state=$(systemctl is-active dataui-reset.service 2>/dev/null)
+    case "$state" in
+        inactive)
+            return 0
+            ;;
+        active|activating)
+            die "A reset started around the timer pause (state ${state}); aborting for a later retry."
+            ;;
+        *)
+            die "dataui-reset.service is '${state}' at the final check; failing closed."
+            ;;
+    esac
+}
+
+function staging_update_supervisor {
+    # staging update [--from REMOTE/BRANCH] (default private/master).
+    # The supervisor: host checks, staging lock, sudo preflight, timer
+    # capture/wait/pause, Model Bank quiescence, production lock,
+    # bootstrap + selection, then the selected staging script as a
+    # CHILD (never exec — this shell's EXIT trap owns timer
+    # restoration, which cannot survive exec). The child inherits
+    # staging as LOCK_FD and production as PROD_LOCK_FD; the supervisor
+    # keeps its descriptors open until timer restoration completes.
+    # Before the first bootstrap, the selected upstream must already
+    # contain this implementation.
+    local from_spec="private/master"
+    case "${1:-}" in
+        "") ;;
+        --from)
+            [[ -n "${2:-}" ]] || die "--from requires a value: '--from REMOTE/BRANCH'."
+            [[ -z "${3:-}" ]] || die "extra arguments after --from REMOTE/BRANCH."
+            from_spec="$2"
+            ;;
+        *)
+            die "Unknown argument '${1}' for staging update (only --from REMOTE/BRANCH)."
+            ;;
+    esac
+    export_deploy_environment
+    staging_one_host_check
+    [[ "$(hostname)" == "$STAGING_HOST" ]] \
+        || die "staging update must run on ${STAGING_HOST} (this is $(hostname))."
+    parse_source_spec "$from_spec"
+    local remote="$CHECKOUT_REMOTE" branch="$CHECKOUT_BRANCH"
+    # Noninteractive sudo preflight before the first mutation: a
+    # password prompt mid-pipeline would leave the timer paused.
+    sudo -n true 2>/dev/null \
+        || die "sudo needs a password; run 'sudo -v' first (staging update only proceeds with cached credentials)."
+    with_checkout_lock staging
+    staging_capture_timer_state
+    staging_wait_reset_service_idle
+    # Cleanup traps BEFORE stopping the timer: a failure after the
+    # pause must still restore it.
+    trap 'staging_supervisor_exit' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    staging_pause_timer
+    staging_recheck_reset_service
+    local status=0
+    # Model Bank is quiesced before EVERY staging checkout mutation —
+    # always, with no exemption even when an activated record exists:
+    # every Deploy runs scripts/data-ui afresh from Model Bank's
+    # loaded checkout, so once that checkout's script changes, old
+    # Lisp calls a new script with old-contract inputs. It is never
+    # restarted by staging update; its process keeps old loaded code
+    # until activate-modelbank.
+    modelbank_quiesce update
+    # Quiescence acquires the production lock at the end of the full
+    # path (after the drain); a skipped quiescence must not skip the
+    # lock — the child envelope carries both slots and the mutation
+    # stays serialized against concurrent deploys.
+    ensure_checkout_lock production
+    ensure_checkout "$STAGING_CHECKOUT" "$DATA_UI_PUBLIC_URL" "$DATA_UI_PRIVATE_URL"
+    require_checkout_clean "$STAGING_CHECKOUT"
+    checkout_fetch_source "$STAGING_CHECKOUT" "$remote" "$branch"
+    # target-staging-sha: only after a successful fetch, before the
+    # working tree moves. phase is already quiesced and
+    # activated-staging-sha already cleared (quiesce, update mode).
+    if [[ -f "$(modelbank_activation_state_path)" ]]; then
+        read_modelbank_activation_state
+        write_modelbank_activation_state \
+            "$MB_STATE_original_exposed" quiesced "$SELECTED_FULL_SHA" -
+    fi
+    checkout_move_to_source "$STAGING_CHECKOUT" "$remote" "$branch" "$SELECTED_FULL_SHA"
+    print_checkout_identity staging "$STAGING_CHECKOUT" "$remote" "$branch" "$SELECTED_LOCAL_BRANCH" "$SELECTED_FULL_SHA"
+    local marker
+    marker=$(checkout_envelope_marker)
+    "${STAGING_CHECKOUT}/scripts/data-ui" \
+        "$marker" staging "$remote" "$branch" "$SELECTED_FULL_SHA" \
+        "$(checkout_lock_fd staging)" "$(checkout_lock_fd production)" \
+        none - - staging-update-child || status=$?
+    if (( status != 0 )); then
+        echo "staging update child failed (status ${status}); restoring the timer and exiting with that status." >&2
+    fi
+    exit "$status"
+}
+
+function staging_install_ops {
+    # Validate the full source set, then install exactly:
+    #   ops/pg-profile.yaml        -> OPS_LIB_DIR/pg-profile.yaml            (0644, reference copy)
+    #   ops/profile-run.sh         -> OPS_LIB_DIR/profile-run.sh             (0755)
+    #   ops/petting-zoo-reset.sh   -> OPS_LIB_DIR/petting-zoo-reset.sh       (0755)
+    #   ops/dataui@.service        -> SYSTEMD_UNIT_DIR/dataui@.service       (0644)
+    #   ops/dataui-reset.service   -> SYSTEMD_UNIT_DIR/dataui-reset.service  (0644)
+    #   ops/dataui-reset.timer     -> SYSTEMD_UNIT_DIR/dataui-reset.timer    (0644)
+    # Each file via sudo with an atomic same-directory temp; everything
+    # before a checked daemon-reload. On failure, stop before restarts
+    # and report which destinations changed; recovery is rerunning the
+    # updater. Never touch demo-directory. OPS_LIB_DIR/SYSTEMD_UNIT_DIR
+    # defaults are the production paths; the test harness overrides.
+    local lib_dir="${OPS_LIB_DIR:-/usr/local/lib/data-ui}"
+    local unit_dir="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+    local -a pairs=(
+        "ops/pg-profile.yaml|${lib_dir}/pg-profile.yaml|644"
+        "ops/profile-run.sh|${lib_dir}/profile-run.sh|755"
+        "ops/petting-zoo-reset.sh|${lib_dir}/petting-zoo-reset.sh|755"
+        "ops/dataui@.service|${unit_dir}/dataui@.service|644"
+        "ops/dataui-reset.service|${unit_dir}/dataui-reset.service|644"
+        "ops/dataui-reset.timer|${unit_dir}/dataui-reset.timer|644"
+    )
+    local p src dst mode tmp
+    local -a done_list=()
+    for p in "${pairs[@]}"; do
+        IFS='|' read -r src dst mode <<<"$p"
+        [[ -f "$src" ]] || die "ops install: missing source '${src}' in the staging checkout."
+    done
+    sudo mkdir -p "$lib_dir" "$unit_dir" \
+        || die "ops install: cannot create ${lib_dir} / ${unit_dir}."
+    for p in "${pairs[@]}"; do
+        IFS='|' read -r src dst mode <<<"$p"
+        tmp="${dst}.data-ui-tmp.$$"
+        if ! sudo install -m "$mode" "$src" "$tmp" || ! sudo mv -f "$tmp" "$dst"; then
+            sudo rm -f "$tmp"
+            echo "ERROR: ops install of ${src} -> ${dst} failed." >&2
+            echo "  Destinations already changed: ${done_list[*]:-(none)}" >&2
+            die "Stopping before restarts; recovery is rerunning 'scripts/data-ui staging update'."
+        fi
+        done_list+=("$dst")
+        echo "Installed ${src} -> ${dst} (mode ${mode})."
+    done
+    sudo systemctl daemon-reload || die "systemctl daemon-reload failed; stopping before restarts."
+    echo "ops files installed; daemon reloaded."
+}
+
+function staging_restart_profiles {
+    # Enumerate active non-Model-Bank dataui@PROFILE units; abort if
+    # any is activating or reloading. Restart each with plain
+    # `sudo systemctl restart` (never enable --now, never lifecycle
+    # stop/start, never reset/delete verbs). Disabled and stopped
+    # profiles stay as they are. Gate each restart before the next: the
+    # first profile is the canary and there is no second pass.
+    local -a units=()
+    local line unit state name
+    while read -r line; do
+        [[ "$line" == dataui@*.service* ]] || continue
+        unit=$(awk '{print $1}' <<<"$line")
+        state=$(awk '{print $3}' <<<"$line")
+        name="${unit#dataui@}"
+        name="${name%.service}"
+        [[ "$name" == "modelbank" ]] && continue
+        case "$state" in
+            active) units+=("$name") ;;
+            activating|reloading)
+                die "dataui@${name} is ${state}; aborting the update before any restart."
+                ;;
+            *) ;; # inactive/failed: leave as-is
+        esac
+    done < <(systemctl list-units --all --no-legend --plain --type=service 'dataui@*.service' 2>/dev/null)
+    if (( ${#units[@]} == 0 )); then
+        echo "No active non-Model-Bank dataui@ units; nothing to restart."
+        return 0
+    fi
+    echo "Active profiles to restart (gated, one at a time): ${units[*]}"
+    local -a restarted=()
+    for name in "${units[@]}"; do
+        staging_gate_profile_restart "$name"
+        restarted+=("$name")
+    done
+    echo "Restarted (all gates passed): ${restarted[*]}"
+}
+
+function staging_gate_profile_restart {
+    # Plain restart, then gate BEFORE the next: journal identity (only
+    # lines --after-cursor the captured cursor that belong to the new
+    # InvocationID — a cursor alone admits late lines from the old
+    # process), loopback /health 200, and — if exposed — the routed
+    # domain /health 200. Poll 5s with 5s timeouts until
+    # STAGING_HEALTH_TIMEOUT (default 300s; 120 was tuned to warm
+    # starts and the pre-warm keeps the deadline measuring health, not
+    # compilation). An InvocationID change during the poll fails the
+    # gate (a crash-restart is not healthy). /health is a real
+    # activation gate by ordering: start-web-server has one caller, the
+    # last form of set-model, so a process that dies inside set-model
+    # never binds the port. Never substitute the "web server started"
+    # log line (it is emitted BEFORE h:start).
+    local profile="$1" unit="dataui@${1}"
+    local env_path http_port cursor inv lines inv2 checkout domain code
+    env_path=$(profile_env_path "$profile")
+    http_port=$(grep -oP '^HTTP_PORT=\K\d+' "$env_path" 2>/dev/null)
+    [[ -n "$http_port" ]] || die "profile '${profile}' has no HTTP_PORT."
+    checkout=$(readlink -m "$STAGING_CHECKOUT")
+    cursor=$(journalctl -u "$unit" -n 0 --show-cursor 2>/dev/null | sed -n 's/^-- cursor: //p')
+    [[ -n "$cursor" ]] || die "cannot capture a journal cursor for ${unit}."
+    sudo systemctl restart "$unit" || die "systemctl restart ${unit} failed."
+    inv=$(systemctl show "$unit" -p InvocationID --value 2>/dev/null)
+    [[ -n "$inv" ]] || die "cannot read the InvocationID of ${unit} after restart."
+    echo "Restarted ${unit} (invocation ${inv:0:8}); gating (deadline ${STAGING_HEALTH_TIMEOUT:-300}s)."
+    local deadline="${STAGING_HEALTH_TIMEOUT:-300}" waited=0
+    local journal_ok=0 health_ok=0 exposed_ok=0 exposed=0
+    haproxy_env
+    if profile_is_exposed "$profile"; then
+        exposed=1
+        domain=$(profile_routed_domain "$profile")
+        [[ -n "$domain" ]] || die "${profile} is exposed but has no routed domain in the map."
+    fi
+    while :; do
+        lines=$(journalctl -u "$unit" --after-cursor "$cursor" 2>/dev/null)
+        if [[ -n "$lines" ]] && (( journal_ok == 0 )); then
+            if grep -qF "profile-run: checkout: ${checkout}" <<<"$lines" \
+               && grep -qF "DATA-UI-ASDF-SOURCE=${checkout}/" <<<"$lines"; then
+                journal_ok=1
+            fi
+        fi
+        if (( journal_ok == 1 && health_ok == 0 )); then
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+                       "http://127.0.0.1:${http_port}/health" 2>/dev/null) || code=000
+            [[ "$code" == "200" ]] && health_ok=1
+        fi
+        if (( journal_ok == 1 && health_ok == 1 && exposed == 1 && exposed_ok == 0 )); then
+            code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+                       "https://${domain}/health" 2>/dev/null) || code=000
+            [[ "$code" == "200" ]] && exposed_ok=1
+        fi
+        # Checked after the polls and BEFORE declaring success: the
+        # invocation must still be the one the restart produced. A
+        # fast crash-restart can re-serve a satisfying /health within
+        # the same iteration, and the plan's rule is unqualified — an
+        # InvocationID change during the poll fails the gate.
+        inv2=$(systemctl show "$unit" -p InvocationID --value 2>/dev/null)
+        [[ "$inv2" == "$inv" ]] \
+            || die "InvocationID of ${unit} changed during the health poll (a crash-restart is not healthy)."
+        if (( journal_ok == 1 && health_ok == 1 && ( exposed == 0 || exposed_ok == 1 ) )); then
+            if (( exposed == 1 )); then
+                echo "  ${unit}: journal identity + loopback /health + https://${domain}/health OK."
+            else
+                echo "  ${unit}: journal identity + loopback /health OK (not exposed)."
+            fi
+            return 0
+        fi
+        if (( waited >= deadline )); then
+            echo "ERROR: ${unit} did not pass its health gate within ${deadline}s (journal=${journal_ok} loopback=${health_ok} exposed=${exposed_ok})." >&2
+            echo "  Inspect: journalctl -u ${unit} --after-cursor '${cursor}'" >&2
+            die "Stopping at the first failure; no further profiles are restarted (no second pass)."
+        fi
+        sleep 5
+        waited=$(( waited + 5 ))
+    done
+}
+
+function staging_update_child {
+    # The selected staging script's body, under a verified envelope
+    # holding BOTH locks. Build, pre-warm, ops installation, and
+    # per-profile gated restarts happen here; Model Bank waits for
+    # activate-modelbank; the supervisor restores the timer when this
+    # child exits (the child never issues a timer command).
+    local remote="$ENVELOPE_REMOTE" branch="$ENVELOPE_BRANCH" sha="$ENVELOPE_FULL_SHA"
+    cd "$STAGING_CHECKOUT" || die "cannot cd to ${STAGING_CHECKOUT}."
+    echo "staging update child: ${remote}/${branch} @ ${sha}"
+    # Frontend: npm ci (requires the committed web/package-lock.json;
+    # never falling back to npm install) then npm run build. Outputs
+    # are never promoted between checkouts; web/dist and node_modules
+    # are ignored so they cannot dirty the tree.
+    [[ -f web/package-lock.json ]] \
+        || die "web/package-lock.json is missing at ${sha}; npm ci requires it and there is no npm-install fallback."
+    ( cd web && npm ci && npm run build ) \
+        || die "frontend build failed; stopping before ops installation or restarts."
+    # Pre-warm: a fresh SBCL applies the ASDF load contract, loads
+    # :data-ui, and exits — a compile gate (a broken revision fails
+    # before any ops file is installed or any unit restarted) that also
+    # fills the FASL cache every dataui@ restart shares
+    # (~/.cache/common-lisp, keyed by checkout path). Run WITHOUT sudo
+    # and as the invoking user (the unit's user): a root-owned cache
+    # would make the health deadline measure compilation again.
+    local warm_start=$SECONDS
+    build_load_contract_evals
+    DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" \
+        ros run -- --disable-debugger \
+            "${LOAD_CONTRACT_EVALS[@]}" \
+            --eval '(format t "pre-warm: :data-ui loaded~%")' \
+            --quit \
+        || die "pre-warm load failed; stopping before ops installation or restarts."
+    echo "Pre-warm complete in $(( SECONDS - warm_start ))s."
+    staging_install_ops
+    staging_restart_profiles
+    echo
+    echo "Staging update complete."
+    echo "  staging SHA:      ${sha}"
+    echo "  Model Bank:       pending activation ('scripts/data-ui staging activate-modelbank')"
+}
+
+#
+# staging activate-modelbank
+#
+
+function swank_eval_string {
+    # Minimal swank client (the CLASSIC SLIME wire protocol from
+    # swank/rpc.lisp: 6-hex-digit length-prefixed s-expressions, and
+    # the request shape (:emacs-rex (swank:interactive-eval "string"
+    # lines width) "PACKAGE" thread id)). Evaluates EXPR on the unit's
+    # Swank passenger at 127.0.0.1:$1 and prints the value. The value
+    # travels inside [[...]] sentinels so the echo-area decoration
+    # interactive-eval adds (prefix, CL string quoting) cannot corrupt
+    # it. Used only as a verification channel (the running image's own
+    # *package-root* and deploy script path) — never a control path.
+    python3 - "$1" "$2" <<'PYEOF'
+import re, socket, sys, time
+port, expr = int(sys.argv[1]), sys.argv[2]
+def cl_str(x):
+    return b'"' + x.replace(b"\\", b"\\\\").replace(b'"', b'\\"') + b'"'
+def frame(p):
+    return b"%06x" % len(p) + p
+def read_message(f):
+    hdr = b""
+    while len(hdr) < 6:
+        c = f.read(6 - len(hdr))
+        if not c: raise EOFError("connection closed")
+        hdr += c
+    n = int(hdr, 16)
+    data = f.read(n)
+    if len(data) < n: raise EOFError("short read")
+    return data
+inner = '(format nil "[[~a]]" %s)' % expr
+req = (b'(:emacs-rex (swank:interactive-eval ' + cl_str(inner.encode())
+       + b' 1 100) "COMMON-LISP-USER" t 1)')
+s = socket.create_connection(("127.0.0.1", port), timeout=10)
+ret = b""
+try:
+    f = s.makefile("rb")
+    s.sendall(frame(req))
+    end = time.time() + 10
+    while time.time() < end:
+        try:
+            m = read_message(f)
+        except Exception:
+            break
+        if m.startswith(b"(:return"):
+            ret = m
+            break
+finally:
+    s.close()
+m = ret.decode("utf-8", "replace")
+if ":ok" not in m:
+    sys.stderr.write("swank eval failed: %r\n" % m[:200]); sys.exit(1)
+hit = re.search(r"\[\[(.*)\]\]", m, re.S)
+if not hit:
+    sys.stderr.write("swank eval returned no [[value]]: %r\n" % m[:200]); sys.exit(1)
+sys.stdout.write(hit.group(1))
+PYEOF
+}
+
+function verify_modelbank_identity {
+    # Loopback /health, then — through the unit's Swank passenger — the
+    # running image's *package-root* and the deploy script path it
+    # would hand a Deploy worker. The journal proves what the process
+    # printed at startup; this proves what the live image believes.
+    local env_path http_port swank_port root want out code
+    env_path=$(profile_env_path modelbank)
+    http_port=$(grep -oP '^HTTP_PORT=\K\d+' "$env_path" 2>/dev/null)
+    swank_port=$(grep -oP '^SWANK_PORT=\K\d+' "$env_path" 2>/dev/null)
+    [[ -n "$http_port" && -n "$swank_port" ]] \
+        || die "modelbank profile lacks HTTP_PORT/SWANK_PORT."
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+               "http://127.0.0.1:${http_port}/health" 2>/dev/null) || code=000
+    [[ "$code" == "200" ]] \
+        || { echo "ERROR: modelbank /health returned ${code:-none} on 127.0.0.1:${http_port}." >&2; return 1; }
+    want="$(readlink -m "$STAGING_CHECKOUT")/"
+    root=$(swank_eval_string "$swank_port" \
+               '(namestring (truename data-ui::*package-root*))') \
+        || return 1
+    [[ "$root" == "$want" ]] \
+        || { echo "ERROR: modelbank's *package-root* is ${root}, wanted ${want}." >&2; return 1; }
+    out=$(swank_eval_string "$swank_port" \
+              '(namestring (probe-file (merge-pathnames "scripts/data-ui" data-ui::*package-root*)))') \
+        || return 1
+    [[ "$out" == "${want}scripts/data-ui" ]] \
+        || { echo "ERROR: modelbank's deploy script path is ${out}, wanted ${want}scripts/data-ui." >&2; return 1; }
+    echo "modelbank identity verified (loopback /health 200; Swank *package-root* and deploy script under ${want})."
+    return 0
+}
+
+function staging_check_protocol_readiness {
+    # Early warning before --expose: the next Deploy selects
+    # public/master, so the DATA_UI_REEXEC_PROTOCOL line in
+    # refs/remotes/public/master:scripts/lib/checkout.sh must equal
+    # staging's. Refs-only fetch under the production lock already
+    # held; NEVER the working tree (production HEAD is the wrong
+    # commit). File-content identity would be too strict; this never
+    # waits on a production application's health. The inner arm's
+    # version check is the real guard.
+    [[ -d "${DEPLOY_CHECKOUT}/.git" ]] \
+        || { echo "ERROR: no production checkout at ${DEPLOY_CHECKOUT}; cannot check protocol readiness." >&2; return 1; }
+    checkout_git "$DEPLOY_CHECKOUT" fetch --no-tags public +refs/heads/master:refs/remotes/public/master >/dev/null 2>&1 \
+        || { echo "ERROR: refs-only fetch of public/master into ${DEPLOY_CHECKOUT} failed." >&2; return 1; }
+    local line
+    line=$(checkout_git "$DEPLOY_CHECKOUT" show refs/remotes/public/master:scripts/lib/checkout.sh 2>/dev/null \
+               | sed -n 's/^DATA_UI_REEXEC_PROTOCOL=//p' | tail -1)
+    [[ "$line" == "$DATA_UI_REEXEC_PROTOCOL" ]] \
+        || { echo "ERROR: protocol mismatch: public/master's scripts/lib/checkout.sh speaks V${line:-none}, staging speaks V${DATA_UI_REEXEC_PROTOCOL}. Publish to public, or use --leave-unexposed." >&2; return 1; }
+    echo "Protocol readiness OK (public/master speaks V${DATA_UI_REEXEC_PROTOCOL})."
+    return 0
+}
+
+function staging_activate_modelbank {
+    # [--leave-unexposed|--expose] (default --leave-unexposed; options
+    # mutually exclusive; extra operands fail). Routed to staging
+    # without selection; takes its own locks (staging first, then
+    # production via the quiescence helper) and holds both through
+    # restart, verification, and any exposure. Activation is a plain
+    # restart — never enable/disable, never the lifecycle verbs.
+    local mode="leave-unexposed"
+    if (( $# > 1 )); then
+        die "staging activate-modelbank takes at most one option (--leave-unexposed | --expose)."
+    fi
+    if [[ "${1:-}" == "--expose" ]]; then
+        mode="expose"
+    elif [[ -n "${1:-}" && "${1:-}" != "--leave-unexposed" ]]; then
+        die "Unknown option '${1}' (only --leave-unexposed | --expose, mutually exclusive)."
+    fi
+    staging_one_host_check
+    [[ "$(hostname)" == "$STAGING_HOST" ]] \
+        || die "staging activate-modelbank must run on ${STAGING_HOST} (this is $(hostname))."
+    cd "$STAGING_CHECKOUT" 2>/dev/null \
+        || die "no staging checkout at ${STAGING_CHECKOUT}; run 'scripts/data-ui staging update' first."
+    local env_file
+    env_file=$(profile_env_path modelbank)
+    [[ -f "$env_file" ]] || die "No modelbank profile (${env_file})."
+    # An e-demo-stamped Model Bank would be restarted by the nightly
+    # reset outside quiescence; refuse it (normal Model Bank is demo
+    # class and never in the nightly set).
+    local class
+    class=$(grep -oP '^DEMO_CLASS=\K.*' "$env_file" | tail -1)
+    [[ "$class" != "e-demo" ]] \
+        || die "modelbank is DEMO_CLASS=e-demo (nightly reset set); activate-modelbank refuses — the reset would restart it outside quiescence."
+    # Original exposure, read before anything can change it.
+    local original
+    if read_modelbank_activation_state; then
+        original="$MB_STATE_original_exposed"
+    else
+        haproxy_env
+        if profile_is_exposed modelbank; then original=1; else original=0; fi
+    fi
+    MB_ORIGINAL_EXPOSED="$original"
+    MB_PHASE="pre-restart"
+    trap 'staging_activate_abort' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    with_checkout_lock staging
+    modelbank_quiesce activate
+    local head
+    head=$(checkout_git "$STAGING_CHECKOUT" rev-parse HEAD) \
+        || die "cannot read the staging HEAD."
+    local already=0
+    if read_modelbank_activation_state \
+       && [[ "$MB_STATE_phase" == "activated" && "$MB_STATE_activated" == "$head" ]]; then
+        already=1
+    fi
+    if (( already )); then
+        # --expose fast path: never restart a healthy current Model
+        # Bank just to change exposure. Revalidate invocation, journal
+        # identity, loopback health, and Swank identity.
+        echo "modelbank is already activated at ${head}; using the --expose fast path (no restart)."
+        if ! verify_modelbank_identity; then
+            die "modelbank failed revalidation on the fast path; run 'scripts/data-ui staging activate-modelbank' (without --expose) to restart it."
+        fi
+    else
+        local unit="dataui@modelbank" cursor inv
+        cursor=$(journalctl -u "$unit" -n 0 --show-cursor 2>/dev/null | sed -n 's/^-- cursor: //p')
+        [[ -n "$cursor" ]] || die "cannot capture a journal cursor for ${unit}."
+        echo "Activating modelbank: plain restart of ${unit}."
+        sudo systemctl restart "$unit" || { MB_PHASE="post-restart"; die "systemctl restart ${unit} failed."; }
+        MB_PHASE="post-restart"
+        inv=$(systemctl show "$unit" -p InvocationID --value 2>/dev/null)
+        [[ -n "$inv" ]] || die "cannot read the InvocationID of ${unit} after restart."
+        # Gate: journal identity (only this invocation's lines), loopback
+        # /health, then Swank identity — the deadline and rules match
+        # staging_gate_profile_restart.
+        local deadline="${STAGING_HEALTH_TIMEOUT:-300}" waited=0 checkout lines ok=0
+        checkout=$(readlink -m "$STAGING_CHECKOUT")
+        while :; do
+            lines=$(journalctl -u "$unit" --after-cursor "$cursor" 2>/dev/null)
+            if [[ -n "$lines" ]] \
+               && grep -qF "profile-run: checkout: ${checkout}" <<<"$lines" \
+               && grep -qF "DATA-UI-ASDF-SOURCE=${checkout}/" <<<"$lines" \
+               && verify_modelbank_identity >/dev/null 2>&1; then
+                ok=1
+                break
+            fi
+            local inv2
+            inv2=$(systemctl show "$unit" -p InvocationID --value 2>/dev/null)
+            [[ "$inv2" == "$inv" ]] \
+                || { echo "ERROR: InvocationID of ${unit} changed during activation (a crash-restart is not healthy)." >&2; break; }
+            if (( waited >= deadline )); then
+                echo "ERROR: modelbank did not verify within ${deadline}s." >&2
+                break
+            fi
+            sleep 5
+            waited=$(( waited + 5 ))
+        done
+        if (( ok == 0 )); then
+            echo "Post-restart verification failed; failing closed (no exposure). Recovery:" >&2
+            echo "  journalctl -u ${unit} --after-cursor '${cursor}'" >&2
+            echo "  retry: scripts/data-ui staging activate-modelbank" >&2
+            die "modelbank activation failed verification."
+        fi
+        verify_modelbank_identity
+        # Success: phase=activated at the current staging HEAD, keeping
+        # original-exposed (and target-staging-sha as recorded).
+        read_modelbank_activation_state 2>/dev/null || true
+        write_modelbank_activation_state \
+            "$original" activated "${MB_STATE_target:--}" "$head"
+        echo "modelbank activated at ${head} (phase=activated)."
+    fi
+    trap - EXIT INT TERM
+    if [[ "$mode" == "expose" ]]; then
+        if [[ "$original" == "1" ]]; then
+            if ! staging_check_protocol_readiness; then
+                echo "modelbank stays unexposed (phase=activated); publish to public, then re-run with --expose." >&2
+                die "protocol readiness failed; refusing to expose modelbank."
+            fi
+            haproxy_env
+            require_haproxy_host "staging activate-modelbank --expose"
+            expose_profile modelbank
+            local domain
+            domain=$(profile_routed_domain modelbank)
+            [[ -n "$domain" ]] || die "modelbank has no routed domain after expose."
+            if ! wait_for_health_200 "https://${domain}/health" \
+                    "modelbank public health" "${STAGING_HEALTH_TIMEOUT:-300}"; then
+                die "modelbank exposed at https://${domain} but its public /health gate failed; investigate before relying on it."
+            fi
+            echo "Exposed modelbank: https://${domain} (public /health 200)."
+        else
+            haproxy_env
+            if profile_is_exposed modelbank; then
+                die "modelbank was originally unexposed but is exposed now; refusing to normalize that by policy."
+            fi
+            echo "modelbank was originally unexposed; a successful no-expose outcome."
+        fi
+    fi
+    # Outcomes: after a verified final exposure, or a verified
+    # activation of an originally-unexposed instance, remove
+    # activation.state. An originally-exposed instance deliberately
+    # left unexposed keeps phase=activated until a later --expose
+    # succeeds.
+    if [[ "$mode" == "expose" || "$original" == "0" ]]; then
+        rm -f "$(modelbank_activation_state_path)" \
+            && echo "Activation complete; removed $(modelbank_activation_state_path)."
+    else
+        echo "modelbank activated and left unexposed (phase stays 'activated' until a later --expose succeeds)."
+    fi
+}
+
+function staging_activate_abort {
+    # A pre-restart failure restores only the recorded original
+    # exposure, and only where that is safe (nothing restarted, nothing
+    # activated). Post-restart failures fail closed with explicit
+    # recovery commands instead (printed by the caller).
+    local status=$?
+    trap - EXIT
+    if [[ "${MB_PHASE:-}" == "pre-restart" && "${MB_ORIGINAL_EXPOSED:-}" == "1" ]]; then
+        echo "Activation aborted before restart; restoring the originally-exposed state..." >&2
+        if expose_profile modelbank; then
+            echo "Re-exposed modelbank (original exposure restored)." >&2
+        else
+            echo "WARNING: could not re-expose modelbank; run 'scripts/data-ui profile expose modelbank'." >&2
+        fi
+    fi
+    exit "$status"
+}
+
+#
+# Orphan scanner (read-only; mirrors the Lisp reaper's strictness)
+#
+
+function parse_registry_record {
+    # Strict parse of a <token>.registry record — the contract shared
+    # with the Lisp reaper: key=value lines, no quoting, no comments,
+    # no blank lines, every key present, in this order:
+    #   state token worker-pid child-pid path
+    # Prints "state worker-pid child-pid path" on success. Returns 1
+    # (with a reason on stderr) on any deviation: unknown, missing, or
+    # duplicate keys; a bad state; a non-numeric worker-pid;
+    # child-pid='-' outside pending; a numeric child-pid in pending; a
+    # token/path mismatch. Unrecognizable records are retained and
+    # reported, never reaped.
+    local rec="$1" line key val n=0
+    local state token worker child path
+    while IFS= read -r line; do
+        n=$(( n + 1 ))
+        [[ "$line" == *=* ]] || { echo "line ${n} has no '='" >&2; return 1; }
+        key="${line%%=*}"
+        val="${line#*=}"
+        case "$n:$key" in
+            1:state) state="$val" ;;
+            2:token) token="$val" ;;
+            3:worker-pid) worker="$val" ;;
+            4:child-pid) child="$val" ;;
+            5:path) path="$val" ;;
+            *) echo "unexpected key '${key}' at line ${n}" >&2; return 1 ;;
+        esac
+    done < "$rec"
+    (( n == 5 )) || { echo "expected 5 lines, got ${n}" >&2; return 1; }
+    [[ "$state" == pending || "$state" == ready || "$state" == done ]] \
+        || { echo "bad state '${state}'" >&2; return 1; }
+    [[ "$token" =~ ^[A-Za-z0-9_-]+$ && "$token" == "$(basename "$rec" .registry)" ]] \
+        || { echo "bad token '${token}'" >&2; return 1; }
+    [[ "$worker" =~ ^[0-9]+$ ]] || { echo "bad worker-pid '${worker}'" >&2; return 1; }
+    if [[ "$state" == "pending" ]]; then
+        [[ "$child" == "-" ]] || { echo "numeric child-pid '${child}' in pending" >&2; return 1; }
+    else
+        [[ "$child" =~ ^[0-9]+$ ]] || { echo "child-pid '${child}' must be numeric outside pending" >&2; return 1; }
+    fi
+    [[ "$path" == "models/local/deploy-incoming/${token}.lisp" ]] \
+        || { echo "path '${path}' does not match the token" >&2; return 1; }
+    printf '%s %s %s %s\n' "$state" "$worker" "$child" "$path"
+}
+
+function pid_alive {
+    # /proc/<pid> existence in any state (zombie included) means live.
+    # The reaping process did not spawn the child, so process-status
+    # cannot answer; every ambiguity (including PID reuse) errs toward
+    # "live", which retains and reports — the required direction.
+    [[ "$1" =~ ^[0-9]+$ ]] && [[ -e "/proc/$1" ]]
+}
+
+function staging_modelbank_orphans {
+    # Read-only report of deploy-incoming orphans: one line per entry
+    # with path, state, and reason — missing incoming file, dead child
+    # without an ack, malformed or unrecognizable record, or stale
+    # temp. Exit 0 if none, nonzero otherwise. Never mutates anything,
+    # never restarts Model Bank, never takes a lock.
+    cd "$STAGING_CHECKOUT" 2>/dev/null \
+        || die "no staging checkout at ${STAGING_CHECKOUT}; run 'scripts/data-ui staging update' first."
+    local dir="$STAGING_CHECKOUT/models/local/deploy-incoming"
+    local found=0 rec token out state worker child path incoming f
+    if [[ ! -d "$dir" ]]; then
+        echo "No deploy-incoming directory (${dir}); no orphans."
+        exit 0
+    fi
+    for rec in "$dir"/*.registry; do
+        [[ -f "$rec" ]] || continue
+        token=$(basename "$rec" .registry)
+        incoming="${dir}/${token}.lisp"
+        if ! out=$(parse_registry_record "$rec" 2>&1); then
+            echo "orphan: ${rec}: malformed/unrecognizable record (${out})"
+            found=1
+            continue
+        fi
+        read -r state worker child path <<<"$out"
+        if [[ ! -f "$incoming" ]]; then
+            echo "orphan: ${rec}: missing incoming file (state=${state})"
+            found=1
+            continue
+        fi
+        case "$state" in
+            done)
+                echo "orphan: ${incoming}: state=done but the file remains (worker died before cleanup)"
+                found=1
+                ;;
+            pending)
+                if ! pid_alive "$worker"; then
+                    echo "orphan: ${incoming}: state=pending, worker-pid ${worker} dead"
+                    found=1
+                fi
+                ;;
+            ready)
+                if ! pid_alive "$child"; then
+                    echo "orphan: ${incoming}: state=ready, child-pid ${child} dead without an ack"
+                    found=1
+                fi
+                ;;
+        esac
+    done
+    for f in "$dir"/*.lisp; do
+        [[ -f "$f" ]] || continue
+        token=$(basename "$f" .lisp)
+        [[ -f "$dir/${token}.registry" ]] \
+            || { echo "orphan: ${f}: no registry record (worker died between file creation and the record write)"; found=1; }
+    done
+    for f in "$dir"/.*.tmp; do
+        [[ -f "$f" ]] || continue
+        echo "orphan: ${f}: stale temp"
+        found=1
+    done
+    if (( found == 0 )); then
+        echo "No orphans in ${dir}."
+        exit 0
+    fi
+    exit 1
+}
+
+#
+# Routing without fetching: routine staging commands run the staging
+# checkout's script from any non-staging cwd. Routing compares
+# canonical script roots, never cwd. Unnamed development invocations
+# stay local. tests/debug/compile/docs/field never route; dev: and
+# prd: snapshot addresses stay on the invoking script; only stg:
+# addresses route.
+#
+
+function route_for_staging {
+    local root staging_root action="${1:-}"
+    root=$(canonical_checkout_root)
+    staging_root=$(readlink -m "$STAGING_CHECKOUT")
+    [[ "$root" == "$staging_root" ]] && return 1
+    case "$action" in
+        profile|e-demo|demo)
+            ;;
+        repl|db|psql)
+            [[ -n "${2:-}" ]] || return 1
+            ;;
+        staging)
+            case "${2:-}" in
+                activate-modelbank|modelbank-orphans|modelbank-running) ;;
+                *) return 1 ;;
+            esac
+            ;;
+        snapshot)
+            case "${2:-}" in
+                save|restore)
+                    [[ "${4:-}" == stg:* ]] || return 1
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    [[ -x "${staging_root}/scripts/data-ui" ]] \
+        || die "No staging checkout at ${staging_root}; run 'scripts/data-ui staging update' first."
+    echo "Routing to the staging checkout (${staging_root})."
+    exec "${staging_root}/scripts/data-ui" "$@"
+}
+
+#
+# Internal envelope dispatch (the re-exec entry point)
+#
+
+function run_envelope_action {
+    # The inner arm. Order: parse (done by the caller), overwrite
+    # ambient MODEL_FILE from the validated handoff or unset it (no
+    # environment-variable bypass), install cleanup traps for every
+    # inherited temporary artifact, THEN verify the fallible guards
+    # (root, host, SHA, lock ownership), then run the action body.
+    case "$ENVELOPE_ACTION" in
+        deploy)
+            [[ "$ENVELOPE_ROLE" == "production" ]] \
+                || die "internal envelope: deploy must be ROLE=production."
+            if [[ "$ENVELOPE_HANDOFF_KIND" != "none" ]]; then
+                export MODEL_FILE="${DEPLOY_CHECKOUT}/${ENVELOPE_HANDOFF_PATH}"
+                DEPLOY_CANDIDATE="$ENVELOPE_HANDOFF_PATH"
+                DEPLOY_CANDIDATE_ABS="${DEPLOY_CHECKOUT}/${ENVELOPE_HANDOFF_PATH}"
+                DEPLOY_CANDIDATE_TOKEN="$(basename "$ENVELOPE_HANDOFF_PATH" .lisp)"
+            else
+                unset MODEL_FILE
+            fi
+            trap 'deploy_inner_exit_trap' EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            verify_internal_envelope
+            deploy_selected
+            ;;
+        delete)
+            [[ "$ENVELOPE_ROLE" == "production" ]] \
+                || die "internal envelope: delete must be ROLE=production."
+            if [[ "$ENVELOPE_HANDOFF_KIND" != "none" ]]; then
+                export MODEL_FILE="${DEPLOY_CHECKOUT}/${ENVELOPE_HANDOFF_PATH}"
+                DEPLOY_CANDIDATE="$ENVELOPE_HANDOFF_PATH"
+                DEPLOY_CANDIDATE_ABS="${DEPLOY_CHECKOUT}/${ENVELOPE_HANDOFF_PATH}"
+                DEPLOY_CANDIDATE_TOKEN="$(basename "$ENVELOPE_HANDOFF_PATH" .lisp)"
+            else
+                unset MODEL_FILE
+            fi
+            verify_internal_envelope
+            delete_selected
+            ;;
+        staging-update-child)
+            [[ "$ENVELOPE_ROLE" == "staging" ]] \
+                || die "internal envelope: staging-update-child must be ROLE=staging."
+            verify_internal_envelope
+            staging_update_child
+            ;;
+        *)
+            die "internal envelope: unhandled ACTION '${ENVELOPE_ACTION}'."
+            ;;
+    esac
+}
+
+# Internal envelope dispatch: the re-exec entry point. A marker-shaped
+# first argument never reaches the public grammar below — a protocol
+# mismatch dies with its own message, and a matching marker with any
+# bad guard dies inside parse/verify (never a fallback to public
+# dispatch; a user-supplied marker cannot forge the inherited, held
+# lock descriptors).
+if envelope_marker_shaped "${1:-}"; then
+    if ! internal_envelope_present "$@"; then
+        die "Re-exec envelope protocol mismatch: got '${1}', this script speaks $(checkout_envelope_marker)."
+    fi
+    parse_internal_envelope "$@"
+    run_envelope_action
+    exit $?
+fi
+
+# Routing without fetching (see route_for_staging): execs into the
+# staging checkout's script for the routine staging verbs, or returns
+# to local dispatch. Unnamed development invocations stay local.
+route_for_staging "$@"
+
 case "$ACTION" in
     repl)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         setup_repl_env "$2"
         start_postgres_quietly
         initialize_database_quietly
@@ -3123,6 +5086,7 @@ case "$ACTION" in
         stop_database_quietly
         ;;
     db)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         setup_repl_env "$2"
         start_postgres
         initialize_database
@@ -3130,6 +5094,7 @@ case "$ACTION" in
         stop_database_quietly
         ;;
     psql)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         if [[ -n "${2:-}" ]]; then
             load_profile "$2"
         else
@@ -3145,6 +5110,10 @@ case "$ACTION" in
         demo_verb demo "${@:2}"
         ;;
     profile)
+        # Routed to staging when invoked elsewhere; either way the arm
+        # runs from the invoking script's canonical root so every
+        # checkout-relative path (models/, ops/) resolves there.
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         sub="${2:-}"
         case "$sub" in
             create)
@@ -3176,6 +5145,7 @@ case "$ACTION" in
         esac
         ;;
     tests)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         export_test_environment
         render_init_sql
         start_postgres_quietly
@@ -3185,6 +5155,7 @@ case "$ACTION" in
         echo $REPORT
         ;;
     debug)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         export_test_environment
         render_init_sql
         start_postgres
@@ -3194,44 +5165,87 @@ case "$ACTION" in
         echo $REPORT
         ;;
     compile)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         export_docs_environment
         compile
         ;;
     docs)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         export_docs_environment
         generate_readme
         ;;
     stop)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         export_test_environment
         stop_database
         ;;
     field)
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         MODEL_NAME="$2"
-        FIELD_NAME="$3"
+        DATA_UI_FIELD_NAME="$3"
         if [[ -z "$MODEL_NAME" ]]; then
             echo "Model name required."
             exit 1
         fi
-        if [[ -z "$FIELD_NAME" ]]; then
+        if [[ -z "$DATA_UI_FIELD_NAME" ]]; then
             echo "Field name required."
             exit 1
         fi
         get_model_field
         ;;
     deploy)
-        MODEL_NAME="$2"
-        [[ -n "$MODEL_NAME" ]] || die "Usage: $SCRIPT_NAME deploy <model-name>"
-        deploy
+        # Fail-fast parsing (operand grammar, --from spec, unknown
+        # flags, the marker) before any side effect; then the outer
+        # arm (selection + re-execution).
+        parse_deploy_args "${@:2}"
+        deploy_outer
+        ;;
+    deploy-bootstrap)
+        [[ -z "${2:-}" ]] || die "deploy-bootstrap takes no arguments."
+        deploy_bootstrap_only
         ;;
     delete)
-        MODEL_NAME="$2"
-        [[ -n "$MODEL_NAME" ]] || die "Usage: $SCRIPT_NAME delete <model-name>"
-        undeploy
+        [[ -n "${2:-}" ]] || die "Usage: $SCRIPT_NAME delete <model-name>"
+        [[ -z "${3:-}" ]] || die "delete takes exactly one model operand."
+        valid_model_operand "$2" "delete operand"
+        delete_outer "$2"
+        ;;
+    staging)
+        sub="${2:-}"
+        case "$sub" in
+            update)
+                staging_update_supervisor "${@:3}"
+                ;;
+            activate-modelbank)
+                staging_activate_modelbank "${@:3}"
+                ;;
+            modelbank-orphans)
+                [[ -z "${3:-}" ]] || die "staging modelbank-orphans takes no arguments."
+                staging_modelbank_orphans
+                ;;
+            modelbank-running)
+                [[ -z "${3:-}" ]] || die "staging modelbank-running takes no arguments."
+                staging_modelbank_running
+                ;;
+            *)
+                echo "Usage: $SCRIPT_NAME staging {update|activate-modelbank|modelbank-orphans|modelbank-running} ..." >&2
+                echo >&2
+                echo "  update [--from REMOTE/BRANCH]   select, build, install ops, restart (default private/master)" >&2
+                echo "  activate-modelbank [--leave-unexposed|--expose]" >&2
+                echo "  modelbank-orphans               read-only orphan report" >&2
+                echo "  modelbank-running               drain query (private helper)" >&2
+                exit 1
+                ;;
+        esac
         ;;
     traffic)
         traffic
         ;;
     snapshot)
+        # stg: addresses may have routed here (the staging checkout);
+        # dev: and prd: stay on their invoking script. Either way, run
+        # from the invoking script's canonical root.
+        cd "$(canonical_checkout_root)" 2>/dev/null || true
         sub="${2:-}"
         case "$sub" in
             save)

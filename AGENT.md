@@ -13,7 +13,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 - **Hooks and the registry** — all three contracts, registry API, action hooks, the no-transactions caveat → `docs/hook-registry.md` (read before authoring any hook or touching hook code)
 - **REST endpoints** — all routes with parameters → `docs/rest.md`
 - **Deployment** — every step, traps, admin password location, TLS, troubleshooting, clean-slate recovery → `docs/deployment.md`; session-by-session history in `~/.debug/deployment-work.md`. Environments (development / staging / production, `:domain` vs `:domain-stg`) are defined in its "Environments" section — read it before any deploy / expose work.
-- **CLI verbs** — `scripts/data-ui` (repl, db, psql, profile, tests, deploy, delete, traffic, snapshot, `e-demo` / `demo`, host profiles, environment variables) and `scripts/publish-data-ui` → `docs/cli.md`. `scripts/README.md` is a stub pointing there.
+- **CLI verbs** — `scripts/data-ui` (repl, db, psql, profile, tests, deploy, delete, deploy-bootstrap, traffic, snapshot, `e-demo` / `demo`, `staging update` / `activate-modelbank` / `modelbank-orphans`, host profiles, environment variables; routine staging verbs route to the staging checkout) and `scripts/publish-data-ui` → `docs/cli.md`. `scripts/README.md` is a stub pointing there.
 - **Lisp style and error reporting** — `u:` preference, small functions, `report-e` / `report-ve`, `valid-*` naming → `docs/lisp-style.md` (read before writing any Lisp: tests, helpers, or engine code with permission). When dealing with `report-ve` (or `report-e`), read the macro documentation in `lisp/aux.lisp` first — the tilde-prefixed var-spec convention is easy to misread as a typo and both macros signal (they do not return).
 - **Dead-code decisions** — `docs/model-accessors.md` (check before removing anything that looks unused)
 - **Backlog** — `docs/todo.org`
@@ -24,6 +24,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 - `lisp/model.lisp` – model compilation and the RBAC base model (`*base-model*`); `heal-model` — idempotent schema/RBAC re-sync for a live image (the tail of `set-model` without the table drops)
 - `lisp/backend.lisp` – backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-action`, `be-landing-page`, ...)
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
+- **`:type-roles` vs row roles — two different resources.** `:type-roles` exist because a row that does not exist yet has no resource to check, and they answer who may create one. They do not decide access to an existing row, and they are not copied onto new rows. Read [`docs/roles.md`](docs/roles.md) before reasoning about either.
 - `lisp/predicates.lisp` – type/field predicates; `:button` field type
 - `lisp/database.lisp` – database initialization and table creation
 - `lisp/aux.lisp` – helpers (`report-e`, `report-ve`, path utilities)
@@ -135,7 +136,7 @@ Org outline hierarchy: `*` section, `**` parent todo, `***` its direct children 
 
 ## Status Digest (September 2026)
 
-- **End-to-end proven:** `scripts/data-ui deploy todos` → https://todo.demo.data-ui.com (k3d, HAProxy, TLS) — production. Staging (host profiles + `profile expose`, serving each model's `:domain-stg`, derived as `-stg` on the first DNS label of `:domain`) is the flagship environment during MVP: it hosts Model Bank and has the Deploy button. Demo apps run as systemd units via the `e-demo` / `demo` verbs with nightly golden resets (`scripts/data-ui`, `ops/`).
+- **End-to-end proven:** `scripts/data-ui deploy todos` → https://todo.demo.data-ui.com (k3d, HAProxy, TLS) — production, always built from the production clone at `/data/data-ui/repos/production`. Staging (host profiles + `profile expose`, serving each model's `:domain-stg`, derived as `-stg` on the first DNS label of `:domain`) is the flagship environment during MVP: it hosts Model Bank and has the Deploy button. Demo apps run as systemd units via the `e-demo` / `demo` verbs with nightly golden resets (`scripts/data-ui`, `ops/`); host apps load the staging clone at `/data/data-ui/repos/staging`, never a development checkout (updated by `staging update`; Model Bank activates separately via `staging activate-modelbank`). Development Lisp work happens in the development repo.
 - Full CRUD on all types (built-in RBAC types included); JWT auth (plus guest login via `:guest-allowed` / `:guest-auto` / `:api-roles`); view-level and field-level scoping; write-through core path; action hooks (`:deploy-model`, `:generate-model`, `:spawn`); rollups (Phase A); file upload / list / delete (two-phase upload: `multipart` to `/api/upload`, then JSON `/api/insert` with the `file-token`).
 - Frontend: type selector with categories, dynamic lists / forms, inline edit, sortable columns, debounced search with negative ("Not…") terms, filter chips, pagination driven by `total`, rollup lists (server-side sortable measures), role management, image lightbox.
 - Known gaps: `:agg` fields on regular types are not sortable (use a rollup); file update unimplemented; one flaky scoping test; UI polish pending.

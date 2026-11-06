@@ -522,8 +522,7 @@ search
 Optional. Free-text search term matched with ILIKE against fields marked
 :searchable t. Blank/whitespace is ignored. Clamped to 200 characters."
   (let* ((type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (filters-parsed (parse-filters filters))
           (form-key (when form (parse-form form)))
           (limit-val (parse-page-param limit "limit" 20))
@@ -544,7 +543,8 @@ Optional. Free-text search term matched with ILIKE against fields marked
     ;; reaches here). dedup stays at its default, so repeated lists
     ;; inside the window collapse. rest-list of :usage itself writes
     ;; nothing — record-usage's self-log guard drops it.
-    (record-usage user :list :on type-key :detail search-val)
+    (record-usage user :list :on type-key :detail search-val
+      :ip (h:real-remote-addr))
     (render-output result)))
 
 (h:define-easy-handler (rest-item :uri "/api/item" :default-request-type :get)
@@ -574,8 +574,7 @@ are 'list-form', 'update-form', 'add-form', and 'view-form'.
 GET /api/item"
   (let* ((id (parse-id id))
           (type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (form-key (when form (parse-form form)))
           (result (handler-case
                     (be-rec id user :type-key type-key :form form-key)
@@ -589,7 +588,8 @@ GET /api/item"
     ;; Detail names the viewed row (identity / uuid).
     (when (and (eq form-key :view-form) (getf result :record))
       (record-usage user :view :on type-key
-        :detail (usage-detail-for type-key id) :dedup nil))
+        :detail (usage-detail-for type-key id) :dedup nil
+        :ip (h:real-remote-addr)))
     (render-output result)))
 
 (h:define-easy-handler (rest-id :uri "/api/id" :default-request-type :get)
@@ -621,8 +621,7 @@ JSON-encoded list of lists.
 
 GET /api/id"
   (let* ((type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (filters-parsed (parse-filters filters))
           (result (handler-case
                     (be-id type-key filters-parsed user)
@@ -660,8 +659,7 @@ Required. The value to look up in the specified field.
 
 GET /api/id"
   (let* ((type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (field-key (parse-field type-key field))
           (result (handler-case
                     (be-value-id type-key field-key value user)
@@ -700,11 +698,11 @@ and used to look up the field in the model.
 GET /api/value"
   (let* ((id (parse-id id))
           (type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
+          (form-key (if form (parse-form form) :update-form))
           (field-key (parse-field type-key field))
           (result (handler-case
-                    (be-val id field-key user :form form :type-key type-key)
+                    (be-val id field-key user :form form-key :type-key type-key)
                     (validation-error (e)
                       (abort-bad-request e
                         :type type :id id :field field :form form))
@@ -750,8 +748,7 @@ are 'list-form', 'update-form', 'add-form', and 'view-form'.
 
 GET /api/column"
   (let* ((type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (field-key (parse-field type-key field))
           (filters-parsed (parse-filters filters))
           (form-key (parse-form form))
@@ -859,7 +856,8 @@ POST /api/insert"
       ;; compose) reshaped it.
       (when inserted
         (record-usage user :insert :on type-key
-          :detail (usage-detail-for type-key id) :dedup nil))
+          :detail (usage-detail-for type-key id) :dedup nil
+          :ip (h:real-remote-addr)))
       (render-output (list :id id :inserted (if inserted :true :false))))))
 
 (h:define-easy-handler (rest-upload :uri "/api/upload")
@@ -1017,8 +1015,7 @@ POST /api/update"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
           (type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (filters (getf tree :filters))
           (data (getf tree :data))
           (roles (getf tree :roles))
@@ -1036,7 +1033,8 @@ POST /api/update"
     ;; write. A non-uuid return (base types write in place and the
     ;; uuid is still returned; anything else) degrades gracefully.
     (record-usage user :update :on type-key
-      :detail (usage-detail-for type-key result) :dedup nil)
+      :detail (usage-detail-for type-key result) :dedup nil
+      :ip (h:real-remote-addr))
     (render-output result)))
 
 (h:define-easy-handler (rest-delete :uri "/api/delete"
@@ -1073,8 +1071,7 @@ POST /api/delete"
   (let* ((tree (parse-posted-json))
           (type (getf tree :type))
           (type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (filters (parse-filters (getf tree :filters) :allow-id t))
           (record (handler-case
                     (let ((id (if (stringp filters)
@@ -1101,12 +1098,11 @@ POST /api/delete"
     (when result
       (record-usage user :delete :on type-key
         :detail (usage-detail-for type-key result
-                   :identity (let ((raw (and record
-                                          (getf (getf record :record)
-                                            (identity-field type-key)))))
-                               (when raw
-                                 (u:trim (format nil "~a" raw)))))
-        :dedup nil))
+                   :identity (usage-identity-from-record
+                               type-key
+                               (and record (getf record :record))))
+        :dedup nil
+        :ip (h:real-remote-addr)))
     (render-output result)))
 
 (h:define-easy-handler (rest-actions :uri "/api/actions"
@@ -1165,8 +1161,7 @@ POST /api/actions"
           (field (getf tree :field))
           (data (getf tree :data))
           (type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
+          (user (require-auth))
           (field-key (when field
                        (if (stringp field)
                            (u:make-keyword field)
@@ -1189,7 +1184,8 @@ POST /api/actions"
     ;; return before this line.
     (record-usage user :action :on type-key
       :detail (usage-detail-for type-key id :extra field-key)
-      :dedup nil)
+      :dedup nil
+      :ip (h:real-remote-addr))
     (render-output result)))
 
 (h:define-easy-handler (rest-validate-field :uri "/api/validate-field"
@@ -1453,7 +1449,8 @@ POST /api/login"
                        ;; person.
                        (when (and (stringp username)
                               (plusp (length username)))
-                         (record-usage username :login-failed :dedup nil))
+                         (record-usage username :login-failed :dedup nil
+                           :ip (h:real-remote-addr)))
                        (abort-auth "Invalid username or password"))
                      id))
           (refresh-token (issue-refresh-token user-id))
@@ -1463,7 +1460,7 @@ POST /api/login"
     (store-token username refresh-token)
     ;; Usage log: guest takes this same success path (login-user-id
     ;; short-circuits a:login for the guest name).
-    (record-usage username :login :dedup nil)
+    (record-usage username :login :dedup nil :ip (h:real-remote-addr))
     (render-output result)))
 
 (h:define-easy-handler (rest-refresh :uri "/api/refresh" :default-request-type :post)
@@ -1491,8 +1488,7 @@ POST /api/refresh"
 (h:define-easy-handler (rest-file :uri "/api/file" :default-request-type :get)
   (type path)
   (let* ((type-key (parse-type type))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth-with-query-token type-roles))
+          (user (require-auth-with-query-token))
           (fs-path (fs-path type-key path))
           (path-field (path-field type-key))
           (resource (find-resource-name type-key

@@ -24,7 +24,7 @@
 # Edit the source, reinstall; never edit the installed copy.
 set -euo pipefail
 
-DATA_UI_CHECKOUT="${DATA_UI_CHECKOUT:-/home/macnod/common-lisp/data-ui}"
+DATA_UI_CHECKOUT="${DATA_UI_CHECKOUT:-/data/data-ui/repos/staging}"
 DATA_UI_STATE="${DATA_UI_STATE:-/data/data-ui}"
 PROFILES_DIR="${DATA_UI_STATE}/profiles"
 SNAPSHOT_DIR="${DATA_UI_STATE}/snapshots"
@@ -134,7 +134,7 @@ reset_profile() {
     # Snapshot 2) — no FORCE anywhere.
     if ! runuser -u "$UNIT_RUN_USER" \
              -- env HOME="$UNIT_RUN_HOME" \
-             scripts/data-ui snapshot restore \
+             "$DATA_UI_CHECKOUT/scripts/data-ui" snapshot restore \
                  "stg-${profile}-golden" "stg:${profile}"; then
         # The restore rolls back from its staged safety pair, so the
         # database is unchanged; the unit is left stopped (the 503s

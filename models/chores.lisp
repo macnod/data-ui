@@ -24,6 +24,7 @@
      (:table t
        :create :auto :update :auto :delete :auto :display t
        :type-roles ("chore-users")
+       :title-field :name
        :views (:main (:tables (:chores :chore-tags :tags
                                 :chore-users :users))
                 :tags (:tables (:tags))

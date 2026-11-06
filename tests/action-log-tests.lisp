@@ -99,7 +99,12 @@ resources row takes the usage row with it (the FK from usage.id)."
   "Install symbol-function stubs from BINDINGS — a list of
 (fn (quote-lambda)) entries where each lambda is evaluated — for
 the duration of THUNK, restoring the real definitions on every
-exit including a signal."
+exit including a signal. Binds h:*request* to a bare fake request
+when unbound: the rest-* handlers read real-remote-addr for
+record-usage's :ip argument, and the direct handler calls run
+outside any request context (al-rest-item-view-only's explicit
+h:*reply* binding is the precedent). A real request context, if
+one exists, is left alone."
   (let ((saved nil))
     (unwind-protect
         (progn
@@ -108,7 +113,10 @@ exit including a signal."
                   (lambda (second binding)))
               (push (cons fn (symbol-function fn)) saved)
               (setf (symbol-function fn) lambda)))
-          (funcall thunk))
+          (if (boundp 'h:*request*)
+            (funcall thunk)
+            (let ((h:*request* (th-al-fake-request)))
+              (funcall thunk))))
       (dolist (pair saved)
         (setf (symbol-function (car pair)) (cdr pair))))))
 
@@ -117,6 +125,32 @@ exit including a signal."
 literal list of (function-name lambda) pairs, or any expression
 evaluating to one (al-handler-stubs returns one)."
   `(th-al-call-with-stubs ,bindings (lambda () ,@body)))
+
+(defun th-al-fake-request ()
+  "A bare Hunchentoot request object for direct handler calls:
+headers-in alist (X-Forwarded-For naming a documentation
+address, so real-remote-addr returns it — record-usage's :ip
+normalization is exercised on every handler test), method, uri,
+and addresses. initialize-instance :after touches h:*reply*
+(a bad-request return-code), h:*session* (session-verify's
+writer), and h:*acceptor* (session-verify reads its
+session-cookie-name for the cookie lookup) — all three bound
+around the make-instance call, never left dynamic-extent over
+the test body. The acceptor slot stays nil: only handle-request
+reads it, and these objects never reach one."
+  (let ((h:*reply* (make-instance 'h:reply))
+        (h:*session* nil)
+        (h:*acceptor* *http-server*))
+    (declare (dynamic-extent h:*reply* h:*session* h:*acceptor*))
+    (make-instance 'h:request
+      :headers-in (list (cons :x-forwarded-for "203.0.113.7"))
+      :method :get
+      :uri "/api/test"
+      :server-protocol :http/1.1
+      :local-addr "127.0.0.1"
+      :local-port 8081
+      :remote-addr "127.0.0.1"
+      :remote-port 12345)))
 
 (define-condition al-aborted (error)
   ((code :initarg :code :reader al-aborted-code)
@@ -443,6 +477,37 @@ created_at back with a direct query; do not sleep."
                  where id = '~a'" id))
       (is-true (th-al-record-and-cleanup "admin" :list :on :todos)))))
 
+(test al-ip-normalization
+  ":ip trims a string and stores it verbatim; nil, blank, and
+non-string write NULL (direct SQL, the guest-login test's
+discipline). Never truncated to *usage-detail-max*."
+  (th-al-with-rows
+    (let ((id (th-al-record-and-cleanup "admin" :list :on :todos
+                 :ip " 203.0.113.7 ")))
+      (is-true id)
+      (is (equal "203.0.113.7"
+            (query (format nil
+                     "select usage_ip from usage where id = '~a'" id)
+              :result-type :single))))
+    (dolist (ip (list nil "" "   "))
+      (let ((id (th-al-record-and-cleanup "admin" :login-failed :dedup nil
+                   :ip ip)))
+        (is-true id)
+        (is (equal :null
+              (query (format nil
+                       "select usage_ip from usage where id = '~a'" id)
+                :result-type :single)))))))
+
+(test al-ip-not-in-dedup-key
+  "Two :list calls inside the window with the same user, type, and
+detail but different :ip values collapse to one row (IP is not in
+the dedup key: a shared NAT must keep collapsing repeated lists)."
+  (th-al-with-rows
+    (is-true (th-al-record-and-cleanup "admin" :list :on :todos
+               :detail "milk" :ip "203.0.113.7"))
+    (is (null (th-al-record-and-cleanup "admin" :list :on :todos
+             :detail "milk" :ip "198.51.100.9")))))
+
 (test al-dedup-offset-and-sort-via-rest
   "Offset and sort are not in the dedup key: two rest-list calls
 that differ only in offset (and two in sort) produce one list row
@@ -693,6 +758,27 @@ pins that one)."
         (signals al-aborted (th-al-rest-list :type "todos"))))
     (is (= 0 (th-al-usage-count)))))
 
+(test al-usage-state-off-stops-writes
+  "The runtime gate: under *top-level-settings* rebound with
+:usage (:state :off), record-usage returns nil, writes nothing,
+and never reads the dedup query (usage-recent-p stubbed to
+signal — a gate that still ran the dedup read would fail here,
+not just quietly skip the insert). After the binding restores,
+writes resume (the reversibility guarantee)."
+  (th-al-with-rows
+    (let* ((copy (copy-list *top-level-settings*)))
+      (setf (getf copy :usage) '(:state :off))
+      (let ((*top-level-settings* copy))
+        (th-al-with-stubs
+            (list (list 'usage-recent-p
+                    (lambda (&rest args)
+                      (declare (ignore args))
+                      (error "gate must not read: usage-recent-p called"))))
+          (is (null (th-al-record-and-cleanup "admin" :list :on :todos)))
+          (finishes (th-al-record-and-cleanup "admin" :list :on :todos)))))
+    (is-true (th-al-record-and-cleanup "admin" :list :on :todos)
+      "binding restored: writes resume")))
+
 (in-suite action-log-compile)
 
 (defun th-al-compile ()
@@ -750,8 +836,9 @@ on delete cascade and carries no :on-delete."
 
 (test al-compile-field-flags
   ":user-name not-null searchable sortable; :event not-null
-searchable; :on force-sql-name on_type searchable; :detail and
-:when searchable; :when sortable."
+searchable sortable; :on force-sql-name on_type searchable
+sortable; :detail searchable sortable; :when searchable
+sortable; :ip searchable sortable."
   (let* ((m (th-al-compile))
          (fields (getf (getf m :usage) :fields)))
     (is (eq t (getf (getf fields :user-name) :not-null)))
@@ -759,35 +846,49 @@ searchable; :on force-sql-name on_type searchable; :detail and
     (is (eq t (getf (getf fields :user-name) :sortable)))
     (is (eq t (getf (getf fields :event) :not-null)))
     (is (eq t (getf (getf fields :event) :searchable)))
+    (is (eq t (getf (getf fields :event) :sortable)))
     (is (equal "on_type" (getf (getf fields :on) :force-sql-name)))
     (is (equal "on_type" (getf (getf fields :on) :name-sql)))
     (is (eq t (getf (getf fields :on) :searchable)))
+    (is (eq t (getf (getf fields :on) :sortable)))
     (is (eq t (getf (getf fields :detail) :searchable)))
+    (is (eq t (getf (getf fields :detail) :sortable)))
+    (is (eq t (getf (getf fields :ip) :searchable))
+      ":ip is searchable")
+    (is (null (getf (getf fields :ip) :not-null))
+      ":ip is nullable")
+    (is (equal "usage_ip" (getf (getf fields :ip) :name-sql))
+      ":ip column is usage_ip")
+    (is (eq t (getf (getf fields :ip) :sortable))
+      ":ip is sortable")
     (is (eq t (getf (getf fields :when) :searchable))
       ":when is searchable")
     (is (eq t (getf (getf fields :when) :sortable))
       ":when is sortable")))
 
 (test al-compile-forms
-  ":list-form names the six fields and not :created-at; no
+  ":list-form names the seven fields and not :created-at; no
 :add-form, no :update-form."
   (let* ((m (th-al-compile))
          (def (getf m :usage)))
-    (is (equal '(:when :user :user-name :event :on :detail)
+    (is (equal '(:when :user :user-name :ip :event :on :detail)
           (getf (getf def :list-form) :fields)))
     (is (null (getf def :add-form)))
     (is (null (getf def :update-form)))))
 
 (test al-compile-wire
-  "fe-fields for :usage emits :filter-with :reference on :user and
-:searchable t on :when (binds *compiled-model*)."
+  "fe-fields for :usage emits :filter-with :reference on :user,
+:searchable t on :when, and :sortable t on :ip (the sortable flag
+reaches fe-fields; binds *compiled-model*)."
   (let* ((m (th-al-compile))
          (*compiled-model* m)
          (fe (fe-fields :usage "admin"))
          (list-form (getf fe :list-form)))
     (is (eq :reference
           (getf (getf list-form :user) :filter-with)))
-    (is (eq t (getf (getf list-form :when) :searchable)))))
+    (is (eq t (getf (getf list-form :when) :searchable)))
+    (is (eq t (getf (getf list-form :ip) :sortable))
+      ":ip sortable reaches fe-fields")))
 
 (test al-dedup-sql-pins-on-type
   "The dedup query follows the compiled names: the SQL text
@@ -798,6 +899,55 @@ contains on_type and not usage_on (the :force-sql-name pin)."
           (th-al-dedup-sql-text)))
     (is-false (search "usage_on"
                 (th-al-dedup-sql-text)))))
+
+;;; ---------------------------------------------------------------------------
+;;; :usage state (top-level :usage key)
+;;; ---------------------------------------------------------------------------
+
+(test al-usage-state-validator
+  "valid-usage accepts (:state :off), (:state :on), and () (an
+absent :state is the :on default, so the empty plist is legal);
+it signals on non-plists, unknown :state values (nil included —
+presence is tested via u:plist-keys, not getf truthiness), and
+unknown keys. top-level-settings probes run on a complete legal
+skeleton (every required key present) so validation reaches
+:usage instead of dying on :title; (:usage nil) is rejected by
+the member gate (the :api-roles precedent); the accessor
+defaults to :on for the absent key."
+  ;; acceptance
+  (dolist (value '((:state :off) (:state :on) ()))
+    (is (equal value (valid-usage value))))
+  ;; rejection
+  (dolist (value '(:off "off" 42 (:state :disabled) (:state nil)
+                   (:state :off :retention 30)))
+    (signals error (valid-usage value)))
+  ;; end-to-end through the real entry point
+  (signals error (top-level-settings (th-al-usage-model
+                                       :usage '(:state :bogus)
+                                       :usage-p t)))
+  (signals error (top-level-settings (th-al-usage-model
+                                       :usage nil :usage-p t)))
+  (let ((settings (top-level-settings (th-al-usage-model
+                                        :usage '(:state :off)
+                                        :usage-p t))))
+    (is (equal '(:state :off) (getf settings :usage))))
+  ;; absent key stores nil; the accessor reads :on
+  (let ((settings (top-level-settings (th-al-usage-model))))
+    (is (null (getf settings :usage)))
+    (let ((*top-level-settings* settings))
+      (is (eq :on (model-usage-state))))))
+
+(defun th-al-usage-model (&key usage usage-p)
+  "Minimal legal model skeleton for :usage probes. Every required
+key present (:title :name :version :domain plus one type) so
+validation reaches :usage instead of dying on :title. USAGE-P (not
+USAGE truthiness) splices the key: (:usage nil) — present-nil — is
+exactly the member-gate probe and must not collapse to absent."
+  `(:title "Usage Probe" :name "usage-probe" :version "1"
+    :domain "probe.example.com"
+    :types (:probe (:name "probe"
+                   :fields ((:name "label" :type "text"))))
+    ,@(when usage-p `(:usage ,usage))))
 
 (defun th-al-dedup-sql-text ()
   "The SQL usage-recent-p builds (recomputed here for text

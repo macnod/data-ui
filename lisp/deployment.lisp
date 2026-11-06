@@ -21,7 +21,9 @@ MODEL_FILE may arrive absolute — never re-prefix an absolute path)."
                        (namestring model-path)
                        (format nil "~a/~a" *root* model-path)))
              (format nil "~a/models/~a.lisp" *root* model-file)))
-          (model (with-open-file (in path) (cadr (read in))))
+          (model (with-open-file (in path)
+                  (let ((*read-eval* nil))
+                    (cadr (read in)))))
           (key (intern (string-upcase key-string) :keyword))
           (raw-value (getf model key))
           (value (cond
