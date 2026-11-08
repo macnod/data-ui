@@ -102,7 +102,7 @@ Returns a file token that is just like the one that the ReST endpoint
     (unless (u:directory-exists-p fs-parent)
       (error "Parent directory does not exist in file system: ~s" fs-parent))
     (unless parent-rn
-      (error "Parent not in database: ~(~s) ~s" parent-type-key logical-parent))
+      (error "Parent not in database: ~(~s~) ~s" parent-type-key logical-parent))
     (if source-file
       (u:copy-file source-file fs-path)
       (u:spew (format nil "~a~%" data-string) fs-path))
@@ -169,7 +169,8 @@ SOURCE-DATA will be ignored.
                            (roles '("directories-user")))
   "Insert a directory record. Returns the directory record ID."
   (let* ((path-field (path-field type-key))
-          (id (be-id type-key `((,type-key ,path-field :eq ,logical-path)))))
+          (id (be-id type-key
+               `((,type-key ,path-field :eq ,logical-path)) "admin")))
     (unless id
       (let* ((fs-path (fs-path type-key logical-path))
               (path-parent (u:path-parent logical-path))
@@ -1155,6 +1156,35 @@ tests/record-permalink-tests.lisp — load it first)."
     (explain! results)
     (when collect results)))
 
+(defun run-public-pages-tests (&optional collect)
+  "Public pages renderer / route / wire / live-HTTP tests (todo
+children 1-2) on the seeded public-pages-test fixture. The fixture's
+:publish / :moderate buttons resolve :test-sync / :test-async from
+the registry at compile time, so action-tests.lisp must be loaded
+before set-model (harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (load (u:join-paths *package-root* "tests" "public-pages-tests.lisp"))
+  (let ((results
+          (with-model "public-pages-test" #'pp-seed
+            (append (run 'public-pages-suite)
+              (run 'public-pages-route-suite)
+              (run 'public-pages-wire-suite)
+              (run 'public-pages-http-suite)))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-public-pages-empty-tests (&optional collect)
+  "Public pages empty-state matrix rows (b) and (c): their own
+unseeded model contexts (with-model resets and loads once and
+restores nothing, so an unseeded reload inside the seeded group
+would strand every later test)."
+  (load (u:join-paths *package-root* "tests" "public-pages-tests.lisp"))
+  (let ((results
+          (with-model "public-pages-test" nil
+            (run 'public-pages-empty-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-fk-eq-tests (&optional collect)
   ":fk-eq filter operator tests: SQL text, raw binding,
 storage-column matches, cross-type guard, and rejections on the
@@ -1305,6 +1335,9 @@ groups."
                    ("reference-chip" . run-reference-chip-tests)
                    ("timestamp-override" . run-timestamp-override-tests)
                    ("record-permalink" . run-record-permalink-tests)
+                   ("public-pages" . run-public-pages-tests)
+                   ("public-pages-empty"
+                                     . run-public-pages-empty-tests)
                    ("fk-eq"          . run-fk-eq-tests)
                    ("children"       . run-children-tests)
                    ("action-log"     . run-action-log-tests)

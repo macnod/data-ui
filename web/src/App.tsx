@@ -12,6 +12,7 @@ import { parseHash, canonicalize, buildUrlState,
          urlStatesEqual, writeUrl, parseScope, scopeToParam,
          SCOPE_NONE } from './urlState'
 import type { RecordMode, ScopeState } from './urlState'
+import { hashPermalink, bestLinkUrl } from './publicLink'
 import { Markdown } from './Markdown'
 import { PageDescription } from './PageDescription'
 import { FieldHelp } from './FieldHelp'
@@ -2925,7 +2926,13 @@ function App() {
       || itemJson.result.type === openType
       || itemJson.result.type.toLowerCase()
         === openType.toLowerCase()
-    let fullRecord: any = opts.strict ? null : record
+    // The non-strict fallback (the /api/item fetch failed): the
+    // supplied list row becomes the record. Drop its public-url —
+    // a list row can be minutes old, and a role revoked since would
+    // otherwise resurrect a dead public URL; only a fresh item fetch
+    // supplies the key.
+    let fullRecord: any = opts.strict ? null
+      : (({ 'public-url': _drop, ...rest }) => rest)(record)
     if (itemJson && !fetchFailed
         && envelopeRecord != null
         && !Array.isArray(envelopeRecord)
@@ -3934,21 +3941,33 @@ function App() {
   // token (record A's in-flight writeText must not paint
   // confirmation on record B's button); confirmation clears on
   // its timer, re-click, unmount, and any record or mode
-  // change.
+  // change. The cleanup also resets copyState itself: the token
+  // bump used to make the timer's own clear a no-op, so a
+  // "Copied" suffix painted on record A survived onto record B
+  // until the next click. The dependency list includes the loaded
+  // record's identity: a non-URL A → B transition (the
+  // dismissRecordError recovery) leaves recordId and recordMode
+  // unchanged, so without it B's button could show A's suffix.
   useEffect(() => {
     return () => {
       if (copyTimer.current) clearTimeout(copyTimer.current)
       clipboardToken.current++
+      setCopyState(null)
     }
-  }, [recordId, recordMode])
+  }, [recordId, recordMode, editRecord?.id])
   const copyBestLink = () => {
-    if (recordId == null) return
+    // The loaded record's own id, not the URL-facing recordId: a
+    // non-URL open (the one-row recovery) leaves recordId null (or
+    // pointing at a failed id) with a loaded record, and the button
+    // must not silently no-op or build the wrong hash there.
+    const id = editRecord?.id ?? recordId
+    if (id == null) return
     const token = ++clipboardToken.current
     if (copyTimer.current) clearTimeout(copyTimer.current)
-    const url = `${window.location.origin
-      }${window.location.pathname}#/app?type=${
-      encodeURIComponent(type)}&id=${
-      encodeURIComponent(recordId)}`
+    const url = bestLinkUrl(
+      editRecord?.['public-url'],
+      hashPermalink(window.location.origin,
+        window.location.pathname, type, id))
     const finish = (s: 'copied' | 'failed') => {
       if (clipboardToken.current !== token) return
       setCopyState(s)
@@ -5292,7 +5311,11 @@ function App() {
               <button
                 type="button"
                 onClick={copyBestLink}
-                title="Copies the link to hand someone. The address bar may include filters."
+                title={
+                  typeof editRecord?.['public-url'] === 'string'
+                  && editRecord['public-url'] !== ''
+                    ? 'Copies the public page.'
+                    : 'Copies the link to hand someone. The address bar may include filters.'}
                 style={{ marginLeft: '0.5rem' }}
               >
                 Best Link{copyState === 'copied'

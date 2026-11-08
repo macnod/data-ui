@@ -32,6 +32,19 @@
 ;; Other
 (defparameter *large-page-size* 10000)
 
+;; Public pages: the absolute origin (scheme, host, optional port,
+;; nothing else) the renderer builds canonical /p/ URLs from.
+;; Configured, never sniffed: dev default below, staging profile.env
+;; (expose_profile), production https://{{DOMAIN}} (deploy template).
+;; Stored as read; valid-public-origin (public-pages.lisp) validates
+;; and canonicalizes at the start of every render, so a REPL can fix
+;; it. Only the parameter lives here — data-ui.lisp loads before
+;; aux.lisp, so report-e is unavailable in this file.
+(defparameter *public-origin*
+  (or (u:getenv "PUBLIC_ORIGIN")
+    (format nil "http://127.0.0.1:~d"
+      (u:getenv "HTTP_PORT" :default 8080 :type :integer))))
+
 ;; Defaults
 (defparameter *default-file-permissions* '("create" "read" "update" "delete"))
 (defparameter *default-directory-permissions*

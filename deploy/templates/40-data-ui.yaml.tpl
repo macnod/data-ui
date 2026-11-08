@@ -100,6 +100,8 @@ spec:
               value: "{{ENV}}"
             - name: MODEL_NAME
               value: "{{MODEL_NAME}}"
+            - name: PUBLIC_ORIGIN
+              value: "https://{{DOMAIN}}"
             - name: SWANK_PORT #@repl
               value: "4005" #@repl
           ports:

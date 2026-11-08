@@ -23,6 +23,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 
 - `lisp/model.lisp` – model compilation and the RBAC base model (`*base-model*`); `heal-model` — idempotent schema/RBAC re-sync for a live image (the tail of `set-model` without the table drops)
 - `lisp/backend.lisp` – backend functions (`be-list`, `be-insert`, `be-update`, `be-delete`, `be-action`, `be-landing-page`, ...)
+- `lisp/public-pages.lisp` – request-time public renderer and routes (`/p/`, `/p/files/`, `/sitemap.xml`, `/robots.txt`, the `:public-url` wire key); pure render functions plus one thin Hunchentoot adapter
 - `lisp/rest.lisp` – REST API layer (Hunchentoot handlers)
 - **`:type-roles` vs row roles — two different resources.** `:type-roles` exist because a row that does not exist yet has no resource to check, and they answer who may create one. They do not decide access to an existing row, and they are not copied onto new rows. Read [`docs/roles.md`](docs/roles.md) before reasoning about either.
 - `lisp/predicates.lisp` – type/field predicates; `:button` field type

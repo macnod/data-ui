@@ -1485,20 +1485,38 @@ POST /api/refresh"
       (render-output `(:access-token ,(issue-access-token user-id)))
       (abort-auth "Invalid or expired token"))))
 
-(h:define-easy-handler (rest-file :uri "/api/file" :default-request-type :get)
-  (type path)
-  (let* ((type-key (parse-type type))
-          (user (require-auth-with-query-token))
-          (fs-path (fs-path type-key path))
+(defun authorized-file-path (type-key path user)
+  ":private: /api/file's body as a reusable helper: the filesystem
+path for the fs-backed TYPE-KEY row at logical PATH, authorized for
+USER. Returns two values — the path (fs-path returns a string) and
+nil on success, or nil and a reason keyword: :missing (no file or no
+row) or :forbidden (row and file exist, USER lacks read). The public
+file route calls this as the guest and collapses both reasons to 404;
+rest-file keeps 403 vs 404."
+  (let* ((fs-path (fs-path type-key path))
           (path-field (path-field type-key))
           (resource (find-resource-name type-key
                       `((,type-key ,path-field :eq ,path)))))
-    (unless (and (u:file-exists-p fs-path) resource)
-      (abort-not-found "File not found" :file path))
-    (unless (a:user-allowed *rbac* user "read" resource)
-      (abort-forbidden "User lacks read permission on this file." 
-        :user user :type type :file path))
-    (h:handle-static-file fs-path)))
+    (cond
+      ((not (and (u:file-exists-p fs-path) resource))
+        (values nil :missing))
+      ((not (a:user-allowed *rbac* user "read" resource))
+        (values nil :forbidden))
+      (t (values fs-path nil)))))
+
+(h:define-easy-handler (rest-file :uri "/api/file" :default-request-type :get)
+  (type path)
+  (let* ((type-key (parse-type type))
+          (user (require-auth-with-query-token)))
+    (multiple-value-bind (fs-path reason)
+      (authorized-file-path type-key path user)
+      (cond
+        ((eq reason :missing)
+          (abort-not-found "File not found" :file path))
+        ((eq reason :forbidden)
+          (abort-forbidden "User lacks read permission on this file."
+            :user user :type type :file path))
+        (t (h:handle-static-file fs-path))))))
 
 (defun serve-frontend ()
   "Serve a real file from *web-directory* if it exists; otherwise serve
@@ -1525,6 +1543,11 @@ index.html so client-side routing can take over."
       h:*dispatch-table* (list
                            ;; /api/*, /health
                            'h:dispatch-easy-handlers
+                           ;; /p, /p/..., /sitemap.xml, /robots.txt
+                           ;; (public pages; claims only those — a
+                           ;; prefix dispatcher for /p would also
+                           ;; capture /posts and /piano)
+                           'public-dispatcher
                            ;; everything else
                            (h:create-prefix-dispatcher "/" 'serve-frontend)))
     (pl:pinfo :in "start-web-server"

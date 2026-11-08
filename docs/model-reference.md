@@ -494,7 +494,7 @@ REST-specific details (auth, error envelope) live in `docs/rest.md` → `GET /ap
 
 Under `:fields`, each entry is `field-key` → plist (except joiner `:reference` entries; see [Join tables](#join-tables-m2m)).
 
-**Reserved field keys:** `:update`, `:delete`, and `:hide-list` are reserved — the first two collide with the per-record capability flags injected onto every record, `:hide-list` with the form option `fe-fields` appends beside the field entries in each form object (see [Forms](#forms)). A same-named author field is a compile error with a rename message.
+**Reserved field keys:** `:update`, `:delete`, `:hide-list`, and `:public-url` are reserved — the first two collide with the per-record capability flags injected onto every record, `:hide-list` with the form option `fe-fields` appends beside the field entries in each form object, `:public-url` with the public-page permalink `be-list` / `be-rec` decorate on records of a public type (see [Forms](#forms) and [Public pages](#public-pages)). A same-named author field is a compile error with a rename message.
 
 ### Core field keys
 
@@ -1127,6 +1127,29 @@ Behavior:
 - insert validates/stores directories; delete is recursive (FS + resources)
 - path values: directories end with `/`; leaves must not
 - path fields are immutable after create — `be-update` rejects any change to a `:path` field's value with a validation error (directory moves are not supported; rename desynchronizes row / RBAC resource / filesystem)
+
+---
+
+## Public pages
+
+A model with `:guest-allowed t` can publish a crawlable, script-free HTML face beside the SPA: guest-readable types that declare a `:view-form` render on request at `/p/`, `/p/<type>/`, and `/p/<type>/<uuid>`, with a per-type RSS 2.0 feed at `/p/<type>/rss.xml`, a `sitemap.xml`, and a `robots.txt`. The pages look a little like the app, carry OG / `article:` meta and a `BlogPosting` JSON-LD block, and a visible "Open in app" link leads to the SPA. Rendering is on request (nothing to rebuild after data changes or a snapshot restore), and the anonymous reach of `/p/` never exceeds the guest token's reach — it is a strict subset: eligibility also requires type-level guest read.
+
+**No model key turns this on.** Publication is guest read on a row of an eligible type in a guest-enabled model. There is no `:public-form`, slug, or publication checkbox. The author controls the projection by what `:view-form` names, and **sensitive text is public exactly when the author puts it on that form and the guest can read the row** — the same reach the guest login already has.
+
+A type is eligible when all of these hold:
+
+- the model sets `:guest-allowed t` (a model with guest login off publishes nothing, whatever its `:type-roles` say — no documents, no files, no wire key)
+- `"public"` (or whatever grant the guest holds) is among the type's `:type-roles` — a type whose `:type-roles` lack it publishes nothing even where a guest-readable row would show in the guest's API list
+- the type declares a `:view-form` whose `:fields` is `t` or a non-empty list
+- the type is not a tree / fs-backed type (directories and file types serve bytes through `/p/files/`, they are not documents), not a joiner, rollup, user-setting, built-in, or base type, and has no view-level `:scope` (a user-scoped view cannot be a public blog)
+
+The rendered projection is the type's own `:view-form`, filtered a second time: `:password`, `:file`, and `:button` fields, `:widget :hidden` fields, `:roles`, `:id`, and the timestamps never render. Timestamps come from a separate query — an explicit `:view-form :fields` list carries only the named fields, so nothing downstream could recover them. A declared `:view-form :children` region renders the child rows (unpaged, through the child's own `:view-form`, default sort `(:created-at :asc)` when the region omits `:sort`). Forward FK fields render as links to the target's public page when the target is itself eligible (targets of `:users` never link); two singular targets on one type render as text. Image widgets emit `/p/files/<asset-type>/<path>` URLs — the route authorizes the file row as guest at fetch time, so a private image is a 404 at fetch, never a leak; external and `data:` markdown images become alt text.
+
+Markdown bodies are rendered by a custom walker that escapes all text and passes every URL through one policy: relative `/p/` paths, fragments, clean `mailto:`, and credential-free absolute `http`/`https` links render; `javascript:`, `data:`, `file:`, `vbscript:`, protocol-relative, and credentialed URLs print their label as text. Raw HTML in a body is visible escaped text, never markup. Fenced code blocks and tables render (no syntax coloring).
+
+Public files: only whitelisted image extensions (png, jpg, jpeg, gif, webp) of a guest-readable fs-backed file row, always as full 200s.
+
+The wire records of a public type (from `/api/list` and `/api/item`) carry a `public-url` string — the absolute `/p/<type>/<uuid>` page for that row, computed from a fresh guest-read check; the key is omitted when there is no public page. `:public-url` is a reserved field name (like `:update`, `:delete`, and `:hide-list`) — an author field of that name is a compile error naming the collision.
 
 ---
 

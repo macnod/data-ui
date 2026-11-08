@@ -13,7 +13,11 @@
     (:u :dc-eclectic)
     (:dt :dc-time)
     (:pl :p-log)
-    (:ds :dc-ds)))
+    (:ds :dc-ds)
+    (:mdg :3bmd-grammar)
+    (:md-ext :3bmd-ext)
+    (:mdt :3bmd-tables)
+    (:mdc :3bmd-code-blocks)))
 
     ;; (:h :hunchentoot)
     ;; (:s :spinneret)

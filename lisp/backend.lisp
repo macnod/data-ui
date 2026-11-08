@@ -151,7 +151,15 @@ converting timetstamps from integers to ISO 8601 strings."
                                                   (not (equal value :null)))
                                             (dt:timestamp-string
                                               :universal-time value)))
-                              (:boolean (if value :true :false))
+                              ;; Public pages (Donnie, 2026-11-06): a NULL
+                              ;; boolean stays :null (JSON null). The old
+                              ;; (if value :true :false) read SQL nil as
+                              ;; false but :null as true, so every nullable
+                              ;; boolean reached the API as true.
+                              (:boolean (cond
+                                          ((eq value :null) :null)
+                                          (value :true)
+                                          (t :false)))
                               (t value)))
         appending (list key final-value)))))
 
@@ -498,21 +506,35 @@ actual column in the associated table, such as fields that have a non-nil
              ;; legitimate false encoding); :list / :password never
              ;; reach the driver from these arms (join tables and
              ;; password hashing have their own write paths).
+             ;; Public pages (2026-11-07): the compiler injects
+             ;; :default :null on nullable columns, so full-data
+             ;; hands db-value the :null keyword for every absent
+             ;; nullable field — the scalar arms must treat it
+             ;; exactly like nil (SQL NULL). Before this, a nullable
+             ;; boolean bound the string "null" (22P02), a nullable
+             ;; integer bound 'false' (parse-number of :null), and a
+             ;; nullable password crashed in password-hash.
              (case type
                (:text (if (null value) :null value))
-               (:password (a:password-hash user value))
-               (:real (if (null value)
+               (:password (if (eq value :null)
+                            :null
+                            (a:password-hash user value)))
+               (:real (if (or (null value) (eq value :null))
                         :null
                         (if (numberp value) value (parse-number value))))
-               (:integer (if (null value)
+               (:integer (if (or (null value) (eq value :null))
                            :null
                            (if (numberp value) value (parse-number value))))
-               (:boolean (format nil "~(~a~)" value))
+               (:boolean (cond
+                           ((or (null value) (eq value :null)) :null)
+                           (t (format nil "~(~a~)" value))))
                (:uuid (cond
-                        ((null value) :null)
-                        ((equal value :generate-uuid) (u:uuid))
+                        ((or (null value) (eq value :null)) :null)
+                        ((eq value :generate-uuid) (u:uuid))
                         (t value)))
-               (:timestamp (if (null value) :null value))
+               (:timestamp (if (or (null value) (eq value :null))
+                             :null
+                             value))
                (:list value)
                (t (report-ve "db-value"
                     "Invalid value ~s for field ~s ~s with field type ~s"
@@ -942,11 +964,17 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
                      records sort)
   ;; Record-permalink siblings ride list records too (same
   ;; decoration, same data on both public read surfaces; list
-  ;; cells ignore the key).
+  ;; cells ignore the key). Public pages: :public-url rides the
+  ;; records of a public type (decorate-public-url, public-pages.lisp
+  ;; — a forward call, the start-web-server precedent), computed from
+  ;; one permitted-row-ids pass for the whole page.
   (let* ((decorated-records
            (or records
              (view-result-values type-key field-keys view-result
                :user user)))
+         (public-ids
+           (when (public-type-p type-key)
+             (permitted-row-ids type-key *guest-user* "read")))
          (id-alias
            (when (and view-result field-keys)
              (u:tree-get *compiled-model* type-key :fields :id
@@ -985,43 +1013,46 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
         :create (user-capability user type-key :create)
         :update (user-capability user type-key :update)
         :delete (user-capability user type-key :delete)
-        :records (decorate-records-with-caps type-key
-                   (add-roles-to-view type-key form user
-                     (mapcar
-                       (lambda (r)
-                         (let ((blanked
-                                 (blank-password-fields type-key r)))
-                           (if (and sibling-keys
-                                 (getf blanked :id)
-                                 (not (null view-result)))
-                             (append
-                               (if (listp blanked) blanked
-                                 (list blanked))
-                               (loop
-                                 for (field-key storage scope-alias
-                                        scope-kind)
-                                   on sibling-keys by (lambda (l)
-                                                        (nthcdr 4 l))
-                                 for value = (field-values-for-id
-                                               view-result id-alias
-                                               (getf blanked :id)
-                                               storage :first
-                                               :scope-alias scope-alias
-                                               :scope-value
-                                               (scope-value-for-kind
-                                                 scope-kind user))
-                                 when (and value
-                                        (not (equal value :null)))
-                                 collect (u:make-keyword
-                                           (format nil "~a-id"
-                                             field-key))
-                                 and collect value))
-                             blanked)))
-                       ;; 08b measure path: RECORDS are already
-                       ;; field-key plists from the GROUP BY
-                       ;; query. No Phase B collapse.
-                       decorated-records))
-                   user)
+        :records (mapcar
+                   (lambda (r)
+                     (decorate-public-url r type-key public-ids))
+                   (decorate-records-with-caps type-key
+                     (add-roles-to-view type-key form user
+                       (mapcar
+                         (lambda (r)
+                           (let ((blanked
+                                   (blank-password-fields type-key r)))
+                             (if (and sibling-keys
+                                   (getf blanked :id)
+                                   (not (null view-result)))
+                               (append
+                                 (if (listp blanked) blanked
+                                   (list blanked))
+                                 (loop
+                                   for (field-key storage scope-alias
+                                          scope-kind)
+                                     on sibling-keys by (lambda (l)
+                                                          (nthcdr 4 l))
+                                   for value = (field-values-for-id
+                                                 view-result id-alias
+                                                 (getf blanked :id)
+                                                 storage :first
+                                                 :scope-alias scope-alias
+                                                 :scope-value
+                                                 (scope-value-for-kind
+                                                   scope-kind user))
+                                   when (and value
+                                          (not (equal value :null)))
+                                   collect (u:make-keyword
+                                             (format nil "~a-id"
+                                               field-key))
+                                   and collect value))
+                               blanked)))
+                         ;; 08b measure path: RECORDS are already
+                         ;; field-key plists from the GROUP BY
+                         ;; query. No Phase B collapse.
+                         decorated-records))
+                     user))
         :allowed-values (if skip-allowed-values
                           nil
                           (allowed-values type-key user))
@@ -1417,15 +1448,13 @@ If DATA points to multiple records, then this function raises an error."
 
 (defun user-read-type-ids (user type-key)
   ":private: Returns a list of resource IDs for resources of type TYPE-KEY that
-USER has 'read' permissions for."
-  (let* ((search (format nil "~(~a~):%" type-key)))
-    (mapcar
-      (lambda (r) (getf r :resource-id))
-      (a:list-user-resources
-        *rbac*
-        user
-        "read"
-        :filters `(("resource_name" "like" ,search))))))
+USER has 'read' permissions for. Public pages (Donnie, 2026-11-06): delegates
+to permitted-row-ids, which pages through the RBAC join to the user's resource
+count — this function's former single a:list-user-resources call saw one page
+of a:*default-page-size* role×resource rows and silently truncated at 10,000,
+dropping readable rows from every be-list (SPA and /p/ alike). Same return
+shape: resource-id strings."
+  (permitted-row-ids type-key user "read"))
 
 (defun user-allowed-resource (user uuid permission)
   ":private: Returns T if USER has PERMISSION on the resource with UUID and NIL
@@ -2036,6 +2065,14 @@ user's shareable exclusive role (point-to-point sharing)."
                            (list
                              value-key
                              (db-value to-type-key value-key user value)))))
+    ;; Public pages (2026-11-07): both callers pass full-data, whose
+    ;; absent-value spelling is the compiler-injected :null default —
+    ;; a :null here means "no value supplied", and the write-through
+    ;; is a no-op (before the db-value :null fix it errored, which
+    ;; the callers logged and swallowed). An explicit nil (clear to
+    ;; NULL) is a different spelling and still writes SQL NULL.
+    (when (eq value :null)
+      (return-from execute-write-to nil))
     (if to-row-id
       (let* ((to-row-values (append to-row-values (list :id to-row-id)))
               (update-sql (u:tree-get m to-type-key :update-sql :main))
@@ -2687,6 +2724,11 @@ callers (be-update, be-val, be-delete, be-action) never see it."
                        (form-field-keys record-type form)
                        rows user record)))
                  user)))
+        ;; Public pages: :public-url on the wire record (fresh guest
+        ;; check; omitted, never nil). A forward call into
+        ;; public-pages.lisp — the start-web-server precedent.
+        (setf (getf result :record)
+          (decorate-public-url (getf result :record) record-type))
         (when (and (eq form :view-form) record-type
                 (u:has (u:plist-keys
                          (u:tree-get *compiled-model* record-type

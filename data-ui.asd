@@ -2,7 +2,10 @@
   :description "Data Apps in 1 Hour"
   :author "Donnie Cameron <macnod@gmail.com>"
   :licence "MIT License"
-  :depends-on (:babel
+  :depends-on (:3bmd
+                :3bmd-ext-code-blocks
+                :3bmd-ext-tables
+                :babel
                 :cl-ppcre
                 :dc-ds
                 :dc-eclectic
@@ -26,6 +29,7 @@
                                (:file "plist-json")
                                (:file "model")
                                (:file "backend")
+                               (:file "public-pages")
                                (:file "rest")
                                (:file "eval-safely")
                                (:file "startup")))
@@ -78,6 +82,7 @@
                 (:file "reference-chip-tests")
                 (:file "timestamp-override-tests")
                 (:file "record-permalink-tests")
+                (:file "public-pages-tests")
                 (:file "fk-eq-tests")
                 (:file "children-tests")
                 (:file "action-log-tests")

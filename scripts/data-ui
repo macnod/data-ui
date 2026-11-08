@@ -465,6 +465,7 @@ DB_HOST=127.0.0.1
 WEB_DIRECTORY=web/dist
 LOG_SEVERITY=DEBUG
 RUN_TESTS=false
+PUBLIC_ORIGIN=http://127.0.0.1:${HTTP_PORT}
 ENV
     chmod 600 "$(profile_env_path "$PROFILE_NAME")"
 }
@@ -704,12 +705,25 @@ CFG
     # leave the old host routing), then add the fresh entry.
     haproxy_map_delete_backend "$backend"
     echo "${domain} ${backend}" | sudo tee -a "$HAPROXY_MAP" >/dev/null
+    # Public pages: the profile's canonical origin is the exposed
+    # https domain (feed guids, og:url, sitemap). The profile must be
+    # restarted so the image re-reads the variable.
+    local env_path
+    env_path="$(profile_env_path "$PROFILE_NAME")"
+    if grep -q '^PUBLIC_ORIGIN=' "$env_path"; then
+        sed -i "s|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=https://${domain}|" "$env_path"
+    else
+        echo "PUBLIC_ORIGIN=https://${domain}" >> "$env_path"
+    fi
+    local http_port_env
+    http_port_env=$(grep -oP '^HTTP_PORT=\K\d+' "$env_path" || true)
     haproxy_validate_and_reload "$need_restart"
     if ! ss -ltn 2>/dev/null | awk '{print $4}' \
            | grep -qE "[:.]${http_port}\$"; then
         echo "WARNING: profile '${PROFILE_NAME}' is not listening on ${http_port} yet; start it with '$SCRIPT_NAME e-demo start ${PROFILE_NAME}' (or 'demo start')." >&2
     fi
     echo "Exposed '${PROFILE_NAME}': https://${domain} -> 127.0.0.1:${http_port}"
+    echo "PUBLIC_ORIGIN in ${env_path} is now https://${domain}; restart the profile so the image re-reads it."
 }
 
 function unexpose_profile {
@@ -731,7 +745,16 @@ function unexpose_profile {
     # remove would be wrong, and exposure implies it is already on.
     remove_profile_exposure "$PROFILE_NAME"
     haproxy_validate_and_reload ""
+    # Public pages: restore the loopback origin (the pre-expose
+    # spelling). The profile must be restarted to re-read it.
+    local env_path http_port_env
+    env_path="$(profile_env_path "$PROFILE_NAME")"
+    http_port_env=$(grep -oP '^HTTP_PORT=\K\d+' "$env_path" || true)
+    if grep -q '^PUBLIC_ORIGIN=' "$env_path"; then
+        sed -i "s|^PUBLIC_ORIGIN=.*|PUBLIC_ORIGIN=http://127.0.0.1:${http_port_env}|" "$env_path"
+    fi
     echo "Removed HAProxy exposure for '${PROFILE_NAME}'."
+    echo "PUBLIC_ORIGIN in ${env_path} is back to http://127.0.0.1:${http_port_env}; restart the profile so the image re-reads it."
 }
 
 function load_profile {
@@ -756,7 +779,7 @@ function load_profile {
         DB_PASSWORD DB_CONTAINER DB_SERVICE DB_DOCKER_COMPOSE
         PGDATA_DIR PG_UID PG_GID
         ADMIN_PASSWORD JWT_SECRET DOCUMENT_ROOT FS_TEMP_DIRECTORY
-        LOG_FILE MODEL_NAME
+        LOG_FILE MODEL_NAME PUBLIC_ORIGIN
     )
     for key in "${required[@]}"; do
         if [[ -z "${!key}" ]]; then
@@ -767,7 +790,7 @@ function load_profile {
     export HTTP_PORT SWANK_PORT SWANK_INTERFACE DB_PORT DB_NAME DB_USER \
            DB_PASSWORD DB_CONTAINER DB_SERVICE DB_DOCKER_COMPOSE \
            ADMIN_PASSWORD JWT_SECRET DOCUMENT_ROOT FS_TEMP_DIRECTORY \
-           LOG_FILE MODEL_NAME
+           LOG_FILE MODEL_NAME PUBLIC_ORIGIN
     # Optional keys profiles may set
     [[ -n "${HTTP_HOST:-}" ]] && export HTTP_HOST
     [[ -n "${DB_HOST:-}" ]] && export DB_HOST

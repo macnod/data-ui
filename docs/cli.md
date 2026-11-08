@@ -109,6 +109,7 @@ Behavior:
 - Requires `sudo` and must run on `DEPLOY_HOST` (default `evo-x2`), from a checkout containing `models/<model>.lisp` (and `ros`)
 - The hostname comes from the model's `:domain-stg` when present, else `:domain` with `-stg` suffixed onto the first DNS label (the compiler's default derivation, duplicated here because the script reads the raw model file); the model must have a `:domain`, or the profile cannot be exposed
 - Refuses if the domain is claimed by a deployed instance (use `delete` first) or by another profile (use `profile unexpose` first); re-exposing the same profile is idempotent
+- Rewrites `PUBLIC_ORIGIN` in the profile's `profile.env` to `https://<domain>` (the public pages' canonical origin) and prints that the profile must be restarted so the image re-reads the variable
 - TLS is covered by the existing `*.demo.data-ui.com` wildcard certificate — no TLS work needed
 - Warns (does not fail) if the profile is not listening yet; expose-then-start is the intended workflow
 
@@ -116,7 +117,7 @@ Behavior:
 
     scripts/data-ui profile expose modelbank
 
-**`unexpose <profile>`** removes a profile's HAProxy exposure (backend drop-in and map entry). Idempotent: prints "not exposed" and exits 0 when there is nothing to remove. Requires `sudo` and must run on `DEPLOY_HOST`.
+**`unexpose <profile>`** removes a profile's HAProxy exposure (backend drop-in and map entry) and restores `PUBLIC_ORIGIN=http://127.0.0.1:<HTTP_PORT>` in `profile.env` (again with the restart notice). Idempotent: prints "not exposed" and exits 0 when there is nothing to remove. Requires `sudo` and must run on `DEPLOY_HOST`.
 
     scripts/data-ui profile unexpose <profile>
 

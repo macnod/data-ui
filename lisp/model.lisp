@@ -5462,21 +5462,23 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
   ":private: Author field keys must not collide with names the
 wire objects already carry: :update / :delete (the per-row
 capability flags be-list / be-rec emit on every record — a
-same-named author field would be shadowed there) and :hide-list
-(the form option fe-fields appends beside the field entries in
-each form object — a same-named author field would emit into the
-same JSON object). Runs on the raw author :fields plist, before
-add-default-fields / compile-fields, so injected keys and author
-keys cannot be confused. Rollups reject the same names in
-valid-rollup-fields (their records carry the flags too, and
-valid-rollup-fields calls this validator)."
+same-named author field would be shadowed there), :hide-list (the
+form option fe-fields appends beside the field entries in each form
+object — a same-named author field would emit into the same JSON
+object), and :public-url (the public-page permalink be-list / be-rec
+decorate on records of a public type — same shadowing). Runs on the
+raw author :fields plist, before add-default-fields / compile-fields,
+so injected keys and author keys cannot be confused. Rollups reject
+the same names in valid-rollup-fields (their records carry the flags
+too, and valid-rollup-fields calls this validator)."
   (loop for field-key in raw-fields by #'cddr
-    when (member field-key '(:update :delete :hide-list))
+    when (member field-key '(:update :delete :hide-list :public-url))
     do (report-e "valid-field-names"
          "Field key ~s on type ~s is reserved (the per-record ~
-          update / delete capability flags and the form option ~
-          :hide-list ride the same wire objects as author ~
-          fields); rename the field."
+          update / delete capability flags, the form option ~
+          :hide-list, and the public-page :public-url permalink ~
+          ride the same wire objects as author fields); rename the ~
+          field."
          ~field-key ~type-key)))
 
 (defun valid-default-field-override (type-key field-key field-def)

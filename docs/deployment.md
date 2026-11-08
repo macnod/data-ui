@@ -79,6 +79,50 @@ Requirements:
 - `sudo` access on the deploy host (for the HAProxy update, nothing else).
 - The one-time host setup already done: k3d cluster, HAProxy, TLS certificate (see [TLS](#tls-certificates-that-renew-themselves)).
 
+### Where the deployed code comes from (`$DEPLOY_CHECKOUT`)
+
+`deploy` never builds the checkout you are standing in. It builds the **production clone** at `/data/data-ui/repos/production` — a clean, independent git clone (remotes `public` and `private`), created by `deploy-bootstrap` on a fresh host. The path defaults in `scripts/lib/checkout.sh` and can be overridden per-invocation:
+
+    DEPLOY_CHECKOUT=/some/other/clone scripts/data-ui deploy todos
+
+The deploy fetches that clone, fast-forwards it to `public/master` (or exactly `--from REMOTE/BRANCH`), refuses a dirty tree, and re-executes the clone's own `scripts/data-ui` there for the actual build. Full story: [Source Environments](#source-environments-three-checkouts).
+
+The Model Bank **Deploy button** is the same pipeline with one difference: the model. The button's action hook (`:deploy-model`) shells out to `scripts/data-ui deploy` — the production clone is selected, fast-forwarded, and built exactly as above — but the model the user typed into the form is handed over as `MODEL_FILE` (a unique file under `models/local/deploy-incoming/`). The engine still comes entirely from the selected revision; the typed model rides into the build context as `models/local/<name>.lisp` and is never committed — it is promoted to a stable copy in the production clone only after the deploy's health gates (see [VIP Deploys](#vip-deploys-handoff-promotion-recovery)).
+
+### Update or take down a deployed app
+
+    scripts/data-ui deploy todos         # update to the latest public/master
+    scripts/data-ui deploy todos --from private/master
+    scripts/data-ui delete todos         # take down the app (asks; FORCE=1 skips)
+
+Update is the same command as the first deploy: publish the new code (`scripts/publish-data-ui`), run `deploy` again, and the clone is fast-forwarded, a new image is built and rolled out, and the instance keeps its database and uploaded files. A bad release is fixed by a revert commit on the upstream followed by another deploy — never by selecting an old tag (see [Selection, Locks, and Rollback](#selection-locks-and-rollback)). `delete` first saves a farewell snapshot of the instance's last state (`prd-todos-last` in the snapshot pool), then removes the Kubernetes namespace and volumes, the host-side application data, the HAProxy route, and the deploy state and secrets.
+
+### Demos
+
+A **demo** is not a Docker deploy but a *host profile*: a `dataui@<profile>` systemd unit running SBCL directly on the deploy host, loading code from the **staging checkout** (`/data/data-ui/repos/staging`), with its own PostgreSQL and uploaded files. All demos share the one engine checkout; the only per-demo things are `profile.env`, the database, and `files/`. The model must be committed and pushed to `private` (staging's default source — `publish-data-ui` is not needed) before `profile create` can see it. Two classes share the same machinery: **e-demos**, whose data is disposable and reset nightly, and **persistent demos**, which keep their data. Verb reference: `docs/cli.md` → e-demo / demo; host machinery: `ops/README.md`; snapshot slots: `docs/snapshots.md`; user-facing walkthroughs of the live apps: `docs/demos.md`.
+
+#### E-demos
+
+Ephemeral: every morning at 04:10 the nightly reset restores the profile's `stg-<profile>-golden` snapshot, wiping the day's accounts, junk rows, and uploads. Until a golden exists the reset skips the profile (bootstrap window) — so take the golden right after seeding the demo content.
+
+    git push private master                 # the model must reach staging's source
+    scripts/data-ui staging update          # fast-forward staging, restart running demos
+    scripts/data-ui profile create todos    # ports + secrets (prints admin password)
+    scripts/data-ui e-demo start todos      # start; enrolls in the nightly reset
+    
+    # After you've added data
+    scripts/data-ui snapshot save stg-todos-golden stg:todos
+    
+    # Makes it visible to the world at the host name specified by the model's
+    # :domain-stg key.
+    scripts/data-ui profile expose todos 
+
+Update is `staging update` again — it rebuilds the frontend and restarts every active demo on the new code, health-gated; demo data is untouched. Delete is `e-demo stop todos` (saves `stg-todos-last` first), then `profile delete todos` (asks; `FORCE=1` skips).
+
+#### Persistent demos
+
+Same verbs with `demo` in place of `e-demo`, same machinery — the only difference is class: no nightly reset, and the golden stays a manual safety copy. `demo reset <profile>` restores the golden on demand. Model Bank is the persistent-class example.
+
 ## What `deploy` Actually Does, Step by Step
 
 `scripts/data-ui deploy` runs the following phases, in order. Each phase is a shell function in `scripts/data-ui`, so the script is the authoritative reference; this is the guided tour. (Phase 0, before all of these: the outer arm selects the production checkout and re-executes its script — see [Source Environments](#source-environments-three-checkouts); what follows is the inner, production-side body.)
@@ -188,6 +232,16 @@ One model may run in all three environments simultaneously, and each instance ha
 - production: namespace `dataui-<name>` with its own postgres
 
 Convention: one instance per model per environment; a second copy in the same environment is a new model. Data: development is volatile (snapshots only); staging and production are persistent — staging is *not* disposable. The admin password is static in development (`admin / admin-password-1`, by convention — see [docs/snapshots.md](snapshots.md)) and generated per instance in staging (`profile.env`) and production (cluster secrets). Snapshot restore re-stamps the destination's own admin password hash, so a restored database always answers to its environment's password (see [docs/snapshots.md](snapshots.md) → Password re-stamping). During the MVP, staging is the flagship environment: it hosts Model Bank and has the Deploy button, which production lacks. Staging does not mirror production's substrate (host process vs k8s); passing staging is not a substrate guarantee. An environment is not a "tier": tiers are product offerings; environments are where an instance runs.
+
+### `PUBLIC_ORIGIN` (public pages)
+
+The public pages (`/p/`, the sitemap, the feed) build every absolute URL — canonical, `og:url`, `article:published_time`, feed guid, `Sitemap:` line — from one configured origin, never from the request's `Host`. It is an absolute `http`/`https` origin with no path, query, or fragment:
+
+- development: defaults to `http://127.0.0.1:$HTTP_PORT` (no variable needed)
+- staging: `profile create` writes `PUBLIC_ORIGIN=http://127.0.0.1:<port>` into `profile.env`; `profile expose` rewrites it to `https://<domain>` and `profile unexpose` restores the loopback spelling, each printing that the profile must be restarted so the image re-reads it. `load_profile` treats the key as required — existing profiles must add the line (a missing origin is how a staging unfurl ships a loopback canonical)
+- production: the deploy template sets `PUBLIC_ORIGIN=https://{{DOMAIN}}` in the pod env
+
+A bad value is a 500 on `/p/` (the log names `PUBLIC_ORIGIN`); the authenticated API keeps working. Public pages are rendered on request and need no rebuild after a snapshot restore.
 
 ### `:domain-stg`
 
