@@ -432,6 +432,7 @@ http(s) URL) carries target / rel like the SPA's Markdown.tsx."
 header.site{background:#f5f5f5;border-bottom:1px solid #eee;padding:.75rem 1rem;display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap}
 header.site h1.site{margin:0;font-size:1.15rem}
 header.site h1.site a{color:inherit;text-decoration:none}
+header.site h1.site img{max-height:2em;vertical-align:middle}
 header.site nav{margin-left:auto}
 main{max-width:44rem;margin:1.5rem auto;padding:0 1rem}
 .meta{color:#888;font-size:.9rem;margin:.25rem 0 1rem}
@@ -454,6 +455,7 @@ section.children h2{font-size:1.1rem}
 .child{margin:.75rem 0;padding:.5rem .75rem;border:1px solid #eee;border-radius:6px}
 .child .meta{margin:.15rem 0 .35rem}
 footer.site{border-top:1px solid #eee;margin-top:2rem;padding:.75rem 1rem;color:#888;font-size:.9rem}
+footer.site .slot{margin:0 0 .5rem 0}
 ul.index{list-style:none;padding:0}
 ul.index li{margin:.5rem 0}"
   "The public pages' inline stylesheet: copied light-theme values of
@@ -739,16 +741,276 @@ string."
 ;;
 
 ;;
+;; BEGIN Styling sanitizer
+;;
+
+(defparameter *styling-policy*
+  (sh:make-policy
+    :allowed-tags '("a" "img" "span" "strong" "em" "br" "center" "p"
+                    "div" "hr" "ul" "ol" "li" "code" "small" "sup"
+                    "sub")
+    :allowed-attributes
+    '(("a" . ("href" "title" "style" "class"))
+      ("img" . ("src" "alt" "title" "width" "height" "style" "class"))
+      ("span" . ("style" "class"))
+      ("strong" . ("style" "class"))
+      ("em" . ("style" "class"))
+      ("center" . ("style" "class"))
+      ("p" . ("style" "class"))
+      ("div" . ("style" "class"))
+      ("hr" . ("style" "class"))
+      ("ul" . ("style" "class"))
+      ("ol" . ("style" "class"))
+      ("li" . ("style" "class"))
+      ("code" . ("style" "class"))
+      ("small" . ("style" "class"))
+      ("sup" . ("style" "class"))
+      ("sub" . ("style" "class")))
+    :allowed-protocols '("https" "mailto")
+    :allowed-css-properties
+    '("color" "background-color" "font-size" "font-weight" "font-style"
+      "font-family" "text-decoration" "text-align" "margin" "margin-top"
+      "margin-right" "margin-bottom" "margin-left" "padding" "padding-top"
+      "padding-right" "padding-bottom" "padding-left" "display"
+      "vertical-align" "height" "width" "max-height" "max-width"
+      "line-height" "letter-spacing" "border" "border-radius" "gap"
+      "align-items"))
+  ":private: The cl-sanitize-html policy for the :styling slots: the
+grammar's tags, attributes, and CSS properties. The URL protocols
+here are a belt only — the authoritative pass owns URL prefixes
+(styling-href-ok / styling-src-ok), because the library accepts any
+/- or #-leading URL. Never sh:*email-policy* (data: URLs) or
+sh:*strict-policy* (no img, no style).")
+
+(defparameter +styling-max-length+ 4096
+  ":private: Character cap on a :styling value, applied before the
+first parse.")
+
+(defun styling-href-ok (url)
+  ":private: The URL to keep on an <a> href, or nil: a relative /p/
+path, a mailto: address passing the public-url-policy mailto arm
+verbatim (one @ in the whole URL — so ?subject= lives, a second @
+does not), or an absolute https:// URL with no userinfo, after
+strip-url-noise (so a tab inside a scheme cannot slip the prefix
+check). No http:, no fragments, no protocol-relative //."
+  (let ((clean (strip-url-noise url)))
+    (cond
+      ((null clean) nil)
+      ((re:scan "^/p/" clean) clean)
+      ((re:scan "^mailto:" clean)
+       (when (re:scan "^mailto:[^@\\s]+@[^@\\s]+$" clean) clean))
+      ((re:scan "(?i)^https://" clean)
+       (when (re:scan "(?i)^https://[^/@]+([/?#]|$)" clean) clean)))))
+
+(defun styling-src-ok (url)
+  ":private: The URL to keep on an <img> src, or nil: a
+site-absolute /p/files/<type>/ source only (the public-url-policy
+:image t rule) — no off-site images at all, so the SPA and /p/
+agree by construction and the public CSP needs no divergence
+note."
+  (let ((clean (strip-url-noise url)))
+    (and clean
+      (re:scan "^/p/files/[a-zA-Z0-9-]+/" clean)
+      clean)))
+
+(defun styling-tag-action (tag)
+  ":private: What the authoritative pass does with TAG: :keep for
+the seventeen grammar tags; :drop (content dies with the tag) for
+the raw-text and form elements; :unwrap (children survive as
+text) for anything else."
+  (cond
+    ((member tag (sh:policy-allowed-tags *styling-policy*)
+             :test #'string-equal)
+     :keep)
+    ((member tag '("script" "style" "noscript" "form" "input" "button"
+                   "textarea" "select" "option" "optgroup" "fieldset"
+                   "legend")
+             :test #'string-equal)
+     :drop)
+    (t :unwrap)))
+
+(defun styling-allowed-attrs (tag)
+  ":private: The attribute whitelist for TAG from the policy, or nil
+when the tag has none (br)."
+  (cdr (assoc tag (sh:policy-allowed-attributes *styling-policy*)
+              :test #'string-equal)))
+
+(defun styling-css-value-ok (value)
+  ":private: T when a CSS property value carries no url(, image-set(,
+expression, javascript:, import, or @ (case-insensitive) — the
+value shapes that can smuggle a load."
+  (let ((v (string-downcase value)))
+    (not (or (search "url(" v)
+             (search "image-set(" v)
+             (search "expression" v)
+             (search "javascript:" v)
+             (search "import" v)
+             (search "@" v)))))
+
+(defun styling-filter-css (css)
+  ":private: A style attribute value reduced to its legal
+property: value pairs — property in the policy's CSS whitelist,
+value passing styling-css-value-ok — joined with \"; \". Empty
+when nothing survives (the attribute then drops)."
+  (let ((props nil))
+    (dolist (part (re:split ";" css))
+      (let* ((trimmed (string-trim '(#\Space #\Tab #\Newline) part))
+             (colon (position #\: trimmed)))
+        (when (and colon (plusp colon))
+          (let* ((name (string-trim '(#\Space #\Tab)
+                                    (subseq trimmed 0 colon)))
+                 (value (string-trim '(#\Space #\Tab)
+                                     (subseq trimmed (1+ colon)))))
+            (when (and (plusp (length value))
+                    (member name
+                      (sh:policy-allowed-css-properties *styling-policy*)
+                      :test #'string-equal)
+                    (styling-css-value-ok value))
+              (push (format nil "~A: ~A" name value) props))))))
+    (format nil "~{~A~^; ~}" (nreverse props))))
+
+(defun styling-replace-with-text (node text)
+  ":private: Replace NODE with a text node carrying TEXT, in place
+(plump:make-text-node appends to the parent — remove it, then
+swap)."
+  (let* ((parent (plump:parent node))
+         (tnode (plump:make-text-node parent text)))
+    (plump:remove-child tnode)
+    (plump:replace-child node tnode)))
+
+(defun styling-pass (html)
+  ":private: The authoritative grammar pass over (already
+library-sanitized) HTML: tags, attributes, CSS, URL prefixes,
+rel / target strip, src-less img, comments, CDATA, doctype and
+processing instructions. The library's sanitize-node does not
+recurse into the children of a tag it unwraps, so markup nested
+under a disallowed tag escapes it — this walk is what catches
+<b><script>…</script></b> (probe-verified; div was the example
+until it became a kept tag). Re-parses with
+plump and serializes back; plump escapes text and attribute
+values on serialize."
+  (let ((root (plump:parse html)))
+    (labels
+        ((clean-element (node)
+           (let ((tag (plump:tag-name node)))
+             ;; Attribute whitelist (plump preserves attribute
+             ;; case; remove by the exact hash key).
+             (let ((allowed (styling-allowed-attrs tag))
+                   (names nil))
+               (maphash (lambda (k v)
+                          (declare (ignore v))
+                          (push k names))
+                 (plump:attributes node))
+               (dolist (name names)
+                 (unless (member name allowed :test #'string-equal)
+                   (plump:remove-attribute node name))))
+             ;; CSS filter on a surviving style attribute.
+             (let ((style (plump:attribute node "style")))
+               (cond
+                 ((null style) nil)
+                 ((plusp (length (styling-filter-css style)))
+                  (plump:set-attribute node "style"
+                    (styling-filter-css style)))
+                 (t (plump:remove-attribute node "style"))))
+             ;; URL prefix rules.
+             (let ((href (plump:attribute node "href")))
+               (when href
+                 (let ((ok (styling-href-ok href)))
+                   (if ok
+                     (plump:set-attribute node "href" ok)
+                     (plump:remove-attribute node "href")))))
+             (let ((src (plump:attribute node "src")))
+               (when src
+                 (let ((ok (styling-src-ok src)))
+                   (if ok
+                     (plump:set-attribute node "src" ok)
+                     (plump:remove-attribute node "src")))))
+             ;; The library's set-safe-defaults adds these to
+             ;; every link; they are not our grammar.
+             (when (plump:attribute node "rel")
+               (plump:remove-attribute node "rel"))
+             (when (plump:attribute node "target")
+               (plump:remove-attribute node "target"))
+             ;; A src-less img is not an image: keep the alt text
+             ;; (the public-url-policy behavior), else drop it.
+             (when (and (string-equal tag "img")
+                     (not (plump:attribute node "src")))
+               (let ((alt (plump:attribute node "alt")))
+                 (if (and alt (plusp (length (string-trim " " alt))))
+                   (styling-replace-with-text node alt)
+                   (plump:remove-child node))))))
+         (walk (node)
+           (cond
+             ((typep node 'plump:element)
+              (let ((action (styling-tag-action (plump:tag-name node))))
+                (cond
+                  ((eq action :drop)
+                   (plump:remove-child node))
+                  ((eq action :unwrap)
+                   ;; Walk the children while they are still ours,
+                   ;; then splice the (now clean) children into the
+                   ;; parent — every descendant is visited exactly
+                   ;; once.
+                   (loop for child across (copy-seq (plump:children node))
+                     do (walk child))
+                   (plump:splice node))
+                  (t
+                   (clean-element node)
+                   (loop for child across (copy-seq (plump:children node))
+                     do (walk child))))))
+             ((typep node 'plump:comment)
+              (plump:remove-child node))
+             ((typep node 'plump:cdata)
+              ;; CDATA becomes escaped text (the library's
+              ;; escape-cdata semantics, applied on every path).
+              (styling-replace-with-text node (plump:text node)))
+             ((or (typep node 'plump:doctype)
+                  (typep node 'plump:xml-header)
+                  (typep node 'plump:processing-instruction))
+              (plump:remove-child node)))))
+      (loop for child across (copy-seq (plump:children root))
+        do (walk child)))
+    (plump:serialize root nil)))
+
+(defun sanitize-styling-html (html)
+  ":private: HTML reduced to the :styling grammar: string → string,
+never signals. Truncates to +styling-max-length+ before the first
+parse, runs sh:sanitize under *styling-policy* (the first pass:
+tags, attributes, event handlers, URL protocols, CSS, comments,
+CDATA), then styling-pass — the authoritative walk that catches
+what the library misses. Idempotent on its own output (the
+read-side belt depends on it); any error degrades to the empty
+string (logged)."
+  (handler-case
+    (let* ((s (subseq html 0 (min (length html) +styling-max-length+)))
+           (clean (sh:sanitize s *styling-policy*)))
+      (styling-pass clean))
+    (error (e)
+      (pl:perror :in "sanitize-styling-html" :error e)
+      "")))
+
+;;
+;; END Styling sanitizer
+;;
+
+;;
 ;; BEGIN Site chrome
 ;;
 
 (defun site-chrome ()
-  ":private: The one extension point the upcoming publisher / styling
-item will own. Today: :title from *top-level-settings*, every other
-key absent. Consumers: the header, the footer, og:site_name, the
-JSON-LD publisher, and the RSS channel — all read this plist and
-nothing else."
-  (list :title (or (getf *top-level-settings* :title) "")))
+  ":private: The one extension point the publisher / styling items
+own. :title from *top-level-settings*; :banner-html / :footer-html
+from the styling slots when they are set (sanitized at write time
+and again in styling-slot — each key absent when the slot is not).
+Consumers: the header, the footer, og:site_name, the JSON-LD
+publisher, and the RSS channel — all read this plist and nothing
+else."
+  (let ((banner (styling-slot "banner"))
+        (footer (styling-slot "footer")))
+    (append
+      (list :title (or (getf *top-level-settings* :title) ""))
+      (when banner (list :banner-html banner))
+      (when footer (list :footer-html footer)))))
 
 (defun type-label (type-key)
   ":private: The humanized type key (be-types emits no type labels)."
@@ -768,32 +1030,40 @@ nothing else."
 
 (defun render-site-header (chrome open-in-app-href)
   ":private: The site header bar on every public page. :banner-html
-(sanitized by the future styling item; never emitted from data in
-this child) else the site title linking to /p/, with the visible
-\"Open in app\" link that leads to the SPA."
+(the styling slot's sanitized markup) wrapped in the same heading
+element so the public stylesheet's header rules apply — the
+header's home link is the title arm only (a banner may carry its
+own anchors) — else the site title linking to /p/, with the
+visible \"Open in app\" link that leads to the SPA."
   (let ((title (getf chrome :title))
         (banner (getf chrome :banner-html)))
     (format nil
       "<header class=\"site\">~a<nav><a href=\"~a\">Open in app</a></nav></header>~%"
-      (or banner
+      (or (when banner
+            (format nil "<h1 class=\"site\">~a</h1>" banner))
         (format nil "<h1 class=\"site\"><a href=\"/p/\">~a</a></h1>"
           (html-escape title)))
       (html-attribute open-in-app-href))))
 
 (defun render-site-footer (chrome open-in-app-href type-keys)
-  ":private: The site footer: the \"Open in app\" link and one link
-per public type index. The publisher name / url / logo and the
-tagline are chrome keys that are absent in v1, so they render
-nothing today. (Built as separate segments: a ~@[~] whose subclause
-consumes more than the test argument would misalign the ~{~} that
-follows.)"
-  (let* ((publisher-name (getf chrome :publisher-name))
+  ":private: The site footer: the styling slot (when set) in its own
+div — block-level slot content cannot tangle with the inline link
+run — then the \"Open in app\" link and one link per public type
+index. The publisher name / url / logo and the tagline are chrome
+keys that are absent in v1, so they render nothing today. (Built
+as separate segments: a ~@[~] whose subclause consumes more than
+the test argument would misalign the ~{~} that follows.)"
+  (let* ((footer (when (getf chrome :footer-html)
+                   (format nil "<div class=\"slot\">~a</div>"
+                     (getf chrome :footer-html))))
+         (publisher-name (getf chrome :publisher-name))
          (publisher-url (html-attribute (getf chrome :publisher-url)))
          (publisher (when (and publisher-name publisher-url)
                       (format nil " &middot; <a href=\"~a\">~a</a>"
                         publisher-url (html-escape publisher-name)))))
     (format nil
-      "<footer class=\"site\"><a href=\"~a\">Open in app</a>~a~{ &middot; <a href=\"~a\">~a</a>~}</footer>"
+      "<footer class=\"site\">~a<a href=\"~a\">Open in app</a>~a~{ &middot; <a href=\"~a\">~a</a>~}</footer>"
+      (or footer "")
       (html-attribute open-in-app-href)
       (or publisher "")
       (loop for key in type-keys

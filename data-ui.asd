@@ -17,6 +17,7 @@
                 :p-log
                 :postmodern
                 :rbac
+                :sanitize-html
                 :swank
                 :yason)
   :serial t
@@ -88,4 +89,5 @@
                 (:file "action-log-tests")
                 (:file "api-type-roles-access-tests")
                 (:file "model-text-tests")
+                (:file "styling-tests")
                 (:file "deploy-incoming-tests")))))

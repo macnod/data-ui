@@ -18,6 +18,7 @@ The registry holds entries of three kinds. The kind discriminant determines whic
 - **Returns** `nil` when the value is valid, or a human-readable error string when it is not.
 - **Invoked** per-field by `validate-field-internal` (backend.lisp), which loops over the compiled `:validations` list for the field and collects all non-nil results.
 - **Never signals.** Returning a string is the failure path; the caller aggregates.
+- The same functionp pass-through exists here: a bare `#'fn` in a `:validations` list is resolved verbatim (`v-email`-shaped helpers are the precedent). The registry is the author surface; base-model types use it without registering. (The one former instance, `v-styling-slot` on `:styling`, was replaced by a static `:ui (:widget :select :options …)` — `compile-validations` auto-attaches `v-options` from `:ui :options`, so the vocabulary check became data, not code.)
 
 ### Lifecycle contract
 
@@ -44,7 +45,7 @@ The registry holds entries of three kinds. The kind discriminant determines whic
 | pre-delete  | uuid   |          | record    |
 | post-delete | uuid   |          | record    |
 
-All six lifecycle slots are compiled at model-compile time into function lists on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks` (backend.lisp); no registry lookup occurs at runtime.
+All six lifecycle slots are compiled at model-compile time into function lists on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks` (backend.lisp); no registry lookup occurs at runtime. Built-in types may attach base-model function hooks directly — a bare `#'fn` in the `*base-model*` backquote passes through `resolve-hook-form`'s functionp arm (`add-user-setting-rows` on `:users`; `sanitize-styling-value` on `:styling` is the pre-write sanitization precedent, one hook on both `:pre-create` and `:pre-update`).
 
 
 ### Action contract

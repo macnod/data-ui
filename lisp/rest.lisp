@@ -1374,6 +1374,28 @@ GET /api/public-info"
       :guest-allowed (model-guest-allowed)
       :guest-auto (model-guest-auto))))
 
+(defun info-settings (user)
+  ":private: The settings plist /api/info renders:
+*top-level-settings* copied (never mutated), the per-user landing
+page, :new-roles and :api-roles removed (deployment data the
+frontend does not need), and the styling slots when they exist —
+each key omitted when nil (the [] truthy trap: plist-to-json
+renders an unregistered nil key as a truthy empty array, so never
+emit a nil value for these keys)."
+  (let ((settings (copy-list *top-level-settings*)))
+    (setf (getf settings :landing-page)
+          (be-landing-page user))
+    ;; Declared roles are deployment data that the frontend does not need
+    (remf settings :new-roles)
+    ;; The roles required by app-level endpoints are authorization
+    ;; internals, not frontend data
+    (remf settings :api-roles)
+    (let ((banner (styling-slot "banner"))
+          (footer (styling-slot "footer")))
+      (when banner (setf (getf settings :banner) banner))
+      (when footer (setf (getf settings :footer) footer)))
+    settings))
+
 (h:define-easy-handler (rest-info :uri "/api/info" :default-request-type :get)
   ()
   ":public: Endpoint for retrieving information about the deployed app,
@@ -1383,15 +1405,7 @@ provides a Common Lisp REPL.
 GET /api/info"
   (let* ((user (require-auth (model-api-roles))))
     (when user
-      (let ((settings (copy-list *top-level-settings*)))
-        (setf (getf settings :landing-page)
-              (be-landing-page user))
-        ;; Declared roles are deployment data that the frontend does not need
-        (remf settings :new-roles)
-        ;; The roles required by app-level endpoints are authorization
-        ;; internals, not frontend data
-        (remf settings :api-roles)
-        (render-output settings)))))
+      (render-output (info-settings user)))))
 
 (h:define-easy-handler (rest-css-variables
                          :uri "/api/css-variables"

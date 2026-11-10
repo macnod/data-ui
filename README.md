@@ -12,7 +12,7 @@ Repo at [github.com/macnod/data-ui](https://github.com/macnod/data-ui).
 
 ## Start Here
 
-Data UI compiles a small model into a complete, RBAC-backed application — database, API, React frontend, Kubernetes deployment — in one command.
+Data UI compiles a small model into a complete, RBAC-backed application (database, API, React frontend, Kubernetes deployment) in one command.
 
 - **Evaluating as an investor or partner?** [Live demos](#live-demos) → [The Big Idea](#the-big-idea) → [Current Status](#current-status-september-2026) → [Road to MVP](#road-to-mvp) → [Business & Monetization](#business--monetization), then [docs/competitive-landscape.md](docs/competitive-landscape.md) for the field.
 - **Need an application built?** Client engagements open after the MVP (target: December 31, 2026). Early conversations welcome: [Contact](#contact).
@@ -48,17 +48,17 @@ Data UI compiles a small model into a complete, RBAC-backed application — data
 
 ## Live Demos
 
-These are working deployments of the engine, not the finished product. MVP target is December 31, 2026 — see [Road to MVP](#road-to-mvp).
+These are working deployments of the engine, not the finished product. MVP target is December 31, 2026. See [Road to MVP](#road-to-mvp).
 
 Four applications compiled from models in this repo, running now. Any of them accepts `guest` with no password (read-only). To watch RBAC working end to end, follow the stories in [Demo Walkthroughs](docs/demos.md).
 
 - [To Do List](https://todo-stg.demo.data-ui.com/): the napkin-sized model from [Example Model](#example-model), compiled and deployed. Log in as `demos` / `TryDataUI2026!` to add, edit, and tag items. Not-done items tagged `mvp` and `frontend` stay hidden until you log in as `alice` (same password).
-- [Books & Authors](https://books-stg.demo.data-ui.com/): relationships, cover images, and a rating rollup. Same login: `demos` / `TryDataUI2026!` — but books in both genres `Nonfiction` and `Self-Help` need the `new-books` role (`alice` and `bob` have it).
-- [Home Chores](https://chores-stg.demo.data-ui.com/): the `:spawn` pattern — a Complete button closes a chore (who, when) and inserts a fresh open instance in one click, while a scoreboard rollup turns completed chores into per-user points. Log in as `demos` / `TryDataUI2026!`, or as `donnie`, `tracy`, or `mel` (same password).
+- [Books & Authors](https://books-stg.demo.data-ui.com/): relationships, cover images, and a rating rollup. Same login: `demos` / `TryDataUI2026!`, but books in both genres `Nonfiction` and `Self-Help` need the `new-books` role (`alice` and `bob` have it).
+- [Home Chores](https://chores-stg.demo.data-ui.com/): the `:spawn` pattern: a Complete button closes a chore (who, when) and inserts a fresh open instance in one click, while a scoreboard rollup turns completed chores into per-user points. Log in as `demos` / `TryDataUI2026!`, or as `donnie`, `tracy`, or `mel` (same password).
 
 All three reset to a known state every morning at 04:10 (US Pacific). Anything you change is gone by then; that is the point of a shared demo.
 
-- [Model Bank](https://modelbank.demo.data-ui.com/) — a gallery of models, with ownership, images, and ratings. Log in as `guest` (no password); it is read-only. Write access, including the Generate and Deploy buttons, is available on request: [Contact](#contact).
+- [Model Bank](https://modelbank.demo.data-ui.com/): a gallery of models, with ownership, images, and ratings. Log in as `guest` (no password); it is read-only. Write access, including the Generate and Deploy buttons, is available on request: [Contact](#contact).
 
 The `demos` password is public by design. The apps are sandboxed and can be taken offline in under a minute.
 
@@ -359,7 +359,7 @@ For a detailed comparison of Data UI's approach against existing tools, see [Com
 - `:user-setting t` (type-level) to mark per-user settings types; auto-sets `:suppress-roles t` and derives category `:settings` if omitted
 - `:suppress-roles t` (type-level) to suppress the injected `roles` field in forms
 - `:category` (type-level) to place a type in the selector: `:user`, `:settings` (Settings tab), or `:system`. Author key, not reserved to built-ins
-- `:type-roles` to declare which roles may create a row of a type (also overrides defaults on built-in types). Not the same thing as the roles a row carries — see [Type Roles and Row Roles](docs/roles.md)
+- `:type-roles` to declare which roles may create a row of a type (also overrides defaults on built-in types). Not the same thing as the roles a row carries; see [Type Roles and Row Roles](docs/roles.md)
 - `:sortable t` / `:searchable t` on a field to enable list sorting (clickable headers) and free-text search (ILIKE)
 - `:default-sort` (type-level) to declare the sort used when a request sends none
 - `:rollup t` + `:grain` for read-only analytical types (SQL `GROUP BY` aggregates, no physical table)
@@ -520,27 +520,28 @@ and one command turns that into a running, public application:
 scripts/data-ui deploy todos
 ```
 
-Behind that command: the production checkout (an independent clone at `/data/data-ui/repos/production`) is fetched and fast-forwarded to `public/master` and its script re-executed; the model is compile-checked against a throwaway database, the release is tagged from the model's version plus the selected commit's hash, a Docker image is built from a curated `git archive` context (React frontend compiled in one stage, precompiled SBCL runtime in another), Kubernetes manifests are rendered from templates and applied to a k3d cluster (each instance in its own namespace, with its own PostgreSQL and persistent volumes), and HAProxy routing is updated so the model's `:domain` serves the app over TLS, a wildcard Let's Encrypt certificate that renews itself — with NodePort and public-domain health gates before anything is promoted.
+Behind that command: the production checkout (an independent clone at `/data/data-ui/repos/production`) is fetched and fast-forwarded to `public/master` and its script re-executed; the model is compile-checked against a throwaway database, the release is tagged from the model's version plus the selected commit's hash, a Docker image is built from a curated `git archive` context (React frontend compiled in one stage, precompiled SBCL runtime in another), Kubernetes manifests are rendered from templates and applied to a k3d cluster (each instance in its own namespace, with its own PostgreSQL and persistent volumes), and HAProxy routing is updated so the model's `:domain` serves the app over TLS, a wildcard Let's Encrypt certificate that renews itself. NodePort and public-domain health gates run before anything is promoted.
 
 The deploy is deterministic and repeatable: every fact is derived from the model and the selected commit. Secrets and port assignments are generated once and thereafter recovered from the live cluster, so a deploy can be re-run from a fresh machine without breaking a running instance.
 
-There are exactly three source checkouts — development (`~/common-lisp/data-ui`, may be dirty; no production build reads it), staging (`/data/data-ui/repos/staging`, updated by `scripts/data-ui staging update`, default `private/master`, and loaded by every host profile), and production (`/data/data-ui/repos/production`, what every `deploy`/`delete` runs). Everything else under `/data/data-ui` is runtime state (profiles, databases, files, snapshots, credentials, deploy state). Model Bank's Deploy button deploys through the same production pipeline via an immutable per-worker handoff file. See [docs/deployment.md](docs/deployment.md) → Source Environments.
+There are exactly three source checkouts: development (`~/common-lisp/data-ui`, may be dirty; no production build reads it), staging (`/data/data-ui/repos/staging`, updated by `scripts/data-ui staging update`, default `private/master`, and loaded by every host profile), and production (`/data/data-ui/repos/production`, what every `deploy`/`delete` runs). Everything else under `/data/data-ui` is runtime state (profiles, databases, files, snapshots, credentials, deploy state). Model Bank's Deploy button deploys through the same production pipeline via an immutable per-worker handoff file. See [docs/deployment.md](docs/deployment.md) → Source Environments.
 
 `:repl t` works and exposes Swank for the instance (reachable over an SSH tunnel). Prefer `:repl nil` in production, it is an extra attack surface even behind a tunnel.
 
 The full story, every step, every file, where the admin password lives, how cert renewal works, troubleshooting, is in [docs/deployment.md](docs/deployment.md).
 
-Instances run in one of three *environments* — development (`scripts/data-ui repl`), staging (`repl <profile>`, exposed via the model's `:domain-stg`), or production (`deploy`, which serves `:domain`). Tiers are product offerings; environments are where an instance runs. See [docs/deployment.md](docs/deployment.md) → Environments.
+Instances run in one of three *environments*: development (`scripts/data-ui repl`), staging (`repl <profile>`, exposed via the model's `:domain-stg`), or production (`deploy`, which serves `:domain`). Tiers are product offerings; environments are where an instance runs. See [docs/deployment.md](docs/deployment.md) → Environments.
 
 
 ## Current Status (September 2026)
 
 The project is in active development, and the core claim is now demonstrated end to end:
 
-- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model was deployed to production on a k3d cluster with a single command (July 2026). The public demos now run as staged apps on their own domains — see [Live Demos](#live-demos).
+- **The full pipeline works: model → compiled application → deployed, TLS-terminated, RBAC-backed app at its own domain.** The example to-do model was deployed to production on a k3d cluster with a single command (July 2026). The public demos now run as staged apps on their own domains. See [Live Demos](#live-demos).
 - Full CRUD operations work via the backend, REST API, and frontend React code, across **all** types, both the built-in RBAC types (users, roles, permissions, resources, etc.) and user-defined types.
 - JWT-based authentication (access + refresh tokens) protects the API, including the passwordless **guest login** path (`:guest-allowed t`, `:guest-auto`, `:api-roles`).
-- **Bot-crawlable public pages** are served on request at `/p/`, `/p/<type>/<uuid>`, and per-type RSS feeds, plus `/sitemap.xml` and `/robots.txt` — no token, no script, an OG/JSON-LD-bearing HTML face for crawlers and unfurls, with a visible "Open in app" link into the SPA. The anonymous reach never exceeds the guest token's.
+- **Bot-crawlable public pages** are served on request at `/p/`, `/p/<type>/<uuid>`, and per-type RSS feeds, plus `/sitemap.xml` and `/robots.txt`: no token, no script, an OG/JSON-LD-bearing HTML face for crawlers and unfurls, with a visible "Open in app" link into the SPA. The anonymous reach never exceeds the guest token's.
+- **Site styling as data** (the built-in `:styling` type): `banner` / `footer` slots edited by holders of the `styling` role replace the SPA header and the public pages' site header / footer — restricted HTML sanitized on write and read by the `cl-sanitize-html`-based styling sanitizer.
 - **Scoping** is implemented at both the view level and the field level. View-level `:scope :user` filters `be-list` results to records owned by the current user. Field-level scoping (`:scope :user` on a field's `:source`) filters aggregated field values to the current user (e.g. "my rating" on Model Bank). It does not control field visibility or editability in the UI.
 - **Write-through** (`:write-to` + `:identity t`) is implemented: related- table upserts run from `be-insert` / `be-update` (best-effort, non- transactional). Used by Model Bank ratings. Some edge cases (e.g. clear-to-NULL) remain open.
 - **Action hooks** (`:button` fields + `:action`, `POST /api/actions`, companion status column, sync/async protocol) are implemented. The `:deploy-model` registry entry powers Model Bank deploy-from-record (role-gated to `deployer`, writes to `models/local/`); `:generate-model` calls an LLM to author a model from a description (role-gated to `ai-user`).
@@ -550,7 +551,7 @@ The project is in active development, and the core claim is now demonstrated end
 - File handling: uploading, listing, and deleting files and directories works end-to-end (uploads use a two-phase flow: `multipart/form-data` POST to `/api/upload`, then a JSON `/api/insert` carrying the returned `file-token`). File **update** is not yet implemented and may be deferred past the MVP.
 - React frontend: log in (including guest), navigate as a user, perform CRUD with RBAC enforcement, manage roles, upload and preview images (thumbnail grids with modal/lightbox), inline edit mode, action buttons on update forms. The UI works but needs polish; this is a current focus.
 - **Ops tooling** around the engine: environments (development / staging / production) with host profiles exposed at each model's `:domain-stg`; `e-demo` / `demo` systemd-managed demo lifecycles with nightly golden resets; a shared **snapshot pool** (`scripts/data-ui snapshot save|restore|list|drop|migrate`) for capturing and moving database + file state between environments.
-- Tests: `tests/` holds 30+ FiveAM suites (compilation, predicates, backend, REST, scoping, actions, hooks, rollups, M2M, compose, search/sort, guest/API-roles, generator, and more — see `data-ui.asd`). One view-level scoping behavioral test remains flaky / TODO.
+- Tests: `tests/` holds 30+ FiveAM suites (compilation, predicates, backend, REST, scoping, actions, hooks, rollups, M2M, compose, search/sort, guest/API-roles, generator, and more; see `data-ui.asd`). One view-level scoping behavioral test remains flaky / TODO.
 
 Model compilation, SQL generation for tables/views/triggers, RBAC integration, validation, CRUD, write-through, action hooks, and Kubernetes deployment are implemented and exercised. Work continues on Model Bank completion, write-through edge cases, UI refinement, and additional example models.
 
@@ -648,7 +649,7 @@ Contributions and feedback are very welcome; this is still early stage!
 
 ## Contact
 
-Donnie Cameron — macnod@gmail.com — [Contact](https://sinistercode.com/public/donnie/contact)
+Donnie Cameron, macnod@gmail.com, [Contact](https://sinistercode.com/public/donnie/contact)
 
 
 ## License

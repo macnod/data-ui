@@ -1267,6 +1267,23 @@ compile time, so action-tests.lisp must be loaded before set-model
     (explain! results)
     (when collect results)))
 
+(defun run-styling-tests (&optional collect)
+  ":styling tests (the built-in type). Compile probes run bare
+(bare compile-model, no DB); behavior runs on test-model — the
+:styling type and its hooks are on *base-model*, present in
+every model context. test-model's :button actions resolve from
+the registry at compile time, so action-tests.lisp must be
+loaded before set-model (harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (load (u:join-paths *package-root* "tests" "styling-tests.lisp"))
+  (let ((results
+          (append
+            (run 'styling-compile-suite)
+            (with-model "test-model" nil
+              (run 'styling-suite)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-deploy-incoming-tests (&optional collect)
   "Deploy handoff machinery (models/local/deploy-incoming/):
 exclusive-create tokens, the <token>.registry contract, spawn without
@@ -1344,6 +1361,7 @@ groups."
                    ("api-type-roles-access"
                                      . run-api-type-roles-access-tests)
                    ("model-text"    . run-model-text-tests)
+                   ("styling"       . run-styling-tests)
                     ("deploy-incoming" . run-deploy-incoming-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)

@@ -151,6 +151,25 @@ order-independent."
     (is (null (search "/p/images/" html)))
     (is (null (search "/p/directories/" html)))))
 
+(test pp-styling-chrome
+  "Styling slots reach the public pages end to end: the banner
+markup in the site header's h1, the footer markup in the site
+footer's slot div. Rows are deleted after — the suite's other
+tests assert the default chrome."
+  (let ((bid (be-insert :styling
+                '(:name "banner" :value "<strong>PP Banner</strong>")
+                "admin"))
+        (fid (be-insert :styling
+                '(:name "footer" :value "<em>PP Footer</em>")
+                "admin")))
+    (unwind-protect
+        (let ((html (render-root-index :origin *pp-origin*)))
+          (is (search "<h1 class=\"site\"><strong>PP Banner</strong></h1>"
+                html))
+          (is (search "<div class=\"slot\"><em>PP Footer</em></div>" html)))
+      (be-delete :styling bid "admin")
+      (be-delete :styling fid "admin"))))
+
 (test pp-type-index-shape
   (let ((html (render-type-index :posts :origin *pp-origin*))
          (ids (pp-ids)))

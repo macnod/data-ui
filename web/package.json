@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test:url-state": "node src/urlState.test.mjs",
     "test:region": "node src/region.test.mjs",
-    "test:public-link": "node src/publicLink.test.mjs"
+    "test:public-link": "node src/publicLink.test.mjs",
+    "test:styling-html": "node src/stylingHtml.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

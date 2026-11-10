@@ -250,6 +250,67 @@ type."
            (when row-id
              (delete-by-id type-key row-id))))))
 
+(defparameter *styling-slots* '("banner" "footer")
+  ":private: The frozen :styling slot vocabulary. The compiled
+:ui (:options ...) of the :styling :name field (v-options
+rejects any :name not among these); every reader (styling-slot
+call sites) asks for one of these names. Adding a slot is one
+entry here, one reader call site, one doc line.")
+
+(defparameter *styling-page-description*
+  (format nil "~{~a~^~%~}"
+    (list
+      (format nil
+        "Appearance slots for the whole app: each row picks a slot ~
+         and holds its HTML: `banner` replaces the header title on ~
+         every page, `footer` renders at the bottom. Values are ~
+         restricted HTML, sanitized on save and capped at 4096 ~
+         characters; anything outside the grammar below is ~
+         stripped automatically.")
+      (format nil
+        "- Tags: `a` `img` `span` `strong` `em` `code` `small` `sup` ~
+         `sub` `br` `p` `div` `center` `hr` `ul` `ol` `li`, all ~
+         take `style` and `class` except `br` (none); `a` adds ~
+         `href` and `title`, `img` adds `src` `alt` `title` ~
+         `width` `height`")
+      (format nil
+        "- Links: `href` must be an `https://…` URL, a clean ~
+         `mailto:` address (one `@`), or start with `/p/`; `img ~
+         src` must be an uploaded image's `/p/files/<type>/…` URL")
+      (format nil
+        "- Style: safe properties only: colors, font `size` / ~
+         `weight` / `style` / `family` / `decoration`, ~
+         `text-align`, `vertical-align`, margins, padding, ~
+         `width` / `height` / `max-*`, `border`, `border-radius`, ~
+         `display`, `gap`, `align-items`, `line-height`, ~
+         `letter-spacing`. Values carrying `url(...)` are dropped")
+      (format nil
+        "- Everything else is removed on save: scripts and form ~
+         elements with their content, other unknown tags down to ~
+         their text (headings included)")))
+  ":private: The :page-description the built-in :styling type
+carries: what the page does plus the value grammar, rendered
+collapsed on the styling list page. Derived from *styling-policy*
+in lisp/public-pages.lisp: tags, attributes, CSS properties,
+and the URL / length rules (styling-href-ok / styling-src-ok /
++styling-max-length+). Manual sync: widen the policy and this
+string together; the styling tests probe every policy tag into
+this string (the styling-tag-action docstring carries the same
+burden).")
+
+(defun sanitize-styling-value (type-key data user &key id roles record)
+  ":private: :pre-create / :pre-update hook on the built-in :styling
+type. Rewrites :value through sanitize-styling-html so the stored
+string is already clean; every reader emits it verbatim. A nil or
+:null value (the absent spelling full-data injects) passes through
+untouched — blanking a slot is legal. Applies to both v1 slots —
+one rule, no per-slot branch."
+  (declare (ignore type-key user id roles record))
+  (let ((value (getf data :value)))
+    (if (stringp value)
+      (list :value (sanitize-styling-html value))
+      nil)))
+
 ;; ---------------------------------------------------------------------------
 ;; Hook Registry
 ;;
@@ -2157,7 +2218,30 @@ validator there, and a frontend renderer.")
                          :source (:view :main :column :when :agg :first)
                          :column t :not-null t :sortable t :searchable t))
        :list-form (:fields (:when :user :user-name :ip :event :on :detail))
-       :view-form (:fields t))))
+       :view-form (:fields t))
+
+     :styling
+     (:table t :base nil :built-in t
+       :create :auto :update :auto :delete :auto :display t
+       :type-roles ("styling")
+       :page-description ,*styling-page-description*
+       :pre-create ,#'sanitize-styling-value
+       :pre-update ,#'sanitize-styling-value
+       :views (:main (:tables (:styling)))
+       :fields (:name (:type :text :identity t
+                        :ui (:label "Slot" :widget :select
+                             :options ,*styling-slots*)
+                        :validations (:required)
+                        :source (:view :main :column :name :agg :first)
+                        :column t :not-null t :unique t :searchable t)
+                :value (:type :text
+                         :ui (:label "Value" :widget :code)
+                         :source (:view :main :column :value :agg :first)
+                         :column t))
+       :list-form (:fields (:name :value))
+       :update-form (:fields t)
+       :view-form (:fields t)
+       :add-form (:fields t))))
 
 (defun to-sql-identifier (keyword &key (format-string "~a") (form :as-is))
   (let ((s (format nil "~(~a~)" keyword)))

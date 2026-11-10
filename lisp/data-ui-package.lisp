@@ -17,7 +17,8 @@
     (:mdg :3bmd-grammar)
     (:md-ext :3bmd-ext)
     (:mdt :3bmd-tables)
-    (:mdc :3bmd-code-blocks)))
+    (:mdc :3bmd-code-blocks)
+    (:sh :sanitize-html)))
 
     ;; (:h :hunchentoot)
     ;; (:s :spinneret)

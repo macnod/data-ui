@@ -4521,6 +4521,40 @@ logging is on."
         :user-name user-name :event event :on on :error e)
       nil)))
 
+(defun styling-slot (name)
+  ":public: The sanitized :value of the built-in :styling row named
+NAME, or nil when there is no such row, the value is blank, or the
+read fails for any reason (logged — a chrome read never takes a
+page or /api/info down). Direct SQL in the usage-recent-p shape,
+not be-list: site-chrome runs this twice per document render and
+render-record-document calls site-chrome twice (once directly,
+once inside record-json-ld) — four reads per record page — and
+the system's own authority should not route through the permission
+machinery. Column names come from the compiled field defs
+(:name-sql), so a :force-sql-name rename cannot desync the SQL
+from the type. The stored value was sanitized by the :pre-create /
+:pre-update hook; sanitize-styling-html runs again here as the
+belt for rows written around the hook (REPL, SQL, a restored
+snapshot)."
+  (handler-case
+    (let* ((m *compiled-model*)
+           (table (u:tree-get m :styling :table-name))
+           (name-col (u:tree-get m :styling :fields :name :name-sql))
+           (value-col (u:tree-get m :styling :fields :value :name-sql))
+           (value (a:with-rbac (*rbac*)
+                    (a:rbac-query
+                      (list (format nil
+                              "select ~a from ~a where ~a = $1 limit 1"
+                              value-col table name-col)
+                            name)
+                      :single)))
+           (clean (and (stringp value)
+                       (sanitize-styling-html value))))
+      (when (and clean (plusp (length (u:trim clean)))) clean))
+    (error (e)
+      (pl:perror :in "styling-slot" :name name :error e)
+      nil)))
+
 ;;
 ;; END Usage log
 ;;

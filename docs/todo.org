@@ -803,6 +803,87 @@ Done 2026-11-07 per the plan. =web/src/publicLink.ts= (new): =hashPermalink= rep
 
 Plan: [[file:~/workbench/public-pages-plan/03-spa.org][03-spa.org]]
 
+** DONE RSS feed                                      :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-02 Mon]
+:COMPLETED: [2026-11-07 Sat]
+:END:
+Absorbed 2026-11-06 into [[*DONE Bot-crawlable public pages][Bot-crawlable public pages]] children 1 and 2: one RSS 2.0 feed per public type at =/p/<type>/rss.xml= (so a blog's feed is =/p/posts/rss.xml=), full =<content:encoded>=, permalink guids, RFC 822 dates, autodiscovery on the type's index and record pages. Do not implement separately; mark this DONE when that child 2 lands. The requirements below stand as the acceptance list.
+Done 2026-11-07 with public pages child 2: =render-feed= (lisp/public-pages.lisp) serves =/p/<type>/rss.xml= through the route — RSS 2.0 with =xmlns:atom= / =xmlns:content=, an absolute =atom:link rel="self"=, newest-first items from a =:limit 50= query, =<guid isPermaLink="true">= equal to =<link>=, RFC 822 =+0000= pubDates, plain =<description>=, full rendered markdown in =<content:encoded>= CDATA (with the =]]>= split pinned directly), and feed autodiscovery =<link>= on the type's index and record pages. Pinned by the =public-pages= suite (feed shape, cdata, limit-50).
+
+A blog engine without a feed loses the subscribers and tools that poll a URL instead of an account: feed readers, planets, and glue automation. Search ranking does not depend on it; the repeat technical audience does. One feed is enough. Readers accept Atom, but a from-scratch generator should emit RSS 2.0 — the dialect validators, docs, and "paste this URL" habits assume, and the only one podcast clients accept.
+
+- RSS 2.0 at a stable URL (=/feed/= or =/rss.xml=), with autodiscovery in =<head>=: =<link rel="alternate" type="application/rss+xml">=
+- Full post body in =<content:encoded>=, not a teaser
+- Stable =<guid isPermaLink="true">= that does not change when the title does
+- RFC 822 dates, absolute permalinks, and a valid =<channel>= title and link
+- Do not also emit Atom unless it is free
+
+Sits above the video because a finished blog the video can point at should already be subscribable.
+
+** DONE Styling type                                 :model:backend:frontend:
+:PROPERTIES:
+:CREATED: [2026-11-05 Thu]
+:COMPLETED: [2026-11-09 Mon]
+:END:
+A built-in =:styling= type whose rows are named appearance slots the system reads, not the user. v1 has one slot, =banner=: restricted HTML that replaces the logged-in header. Absent, blank, or unknown slot means today's =h1=. The browser tab and the login screen stay on the model's =:title= until a later slot says otherwise. The admin edits the rows; the system reads them as admin, so the row's own roles never decide who sees the header. The tab is admin-only because =:type-roles ("admin")= plus =be-types=' read gate already hide a type the caller cannot read. Depends on [[*DONE Bot-crawlable public pages][Bot-crawlable public pages]]: a banner image is a =/p/files/<type>/<path>= URL the admin writes (grammar amended 2026-11-06), and that route does not exist until public pages land. Its renderer already reads the site header, footer, =og:site_name=, JSON-LD =publisher=, and RSS channel from one =site-chrome= function that returns defaults; this item makes that function read the styling rows as admin and adds the banner sanitizer. Do not start this before that item is serving.
+Requirement: [[file:~/workbench/styling-type-req.org][styling-type-req.org]].
+
+Plans: [[file:~/workbench/styling-type-plan-grok.org][styling-type-plan-grok.org]], [[file:~/workbench/styling-type-plan-fable.org][styling-type-plan-fable.org]].
+Plan (synthesis): [[file:~/workbench/styling-type-plan.org][styling-type-plan.org]].
+The plan settles the conversation: rows not columns (a new slot is a new row, and =create-tables= never alters an existing table — the =usage= =:ip= column is the scar); =banner= is the only v1 slot and the frontend ignores any other name; the value is restricted HTML sanitized on the write path (=a=, =img=, =span=, =strong=, =em=, =br=; =href= / =src= only =https:= and =/p/=; =style= is a closed property list, no =url()=); the header stops being a home link when the banner renders, and the Home button is the guaranteed way home; =document.title= and the login screen are untouched.
+Implemented as specified. =model.lisp=: =*styling-slots*= (banner / footer), =v-styling-slot= (the =v-email= shape, unregistered), =sanitize-styling-value= (:pre-create / :pre-update function hooks), and the =:styling= type after =:usage= in =*base-model*= (:base nil, :type-roles ("admin"), :suppress-roles t, :name :identity t :unique t, :value nullable :widget :code). =public-pages.lisp=: the =cl-sanitize-html= policy plus the authoritative =styling-pass= walk (the library's nested-unwrap hole is what makes the pass load-bearing), =sanitize-styling-html= (4096 cap, drop-not-reject, never signals), and the =site-chrome= / =render-site-header= / =render-site-footer= / =+public-style+= seams. =backend.lisp=: =styling-slot= (direct SQL in the =usage-recent-p= shape, read-side sanitizer belt, swallows errors). =rest.lisp=: =rest-info='s settings extracted as =info-settings= with =:banner= / =:footer= omitted-when-nil. Frontend: =stylingHtml.ts= (=slotFromInfo=), =AppTitle= / =AppFooter= at module level, both =/api/info= consumers set both slots, =handleLogout= / =onAuthFailure= clear them, banner as a non-link =h1.banner=, footer at the shell level of both render paths. Deviation from the item body's "v1 has one slot, =banner=": the plan (and its requirements doc) defines two v1 slots, =banner= / =footer=, and the plan's steps implement both — followed the plan. Live-verified end to end in the browser (banner insert through the real form sanitizes =<script>= / =onclick= away; =/api/info= carries the slots as strings; Home refetch picks up edits; blanked slots fall back to the default chrome). Tests: =tests/styling-tests.lisp= (compile probes + behavior, 152 checks: grammar, idempotence, hook, belt, unique index, permissions, wire, public chrome), one =pp-styling-chrome= end-to-end assertion in the public-pages suite, =run-styling-tests= in =helpers.lisp=. Full suite green (3696 checks, 56 groups). Observed while verifying (pre-existing, not from this item): =submitForm='s post-insert list refetch is dead code — =closeForm= bumps the navigation generation, so the =submitOk()= guard that wraps =fetchListRef.current()= always fails; the list only refreshes on the next navigation.
+** DONE Styling expansion                    :model:backend:frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-11-10 Tue]
+:COMPLETED: [2026-11-10 Tue]
+:END:
+Widen the =:styling= slot grammar so banner / footer authors can lay out text — motivated by centering a footer item, which is impossible today. Add harmless structural tags (=center=, =p=, =div=, =hr=, =ul=, =ol=, =li=, =code=, =small=, =sup=, =sub=) and the =text-align= CSS property to =*styling-policy*= in =lisp/public-pages.lisp= — the entire engine change is one =defparameter=; the authoritative pass derives from the policy. Headings stay out (the banner =h1= wrapper pops open on a heading start tag in full-document parse but nests in the SPA fragment parse — same markup, different DOM per surface). Both =<center>= and =text-align=: the tag is what the admin actually types, the property covers =right= / =justify=. New grammar is a strict superset, so old rows and the read-side belt are unaffected; re-save a row to use the new tags. Grammar probes + idempotence cases in =tests/styling-tests.lisp=, one doc line in =model-reference.md=.
+
+Plan: [[file:~/workbench/styling-expansion-plan.org][styling-expansion-plan.org]]
+Implemented as specified. =lisp/public-pages.lisp=: =*styling-policy*= gained the eleven structural tags (=center= / =p= / =div= / =hr= / =ul= / =ol= / =li= / =code= / =small= / =sup= / =sub=), each with the =("style" "class")= attribute shape (=hr= included, =br= keeps none), and ="text-align"= in =:allowed-css-properties=; =styling-tag-action='s docstring count went six → seventeen. Nothing else in the engine moved — =styling-allowed-attrs=, the CSS value filter, and the authoritative walk all derive from the policy. Deviation (one docstring beyond the plan's "nothing else changes"): =styling-pass='s docstring cited =<div><script>…</script></div>= as its probe-verified nested-unwrap example, stale now that =div= is kept — swapped to =<b><script>…</script></b>= (library-alone probe: the =<script>= element survives pass one intact; the walk is what kills it), the same move the plan makes for the test pin. =tests/styling-tests.lisp= (probe-first; every new expectation pinned to the live sanitizer's answer, and the plan's open (d) question answered by probe: script inside a kept tag drops with content — =<div></div>=, not unwrap-to-text): the five =div=-riding pins rewritten for the kept =div= (href and CDATA cases gain their wrapper, =<div><b>x</b></div>= keeps both levels), the load-bearing nested-unwrap pin moved to =<b><script>alert(1)</script></b>= with its comment, new structural probes (all eleven tags, =<hr>= void serialization =<hr>=, class-kept / onclick-dropped on =<ul>=, =<h2>= unwraps — the heading fence), =text-align= filter cases in the style section, seven new =*sty-test-cases*= fixed-point inputs for the read-side belt. =docs/model-reference.md=: the =:styling= paragraph's tag enumeration and style property clause updated (the built-in-types table row untouched). Live-verified in the browser on both surfaces of the dev image (todos model — test-model, which the suite run left loaded, publishes nothing): footer centering, the motivating case, measured exactly centered on =/p/= (409/409 side margins on a 953px box) and the SPA (389/389, full-width =.app-footer=); =<hr>= and =<ul>= render (disc markers); the banner's =<div style="font-size: 0.7em">= block child renders on both surfaces with the style applied, and the =/p/= "Open in app" nav stayed on the banner's flex line; the =<span>= control renders as before; no console errors; no =npm run build= (no =web/= change — the SPA renders the new tags from stored HTML). Screenshots unavailable (desktop window hidden) — verified by DOM geometry instead. Eyeball rows deleted after; the dev image now serves todos with no styling rows. =(run-styling-tests)= green (182 checks). Full suite green (3724 checks, 56 groups).
+** DONE Styling page description                  :model:backend:frontend:
+:PROPERTIES:
+:CREATED: [2026-11-10 Tue]
+:COMPLETED: [2026-11-10 Tue]
+:END:
+The =:styling= page showed a bare Slot / Value grid with no hint of what the grammar accepts — an admin pasting HTML discovered the sanitizer by watching their markup vanish. Add a =:page-description= to the built-in =:styling= type: what the page does (named slots the system reads) plus the full value grammar — tags, per-tag attributes, =href= / =src= URL rules, the closed =style= property list, the length cap, drop-not-reject. Collapsed by default (the convention; =:page-description-open= deliberately not set — the styling page is rare and the toggle is one click). The grammar lives in =*styling-policy*= (=lisp/public-pages.lisp=), which loads after =model.lisp=, so the string cannot be derived from the policy at load time: it is a named constant beside the =,*styling-slots*= precedent, =*styling-page-description*=, manually synced with the policy and probe-pinned (one compile test searches every =sh:policy-allowed-tags= entry into the string — widening the policy without touching the string fails the suite). No engine, wire, or frontend change beyond the key: the generic =:page-description= machinery (validator, stage-3 re-emit, =be-types= emission, the collapsed =PageDescription= block on the list page) already serves every type.
+** DONE Styling mailto links                     :model:backend:polish:
+:PROPERTIES:
+:CREATED: [2026-11-10 Tue]
+:COMPLETED: [2026-11-10 Tue]
+:END:
+A banner / footer author could not write a contact link: `mailto:` hrefs died in both sanitizer layers — pass one (the library's `protocol-allowed-p`, which only knows `/`, `#`, and `:allowed-protocols`) and the authoritative `styling-href-ok` ("No http:, no mailto:"). Two-line engine change in `lisp/public-pages.lisp`: `"mailto"` joins `*styling-policy*`'s `:allowed-protocols` (the belt), and `styling-href-ok` gains the `public-url-policy` mailto arm verbatim — `^mailto:[^@\s]+@[^@\s]+$`, so exactly one `@` in the whole URL. Verbatim mirroring keeps one mailto grammar across both surfaces; probed live before writing the pins, which caught a misread: the markdown regex *accepts* query strings (`?subject=Hi` passes — `[^@\s]` never excludes `?`), so queries are allowed here too (an `@` inside a query still dies — one `@` total). Case-sensitive `mailto:` prefix, same as markdown (`MAILTO:` dies; the https arm stays `(?i)`). `*styling-page-description*` Links line and `docs/model-reference.md` synced (the manual-sync rule). Tests: the old `mailto:a@b.c` pin flipped to kept, five new pins (query kept; `a@b.c@d`, `@b.c`, `nobody`, `MAILTO:` dropped), three new `*sty-test-cases*` fixed-point inputs. Sibling of, not part of, [[*DONE Styling expansion][Styling expansion]] (DONE, its summary frozen).
+** DONE Post-submit list refresh               :frontend:bug:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-09 Mon]
+:COMPLETED: [2026-11-10 Tue]
+:END:
+After a successful Add or Edit, the list does not refresh: the form closes and the table still shows the pre-submit rows until something re-queries it (type switch, search / sort / page commit). Observed live while verifying [[*DONE Styling type][Styling type]] — pre-existing, not from that item, and demo-relevant: "add a row, nothing happens" is exactly what the 30-second video would capture.
+
+The refetch is dead code. =submitForm='s success branch — both the file path and the normal path — captures =gen = navGen.current=, closes the form inside the first =submitOk()= guard, then re-checks before the refresh: =if (submitOk()) fetchListRef.current()=. But =closeForm= calls =clearRecordTarget=, which does =++navGen.current= and rewrites =navRef= with the new generation, so the second =submitOk()= always fails and the refresh never runs. The code contradicts its own once-guard comment ("on pass, run the synchronous close/landing/refresh without further checks — a per-call re-check would reject the operation's own close"): the refresh sits behind exactly that per-call re-check.
+
+Fix direction: the =be-action= complete branch is the in-code precedent — one guard (there =attemptId=, not generation), then =closeForm()= and =await fetchListRef.current()= unconditionally. Settle while fixing: the hide-list case, where =closeForm= routes through =returnToLanding= and its own landing fetch — the fix must not add a racing second =fetchList= there (the settings branch already skips the refresh for exactly that reason).
+
+The fix is =web/src/App.tsx= only, in =submitForm='s two success branches (file path and normal path). Two defects, not one: besides the dead refetch (the per-call =submitOk()= re-check after =closeForm= always failed — =clearRecordTarget= bumps =navGen= and rewrites =navRef=), the once-guard itself was vacuous: =gen= was captured after the =await=, and =navGen= / =navRef= always advance together, so the check compared the generation against itself and fenced nothing — a navigation during the in-flight POST (another open, a type switch, logout) still took the late =closeForm= over it. Now one shared capture at submit (before the first =await=, above the file/normal path split), one check after the response, then the synchronous close/landing/refresh without further checks — the =handleAction= complete-branch shape. The settled hide-list case: the refresh is skipped when the open form is =:hide-list t=, because =closeForm= routes through =returnToLanding= whose landing continuation always owns the next list fetch — =resetListQuery='s =setListFilters({})= / =setBoolFilters({})= replacements change the list effect's dep identities even when the values match, so the landing list refetches regardless of type or query state; a direct =fetchList= there would only race that fetch (one response sequence-discarded), the settings branch's own reason. That identity guarantee was probed, not assumed: a mid-implementation continuation fetch for the same-type-landing case (believing the pristine setters bail and nothing refetches) produced exactly the doubled =/api/list= the item forbids and was reverted — the effect re-run is the refresh. Verified live on the dev image (browser + network log, clean console): todos add and edit (=insert= / =update= → immediate =list= → row / edited text visible without a type switch), hide-list-test add on the =:hide-list t= landing type (=insert= → =css-variables= → =info= → exactly one =list= → fresh count), update via the =:hide-list nil= update form (=update= → direct =list=, no =info=), and Close of the hide-list view form (=info= → =list=). Full suite =scripts/data-ui tests=: 3758 checks, 56 groups, all pass. Left as-is: =handleAction='s complete branch (the cited precedent) still closes + fetches unconditionally, so a =:button= on a =:hide-list t= update form races the landing fetch — benign (sequence-guarded, one superseded request) and pre-existing; and a model with no =:landing-page= gets no landing fetch after a hide-list close (the continuation's =if (lp)= is false) — no repo model combines the two, and the close flow there is already degenerate.
+** PLANNING Page type (editable content pages)     :model:frontend:compiler:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-21 Wed]
+:END:
+Prose an app user is meant to edit — About page, house style guide, landing blurb — as data, not model text: a content type holds one row per page (markdown body, =:identity t= slug, edited in-app under RBAC), and a =:page t= projection type renders one selected row as a full page in the type selector — no list chrome, always expanded, empty state when the row does not exist yet. Static =:page-description= (above) stays the author-prose counterpart; tabs remain model-declared — a page without a tab is just a row. v1 is a read-only projection; in-page editing waits on the per-field editability machinery. Naming settled 2026-10-21: =:page t= survives the collision check — pagination's =page= lives only in query-param / wire namespaces, never a model keyword (keep any future types-payload wire key from being named =page=). =:page-description= on a =:page t= type is a compile error: the page's content /is/ the description, and a collapsible intro on top of a full page is noise. Amended 2026-10-21 after the View form discussion: a page type *requires* =:view-form= (compile error, the rollup-requires-:list-form precedent) and renders it as the page — the reader may not hold read on the content type, so the page cannot borrow its forms. A page type declares no =:list-form= (compile error if it does; absent =:list-form= is already structurally list-less today, so no suppression mechanism is needed), does not use =:hide-list=, and has no list to hide.
+
+Notes: [[file:~/workbench/page-type-notes.org][page-type-notes.org]]
+Plans: [[file:~/workbench/page-type-plan-kimi.org][page-type-plan-kimi.org]], [[file:~/workbench/page-type-plan-grok.org][page-type-plan-grok.org]]
+
+Plan: [[file:~/workbench/page-type-plan.org][page-type-plan.org]]
+** TODO Syntax check                              :model:backend:scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-07 Sat]
+:END:
+Allow users and clients to validate model syntax in the app and via a client script.
+
+Notes: [[file:~/workbench/syntax-check-notes.org][syntax-check-notes.org]]
+
 ** TODO Add a field to a running model                     :backend:scripts:mvp:
 :PROPERTIES:
 :CREATED: [2026-11-06 Fri]
@@ -810,9 +891,6 @@ Plan: [[file:~/workbench/public-pages-plan/03-spa.org][03-spa.org]]
 An admin adds a field to a running model's source, reloads without dropping tables, restores a snapshot taken before the field existed, and finds the new field on every old row — NULL or the field's default — with the old data intact. Stays small by leaning on the admin and on documentation: he adds one nullable or defaulted field at a time, and the code only does the two mechanical steps. A =NOT NULL= field with no default is rejected, not invented. No type changes, renames, or drops — those stay with [[*TODO Migrations when the model changes][Migrations when the model changes]].
 
 Two changes. A second pass beside =create-tables= probes =information_schema.columns= and =ALTER TABLE ... ADD COLUMN=s a compiled column the table does not have yet, refusing =NOT NULL= without a default; =heal-model= and a fresh =set-model= grow the column themselves. A data-only snapshot restore skips =DROP SCHEMA public= and loads with =pg_restore --data-only=, so the column the new model just added survives. =(set-model ...)= on an already-loaded image still drops user tables — the safe reload is a restart or =heal-model=, and the snapshot docs must say so.
-
-Notes: [[file:~/workbench/field-migration-notes.org][field-migration-notes.org]]
-
 ** READY Separate index creation                           :backend:
 :PROPERTIES:
 :CREATED: [2026-11-04 Wed]
@@ -824,14 +902,6 @@ Split the gate in =create-tables= (=lisp/model.lisp=): table and trigger DDL sta
 Plan: [[file:~/workbench/separate-index-creation-plan.org][separate-index-creation-plan.org]]
 =:event=, =:on=, and =:detail= on the built-in =:usage= type are base text columns and already =:searchable t=, but none of them is =:sortable t= — only =:user-name=, =:ip=, and =:when= are. Add =:sortable t= to those three fields in =*base-model*= so the list headers sort them the same way the other text columns do (lexicographic, the same acceptance as =:ip=). =:user= stays unsortable: it is a =:target= FK, and =compile-field= rejects =:sortable t= on those. No tests.
 Implemented as specified. =model.lisp= =*base-model*=: =:sortable t= appended to =:event=, =:on=, =:detail= (nothing else touched; =:user= untouched). Fresh DBs gain =ix_usage_usage_event= / =ix_usage_on_type= / =ix_usage_usage_detail= via =sort-index-ddl=; existing tables do not (the =usage_ip= stop-at-present precedent — manual =CREATE INDEX= if wanted). Deviation from "No tests": =al-compile-field-flags= already pins the =:usage= field flags, so it gained =:sortable t= assertions for the three fields (docstring updated) rather than silently asserting their absence; =al-compile-wire= left alone. Docs: =model-reference.md= =:usage= paragraph gains "All six text columns are also =:sortable t= … =:user= FK stays unsortable". Full suite green (2847 checks, 50 groups).
-** TODO Page type (editable content pages)     :model:frontend:compiler:mvp:
-:PROPERTIES:
-:CREATED: [2026-10-21 Wed]
-:END:
-Prose an app user is meant to edit — About page, house style guide, landing blurb — as data, not model text: a content type holds one row per page (markdown body, =:identity t= slug, edited in-app under RBAC), and a =:page t= projection type renders one selected row as a full page in the type selector — no list chrome, always expanded, empty state when the row does not exist yet. Static =:page-description= (above) stays the author-prose counterpart; tabs remain model-declared — a page without a tab is just a row. v1 is a read-only projection; in-page editing waits on the per-field editability machinery. Naming settled 2026-10-21: =:page t= survives the collision check — pagination's =page= lives only in query-param / wire namespaces, never a model keyword (keep any future types-payload wire key from being named =page=). =:page-description= on a =:page t= type is a compile error: the page's content /is/ the description, and a collapsible intro on top of a full page is noise. Amended 2026-10-21 after the View form discussion: a page type *requires* =:view-form= (compile error, the rollup-requires-:list-form precedent) and renders it as the page — the reader may not hold read on the content type, so the page cannot borrow its forms. A page type declares no =:list-form= (compile error if it does; absent =:list-form= is already structurally list-less today, so no suppression mechanism is needed), does not use =:hide-list=, and has no list to hide.
-
-Notes: [[file:~/workbench/page-type-notes.org][page-type-notes.org]]
-Plan: [[file:~/workbench/page-type-plan-kimi.org][page-type-plan-kimi.org]]
 ** TODO Page description button label     :model:frontend:polish:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-27 Tue]
@@ -891,25 +961,6 @@ Plan: [[file:~/workbench/record-cli-plan.org][record-cli-plan.org]]
 :CREATED: [2026-11-01 Sun]
 :END:
 In the view form, =:list= fields (e.g. =:tags=) render as a comma-separated plaintext string (=renderReadOnlyField= in =web/src/App.tsx= joins the values). List views already render the same values as chips — the =chipFieldMeta= / cell-chip treatment — and the view form should match. Pure frontend: chip spans in the read-only list-field branch; no backend, model, or wire changes.
-** DONE RSS feed                                      :backend:mvp:
-:PROPERTIES:
-:CREATED: [2026-11-02 Mon]
-:COMPLETED: [2026-11-07 Sat]
-:END:
-Absorbed 2026-11-06 into [[*DONE Bot-crawlable public pages][Bot-crawlable public pages]] children 1 and 2: one RSS 2.0 feed per public type at =/p/<type>/rss.xml= (so a blog's feed is =/p/posts/rss.xml=), full =<content:encoded>=, permalink guids, RFC 822 dates, autodiscovery on the type's index and record pages. Do not implement separately; mark this DONE when that child 2 lands. The requirements below stand as the acceptance list.
-Done 2026-11-07 with public pages child 2: =render-feed= (lisp/public-pages.lisp) serves =/p/<type>/rss.xml= through the route — RSS 2.0 with =xmlns:atom= / =xmlns:content=, an absolute =atom:link rel="self"=, newest-first items from a =:limit 50= query, =<guid isPermaLink="true">= equal to =<link>=, RFC 822 =+0000= pubDates, plain =<description>=, full rendered markdown in =<content:encoded>= CDATA (with the =]]>= split pinned directly), and feed autodiscovery =<link>= on the type's index and record pages. Pinned by the =public-pages= suite (feed shape, cdata, limit-50).
-
-A blog engine without a feed loses the subscribers and tools that poll a URL instead of an account: feed readers, planets, and glue automation. Search ranking does not depend on it; the repeat technical audience does. One feed is enough. Readers accept Atom, but a from-scratch generator should emit RSS 2.0 — the dialect validators, docs, and "paste this URL" habits assume, and the only one podcast clients accept.
-
-- RSS 2.0 at a stable URL (=/feed/= or =/rss.xml=), with autodiscovery in =<head>=: =<link rel="alternate" type="application/rss+xml">=
-- Full post body in =<content:encoded>=, not a teaser
-- Stable =<guid isPermaLink="true">= that does not change when the title does
-- RFC 822 dates, absolute permalinks, and a valid =<channel>= title and link
-- Do not also emit Atom unless it is free
-
-Sits above the video because a finished blog the video can point at should already be subscribable.
-
-
 ** TODO 30-second demo video                                      :docs:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -919,6 +970,12 @@ Nothing → model → deployed app. Deadline: December 31, 2026.
 Montage concept (2026-10-24): ~20 seconds creating and deploying one simple app — nothing → model → deployed, the complete story once — then the remaining ~10 seconds as rapid-fire deployments of a few more apps, 2–3 seconds each. The first 20 seconds carry the claim; the last 10 are repetition at speed, which is the proof. Fits the 30-second ceiling exactly. Beat details live in the video plan: [[file:~/workbench/video-plan.org][video-plan.org]].
 
 **When to shoot:** mid-to-late December — after polish and the features that should appear on camera (search/filtering, sort, static drop-downs, boolean list checkmarks, UI polish, etc.).
+
+** TODO Profiles                               :model:backend:frontend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-08 Sun]
+:END:
+User profiles for apps that need them (blog is the named consumer): each user gets one profile they author about themselves — owner-only writes, open reads, public page addressed by username in guest-enabled apps, byline links from content, sitemap + person metadata. Requirements are drafted and shape-neutral: [[file:~/workbench/profiles-req.org][profiles-req.org]]. Vocabulary shape (how a profile is spelled in a model) is an open question for the planning stage.
 
 * MVP Backlog
 ** TODO Type→widget inference                      :compiler:model:mvp:docs:
@@ -936,11 +993,16 @@ Intended inferences (explicit =:widget= always wins):
 - button field with =:action= and no widget → =:button=
 - status companion fields (already synthesized) → =:textbox= + =:read-only t= (should already be true after the widget series)
 
-** TODO Cryptic no-model-selected error when uploading image :model:polish:mvp:
+** TODO Cryptic required-field error message :model:polish:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
 :END:
 If no model is selected when uploading an image, the error is cryptic. Instead of "Model is required" or something like that, we get: "Invalid value type for field :IMAGES :MODEL. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-f02]" Model Bank demo polish.
+Second sighting (2026-11-10) — the generic case, not Model Bank's: the Add form for the built-in =:styling= type with Slot left unselected gives "Invalid value type for field :STYLING :NAME. Expected type :TEXT, but got value :NULL. [Guru Meditation Number 29a979-c9f]". Any =:not-null= field with no =:default=, left empty on any type, takes this path: type-theory prose that names keys, not labels — "Slot" never appears, so a user cannot map the error to the control they skipped.
+
+Mechanics (verified live, 2026-11-10): both GMNs share prefix =29a979= — one function, =valid-value-type= in =lisp/backend.lisp=. JSON null reaches =valid-data=, whose null guard skips =valid-value-type= only for nullable fields and =:password=; a not-null field falls through to the type mismatch above. The friendly message already exists and already runs: the compiled =:validations= list carries =v-required= ("STYLING NAME is required."), but =be-insert= / =be-update= run =valid-data= *before* =validate-fields=, so the cryptic error preempts it every time. The backend fix is a case at that decision point, not new machinery: null + =:not-null t= → "<Label> is required" (the =:ui :label=, falling back to the field key).
+
+Frontend half: the wire already carries what a submit-time guard needs — =fe-fields= emits =not-null= as a JSON boolean and App.tsx already consumes it (the SearchSelect clear-✕ gate), and the label rides the same field meta. A pre-submit required check showing "<label> is required" inline at the field blocks the failed round-trip with no schema change; it is the submit-time v1 of [[*TODO Real-time field validation][Real-time field validation]].
 
 ** TODO Move =:model:= templates to =models/template/= :model:testing:maintenance:
 :PROPERTIES:
@@ -1072,13 +1134,6 @@ Replace the paid GlobeSSL wildcard on evo-x2's HAProxy with a Let's Encrypt wild
 - =certbot renew --dry-run= does not fire deploy hooks.
 - HAProxy reload keeps connections; restart drops them.
 - Side-fix while in there: the =guru= / =files= / =files-dev= / =grafana= ACLs + backends — and =default_backend guru= — are dead config now (DNS deliberately gone; see above). Bots hitting the bare IP already land on the dead guru backend and get 503s. Either delete them during the cutover (and repoint or drop =default_backend=) or confirm they're expected to come back first. Step 4 verification then needs =monitor= only. Constraint: =monitor= must NOT become the default backend — the preferred end state is no =default_backend= line at all (HAProxy's built-in 503), so bare-IP scanners never reach Grafana.
-** TODO Styling type                              :model:backend:frontend:
-:PROPERTIES:
-:CREATED: [2026-11-05 Thu]
-:END:
-A built-in =:styling= type whose rows are named appearance slots the system reads, not the user. v1 has one slot, =banner=: restricted HTML that replaces the logged-in header. Absent, blank, or unknown slot means today's =h1=. The browser tab and the login screen stay on the model's =:title= until a later slot says otherwise. The admin edits the rows; the system reads them as admin, so the row's own roles never decide who sees the header. The tab is admin-only because =:type-roles ("admin")= plus =be-types=' read gate already hide a type the caller cannot read. Depends on [[*DONE Bot-crawlable public pages][Bot-crawlable public pages]]: a banner image is a =/p/files/<type>/<path>= URL the admin writes (grammar amended 2026-11-06), and that route does not exist until public pages land. Its renderer already reads the site header, footer, =og:site_name=, JSON-LD =publisher=, and RSS channel from one =site-chrome= function that returns defaults; this item makes that function read the styling rows as admin and adds the banner sanitizer. Do not start this before that item is serving.
-Plan: [[file:~/workbench/styling-type-plan-grok.org][styling-type-plan-grok.org]]
-The plan settles the conversation: rows not columns (a new slot is a new row, and =create-tables= never alters an existing table — the =usage= =:ip= column is the scar); =banner= is the only v1 slot and the frontend ignores any other name; the value is restricted HTML sanitized on the write path (=a=, =img=, =span=, =strong=, =em=, =br=; =href= / =src= only =https:= and =/p/=; =style= is a closed property list, no =url()=); the header stops being a home link when the banner renders, and the Home button is the guaranteed way home; =document.title= and the login screen are untouched.
 ** TODO Message of the day :compiler:frontend:
 :PROPERTIES:
 :CREATED: [2026-09-09 Wed]
@@ -1649,6 +1704,23 @@ Not a union: aliasing enables per-field AND; whether cross-field same-target row
 :END:
 Public account creation so a visitor can comment. Submit takes username, email, and password; the user row is created only after a single-use confirm link, sent through Migadu. Guest stays read-only. Not an open create on =:users=.
 Decisions: [[file:~/workbench/auto-registration-notes.org][auto-registration-notes.org]]
+
+** TODO Stateful-profile protocol                :scripts:deployment:
+:PROPERTIES:
+:CREATED: [2026-11-07 Sat]
+:END:
+Generalize Model Bank's staging-verb specificity before the model editor (the second Model-Bank-like app, later) needs it. Grammar first: the CLI already speaks =class verb + instance argument= (=e-demo start books=); =staging activate-modelbank= collapses to =staging activate <profile>=, with =modelbank-orphans= / =modelbank-running= deliberately keeping their names — they are app-domain queries over Model Bank's own rows, not profile infrastructure. The pieces are already parameterized by profile everywhere except names: =activation.state= lives behind a path function, quiesce reads the profile env generically, the activate body (locks, restart, verify, re-expose) does not care whose. Day-sized pass: verb rename; per-profile =activation.state=; a "stateful profiles" list in the =staging update= supervisor (quiesce and restart the rest behind the health gates, leave listed profiles pending activation); the =DEMO_CLASS= stamp grows a value for the editor's class; deployment-cleanup tests updated (they exist — that is what the recent =Fix deployment cleanup= commits were). One deliberate exclusion: the drain predicate stays per-app (modelbank's is "no action-hook execution in flight", the editor's is its own spawn/preview shape) — a general drain abstraction from one data point is the speculative-generality failure mode, not the fix. Do as its own item, sequenced before editor work starts (the editor needs it only at its first staging update dance, not to exist). Second rationale recorded so the rename is not relitigated: names are the highest-signal-per-minute surface in the repo — an evaluator reads the CLI help in the first five minutes of due diligence, and =activate-modelbank= beside the class grammar reads as accretion; =staging activate <profile>= reads as designed.
+** TODO Virtual page types                              :model:compiler:backend:
+:PROPERTIES:
+:CREATED: [2026-11-07 Sat]
+:END:
+A page type with no backing table: form fields over a synthesized record, actions answered on the response — "text in, verdict out" surfaces (the check app's pure spelling, calculators, converters, tool pages) as a vocabulary concept instead of a forced one-row scratchpad. Cannot be spelled today: =:table nil= is an explicit compile error (frozen as "not a rollup alias"), rollups — the only tableless kind — forbid =:update-form= and =:button=, =be-action= is row-born (a mandatory record UUID and row-resource authorization), and the sync status protocol writes a record's companion field through =set-status=. Work list when it earns its keep: compiler vocabulary + validators, synthesized records through =be-list= / =be-rec=, a recordless =be-action= path with a response-carried verdict, a type-roles-only RBAC story, =fe-fields= / =App.tsx= branches, docs, tests — =model.lisp= / =backend.lisp= / =rest.lisp= core, week-class. The check app ([[*TODO Syntax check][Syntax check]]) migrates to this by editing a 35-line model, not a rewrite; the model editor still wants storage (drafts, versions) and does not wait for it.
+
+** TODO User styles                                   :model:backend:frontend:
+:PROPERTIES:
+:CREATED: [2026-11-08 Sun]
+:END:
+A built-in =:user-styles= type — the user-scope sibling of [[*TODO Styling type][Styling type]]. Rows are the =:secrets= shape (name/value, =:scope :user=, one set per user) under a controlled slot vocabulary like =:styling='s; the system reads them as the viewer, not as admin, and the UI surface is the Settings view, not an Admin tab. Slot names stay orthogonal between the scopes (=banner= never per-user, =dark-mode= never site-wide), and when a name exists in both (=theme= is the likely one), the layering rule is user slot > site slot > built-in default. Values are enums and strings, not authored HTML, so no sanitizer rides along. Dark mode stays in =:settings= until this lands; the trigger is the second per-user appearance preference, not the first.
 
 * Scratch
 

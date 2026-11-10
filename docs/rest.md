@@ -153,7 +153,7 @@ Available types, each entry an object: `name` (string), `category` (`user` / `se
 
 ### `GET /api/info`
 
-Schema metadata, landing page resolution (per-user via `be-landing-page`). Includes the top-level settings (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:guest-allowed`, with `:landing-page` resolved per user).
+Schema metadata, landing page resolution (per-user via `be-landing-page`). Includes the top-level settings (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:guest-allowed`, with `:landing-page` resolved per user). Carries optional `banner` and `footer` strings — the sanitized `:styling` slot values, each key omitted when the slot has no row or a blank value (never `null` / `[]`).
 
 ### `GET /api/public-info`
 

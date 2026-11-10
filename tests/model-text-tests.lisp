@@ -84,7 +84,7 @@ committed."
                      (subseq (u:random-hex-number 8) 0 8)))
          (dir (u:join-paths *package-root* "models" "local"))
          (path (u:join-paths dir (format nil "~a.lisp" name))))
-    (ensure-directories-exist dir)
+    (ensure-directories-exist path)
     (unwind-protect
         (progn
           (u:spew "'(:a #.(with-open-file (s \"/tmp/opencode/mt-pwned\"

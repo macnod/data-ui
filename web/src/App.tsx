@@ -13,6 +13,7 @@ import { parseHash, canonicalize, buildUrlState,
          SCOPE_NONE } from './urlState'
 import type { RecordMode, ScopeState } from './urlState'
 import { hashPermalink, bestLinkUrl } from './publicLink'
+import { slotFromInfo } from './stylingHtml'
 import { Markdown } from './Markdown'
 import { PageDescription } from './PageDescription'
 import { FieldHelp } from './FieldHelp'
@@ -1910,6 +1911,43 @@ function InvalidScopeNotice({ onClear }: {
   )
 }
 
+// The app header's h1: the styling banner (when set) or the title
+// as a home link. Props only, no state (the PageDescription
+// precedent); both logged-in render paths consume it so the branch
+// lives once.
+function AppTitle({ title, banner, onHome }: {
+  title: string
+  banner: string | null
+  onHome: () => void
+}) {
+  if (banner) {
+    // The banner may carry its own anchors; nesting them inside
+    // a header link is invalid HTML. Home is the way home.
+    // Sanitized server-side on write (and again on read); this
+    // is the only dangerouslySetInnerHTML in the app — do not
+    // route any other string through this component.
+    return <h1 className="banner"
+      dangerouslySetInnerHTML={{ __html: banner }} />
+  }
+  return (
+    <h1>
+      <a href="#" onClick={e => { e.preventDefault(); onHome() }}
+        style={{ textDecoration: 'none', color: 'inherit' }}>
+        {title}
+      </a>
+    </h1>
+  )
+}
+
+// The styling footer slot (when set), rendered at the shell level
+// so it survives every view switch and form-open state. Same
+// server-contract invariant as AppTitle's banner.
+function AppFooter({ footer }: { footer: string | null }) {
+  if (!footer) return null
+  return <footer className="app-footer"
+    dangerouslySetInnerHTML={{ __html: footer }} />
+}
+
 function App() {
   const [data, setData] = useState<ListResponse | null>(null)
   const [types, setTypes] = useState<TypeInfo[]>([])
@@ -2015,6 +2053,11 @@ function App() {
   const [listError, setListError] =
     useState<ListErrorOwner | null>(null)
   const [title, setTitle] = useState('Data UI')
+  // Styling slots (banner / footer) from /api/info; null = absent
+  // (slotFromInfo normalizes blank / non-string to null so a
+  // removed slot clears on the next fetch).
+  const [banner, setBanner] = useState<string | null>(null)
+  const [footer, setFooter] = useState<string | null>(null)
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
   const [elapsed, setElapsed] = useState<number | null>(null)
   const runningStartRef = useRef<number | null>(null)
@@ -2136,6 +2179,8 @@ function App() {
       setLoggedIn(false)
       setLoggedInUser('')
       resetSessionState()
+      setBanner(null)
+      setFooter(null)
       document.body.classList.remove('dark')
     })
   }, [])
@@ -3154,6 +3199,8 @@ function App() {
         if (navRef.current.generation !== gen) return
         const t = info.result?.['title']
         if (t) setTitle(String(t))
+        setBanner(slotFromInfo(info.result, 'banner'))
+        setFooter(slotFromInfo(info.result, 'footer'))
         const lp = info.result?.['landing-page']
         if (lp) {
           setViewMode('app')
@@ -3229,6 +3276,11 @@ function App() {
     setLoggedIn(false)
     setLoggedInUser('')
     resetSessionState()
+    // Chrome is user-visible and a different app could be behind
+    // the next login (title is not cleared today; belt, not
+    // load-bearing).
+    setBanner(null)
+    setFooter(null)
     document.body.classList.remove('dark')
   }
 
@@ -3407,6 +3459,20 @@ function App() {
       }
     }
 
+    // Once-guard capture, shared by both submit paths: the
+    // navigation generation at submit, taken before the first
+    // await. Each success branch checks it once, after its
+    // awaits — a navigation during the request(s) (type or view
+    // switch, another open, a close, logout) owns the screen,
+    // and the continuation must not close a newer form or
+    // refresh a departed query over it. The capture must precede
+    // the awaits: navGen and navRef advance together, so a
+    // capture beside the check would compare the generation
+    // against itself and fence nothing.
+    const gen = navGen.current
+    const submitOk = () =>
+      navRef.current.generation === gen
+
     const fileField = formFieldKeys(formDef)
       .find(f => formDef[f]['widget'] === 'file')
     const fileValue = fileField ? formValues[fileField] : null
@@ -3508,27 +3574,34 @@ function App() {
       })
 
       if (res.ok) {
-        // Once-guard: capture the navigation generation at
-        // submit; on pass, run the synchronous close/landing/
-        // refresh without further checks (a per-call re-check
+        // Once-guard (captured above the path split): one check
+        // after the awaits, then the synchronous close/landing/
+        // refresh without further checks — a per-call re-check
         // would reject the operation's own close, which bumps
-        // the generation the check would compare against).
-        // Refresh goes through fetchListRef.current, never the
-        // captured fetchList closure (the old query under a new
+        // the generation the check compares against. Refresh
+        // goes through fetchListRef.current, never the captured
+        // fetchList closure (the old query under a new
         // sequence).
-        const gen = navGen.current
-        const submitOk = () =>
-          navRef.current.generation === gen
         if (viewMode === 'settings') {
           if (submitOk()) returnToLanding()
-        } else {
-          if (submitOk()) {
-            if (recordId != null) {
-              pendingUrlCause.current = 'push'
-            }
-            closeForm()
+        } else if (submitOk()) {
+          if (recordId != null) {
+            pendingUrlCause.current = 'push'
           }
-          if (submitOk()) fetchListRef.current()
+          // Hide-list: closeForm routes through returnToLanding,
+          // whose landing continuation owns the next list fetch —
+          // resetListQuery re-runs the list effect on its own (its
+          // setListFilters({}) / setBoolFilters({}) replacements
+          // change the dep identities even when the values match),
+          // so the landing list refetches regardless of type or
+          // query state. A fetchList here would only race that
+          // fetch (one response sequence-discarded); the settings
+          // branch skips its refresh for exactly that reason.
+          const viaLanding =
+            (activeForm as Record<string, any> | undefined)
+              ?.['hide-list'] === true
+          closeForm()
+          if (!viaLanding) await fetchListRef.current()
         }
       } else {
         alert(await errorMessage(res, isEditMode ? 'Failed to update' : 'Failed to insert'))
@@ -3572,20 +3645,19 @@ function App() {
     }
 
     if (res.ok) {
-      // Same once-guard as the file path (see there).
-      const gen = navGen.current
-      const submitOk = () =>
-        navRef.current.generation === gen
+      // Same once-guard and hide-list routing as the file path
+      // (see there).
       if (viewMode === 'settings') {
         if (submitOk()) returnToLanding()
-      } else {
-        if (submitOk()) {
-          if (recordId != null) {
-            pendingUrlCause.current = 'push'
-          }
-          closeForm()
+      } else if (submitOk()) {
+        if (recordId != null) {
+          pendingUrlCause.current = 'push'
         }
-        if (submitOk()) fetchListRef.current()
+        const viaLanding =
+          (activeForm as Record<string, any> | undefined)
+            ?.['hide-list'] === true
+        closeForm()
+        if (!viaLanding) await fetchListRef.current()
       }
     } else {
       alert(await errorMessage(res, isEditMode ? 'Failed to update' : 'Failed to insert'))
@@ -3678,6 +3750,8 @@ function App() {
       parkedHistoryRef.current = false
       const t = info.result?.['title']
       if (t) setTitle(String(t))
+      setBanner(slotFromInfo(info.result, 'banner'))
+      setFooter(slotFromInfo(info.result, 'footer'))
       const lp = info.result?.['landing-page']
       // App state in the URL, Step 3: seed state ← URL. Parse
       // the LIVE hash on every login transition (not once per
@@ -4686,14 +4760,7 @@ function App() {
     return (
       <div>
         <div className="app-header">
-          <h1>
-            <a href="#" onClick={(e) => {
-              e.preventDefault()
-              returnToLanding()
-            }} style={{ textDecoration: 'none', color: 'inherit' }}>
-              {title}
-            </a>
-          </h1>
+          <AppTitle title={title} banner={banner} onHome={returnToLanding} />
           <div className="view-switcher">
             {/* View switcher: Home/Admin/user (Settings) select
                 viewMode (Home via returnToLanding); the username
@@ -4833,6 +4900,7 @@ function App() {
           {listError ? (listError as ListErrorOwner).message
             : 'No records'}
         </p>
+        <AppFooter footer={footer} />
       </div>
     )
   }
@@ -4916,14 +4984,7 @@ function App() {
   return (
     <div>
       <div className="app-header">
-        <h1>
-          <a href="#" onClick={(e) => {
-            e.preventDefault()
-            returnToLanding()
-          }} style={{ textDecoration: 'none', color: 'inherit' }}>
-            {title}
-          </a>
-        </h1>
+        <AppTitle title={title} banner={banner} onHome={returnToLanding} />
         <div className="view-switcher">
           {/* View switcher: Home/Admin/user (Settings) select
               viewMode (Home via returnToLanding); the username
@@ -5969,6 +6030,7 @@ function App() {
         <span className="record-count">{totalRecords} records</span>
       </div>
       )}
+      <AppFooter footer={footer} />
     </div>
   )
 }

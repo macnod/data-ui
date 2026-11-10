@@ -90,6 +90,34 @@ th {
   line-height: 1.2;
 }
 
+/* Styling banner slot: the admin's inline style overrides all of
+   it. The banner stays inside an h1 so the view switcher's
+   top: 0.6em alignment survives; an inline img is capped by the
+   line box. */
+.app-header h1.banner img {
+  max-height: 1.2em;
+  vertical-align: middle;
+}
+
+.app-header h1.banner a {
+  color: inherit;
+}
+
+/* Styling footer slot (rendered at the shell level so it survives
+   every view switch). */
+.app-footer {
+  margin-top: 1.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.95em;
+  color: var(--muted);
+}
+
+.app-footer img {
+  max-height: 2em;
+  vertical-align: middle;
+}
+
 .view-switcher {
   position: absolute;
   right: 0;

@@ -1526,6 +1526,10 @@ function run_tests {
     # central-registry push is not enough; see build_load_contract_evals).
     local out status
     out=$(mktemp)
+    # Gitignored runtime directories; absent in a fresh clone (same
+    # shape as compile_model) — data-ui.lisp probes DOCUMENT_ROOT and
+    # FS_TEMP_DIRECTORY at load time and dies without them.
+    mkdir -p "$DOCUMENT_ROOT" "$FS_TEMP_DIRECTORY"
     build_load_contract_evals
     DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" \
         ros run -- --disable-debugger \
@@ -5187,6 +5191,7 @@ case "$ACTION" in
         run_tests
         stop_database_quietly
         echo $REPORT
+        [[ "$REPORT" == "PASS" ]] || exit 1
         ;;
     debug)
         cd "$(canonical_checkout_root)" 2>/dev/null || true

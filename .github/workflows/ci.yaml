@@ -1,0 +1,25 @@
+name: Run Tests
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # No postgres service block: `scripts/data-ui tests` starts its own
+      # postgres:16 on 5445 via docker compose and waits for it.
+      - uses: actions/checkout@v5
+
+      - name: Setup Roswell
+        uses: macnod/roswell-action@v4
+        with:
+          sbcl-version: 2.5.10
+          roswell-version: 23.10.14.114
+
+      - name: Install dependencies
+        run: make install-dependencies
+
+      - name: Run tests
+        run: make test
