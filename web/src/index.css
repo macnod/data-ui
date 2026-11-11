@@ -272,6 +272,26 @@ tr.row-clickable:hover {
   display: none;
 }
 
+/* Page document (:page t). A reading column, not a full-bleed
+   property sheet: 44rem is the public renderer's main measure,
+   left-aligned under the tabs (centering would push the title
+   right of them). form-no-labels on the same element collapses
+   the gutter when no field draws a label. Images and pre blocks
+   stay inside the measure — a wide asset must not blow it out. */
+.page-body {
+  max-width: 44rem;
+  margin-top: 1rem;
+}
+
+.page-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.page-body pre {
+  overflow-x: auto;
+}
+
 /* Narrow screens: stack label above value, left-aligned, so the
    value column is not squeezed to unusable width. */
 @media (max-width: 640px) {

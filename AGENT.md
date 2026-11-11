@@ -18,6 +18,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 - **Dead-code decisions** — `docs/model-accessors.md` (check before removing anything that looks unused)
 - **Backlog** — `docs/todo.org`
 - **Demo video suggestions** → `~/workbench/video-plan.org` — running list of beats to capture (shots, pauses, points to land). Video work starts December 15; whenever a moment in the UI or flow would demo well, add it there.
+- **Mel's app** → `~/workbench/mels-app-notes.org` — the film continuity tracker (first expressly requested app): data model with settled decisions, what works today, build checklist. Read before any "Mel's app" work.
 
 ## Key Architecture
 

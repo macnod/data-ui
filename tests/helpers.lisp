@@ -1068,6 +1068,23 @@ page-description-test fixture."
     (explain! results)
     (when collect results)))
 
+(defun run-page-type-tests (&optional collect)
+  ":page t tests. Compile probes (pure compile-model, no DB) plus
+behavior / REST-harness checks on the page-type-test fixture
+(seeded by th-pt-seed, defined in tests/page-type-tests.lisp — load
+it first)."
+  (load (u:join-paths *package-root* "tests" "page-type-tests.lisp"))
+  (let ((results
+          (append
+            ;; Compile probes (pure compile-model, no DB)
+            (run 'page-type-compile)
+            ;; Behavior (needs the fixture, a live DB, and the
+            ;; running web server with-model starts)
+            (with-model "page-type-test" #'th-pt-seed
+              (run 'page-type-behavior)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-field-help-tests (&optional collect)
   ":help tests: value / combination-rule compile probes (no model
 needed) plus fe-fields / plist-to-json wire checks on the
@@ -1346,6 +1363,7 @@ groups."
                    ("file-path"     . run-file-path-tests)
                    ("markdown"      . run-markdown-tests)
                    ("page-description" . run-page-description-tests)
+                   ("page-type"      . run-page-type-tests)
                    ("field-help"    . run-field-help-tests)
                    ("view-form"     . run-view-form-tests)
                    ("hide-list"     . run-hide-list-tests)

@@ -250,7 +250,7 @@ type."
            (when row-id
              (delete-by-id type-key row-id))))))
 
-(defparameter *styling-slots* '("banner" "footer")
+(defparameter *styling-slots* '("banner" "footer" "heading")
   ":private: The frozen :styling slot vocabulary. The compiled
 :ui (:options ...) of the :styling :name field (v-options
 rejects any :name not among these); every reader (styling-slot
@@ -263,9 +263,10 @@ entry here, one reader call site, one doc line.")
       (format nil
         "Appearance slots for the whole app: each row picks a slot ~
          and holds its HTML: `banner` replaces the header title on ~
-         every page, `footer` renders at the bottom. Values are ~
-         restricted HTML, sanitized on save and capped at 4096 ~
-         characters; anything outside the grammar below is ~
+         every page, `footer` renders at the bottom, `heading` is a ~
+         single styled span whose style rides the page headline. ~
+         Values are restricted HTML, sanitized on save and capped at ~
+         4096 characters; anything outside the grammar below is ~
          stripped automatically.")
       (format nil
         "- Tags: `a` `img` `span` `strong` `em` `code` `small` `sup` ~
@@ -1930,8 +1931,11 @@ compiled type-def is in hand.")
 (defparameter *widgets*
   '(:textbox :textarea :code :markdown :stars :checkbox :checkbox-list :select
      :search-select :file :file-path :password-new :password-read
-     :button :hidden :image :image-list)
-  "Allowed values for the :widget key on a field :ui plist.")
+     :button :hidden :image :image-list :heading)
+  "Allowed values for the :widget key on a field :ui plist. The
+master gate is membership only — :heading is page-only in v1, and
+that rule lives in compile-field (page fields never reach it; see
+*page-widgets*).")
 
 (defparameter *ui-keys*
   '(:label :widget :read-only :hide-label :help :precision :options :table
@@ -3469,6 +3473,17 @@ correct there). Returns the effective :source plist."
             ":widget :search-select requires :target on field ~s ~
              of type ~s."
             ~new-field-key ~type-key))
+        ;; :heading is page-only in v1 — a page is title and body; the
+        ;; title is the one heading, and the ordinary property sheet has
+        ;; no heading row. Page fields never reach compile-field (the
+        ;; page path builds presentation overlays in valid-page-field-ui),
+        ;; so this check cannot fire on a page.
+        (when (eq widget :heading)
+          (report-e "compile-field"
+            ":widget :heading is legal on :page t types only, on ~
+             field ~s of type ~s (a page is title and body; the ~
+             title is the one heading)."
+            ~new-field-key ~type-key))
         ;; :file-path requires :directory-type naming an existing type
         ;; (the frontend must not guess the folder source; the same
         ;; model-scope existence check pattern as :enabled-when).
@@ -4186,6 +4201,120 @@ fragments (FILTER conditions ANDed into every real measure)."
     into joined-frags
     finally (return (values grain-frags joined-frags))))
 
+(defun page-qualified-column (model of-type field-key)
+  ":private: Fully qualified <table>.<column> for a page filter or
+projection column: the content type's compiled :table-name and the
+content field's compiled :name-sql. The WHERE resolves its columns
+from the content type's compiled fields, never from :page-columns —
+a clause may name any storage-legal column, projected or not; the
+SELECT list and the WHERE list answer different questions, as in
+any SQL select."
+  (format nil "~a.~a"
+    (u:tree-get model of-type :table-name)
+    (u:tree-get model of-type :fields field-key :name-sql)))
+
+(defun page-where-sql (model of-type clause index)
+  ":private: One parameterized WHERE fragment for a page :filter
+clause. Discrete :eq / :ne literals are bind parameters — never
+embedded in quotes the way measure-model-filter-sql embeds them (a
+slug literal with an apostrophe would produce broken SQL) — except
+booleans, which use the measure truthiness forms in all four cases
+(:eq t → bare column, :eq nil → not column, :ne t → not column,
+:ne nil → bare column; Lisp nil is never a bind, and no IS NULL
+translation exists or is needed — a non-boolean nil literal is
+illegal in the DSL, so SQL-NULL comparison semantics never arise).
+:last-days / :calendar reuse the measure clock shapes (their values
+are validated integers and :month, never strings). INDEX is the
+1-based bind number this clause's placeholder uses. Returns (values
+fragment bind); BIND is nil for the truthiness and clock forms, so
+a zero-bind page is a legal compiled shape."
+  (destructuring-bind (table column op value) clause
+    (declare (ignore table))
+    (let ((qualified (page-qualified-column model of-type column))
+          (col-type (rollup-column-type model of-type column)))
+      (case op
+        (:eq
+          (if (eq col-type :boolean)
+            (values (if value
+                      qualified
+                      (format nil "not ~a" qualified))
+              nil)
+            (values (format nil "~a = $~d" qualified index) value)))
+        (:ne
+          (if (eq col-type :boolean)
+            (values (if value
+                      (format nil "not ~a" qualified)
+                      qualified)
+              nil)
+            (values (format nil "~a != $~d" qualified index) value)))
+        (:last-days
+          (values
+            (format nil "~a >= now() - interval '~a days'"
+              qualified value)
+            nil))
+        (:calendar
+          ;; :month is the sole MVP unit (the measure shape).
+          (values
+            (format nil
+              "~a >= date_trunc('month', now()) and ~a < date_trunc('month', now()) + interval '1 month'"
+              qualified qualified)
+            nil))))))
+
+(defun page-where-parts (model type-key filter)
+  ":private: Fragments and bind parameters for every page :filter
+clause, in clause order: fragments and binds are built left to
+right, truthiness / clock clauses contribute no placeholder, and
+the bind numbering runs across clauses (a text bind, a boolean
+no-bind, a text bind is $1, bare column, $2). Returns (values
+fragments params); PARAMS may be () — a boolean identity column
+pins with a truthiness form and binds nothing — so the runtime
+builds its query as (cons sql params) and never assumes a
+parameter exists."
+  (loop
+    with of-type = (u:tree-get model type-key :of)
+    with fragments = nil
+    with params = nil
+    for clause in filter
+    for index = (+ 1 (length params))
+    do (multiple-value-bind (fragment bind)
+           (page-where-sql model of-type clause index)
+         (push fragment fragments)
+         ;; A nil BIND is a truthiness / clock clause by
+         ;; construction; a nil *value* never reaches the bind list
+         ;; (non-boolean nil literals are illegal in the DSL).
+         (when bind (push bind params)))
+    finally (return (values (nreverse fragments)
+                      (nreverse params)))))
+
+(defun page-select-columns (model type-key)
+  ":private: The SELECT list for the page query, capped at the
+effective View-form projection plus :id — t expands to every
+declared page field, an explicit list to exactly its members; never
+the full declared :fields when the view form omits one (list-result
+passes supplied records through unfiltered, so an over-broad SELECT
+would leak values the author deliberately left off :view-form, and
+fe-fields hiding the schema is not data hiding). Each entry is a
+qualified content column aliased through to-sql-identifier (a
+hyphenated key like :sub-title aliases as sub_title), exactly how
+measure-field-sql builds its aliases, so each row comes back as a
+field-key plist (the measure-row-to-plist shape)."
+  (let* ((type-def (getf model type-key))
+         (of-type (getf type-def :of))
+         (form-fields (u:tree-get type-def :view-form :fields))
+         (field-keys (if (eq form-fields t)
+                       ;; Every declared page field — the injected
+                       ;; :id is appended explicitly below.
+                       (remove :id (u:plist-keys
+                                     (getf type-def :fields)))
+                       form-fields)))
+    (append
+      (loop for field-key in field-keys
+        collect (format nil "~a as ~a"
+                  (page-qualified-column model of-type field-key)
+                  (to-sql-identifier field-key)))
+      (list (format nil "~a.id as id"
+              (u:tree-get model of-type :table-name))))))
+
 (defun measure-pk-guard-sql (model fact-table)
   "The shared per-table predicate attached to every real measure from the fact
 table F: <F>.id IS NOT NULL. This is what makes unfiltered array_agg empty (not
@@ -4816,12 +4945,24 @@ injected default fields (:id :uuid, timestamps) and the omitted-:type default of
       (report-e "valid-non-rollup-keys"
         ":table nil on type ~s is a compile error, not a rollup ~
          alias; :rollup t is the sole declaration."
+        ~type-key))
+    ;; :of is page-only vocabulary, unused anywhere in the Lisp
+    ;; source before the page item — without this arm an :of on an
+    ;; ordinary type rides compile-base-type-def's overlay
+    ;; untouched, silently accepted junk.
+    (when (u:has (u:plist-keys type-def) :of)
+      (report-e "valid-non-rollup-keys"
+        ":of is page-only; type ~s is not a page."
         ~type-key))))
 
 (defun valid-rollup-matrix (model type-key type-def grain views)
   "Type-level incompatible-key matrix for :rollup t (07b), including the
 grain / :tables contract and the :scope :user compile check. Signals report-e on
 the first violation."
+  (when (u:has (u:plist-keys type-def) :of)
+    (report-e "valid-rollup-matrix"
+      ":of is not allowed on rollup type ~s (page-only vocabulary)."
+      ~type-key))
   (when (u:has (u:plist-keys type-def) :table)
     (report-e "valid-rollup-matrix"
       "Rollup type ~s must not declare :table; a rollup has no ~
@@ -5484,6 +5625,496 @@ no :primary-key t, no :target, no default."
           (compile-field model type-key field-key field-key
             field-def))))))
 
+;;
+;; BEGIN Page types (:page t — editable content pages)
+;;
+;; Prose an app user is meant to edit — About page, house style
+;; guide, landing blurb — is a row of an ordinary content type, not
+;; model text. A :page t sibling type is a read-only projection of
+;; one of those rows, selected by a type-level :filter that pins
+;; every identity field of the content type with :eq (the composite
+;; identity index makes the result 0 or 1 rows), rendered as a full
+;; page in the type selector: no list chrome, always expanded, an
+;; empty state when the row does not exist yet. The page is tableless
+;; (:phase-a-shape :page beside :measure) with a direct parameterized
+;; select at runtime — no view machinery, no compile-field, no
+;; shared-validator edits. Authorization is the page's own
+;; type-resource read (the be-list dispatch); content rows are never
+;; consulted (the rollup precedent).
+;;
+
+(defparameter *page-column-types*
+  '(:text :integer :real :boolean :timestamp :uuid)
+  ":private: Stored scalar column types a page may filter on and
+project. Declared type is not storage: a :target field declares
+:type :text — the display type — while its column stores a UUID, a
+:column nil virtual field has no column at all, and :join-table /
+:file storage lives elsewhere. None of them is a page column.")
+
+(defparameter *page-widgets*
+  '(:textbox :textarea :code :markdown :stars :checkbox :select :heading)
+  ":private: Positive allowlist of widgets a page field may declare.
+Every entry has a read-only render in the frontend's
+renderReadOnlyField; everything else in *widgets* requires machinery
+a page field cannot declare (:search-select needs :target,
+:file-path needs file fields, :image / :image-list are not
+projectable scalars). A positive list also stays correct when
+*widgets* grows a new entry.")
+
+(defun page-content-field-def (model of-type field-key)
+  ":private: Effective raw def of FIELD-KEY on the page content type
+OF-TYPE: the author field def, or the injected default-fields def
+(:id / :created-at / :updated-at — all stored scalars), or nil when
+the key names neither."
+  (or (u:tree-get model of-type :fields field-key)
+    (getf (default-fields) field-key)))
+
+(defun valid-page-column (model type-key of-type field-key)
+  ":private: Storage check for one page column — a :filter clause or
+a projected field: FIELD-KEY must be a real stored scalar column of
+the content type OF-TYPE. The shared filter validator checks
+*declared* type only (rollup-column-type is declared-type-only), and
+declared type is not storage. Signals report-e naming the field;
+returns the effective def otherwise."
+  (let ((def (page-content-field-def model of-type field-key)))
+    (unless def
+      (report-e "valid-page-column"
+        "Field ~s on page type ~s does not exist on content type ~s."
+        ~field-key ~type-key ~of-type))
+    (unless (member field-key (default-fields :keys-only t))
+      (unless (and (getf def :column)
+               (not (getf def :target))
+               (not (getf def :join-table)))
+        (report-e "valid-page-column"
+          "Field ~s of ~s is not a stored column of the content ~
+           type (a :target field stores a UUID FK, a :column nil ~
+           field is virtual, a :join-table field stores on another ~
+           table); a page column must be a stored scalar."
+          ~field-key ~of-type)))
+    (let ((col-type (or (getf def :type) :text)))
+      (unless (member col-type *page-column-types*)
+        (report-e "valid-page-column"
+          "Field ~s of ~s has type ~s; page columns must be stored ~
+           scalars (~{~a~^, ~})."
+          ~field-key ~of-type ~col-type ~*page-column-types*)))
+    def))
+
+(defun page-identity-fields (model of-type)
+  ":private: Author field keys carrying :identity t on the content
+type OF-TYPE."
+  (loop for field-key in (u:tree-get model of-type :fields) by #'cddr
+    for field-def in (cdr (u:tree-get model of-type :fields)) by #'cddr
+    when (getf field-def :identity)
+    collect field-key))
+
+(defun valid-page-filter-identity (model type-key of-type filter)
+  ":private: The at-most-one-row rule, as an identity-set rule: the
+content-type fields pinned by (of identity-field :eq literal) must
+be exactly the whole :identity t set of OF-TYPE. :identity t
+columns form one composite unique index (ix_<table>_identity), so
+uniqueness holds on the tuple — one pinned column of two guarantees
+nothing, and a composite containing a :target identity field (the
+Model Bank :ratings shape) cannot be pinned by a scalar literal at
+all. Clauses that are not identity :eq pins — :eq on a non-identity
+column, :ne / :last-days / :calendar — are ride-alongs: legal on
+storage-legal columns, never counting toward the pin (a filter
+whose every :eq is a ride-along dies below as an unpinned identity
+set). Signals report-e."
+  (let* ((identity-fields (page-identity-fields model of-type))
+         (pinned (loop for clause in filter
+                   when (and (eq (third clause) :eq)
+                          (member (second clause) identity-fields))
+                   collect (second clause)))
+         (missing (remove-if
+                    (lambda (k) (member k pinned))
+                    identity-fields)))
+    (unless identity-fields
+      (report-e "valid-page-filter-identity"
+        "Content type ~s of page ~s declares no :identity t fields; ~
+         a page selects one row by pinning every identity field."
+        ~of-type ~type-key))
+    (dolist (field-key missing)
+      (let ((def (u:tree-get model of-type :fields field-key)))
+        (if (or (getf def :target)
+              (getf def :join-table)
+              (not (getf def :column)))
+          (report-e "valid-page-filter-identity"
+            "Identity field ~s of ~s cannot be pinned by a scalar ~
+             literal (it stores a UUID, lives on another table, or ~
+             is virtual); page ~s cannot select one row."
+            ~field-key ~of-type ~type-key)
+          (report-e "valid-page-filter-identity"
+            "Page ~s does not pin identity field ~s of ~s; :identity ~
+             t columns form one composite unique index, so every ~
+             identity field must be pinned with :eq (a non-identity ~
+             :eq never counts — it is a ride-along)."
+            ~type-key ~field-key ~of-type))))))
+
+(defun valid-page-matrix (model type-key type-def)
+  ":private: Type-level matrix for :page t (the valid-rollup-matrix
+shape): incompatible keys by membership (an explicit nil is the same
+mistake as t — the key names machinery a page does not have), the
+required :of / :filter / :view-form / :fields keys, the content type
+contract, and the filter's identity-pin rule. Returns the validated
+:of type-key. Signals report-e on the first violation. Does not call
+valid-page-description: both existing call sites run it on raw defs
+where a page would die in the visibility rule with a message naming
+neither pages nor descriptions, and on a compiled def it always
+silently passes (the overlay's :display t satisfies the rule) — the
+matrix's own rejection is the check that names pages."
+  (let ((keys (u:plist-keys type-def))
+        (of-type (getf type-def :of)))
+    ;; -- incompatible keys, rejected by key membership --
+    (dolist (key '(:table :type :grain :views :children :via
+                   :write-to :title-field :default-sort
+                   :page-description :page-description-open
+                   :list-form :add-form :update-form))
+      (when (member key keys)
+        (report-e "valid-page-matrix"
+          "Key ~s is not compatible with :page t on type ~s."
+          ~key ~type-key)))
+    ;; Compiled-only keys: the add-to-plist overlay merges with (or
+    ;; new old), so a computed nil cannot overwrite an author value —
+    ;; a zero-bind page computes :page-params as (), and an
+    ;; author-supplied :page-params would survive that merge and
+    ;; corrupt the runtime bind list. The rejection, not emission
+    ;; order, is the guard. :table-name on a page is a lie about a
+    ;; table that does not exist; the DDL / DML artifacts describe
+    ;; machinery the stage-2 widening declines to run.
+    (dolist (key '(:table-name :create-table-sql :insert-sql
+                   :update-sql :delete-sql :search-sql
+                   :page-table :page-columns :page-where
+                   :page-params))
+      (when (member key keys)
+        (report-e "valid-page-matrix"
+          "Key ~s is compiler-owned and not allowed on page type ~s."
+          ~key ~type-key)))
+    (dolist (key '(:tree :fs-backed :is-leaf :parent-type
+                   :user-setting :is-joiner :built-in :base
+                   :internal))
+      (when (member key keys)
+        (report-e "valid-page-matrix"
+          "Key ~s is not compatible with :page t on type ~s."
+          ~key ~type-key)))
+    (dolist (key *lifecycle-keys*)
+      (when (member key keys)
+        (report-e "valid-page-matrix"
+          "Lifecycle slot ~s is not allowed on page type ~s."
+          ~key ~type-key)))
+    (dolist (key '(:create :update :delete))
+      (when (getf type-def key)
+        (report-e "valid-page-matrix"
+          "Page type ~s is read-only; ~s must be absent or nil."
+          ~type-key ~key)))
+    (when (and (member :suppress-roles keys)
+            (null (getf type-def :suppress-roles)))
+      (report-e "valid-page-matrix"
+        "Author :suppress-roles nil on page ~s; the compiler ~
+         auto-sets :suppress-roles t."
+        ~type-key))
+    (when (and (member :display keys)
+            (not (eq (getf type-def :display) t)))
+      (report-e "valid-page-matrix"
+        ":display on page type ~s must be t or omitted; a page is ~
+         visible or it is not a page."
+        ~type-key))
+    ;; Load-bearing, not belt: the (or new old) overlay would
+    ;; silently clobber an author :category with the page's :user,
+    ;; and the fallback message interpolates the whole def — this is
+    ;; the only check that names pages.
+    (when (and (member :category keys)
+            (not (eq (getf type-def :category) :user)))
+      (report-e "valid-page-matrix"
+        ":category on page type ~s must be :user or omitted (the ~
+         Home strip is the page surface; settings auto-open and the ~
+         Admin strip are not)."
+        ~type-key))
+    ;; -- :of contract --
+    (unless of-type
+      (report-e "valid-page-matrix"
+        "Page type ~s is missing :of (the content type whose row it ~
+         projects)."
+        ~type-key))
+    (let ((of-def (getf model of-type)))
+      (unless of-def
+        (report-e "valid-page-matrix"
+          "Page type ~s names unknown :of ~s."
+          ~type-key ~of-type))
+      (when (eq of-type type-key)
+        (report-e "valid-page-matrix"
+          "Page type ~s names itself as :of; a page projects another ~
+           type's row."
+          ~type-key))
+      ;; Checked on the raw def: stage-1 compiles types one at a
+      ;; time, so the target's :phase-a-shape may not exist yet.
+      (dolist (key '(:rollup :page :base :built-in :internal
+                     :is-joiner :tree :fs-backed))
+        (when (getf of-def key)
+          (report-e "valid-page-matrix"
+            ":of ~s of page ~s must be an ordinary author table ~
+             type; ~s is set on it."
+            ~of-type ~type-key ~key))))
+    ;; -- :filter contract --
+    (let ((filter (getf type-def :filter)))
+      (unless (and (listp filter) filter (every #'listp filter))
+        (report-e "valid-page-matrix"
+          ":filter on page ~s must be a non-empty list of 4-tuple ~
+           clauses; nil, (), a singular clause, and non-lists are ~
+           compile errors."
+          ~type-key))
+      (dolist (clause filter)
+        (valid-model-filter-clause model type-key (list of-type)
+          clause)
+        (valid-page-column model type-key of-type (second clause)))
+      (valid-page-filter-identity model type-key of-type filter))
+    ;; -- :view-form and :fields contracts --
+    (let ((view-form (getf type-def :view-form :missing)))
+      (when (or (eq view-form :missing) (null view-form))
+        (report-e "valid-page-matrix"
+          "Page type ~s requires :view-form (the ~
+           rollup-requires-:list-form precedent): the reader may not ~
+           hold read on the content type, so the page cannot borrow ~
+           its forms."
+          ~type-key))
+      (when (member :hide-list (u:plist-keys view-form))
+        (report-e "valid-page-matrix"
+          ":hide-list on the :view-form of page ~s is a compile ~
+           error (even as nil); the key transiently suppresses a ~
+           list, and a page has no list."
+          ~type-key))
+      (when (member :children (u:plist-keys view-form))
+        (report-e "valid-page-matrix"
+          ":children on the :view-form of page ~s is a compile ~
+           error; a page has no list to embed a region into."
+          ~type-key))
+      (let ((form-fields (getf view-form :fields)))
+        (unless (or (eq form-fields t)
+                (and (listp form-fields) form-fields))
+          (report-e "valid-page-matrix"
+            ":view-form :fields on page ~s must be t or a non-empty ~
+             field list."
+            ~type-key))))
+    (let ((fields (getf type-def :fields)))
+      (unless (and (u:plistp fields) fields)
+        (report-e "valid-page-matrix"
+          ":fields on page ~s must be a non-empty plist of ~
+           presentation overlays (a rollup-style pair list does not ~
+           compile here)."
+          ~type-key)))
+    of-type))
+
+(defun valid-page-field-ui (model type-key of-type field-key
+                            field-def)
+  ":private: Validate one page field and return its finalized :ui
+plist: the field def is :ui only (any other key is silently ignored
+junk on a hand-built compiled field), the key names a projectable
+column (valid-page-column), :ui runs finalize-ui, and the finalized
+widget must be in the positive page allowlist with its content-type
+rules (:markdown / :textarea / :code / :heading need :type :text, :checkbox
+needs :boolean, :stars needs a number, :select needs static
+:options — finalize-ui checks shape only, and compile-field, which
+owns the options requirement everywhere else, never runs on a page
+field). Signals report-e."
+  (dolist (key (u:plist-keys field-def))
+    (unless (eq key :ui)
+      (report-e "valid-page-fields"
+        "Key ~s on page field ~s of ~s is not allowed; a page field ~
+         is a presentation overlay — :ui only."
+        ~key ~field-key ~type-key)))
+  (let* ((def (valid-page-column model type-key of-type field-key))
+         (ui (finalize-ui field-key (getf field-def :ui)))
+         (widget (getf ui :widget))
+         (col-type (or (getf def :type) :text)))
+    (unless (member widget *page-widgets*)
+      (report-e "valid-page-fields"
+        "Widget ~s on page field ~s of ~s is not in the page ~
+         allowlist ~s."
+        ~widget ~field-key ~type-key ~*page-widgets*))
+    (case widget
+      (:markdown
+        (unless (eq col-type :text)
+          (report-e "valid-page-fields"
+            ":widget :markdown on page field ~s of ~s requires a ~
+             :type :text content column; it is ~s."
+            ~field-key ~type-key ~col-type)))
+      ((:textarea :code :heading)
+        (unless (eq col-type :text)
+          (report-e "valid-page-fields"
+            ":widget ~s on page field ~s of ~s requires a :type ~
+             :text content column; it is ~s."
+            ~widget ~field-key ~type-key ~col-type)))
+      (:checkbox
+        (unless (eq col-type :boolean)
+          (report-e "valid-page-fields"
+            ":widget :checkbox on page field ~s of ~s requires a ~
+             :type :boolean content column; it is ~s."
+            ~field-key ~type-key ~col-type)))
+      (:stars
+        (unless (member col-type '(:integer :real))
+          (report-e "valid-page-fields"
+            ":widget :stars on page field ~s of ~s requires an ~
+             :integer or :real content column; it is ~s."
+            ~field-key ~type-key ~col-type)))
+      (:select
+        ;; Static options are the only mode here: relation mode
+        ;; needs :target, and a page field cannot declare one.
+        (unless (and (listp (getf ui :options))
+                 (getf ui :options))
+          (report-e "valid-page-fields"
+            ":widget :select on page field ~s of ~s requires a ~
+             non-empty static :options list (relation mode needs ~
+             :target, which a page field cannot declare)."
+            ~field-key ~type-key))))
+    ui))
+
+(defun valid-page-fields (model type-key type-def of-type)
+  ":private: Field-level page matrix: no author :id, every :fields
+key validated by valid-page-field-ui (returns the finalized :ui),
+at most one :heading field (a page is title and body; the title is
+the one heading — a second signals, naming the field), and the
+:view-form field list must name declared page fields — :id
+included in that prohibition. Returns the plist of finalized :ui
+values keyed by field key. Signals report-e."
+  (let ((fields (getf type-def :fields)))
+    (when (member :id (u:plist-keys fields))
+      (report-e "valid-page-fields"
+        "Page type ~s must not declare :id; the compiler injects it ~
+         as a non-displayed pass-through of the content row's id."
+        ~type-key))
+    ;; let*, not let: the uis init form (the loop) references its
+    ;; sibling binding heading-seen, which a plain let would leave
+    ;; unbound during the init evaluation.
+    (let* ((heading-seen nil)
+           (uis
+            (loop
+              for field-key in fields by #'cddr
+              for field-def in (cdr fields) by #'cddr
+              for ui = (valid-page-field-ui model type-key of-type
+                         field-key field-def)
+              ;; At most one :heading per page: a page is title and
+              ;; body, the title is the one heading, and the markdown
+              ;; body makes all the headings it wants. Counted here,
+              ;; not in valid-page-field-ui — the rule is about the
+              ;; page, not one field.
+              when (eq (getf ui :widget) :heading)
+              do (if heading-seen
+                   (report-e "valid-page-fields"
+                     "Page ~s declares a second :widget :heading ~
+                      field ~s; a page is title and body, the title ~
+                      is the one heading, and the markdown body ~
+                      makes all the headings it wants."
+                     ~type-key ~field-key)
+                   (setf heading-seen t))
+              nconc (list field-key ui))))
+      (let ((form-fields (u:tree-get type-def :view-form :fields)))
+        (unless (eq form-fields t)
+          (dolist (field-key form-fields)
+            (unless (member field-key (u:plist-keys fields))
+              (report-e "valid-page-fields"
+                ":view-form on page ~s names ~s, which the page does ~
+                 not declare in :fields."
+                ~type-key ~field-key)))))
+      uis)))
+
+(defun compile-page-fields (model raw-fields of-type uis)
+  ":private: Build the compiled page :fields plist by hand — page
+fields never call compile-field (its :widget :markdown rule requires
+:column t, and setting :column t to sneak past would also emit
+create-SQL). Each field carries: the content column's effective
+:type (omitted model :type means :text), :default :null on every
+field (fe-fields emits :default unconditionally, and a hand-built
+field without the key serializes its nil as the truthy [] through
+plist-to-json — the :user-setting comment's trap), :column nil, the
+finalized :ui, :source (:table <of> :column <field>) with no :view
+and no :agg (load-bearing: compile-field-stage-2 takes the copy
+branch, and fe-fields' wire :table honestly names the content type),
+:name-sql from the pure column-name helper on the raw content def,
+and :sortable / :searchable / :not-null nil (:searchable nil is
+what makes a non-blank search 400). Plus the injected :id
+pass-through, first like every injected default (no :ui, so
+fe-fields never emits it; a record without an id is not a record)."
+  (let ((author-fields
+          (loop
+            for field-key in raw-fields by #'cddr
+            for content-def = (page-content-field-def model of-type
+                               field-key)
+            append (list field-key
+                     (list
+                       :type (or (getf content-def :type) :text)
+                       :default :null
+                       :column nil
+                       :ui (getf uis field-key)
+                       :source (list :table of-type :column field-key)
+                       :name-sql (column-name model of-type field-key
+                                   content-def)
+                       :sortable nil
+                       :searchable nil
+                       :not-null nil)))))
+    (append
+      (list
+        :id
+        (list
+          :type :uuid
+          :default :null
+          :column nil
+          :base-field t
+          :source (list :table of-type :column :id)
+          :name-sql (column-name model of-type :id
+                      (getf (default-fields) :id))))
+      author-fields)))
+
+(defun compile-page-type-def (model type-key)
+  "Compile a :page t type-def: a read-only, tableless projection of
+one row of :of, selected by :filter, rendered through its own
+:view-form. No :table-name, no DDL / DML (stage-2 and create-tables
+key off :phase-a-shape :page); the runtime query parts (:page-table
+/ :page-columns / :page-where / :page-params) are computed in
+stage-2. Authorization is the page's own type-resource read (the
+be-list dispatch names the page shape); content rows are never
+consulted."
+  (let* ((type-def (getf model type-key))
+         (of-type (valid-page-matrix model type-key type-def))
+         (filter (getf type-def :filter))
+         (uis (valid-page-fields model type-key type-def of-type))
+         (fields (compile-page-fields model
+                   (getf type-def :fields) of-type uis))
+         (roles (when (type-has-roles type-def)
+                  (getf type-def :type-roles '("admin"))))
+         ;; add-to-plist over the author def, the
+         ;; compile-rollup-type-def shape: the merge computes each
+         ;; key as (or new old), so the nil values below land as nil
+         ;; precisely because the matrix rejects the author keys
+         ;; they guard. Do not diverge into remf / append — a future
+         ;; defaulting layer that injects such a key breaks pages
+         ;; and rollups identically, and the fix belongs there.
+         (final-def (add-to-plist
+                      type-def
+                      (list
+                        :internal nil
+                        :create nil
+                        :update nil
+                        :delete nil
+                        :type-roles roles
+                        :category :user
+                        :fields fields
+                        :phase-a-shape :page
+                        :of of-type
+                        :filter filter
+                        :suppress-roles t
+                        :display t))))
+    ;; The belt: the page's :view-form must be an otherwise-legal
+    ;; form plist — *form-keys* is the closed set, there are no
+    ;; page-only form keys, and valid-hide-list also rejects
+    ;; :default-sort on the view form (the second compile-time wall
+    ;; behind page-be-list's sort rejection).
+    (valid-form-fields type-key final-def)
+    (valid-hide-list type-key final-def)
+    final-def))
+
+;;
+;; END Page types (:page t — editable content pages)
+;;
+
 (defun compile-rollup-type-def (model type-key)
   "Compile a :rollup t type-def (07a/07b/07c/07d Lisp). No :table-name key is
 stored — a rollup has no physical table, and a phantom rt_<rollup> must not
@@ -5538,9 +6169,25 @@ exist even as a string. DDL / DML skips key off :phase-a-shape :measure (stage-2
       final-def)))
 
 (defun compile-type-def (model type-key)
-  (if (getf (getf model type-key) :rollup)
-    (compile-rollup-type-def model type-key)
-    (compile-base-type-def model type-key)))
+  (let ((type-def (getf model type-key)))
+    (cond
+      ;; :page t is the sole declaration (the :rollup t precedent):
+      ;; a present key with any other value is a compile error, not
+      ;; an alias.
+      ((and (member :page (u:plist-keys type-def))
+         (not (eq (getf type-def :page) t)))
+        (report-e "compile-type-def"
+          ":page on type ~s must be t; nil is not a declaration."
+          ~type-key))
+      ((and (getf type-def :page) (getf type-def :rollup))
+        (report-e "compile-type-def"
+          "Type ~s cannot be both :page t and :rollup t."
+          ~type-key))
+      ((getf type-def :rollup)
+        (compile-rollup-type-def model type-key))
+      ((getf type-def :page)
+        (compile-page-type-def model type-key))
+      (t (compile-base-type-def model type-key)))))
 
 (defun valid-field-names (type-key raw-fields)
   ":private: Author field keys must not collide with names the
@@ -5948,18 +6595,34 @@ mutate *base-model*."
     ;; recompute. enrich-views still runs (aliases / columns /
     ;; scope only). Same precedent as the joiner cut.
     for measure = (eq (getf type-def :phase-a-shape) :measure)
-    for table-name = (unless measure
+    ;; Page shape: the full widening, not just the views skip — the
+    ;; six-key new-def filter below drops only *nil* values, and
+    ;; unwidened every one of these builders returns non-nil junk
+    ;; for a page (table-name derives rt_<page> from the key alone,
+    ;; create-table-sql emits an empty-column create table plus its
+    ;; trigger against the phantom name, insert-sql / delete-sql
+    ;; emit DML against it). create-tables' skip merely declines to
+    ;; *execute* the junk — the compiled def still carries it.
+    ;; search-sql happens to return nil for a page (no :identity
+    ;; fields to collect); do not lean on the accident.
+    for page = (eq (getf type-def :phase-a-shape) :page)
+    for table-name = (unless (or measure page)
                        (table-name type-key built-in))
-    for views = (enrich-views model type-key)
-    for insert-sql = (unless (or joiner measure)
+    ;; A page declares no :views — enrich-views would invent
+    ;; (:main (:tables (,page-type))), alias a phantom table, and
+    ;; build SQL parts against it. With the skip, views is nil and
+    ;; remove-null-value-pairs drops it: the compiled page simply
+    ;; has no :views key. Measures are untouched.
+    for views = (unless page (enrich-views model type-key))
+    for insert-sql = (unless (or joiner measure page)
                        (insert-sql model type-key))
-    for update-sql = (unless (or joiner measure)
+    for update-sql = (unless (or joiner measure page)
                        (update-sql model type-key))
-    for delete-sql = (unless (or joiner measure)
+    for delete-sql = (unless (or joiner measure page)
                        (delete-sql model type-key))
-    for search-sql = (unless (or joiner measure)
+    for search-sql = (unless (or joiner measure page)
                        (search-sql model type-key))
-    for create-table-sql = (unless measure
+    for create-table-sql = (unless (or measure page)
                              (create-table-sql table-name fields))
     for new-def = (remove-null-value-pairs
                     (list
@@ -5969,7 +6632,28 @@ mutate *base-model*."
                       :update-sql update-sql
                       :delete-sql delete-sql
                       :search-sql search-sql))
-    appending (list type-key (add-to-plist type-def new-def))))
+    ;; Page query parts overlay outside the six-key filter:
+    ;; :page-params is legitimately () on a zero-bind page (a
+    ;; boolean identity column pins with a truthiness form and
+    ;; binds nothing), and remove-null-value-pairs would drop it.
+    ;; add-to-plist keeps the key present with its nil value — the
+    ;; matrix rejects author copies of these keys, so the merge is
+    ;; safe.
+    for page-def = (when page
+                     (multiple-value-bind (fragments params)
+                       (page-where-parts model type-key
+                         (getf type-def :filter))
+                       (list
+                         :page-table
+                         (u:tree-get model (getf type-def :of)
+                           :table-name)
+                         :page-columns
+                         (page-select-columns model type-key)
+                         :page-where fragments
+                         :page-params params)))
+    appending (list type-key
+                (add-to-plist type-def
+                  (append new-def page-def)))))
 
 (defun stage-3 (model)
   (loop
@@ -6163,10 +6847,11 @@ at startup."
 (defun create-tables ()
   (loop with m = *compiled-model*
     for type-key in m by #'cddr
-    ;; Rollup (measure shape): no physical table, nothing to
-    ;; create. Do not probe information_schema with a nil
-    ;; :table-name and do not db:query nil.
-    unless (eq (u:tree-get m type-key :phase-a-shape) :measure)
+    ;; Rollup (measure shape) and page shape: no physical table,
+    ;; nothing to create. Do not probe information_schema with a
+    ;; nil :table-name and do not db:query nil.
+    unless (member (u:tree-get m type-key :phase-a-shape)
+             '(:measure :page))
     do
     (let* ((table-name (u:tree-get m type-key :table-name))
             (table (u:tree-get m type-key :create-table-sql :table))

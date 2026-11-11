@@ -925,49 +925,65 @@ POST /api/upload"
   (unless (search "multipart/form-data" (h:header-in* :content-type))
     (abort-bad-request "Content-Type header must be multipart/form-data"
       :content-type (h:header-in* :content-type)))
+  ;; Page / rollup rejection before any file or path work (the
+  ;; widened guard): today the rejection happens only inside
+  ;; valid-file-meta, which runs after file-field / path-field
+  ;; lookups (both nil on a page) have been formatted into "nil" /
+  ;; "NIL" strings and an fs-path computed from a nil path — work
+  ;; that can error with an uncontrolled 500. The early call is a
+  ;; deterministic 400 with no nil-field work; the same
+  ;; validation-error → abort-bad-request handling the handler
+  ;; already uses lower down (an unhandled report-ve signal would
+  ;; itself 500).
   (let* ((type (h:post-parameter "type" h:*request*))
-          (type-key (parse-type type))
-          (file-field (format nil "~(~a~)" (file-field type-key)))
-          (file (h:post-parameter file-field h:*request*))
-          (temp-path (format nil "~a" (first file)))
-          (target-field (format nil "~(~a~)" (path-field type-key)))
-          (logical-path (h:post-parameter target-field h:*request*))
-          (fs-path (fs-path type-key logical-path))
-          (roles (let ((r (h:post-parameter "roles" h:*request*)))
-                   (if (listp r) (list r))))
-          (type-roles (get-type-roles type-key))
-          (user (require-auth type-roles))
-          (file-token (u:safe-encode fs-path)))
-    (pl:pdebug :in "rest-upload" :type type :type-key type-key
-      :target-field target-field :logical-path logical-path
-      :temp-path temp-path :type-roles type-roles 
-      :file-field file-field
-      :file-token file-token
-      :fs-path fs-path)
+          (type-key (parse-type type)))
     (handler-case
-      (progn
-        ;; TODO: Check file size and available disk space?
-        (valid-file-meta type-key logical-path user roles)
-        (u:copy-file temp-path fs-path)
-        (render-output (list :file-token file-token)))
+      (valid-non-rollup-type-key type-key)
       (validation-error (e)
-        (abort-bad-request e
-          :type type
-          :type-key type-key
-          :path-field target-field
-          :logical-path logical-path
-          :roles roles
-          :user user
-          :file-token file-token))
+        (abort-bad-request e :type type))
       (error (e)
-        (abort-error e
-          :type type
-          :type-key type-key
-          :path-field target-field
-          :logical-path logical-path
-          :roles roles
-          :user user
-          :file-token file-token)))))
+        (abort-error e :type type)))
+    (let* ((file-field (format nil "~(~a~)" (file-field type-key)))
+           (file (h:post-parameter file-field h:*request*))
+           (temp-path (format nil "~a" (first file)))
+           (target-field (format nil "~(~a~)" (path-field type-key)))
+           (logical-path (h:post-parameter target-field h:*request*))
+           (fs-path (fs-path type-key logical-path))
+           (roles (let ((r (h:post-parameter "roles" h:*request*)))
+                    (if (listp r) (list r))))
+           (type-roles (get-type-roles type-key))
+           (user (require-auth type-roles))
+           (file-token (u:safe-encode fs-path)))
+      (pl:pdebug :in "rest-upload" :type type :type-key type-key
+        :target-field target-field :logical-path logical-path
+        :temp-path temp-path :type-roles type-roles
+        :file-field file-field
+        :file-token file-token
+        :fs-path fs-path)
+      (handler-case
+        (progn
+          ;; TODO: Check file size and available disk space?
+          (valid-file-meta type-key logical-path user roles)
+          (u:copy-file temp-path fs-path)
+          (render-output (list :file-token file-token)))
+        (validation-error (e)
+          (abort-bad-request e
+            :type type
+            :type-key type-key
+            :path-field target-field
+            :logical-path logical-path
+            :roles roles
+            :user user
+            :file-token file-token))
+        (error (e)
+          (abort-error e
+            :type type
+            :type-key type-key
+            :path-field target-field
+            :logical-path logical-path
+            :roles roles
+            :user user
+            :file-token file-token))))))
 
 (h:define-easy-handler (rest-update :uri "/api/update"
                           :default-request-type :post)
@@ -1354,7 +1370,15 @@ GET /api/types"
               (list :page-description-open
                 (if (getf e :page-description-open)
                   :true
-                  :false)))))
+                  :false)))
+            ;; Page projection flag (be-types emits :page-type t
+            ;; only on pages — absent means not a page, so every
+            ;; existing payload stays byte-identical). Keyword-
+            ;; encoded :true for the []-is-truthy reason; never
+            ;; named "page" (pagination owns the query-param /
+            ;; wire namespaces).
+            (when (getf e :page-type)
+              (list :page-type :true))))
         (be-types user)))))
 
 (h:define-easy-handler (rest-public-info
@@ -1391,9 +1415,11 @@ emit a nil value for these keys)."
     ;; internals, not frontend data
     (remf settings :api-roles)
     (let ((banner (styling-slot "banner"))
-          (footer (styling-slot "footer")))
+          (footer (styling-slot "footer"))
+          (heading (styling-slot "heading")))
       (when banner (setf (getf settings :banner) banner))
-      (when footer (setf (getf settings :footer) footer)))
+      (when footer (setf (getf settings :footer) footer))
+      (when heading (setf (getf settings :heading) heading)))
     settings))
 
 (h:define-easy-handler (rest-info :uri "/api/info" :default-request-type :get)

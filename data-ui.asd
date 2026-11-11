@@ -77,6 +77,7 @@
                 (:file "file-path-tests")
                 (:file "markdown-tests")
                 (:file "page-description-tests")
+                (:file "page-type-tests")
                 (:file "field-help-tests")
                 (:file "view-form-tests")
                 (:file "hide-list-tests")

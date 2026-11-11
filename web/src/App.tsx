@@ -13,7 +13,7 @@ import { parseHash, canonicalize, buildUrlState,
          SCOPE_NONE } from './urlState'
 import type { RecordMode, ScopeState } from './urlState'
 import { hashPermalink, bestLinkUrl } from './publicLink'
-import { slotFromInfo } from './stylingHtml'
+import { slotFromInfo, headingStyleFromInfo } from './stylingHtml'
 import { Markdown } from './Markdown'
 import { PageDescription } from './PageDescription'
 import { FieldHelp } from './FieldHelp'
@@ -985,11 +985,14 @@ interface ListResponse {
   status: string
   result: {
     'type-key': string
-    'list-form': Record<string, Field>
     // Rollups emit only list-form (the compiler forbids add/update
     // view forms on :rollup types), so all three are optional on
     // the wire. view-form presence is the declaration bit: absent
-    // means the type has no view surface (no fallback).
+    // means the type has no view surface (no fallback). A page
+    // type genuinely lacks list-form too (the compiler forbids it
+    // there) — the dead-shell return renders the page body from
+    // view-form.
+    'list-form'?: Record<string, Field>
     'add-form'?: Record<string, Field>
     'update-form'?: Record<string, Field>
     'view-form'?: Record<string, Field>
@@ -1028,6 +1031,13 @@ interface TypeInfo {
   // per user by nature. Multi-record settings types (secrets)
   // leave it unset.
   userSetting?: boolean
+  // :page t — a read-only projection of one content row rendered
+  // as a full page (no list chrome). The /api/types flag is the
+  // render-path signal, never "view-form present and list-form
+  // absent": the tab row is built from /api/types before any list
+  // fetch, and the dead shell cannot otherwise tell a page from a
+  // broken type. Absent means not a page.
+  pageType?: boolean
   // :page-description — markdown intro block on the list page.
   // pageDescriptionOpen is presence-preserving: undefined means
   // the author declared nothing (collapsed default); false means
@@ -1299,7 +1309,7 @@ const WIDGET_VOCABULARY = new Set([
   'textbox', 'textarea', 'code', 'markdown', 'stars', 'checkbox',
   'checkbox-list', 'select', 'search-select', 'file', 'file-path',
   'password-new', 'password-read', 'button', 'hidden', 'image',
-  'image-list'
+  'image-list', 'heading'
 ])
 
 // Two-column property-sheet row for every field in the View/Edit
@@ -1710,6 +1720,13 @@ interface ReadOnlyCtx {
   viewTypeList: string[]
   isViewForm: boolean
   open: ((t: string, id: string) => void) | null
+  // The heading slot's lifted style (the publisher override for
+  // :widget :heading); null / absent = the widget's built-in
+  // default. Only the page-body call site sets it in v1 — the
+  // compiler guarantees :heading never reaches the other call
+  // sites (page-only widget, pages have no list / overlay / edit
+  // mode).
+  headingStyle?: React.CSSProperties | null
 }
 
 function renderReadOnlyField(
@@ -1775,6 +1792,33 @@ function renderReadOnlyField(
       <div style={{ padding: '0.3rem 0', minHeight: '1.2em' }}>
         <Markdown text={String(text)} />
       </div>
+    )
+  }
+
+  // heading read-only (page-only widget in v1): the value is the
+  // page's headline — an <h2> at page-title size under the shell's
+  // h1.banner document outline, rendered outside any property-sheet
+  // row (the page-body call site invokes this branch bare, no
+  // FieldRow). The slot style spreads LAST so the publisher
+  // override wins per-property — font-size alone can be set while
+  // the default margins survive; do not reorder the spread. Empty
+  // renders the em dash, the markdown branch precedent. Edit / Add
+  // never see the widget: v1 pages are read-only projections (a
+  // later widening to regular types falls through to textbox in
+  // renderFormField).
+  if (widget === 'heading') {
+    const text = typeof value === 'string' && value.trim() !== ''
+      ? value : null
+    if (!text) {
+      return <div style={{ color: 'var(--muted-2)' }}>—</div>
+    }
+    return (
+      <h2 style={{
+        margin: '0 0 0.6rem 0',
+        fontSize: '1.9rem',
+        lineHeight: 1.15,
+        ...(ctx?.headingStyle ?? {})
+      }}>{text}</h2>
     )
   }
 
@@ -2058,6 +2102,11 @@ function App() {
   // removed slot clears on the next fetch).
   const [banner, setBanner] = useState<string | null>(null)
   const [footer, setFooter] = useState<string | null>(null)
+  // The heading slot as a lifted React style object (the publisher
+  // override for :widget :heading); null = absent / unparseable →
+  // the widget's built-in default style.
+  const [headingStyle, setHeadingStyle] =
+    useState<React.CSSProperties | null>(null)
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set())
   const [elapsed, setElapsed] = useState<number | null>(null)
   const runningStartRef = useRef<number | null>(null)
@@ -2181,6 +2230,7 @@ function App() {
       resetSessionState()
       setBanner(null)
       setFooter(null)
+      setHeadingStyle(null)
       document.body.classList.remove('dark')
     })
   }, [])
@@ -2386,8 +2436,28 @@ function App() {
       setData(null)
       return null
     }
+    // Page type: a bare-URL branch that skips the whole request
+    // build, not just the query string. The backend 400s filters
+    // (including the bare-UUID shorthand) and sort on a page, and
+    // search 400s earlier in phase-a-search-clause — so skipping
+    // the builder is load-bearing, not an optimization: URL-seeded
+    // query state reaches fetchList without passing through
+    // resetListQuery (the login seed and the history listener
+    // assign fk / q / sort / filters / bool directly from the
+    // entry), so a pasted URL carrying an fk or filter would
+    // otherwise emit a filter row the page rejects. limit /
+    // offset are unconditional in the base URL today, so the
+    // branch replaces the base-URL construction itself; the
+    // backend ignores them anyway (a page is not a page of a
+    // list).
+    const pageType =
+      types.find(t => t.name === type)?.pageType === true
+    let url: string
+    if (pageType) {
+      url = `/api/list?type=${type}`
+    } else {
     const offset = (currentPage - 1) * PAGE_SIZE
-    let url = `/api/list?type=${type}&limit=${PAGE_SIZE}&offset=${offset}`
+    url = `/api/list?type=${type}&limit=${PAGE_SIZE}&offset=${offset}`
     if (sortField) {
       url += `&sort=${sortField}:${sortDir}`
     }
@@ -2514,6 +2584,7 @@ function App() {
         url += `&filters=${encodeURIComponent(JSON.stringify(rows))}`
       }
     }
+    } // end non-page request build
     try {
       const res = await apiFetch(url)
       if (!res.ok) {
@@ -3201,6 +3272,8 @@ function App() {
         if (t) setTitle(String(t))
         setBanner(slotFromInfo(info.result, 'banner'))
         setFooter(slotFromInfo(info.result, 'footer'))
+        setHeadingStyle(
+          headingStyleFromInfo(slotFromInfo(info.result, 'heading')))
         const lp = info.result?.['landing-page']
         if (lp) {
           setViewMode('app')
@@ -3281,6 +3354,7 @@ function App() {
     // load-bearing).
     setBanner(null)
     setFooter(null)
+    setHeadingStyle(null)
     document.body.classList.remove('dark')
   }
 
@@ -3730,6 +3804,13 @@ function App() {
             ? 'user' : t.category,
           userSetting: typeof t === 'string'
             ? false : !!t['user-setting'],
+          // Page projection flag: the === true presence test (the
+          // pageDescriptionOpen style, not !!), so an absent key is
+          // not-a-page and an explicit false stays false. Absent
+          // means not a page — every existing payload stays
+          // byte-identical.
+          pageType: typeof t === 'string'
+            ? undefined : t['page-type'] === true,
           // Wire presence → boolean | undefined. Not !!t[...] —
           // that would collapse an explicit false (declared
           // :page-description-open nil) into undefined-ish loss.
@@ -3752,6 +3833,8 @@ function App() {
       if (t) setTitle(String(t))
       setBanner(slotFromInfo(info.result, 'banner'))
       setFooter(slotFromInfo(info.result, 'footer'))
+      setHeadingStyle(
+        headingStyleFromInfo(slotFromInfo(info.result, 'heading')))
       const lp = info.result?.['landing-page']
       // App state in the URL, Step 3: seed state ← URL. Parse
       // the LIVE hash on every login transition (not once per
@@ -3926,6 +4009,24 @@ function App() {
   // sits in the silent wait step 17 exists to prevent.
   useEffect(() => {
     if (!loggedIn) return
+    // Page types are not record-addressable: no /api/item call, no
+    // URL grammar, and the content row's id is never written into
+    // recordId (that would look like a permalink, and /api/item on
+    // a page type 400s). The guard goes with the first guards,
+    // before the metadata arm, so no recordError can be set for a
+    // page type by any path under this effect — without it, a
+    // pasted id does not stop at the metadata arm (the page
+    // envelope carries a view-form, so the requested-form check
+    // passes) and reaches openEditForm strict, whose /api/item
+    // call 400s and paints the record-error box; the page branch's
+    // render suppression is the second wall. A URL that names an id
+    // on a page type is type-only: changeType already clears the
+    // record target on a tab click, and the id is dropped on the
+    // next URL write — the address is the tab, not the row. The
+    // re-entry on every list response is free (the guard returns
+    // before any fetch); do not restructure the effect or prune
+    // deps to "skip pages" — the deps serve every other type.
+    if (types.find(t => t.name === type)?.pageType === true) return
     if (recordId == null) return
     if (data?.result?.['type-key'] !== type) {
       // Metadata not arrived yet for the target type — but
@@ -4850,8 +4951,12 @@ function App() {
             description block renders here too — the empty list is
             exactly the page the description exists to orient. The
             !(showAddForm || isEditMode) guard is kept for symmetry
-            with the main return; forms never mount in this shell. */}
+            with the main return; forms never mount in this shell.
+            A page type renders no description (the compiler
+            forbids declaring one on a page) — the page body below
+            replaces every surface in this shell. */}
         {!(showAddForm || isEditMode)
+          && !shellTypeInfo?.pageType
           && shellTypeInfo?.pageDescription && (
           <PageDescription
             text={shellTypeInfo.pageDescription}
@@ -4865,6 +4970,93 @@ function App() {
               }))}
           />
         )}
+        {/* Page body — a :page t type's whole surface. The dead
+            shell is where a page response lands (it has no
+            list-form), and the pageType flag is known from
+            /api/types, so the branch does not wait on the
+            envelope to decide it is a page. The dead shell is
+            also the loading shell, so the empty-page sentence is
+            gated on an envelope whose type-key is this page
+            (ungated, every navigation would flash "has not been
+            written yet"). FieldRow / renderReadOnlyField stay
+            unexported and the page uses the form row layout (the
+            view-form surface the item asked to render — the heading
+            widget alone renders bare, no FieldRow: an h2 inside the
+            label gutter would be the property sheet with a bigger
+            font). The wrapper is .page-body: the public renderer's
+            44rem measure, left-aligned, and form-no-labels when no
+            field draws a label so an all-hidden page does not keep
+            the empty gutter beside the title. No Close, no Edit,
+            no Add, no recordId write. No widget skip of the page's
+            own: every page-legal widget has a read-only render,
+            and the widgets the view-mode branch skips are already
+            compile errors on a page field. */}
+        {shellTypeInfo?.pageType && (() => {
+          const meta = data?.result
+          const sameType = meta?.['type-key'] === type
+          const err = listError as ListErrorOwner | null
+          const errCurrent = err != null && err.type === type
+            && err.sequence === listSeq.current
+          if (errCurrent) {
+            return <p style={{ color: 'var(--error)' }}>{err.message}</p>
+          }
+          if (!sameType) {
+            return <p style={{ color: 'var(--muted-2)' }}>Loading…</p>
+          }
+          const rec = (meta.records || [])[0]
+          if (!rec) {
+            // Same sentence for every caller: the reader may not
+            // hold read on the content type, and naming it would
+            // leak the model.
+            return <p style={{ color: 'var(--muted-2)' }}>
+              This page has not been written yet.
+            </p>
+          }
+          const viewForm =
+            (meta as Record<string, any>)['view-form'] || {}
+          // The heading never draws a label (bare h2, above),
+          // and :hide-label t never does either — the record
+          // form's form-no-labels rule. About hides both, so
+          // without the class the empty 180px gutter shoves
+          // the prose right of the title. A page that does
+          // draw a label keeps the gutter for those rows.
+          const anyLabelShown = formFieldKeys(viewForm).some(f =>
+            viewForm[f]['hide-label'] !== true
+            && viewForm[f]['widget'] !== 'heading')
+          return (
+            <div className={anyLabelShown
+              ? 'page-body' : 'page-body form-no-labels'}>
+              {formFieldKeys(viewForm).map(f => {
+                const fieldMeta = viewForm[f]
+                // The heading renders bare — no FieldRow: FieldRow
+                // always emits both columns, the .field-label
+                // gutter survives :hide-label t (it only blanks the
+                // label text), and an <h2> inside the value column
+                // would be the property sheet with a bigger font.
+                // Every other field keeps its row.
+                if (fieldMeta['widget'] === 'heading') {
+                  return (
+                    <Fragment key={f}>
+                      {renderReadOnlyField(fieldMeta, rec[f], {
+                        fieldKey: f, record: rec,
+                        viewTypeList: [], isViewForm: true, open: null,
+                        headingStyle
+                      })}
+                    </Fragment>
+                  )
+                }
+                return (
+                  <FieldRow key={f} field={fieldMeta}>
+                    {renderReadOnlyField(fieldMeta, rec[f], {
+                      fieldKey: f, record: rec,
+                      viewTypeList: [], isViewForm: true, open: null
+                    })}
+                  </FieldRow>
+                )
+              })}
+            </div>
+          )
+        })()}
         {/* recordError surface, no-data/error shell (step 18):
             a metadata failure or missing-form decision lands
             while data is null / unusable, so the surface must
@@ -4873,8 +5065,12 @@ function App() {
             Terminal decisions clear the loaded form before
             setting recordError, so the box renders alone; Retry
             is by cause, Dismiss the close path (stranding rule
-            included). */}
-        {recordError != null && (
+            included). Suppressed on a page: a page is not
+            record-addressable, so a recordError that survives to
+            a page render is stale by definition (the arrival
+            effect's page guard is what keeps it unset; this is
+            the belt). */}
+        {recordError != null && !shellTypeInfo?.pageType && (
           <RecordErrorBox
             message={recordError.message}
             onRetry={retryRecord}
@@ -4889,17 +5085,22 @@ function App() {
             structural input renders the neutral error with its
             Clear scope action. Both call clearScope; no
             invalid-scope path renders the previous list or an
-            unscoped list. */}
-        {scope.kind === 'valid' && (
+            unscoped list. On a page the valid-scope chip is
+            suppressed (a page renders no scope surface; the
+            invalid-scope notice still renders — fetchList's page
+            branch stands down under a broken scope). */}
+        {scope.kind === 'valid' && !shellTypeInfo?.pageType && (
           <ScopeChip title={null} onClear={clearScope} />
         )}
         {scope.kind === 'invalid' && (
           <InvalidScopeNotice onClear={clearScope} />
         )}
-        <p style={{ color: listError ? 'var(--error)' : undefined }}>
-          {listError ? (listError as ListErrorOwner).message
-            : 'No records'}
-        </p>
+        {!shellTypeInfo?.pageType && (
+          <p style={{ color: listError ? 'var(--error)' : undefined }}>
+            {listError ? (listError as ListErrorOwner).message
+              : 'No records'}
+          </p>
+        )}
         <AppFooter footer={footer} />
       </div>
     )
@@ -5819,7 +6020,7 @@ function App() {
               <th style={{ width: '40px', textAlign: 'center', color: 'var(--error-bright)' }}>✕</th>
             )}
             {listFields.map(f => {
-              const field = data.result['list-form'][f]
+              const field = data.result['list-form']![f]
               if (field.sortable === true) {
                 const isActive = sortField === f
                 const indicator = isActive
@@ -5893,7 +6094,7 @@ function App() {
                 </td>
               )}
               {listFields.map(f => {
-                const field = data.result['list-form'][f]
+                const field = data.result['list-form']![f]
                 // Global one-line rule: text cells clamp to one
                 // line with an ellipsis; the full value rides
                 // along as the hover tooltip. Media cells and

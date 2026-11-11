@@ -46,6 +46,8 @@ List records for a type. Returns records, form schemas (`list-form`, `add-form`,
 
 **Rollup types:** `type` may name a read-only analytical (rollup) type — served from the same surface (see `docs/model-reference.md` → List queries and → Rollup types). Only list-family endpoints accept a rollup: `/api/list` and `/api/column` work; `/api/item`, `/api/id`, `/api/value`, `/api/value-id`, `/api/validate-*`, `/api/actions`, and `/api/upload` reject one. Rollup responses carry `create`/`update`/`delete` all `false`, and `total` is the grain-row count.
 
+**Page types:** `type` may name a `:page t` type (a read-only projection of one content row; see `docs/model-reference.md` → Page types). A page response returns 0 or 1 record, carries `view-form` but no `list-form`, ignores `limit` / `offset`, and carries `create`/`update`/`delete` all `false` plus `page-type: true`. `filters`, `sort`, and non-blank `search` are 400s (the page's row selection is model-declared). Every non-list endpoint rejects a page type the way it rejects a rollup — `/api/item`, `/api/id`, `/api/value`, `/api/value-id`, the validate endpoints, `/api/actions`, and the writes — and `/api/column` rejects one too (a page is not a column source), as does `/api/upload` (a deterministic 400 before any file work). A page's address is the tab; an `id` on the URL is not a permalink.
+
 ### `GET /api/item`
 
 Fetch a single record by UUID. The `record` object carries the same per-record `update` / `delete` JSON booleans as `/api/list` (row-level, computed from the caller's permissions on this record's own resource).
@@ -72,7 +74,7 @@ Resolve a record UUID by a field value — the identity-lookup arm of `/api/id`,
 
 ### `GET /api/column`
 
-Fetch all values for a column across a type. Unpaged / full-set: this endpoint ignores the paging parameters (it exists to feed dropdowns and autocomplete, not paged tables). Accepts rollup types.
+Fetch all values for a column across a type. Unpaged / full-set: this endpoint ignores the paging parameters (it exists to feed dropdowns and autocomplete, not paged tables). Accepts rollup types; rejects page types (400 — a page is not a column source).
 
 **Parameters:** `type`, `field`; optional `form`, default `list-form`, accepts `view-form`.
 
@@ -125,7 +127,7 @@ Returns sync result (`complete` / `failed`) or async acceptance.
 
 ### `POST /api/upload`
 
-File upload via `multipart/form-data`. Returns a `file-token` used in the subsequent `/api/insert` call.
+File upload via `multipart/form-data`. Returns a `file-token` used in the subsequent `/api/insert` call. Rejects rollup and page types (400) right after the `type` parameter is parsed, before any file or path work.
 
 ### `GET /api/file`
 
@@ -149,11 +151,11 @@ The three app-level endpoints in this section have no type whose roles they coul
 
 ### `GET /api/types`
 
-Available types, each entry an object: `name` (string), `category` (`user` / `settings` / `system`), `user-setting` (boolean). Two optional fields ride the entry only when the model author declared them (`:page-description` / `:page-description-open`): `page-description` (markdown string, the list-page intro block) and `page-description-open` (boolean; an explicit `:page-description-open nil` serializes as `false`, never dropped). RBAC scoping is inherent — `/api/types` returns only types the caller may read, so a user without read on a type sees no entry, and no description.
+Available types, each entry an object: `name` (string), `category` (`user` / `settings` / `system`), `user-setting` (boolean). Two optional fields ride the entry only when the model author declared them (`:page-description` / `:page-description-open`): `page-description` (markdown string, the list-page intro block) and `page-description-open` (boolean; an explicit `:page-description-open nil` serializes as `false`, never dropped). A third optional field marks page types: `page-type` (boolean, present only when `true` — a `:page t` type rendered as a full page by the client; never named `page`, which pagination owns in the query-param / wire namespaces). RBAC scoping is inherent — `/api/types` returns only types the caller may read, so a user without read on a type sees no entry, and no description.
 
 ### `GET /api/info`
 
-Schema metadata, landing page resolution (per-user via `be-landing-page`). Includes the top-level settings (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:guest-allowed`, with `:landing-page` resolved per user). Carries optional `banner` and `footer` strings — the sanitized `:styling` slot values, each key omitted when the slot has no row or a blank value (never `null` / `[]`).
+Schema metadata, landing page resolution (per-user via `be-landing-page`). Includes the top-level settings (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:guest-allowed`, with `:landing-page` resolved per user). Carries optional `banner`, `footer`, and `heading` strings — the sanitized `:styling` slot values, each key omitted when the slot has no row or a blank value (never `null` / `[]`).
 
 ### `GET /api/public-info`
 

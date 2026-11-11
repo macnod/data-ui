@@ -2247,15 +2247,24 @@ meaning that the type lacks `:base t`."
     (report-ve "valid-be-type-key" "Invalid backend type key ~a" ~type-key)))
 
 (defun valid-non-rollup-type-key (type-key)
-  ":private: Rejects rollup (measure-shape) types for every non-list
-record endpoint (Issue 9). Rollups are read-only computed views; only
-be-list / be-list-column may read them. Guards live in the be-*
-functions so REST and REPL share them; rest.lisp does not grow a
-parallel type check."
-  (when (eq (u:tree-get *compiled-model* type-key :phase-a-shape) :measure)
-    (report-ve "valid-non-rollup-type-key"
-      "Rollup type ~s is read-only; only list reads (/api/list, ~
-       /api/column) are supported on it." ~type-key)))
+  ":private: Rejects computed, tableless shapes for every non-list
+record endpoint (Issue 9): rollups (:phase-a-shape :measure —
+read-only computed views) and pages (:phase-a-shape :page —
+read-only projections of one content row). Only list reads reach
+them (be-list; be-list-column allows rollups but carries its own
+page guard). Guards live in the be-* functions so REST and REPL
+share them; rest.lisp does not grow a parallel type check."
+  (let ((shape (u:tree-get *compiled-model* type-key :phase-a-shape)))
+    (when (eq shape :measure)
+      (report-ve "valid-non-rollup-type-key"
+        "Rollup type ~s is read-only; only list reads (/api/list, ~
+         /api/column) are supported on it."
+        ~type-key))
+    (when (eq shape :page)
+      (report-ve "valid-non-rollup-type-key"
+        "Page type ~s is a read-only projection; only list reads ~
+         (/api/list) are supported on it."
+        ~type-key))))
 
 (defun valid-field-key (type-key field-key)
   ":private: Checks that FIELD-KEY is a valid field key for TYPE-KEY in the
@@ -3068,13 +3077,25 @@ The following example returns a list of all the :todos records that have the tag
         (measure-be-list type-key user :form form :filters filters
           :limit limit :offset offset :sort sort
           :skip-allowed-values skip-allowed-values)
-        (progn
-          (if (uuid-p filters)
-            (valid-existing-uuid filters)
-            (valid-filters filters :type-key type-key))
-          (base-be-list type-key user :form form :filters filters
-            :limit limit :offset offset :sort sort :search search
-            :skip-allowed-values skip-allowed-values))))))
+        (if (eq shape :page)
+          ;; Page projection: the same authorization arm as a rollup
+          ;; (the type-resource read above) and the same no-filter
+          ;; discipline — a page's row selection is model-declared.
+          ;; Search was already rejected by phase-a-search-clause
+          ;; above (page fields are not :searchable); limit / offset
+          ;; are ignored (a page is not a page of a list, and under
+          ;; the identity-pin compile rule paging cannot hide a
+          ;; duplicate).
+          (page-be-list type-key user :form form :filters filters
+            :sort sort
+            :skip-allowed-values skip-allowed-values)
+          (progn
+            (if (uuid-p filters)
+              (valid-existing-uuid filters)
+              (valid-filters filters :type-key type-key))
+            (base-be-list type-key user :form form :filters filters
+              :limit limit :offset offset :sort sort :search search
+              :skip-allowed-values skip-allowed-values)))))))
 
 (defun base-be-list (type-key user
                       &key (form :list-form) filters
@@ -3414,6 +3435,102 @@ NULLS LAST on :avg."
                            (measure-row-to-plist type-key row))
                          rows))))))))
 
+(defun page-row-value (type-key field-key value)
+  ":private: Convert one raw page-row value for FIELD-KEY to its
+JSON-ready form: SQL NULL (:null) stays :null, boolean t / nil
+become :true / :false (never bare nil — plist-to-json renders nil as
+[], which JS reads as truthy), and timestamps take the base
+hydrator's string form so the wire value matches every other
+surface. Not measure-row-value: its boolean arm requires :source
+:agg :first, and a page field's :source has no :agg."
+  (let* ((field-type (u:tree-get *compiled-model* type-key :fields
+                     field-key :type)))
+    (cond
+      ((or (null value) (eq value :null)) :null)
+      ((eq field-type :boolean) (if value :true :false))
+      ((eq field-type :timestamp)
+        (dt:timestamp-string :universal-time value))
+      (t value))))
+
+(defun page-row-to-plist (type-key row)
+  ":private: Convert one raw page row (SQL aliases are field keys)
+to a field-key plist with JSON-ready values (the
+measure-row-to-plist shape)."
+  (loop for key in row by #'cddr
+    for value in (cdr row) by #'cddr
+    append (list key (page-row-value type-key key value))))
+
+(defun page-be-list (type-key user &key (form :list-form) filters
+                      sort skip-allowed-values)
+  ":private: Page-shape be-list body: one parameterized select
+against the content table — no base-be-list (it wants a table and
+per-row resources on the listed type), no measure Phase A (no GROUP
+BY), no view machinery. Zero rows is success (the empty page: the
+frontend renders 'This page has not been written yet.'); one row is
+the page; two rows report-e (the composite identity index failed —
+never silently show the first of several; the identity-pin compile
+rule is the guarantee, limit 2 the backstop). The count is the row
+count of that same select, not a second query and not
+user-read-type-ids.
+
+The FORM argument is ignored on purpose. rest-list defaults form to
+\"list-form\", so the page's bare URL arrives here asking for a form
+the page does not declare — the envelope is always built from the
+page's :view-form (the same treatment a rollup gives its
+:list-form). A later reader who 'fixes' this to honor the request
+form breaks every page read.
+
+filters and sort (user input; a page's selection is model-declared)
+are report-ve here — the guard fires ahead of any form work, and
+the compile-time walls (the matrix's :default-sort rejection and
+valid-hide-list's form arm) are what keep the defaulted sort nil.
+limit / offset never arrive (the frontend's bare-URL branch sends
+none) and are not parameters here at all."
+  (declare (ignore form))
+  (when filters
+    (report-ve "page-be-list"
+      "Filters are not supported on page type ~s; the page's row ~
+       selection is model-declared (:filter on the page type)."
+      ~type-key))
+  (when sort
+    (report-ve "page-be-list"
+      "Sort is not supported on page type ~s; a page renders one row."
+      ~type-key))
+  (let* ((m *compiled-model*)
+         (columns (u:tree-get m type-key :page-columns))
+         (table (u:tree-get m type-key :page-table))
+         (where (u:tree-get m type-key :page-where))
+         (params (u:tree-get m type-key :page-params))
+         (sql (format nil
+                 "select ~{~a~^, ~}~%from ~a~@[~%where ~{~a~^ and ~}~]~%limit 2"
+                 columns table where))
+         ;; (cons sql params), never a bare list: a zero-bind page
+         ;; (boolean identity pinned by a truthiness form) is a
+         ;; legal compiled shape and must query cleanly with an
+         ;; empty parameter list.
+         (query (cons sql params))
+         (rows (a:with-rbac (*rbac*) (a:rbac-query query))))
+    (when (cdr rows)
+      (report-e "page-be-list"
+        "Page ~s matched more than one row of ~s; the identity ~
+         index guarantee failed. Refusing to pick one silently."
+        ~type-key ~table))
+    (let ((records (mapcar
+                     (lambda (row) (page-row-to-plist type-key row))
+                     rows)))
+      (pl:pdebug :in "page-be-list"
+        :type-key type-key :table table :rows (length records))
+      ;; :page-type rides by append only, never as a nil pair
+      ;; through add-to-plist — its (or new old) merge cannot pin a
+      ;; nil, and a bare nil would serialize as the truthy [].
+      (append
+        (list-result type-key user :view-form
+          :records records
+          :total (length records)
+          :sort nil
+          :skip-allowed-values skip-allowed-values)
+        (list :page-type :true)))))
+
 (defun be-list-column (type-key field-key user
                        &key (form :list-form) 
                         sort limit offset
@@ -3424,6 +3541,21 @@ TYPE-KEY that match FILTERS and that USER has 'read' permissions for. This is
 like BE-LIST, but it returns a list of values instead of a list of records."
   (valid-compiled-model)
   (valid-type-key type-key)
+  ;; Page guard (not valid-non-rollup-type-key — that one rejects
+  ;; rollups too, and /api/column stays legal on a rollup). A page
+  ;; is not a column source: be-list-column feeds its form (default
+  ;; :list-form) to both be-list (where the page's form-ignore
+  ;; serves the read) and its own outer response metadata, where
+  ;; nothing serves it — a page declares no :list-form, so the
+  ;; metadata arm would wrap a nil field def around the values.
+  ;; Rejecting is honest where form-fixing both layers would be
+  ;; maintained illusion.
+  (when (eq (u:tree-get *compiled-model* type-key :phase-a-shape)
+          :page)
+    (report-ve "be-list-column"
+      "Page type ~s is not a column source; a page is a read-only ~
+       projection of one content row."
+      ~type-key))
   (valid-field-key type-key field-key)
   (valid-existing-user user)
   (if (uuid-p filters)
@@ -4027,7 +4159,14 @@ when even one value is invalid. `{error-message-list}` is a list of strings."
               ;; false, never drop.
               (when (member :page-description-open type-def)
                 (list :page-description-open
-                  (getf type-def :page-description-open))))))
+                  (getf type-def :page-description-open)))
+              ;; Page projection flag: the :page-description
+              ;; omit-when-absent pattern, not the always-emitted
+              ;; :user-setting pattern — absent means not a page,
+              ;; so every existing types payload stays
+              ;; byte-identical. rest-types keyword-encodes it.
+              (when (eq (getf type-def :phase-a-shape) :page)
+                (list :page-type t)))))
 
 (defun be-landing-page (user)
   ":public: Effective landing type-key for USER, or NIL.

@@ -59,7 +59,8 @@ pass-through — the :users :post-create precedent, re-pinned here)."
 :searchable t; its :ui is a static select over *styling-slots*
 and its :validations include v-options (compile-validations
 auto-attaches it from :ui :options — the dropdown is the admin's
-discovery surface, the validator the belt)."
+discovery surface, the validator the belt). The slot vocabulary
+itself is pinned here, not self-referential."
   (let* ((m (th-sty-compile))
          (name-def (getf (getf (getf m :styling) :fields) :name)))
     (is (eq t (getf name-def :identity)))
@@ -69,6 +70,8 @@ discovery surface, the validator the belt)."
     (is (eq :select (u:tree-get name-def :ui :widget)))
     (is (equal *styling-slots*
           (u:tree-get name-def :ui :options)))
+    (is (equal '("banner" "footer" "heading") *styling-slots*)
+      "the slot vocabulary is pinned, not self-referential")
     (is (member #'v-options (getf name-def :validations)
           :test #'eq))))
 
@@ -123,7 +126,8 @@ burden)."
            "grammar tag ~a missing from the description" tag))
     (is (search "`text-align`" desc))
     (is (search "`banner`" desc))
-    (is (search "`footer`" desc))))
+    (is (search "`footer`" desc))
+    (is (search "`heading`" desc))))
 
 (in-suite styling-suite)
 
@@ -191,10 +195,14 @@ aborted test cannot break the next one's unique constraint."
     "<p style=\"font-size:0.8em\">s</p>"
     "<hr>"
     "<code>c</code>"
-    "<h2>t</h2>")
+    "<h2>t</h2>"
+    "<span style=\"font-family: Georgia, 'Times New Roman', serif; font-size: 36px; font-weight: 700; letter-spacing: -0.3px\"/>")
   "The grammar case list (every expectation probe-verified against
 the landed sanitize-styling-html; the belt simulation — running
-the sanitizer on its own output — matched on every case).")
+the sanitizer on its own output — matched on every case). The
+last case is the heading slot's canonical value in its
+self-closing spelling — the session probe: it normalizes to the
+paired span, which is a fixed point.")
 
 (test sty-validator-rejects-unknown-name
   "An insert with an out-of-vocabulary :name fails (v-options,
@@ -365,7 +373,17 @@ on serialize)."
     (sty "<a href=\"https://x.y/z\" style=\"color:blue\">x</a> <strong style=\"font-weight:700\">y</strong>"
       "<a href=\"https://x.y/z\" style=\"color: blue\">x</a> <strong style=\"font-weight: 700\">y</strong>")
     ;; non-string input degrades to the empty string, never signals
-    (is (equal "" (sanitize-styling-html nil)))))
+    (is (equal "" (sanitize-styling-html nil)))
+    ;; the heading slot's canonical value, kept verbatim (the
+    ;; probed font stack with its quoted family names, the
+    ;; negative letter-spacing, and the four-property declaration
+    ;; all pass; the frontend's headingStyleFromInfo lifts this
+    ;; exact shape), and its self-closing spelling normalizes to
+    ;; the paired span
+    (sty "<span style=\"font-family: Georgia, 'Times New Roman', serif; font-size: 36px; font-weight: 700; letter-spacing: -0.3px\"></span>"
+      "<span style=\"font-family: Georgia, 'Times New Roman', serif; font-size: 36px; font-weight: 700; letter-spacing: -0.3px\"></span>")
+    (sty "<span style=\"font-family: Georgia, 'Times New Roman', serif; font-size: 36px; font-weight: 700; letter-spacing: -0.3px\"/>"
+      "<span style=\"font-family: Georgia, 'Times New Roman', serif; font-size: 36px; font-weight: 700; letter-spacing: -0.3px\"></span>")))
 
 (test sty-sanitizer-length-cap
   "A 5000-char input cuts at +styling-max-length+ before the
@@ -436,7 +454,8 @@ whatever path wrote it."
 clean string; out-of-vocabulary name → nil. Direct SQL with the
 system's own authority — there is no user argument and no
 permission machinery, pinned by reading while a roleless user
-exists."
+exists. The heading slot reads through the same name-generic
+path (the third slot's read pin)."
   (th-sty-with-rows
     (th-make-user "sty-roleless")
     (is (null (styling-slot "banner")))
@@ -445,7 +464,14 @@ exists."
       (is (null (styling-slot "banner")))
       (be-update :styling id '(:value "<strong>hello</strong>") "admin")
       (is (equal "<strong>hello</strong>" (styling-slot "banner")))
-      (is (null (styling-slot "nope"))))))
+      (is (null (styling-slot "nope"))))
+    (let ((hid (be-insert :styling
+                  '(:name "heading"
+                    :value "<span style=\"font-size: 30px\"></span>")
+                  "admin")))
+      (is-true (uuid-p hid))
+      (is (equal "<span style=\"font-size: 30px\"></span>"
+            (styling-slot "heading"))))))
 
 (test sty-reader-belt
   "A row written around the hook (the usage-insert shape:
@@ -505,22 +531,31 @@ and can insert; admin sees it under :category :system."
             (getf admin-entry :page-description))))))
 
 (test sty-wire-info-settings
-  "info-settings carries :banner / :footer only when the rows
-exist (never a nil value — the [] truthy trap), always
-:landing-page, never :new-roles / :api-roles."
+  "info-settings carries :banner / :footer / :heading only when
+the rows exist (never a nil value — the [] truthy trap), always
+:landing-page, never :new-roles / :api-roles. The heading row
+carries the canonical span — the exact string the frontend's
+headingStyleFromInfo lifts."
   (th-sty-with-rows
     (let ((settings (info-settings "admin")))
       (is (getf settings :landing-page))
       (is-false (getf settings :banner))
       (is-false (getf settings :footer))
+      (is-false (getf settings :heading))
       (is-false (getf settings :new-roles))
       (is-false (getf settings :api-roles)))
     (be-insert :styling '(:name "banner" :value "<strong>b</strong>")
       "admin")
     (be-insert :styling '(:name "footer" :value "<em>f</em>") "admin")
+    (be-insert :styling
+      '(:name "heading"
+        :value "<span style=\"font-family: Georgia, 'Times New Roman', serif; font-size: 36px; font-weight: 700; letter-spacing: -0.3px\"></span>")
+      "admin")
     (let ((settings (info-settings "admin")))
       (is (equal "<strong>b</strong>" (getf settings :banner)))
       (is (equal "<em>f</em>" (getf settings :footer)))
+      (is (equal "<span style=\"font-family: Georgia, 'Times New Roman', serif; font-size: 36px; font-weight: 700; letter-spacing: -0.3px\"></span>"
+            (getf settings :heading)))
       (is (getf settings :landing-page))
       (is-false (getf settings :new-roles))
       (is-false (getf settings :api-roles)))))

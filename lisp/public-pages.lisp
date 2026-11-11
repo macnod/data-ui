@@ -59,7 +59,10 @@ every render, not at load, so a REPL can fix it."
 (model-guest-allowed) first — a model with guest login off publishes
 nothing, whatever its :type-roles say. The compiled type must not be
 :base, :built-in, :internal, :is-joiner, a rollup
-(:phase-a-shape :measure), :user-setting, or :tree (directories and
+(:phase-a-shape :measure), a page (:phase-a-shape :page — the /p/
+record renderer calls be-rec → rec, whose SQL path reads :views
+:main :sql, and a page has none; the sitemap must not advertise URLs
+that error on fetch), :user-setting, or :tree (directories and
 fs-backed file types both carry :tree; their bytes are served by the
 file route, they are not documents), must have no view-level scope
 (be-list applies :scope :user, be-rec does not, so a scoped type's
@@ -76,6 +79,7 @@ grant cannot express per-record publication."
         (not (getf type-def :internal))
         (not (getf type-def :is-joiner))
         (not (eq (getf type-def :phase-a-shape) :measure))
+        (not (eq (getf type-def :phase-a-shape) :page))
         (not (getf type-def :user-setting))
         (not (getf type-def :tree))
         (not (u:tree-get type-def :views :main :scope))
