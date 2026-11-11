@@ -20,7 +20,7 @@ and presentation overrides on injected default fields.")
 ;; --------------------------------------------------------------------
 ;; Shared inline-model builders (types plist only — merge-with-base-model
 ;; runs inside compile-model; probes read the returned model, never a
-;; global; see the sortable-target-field-rejected precedent).
+;; global; see the sortable-target-field-compiles precedent).
 ;; --------------------------------------------------------------------
 
 (defun tro-base-types ()

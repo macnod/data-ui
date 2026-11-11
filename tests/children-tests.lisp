@@ -544,7 +544,7 @@ present-nil direction all reject."
   (error-matches (blog-compile (blog-sort-children-types '(:nope :asc)))
     "names an unknown field"
     "unknown sort field not caught")
-  ;; non-sortable field (:user is a :target — never sortable)
+  ;; non-sortable field (:user declares no :sortable t)
   (error-matches (blog-compile (blog-sort-children-types '(:user :asc)))
     "not :sortable t"
     "non-sortable sort field not caught"))

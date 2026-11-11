@@ -2306,7 +2306,9 @@ end $$;
 (defun sort-index-ddl (table fields)
   ":private: Returns a list of CREATE INDEX DDL strings for sortable fields that
 lack an existing single-column index. Skips fields that already have :unique t
-or are the sole :identity field (those already have a covering index). Returns
+or are the sole :identity field (those already have a covering index), and
+skips :target (FK) fields — a target sort orders by the joined table's
+display column, which an index on the local FK column cannot serve. Returns
 nil when no new indexes are needed."
   (loop 
     with id-fields = (remove-if-not
@@ -2319,6 +2321,7 @@ nil when no new indexes are needed."
     for col = (getf field :name-sql)
     for unique-p = (getf field :unique)
     when (and sortable col
+           (not (getf field :target))
            (not unique-p)
            (not (equal col sole-identity-col)))
     collect (format nil
@@ -2713,7 +2716,7 @@ necessary."
   ":private: Returns Phase A SQL for join-filter pushdown: SELECT DISTINCT
 <base-table>.id with the same FROM/JOIN structure as VIEW-SQL but selecting
 only the base table's id column. Used when request-time filters reference
-joined tables."
+joined tables or the sort field is a :target field (the joined-column sort)."
   (loop
     with view-tables = (u:deep-copy (getf view-def :tables))
     with joined-tables = (list (car view-tables))
@@ -3464,29 +3467,29 @@ correct there). Returns the effective :source plist."
             ":widget :select requires either :options or :target ~
              on field ~s of type ~s."
             ~new-field-key ~type-key))
-        ;; :search-select requires :target (no static :options
-        ;; mode — valid-options-value keeps :options gated to
-        ;; :select, so :options + :search-select already signals
-        ;; there; this rule closes the bare case).
+        ;; :search-select requires :target (no static :options mode:
+        ;; valid-options-value keeps :options gated to :select, so :options +
+        ;; :search-select already signals there; this rule closes the bare
+        ;; case).
         (when (and (eq widget :search-select) (not has-target))
           (report-e "compile-field"
             ":widget :search-select requires :target on field ~s ~
              of type ~s."
             ~new-field-key ~type-key))
-        ;; :heading is page-only in v1 — a page is title and body; the
-        ;; title is the one heading, and the ordinary property sheet has
-        ;; no heading row. Page fields never reach compile-field (the
-        ;; page path builds presentation overlays in valid-page-field-ui),
-        ;; so this check cannot fire on a page.
+        ;; :heading is page-only in v1: a page is title and body; the title is
+        ;; the one heading, and the ordinary property sheet has no heading
+        ;; row. Page fields never reach compile-field (the page path builds
+        ;; presentation overlays in valid-page-field-ui), so this check cannot
+        ;; fire on a page.
         (when (eq widget :heading)
           (report-e "compile-field"
             ":widget :heading is legal on :page t types only, on ~
              field ~s of type ~s (a page is title and body; the ~
              title is the one heading)."
             ~new-field-key ~type-key))
-        ;; :file-path requires :directory-type naming an existing type
-        ;; (the frontend must not guess the folder source; the same
-        ;; model-scope existence check pattern as :enabled-when).
+        ;; :file-path requires :directory-type naming an existing type (the
+        ;; frontend must not guess the folder source; the same model-scope
+        ;; existence check pattern as :enabled-when).
         (let ((directory-type (getf ui-val :directory-type)))
           (when (eq widget :file-path)
             (unless directory-type
@@ -3504,20 +3507,12 @@ correct there). Returns the effective :source plist."
         ;; :sum / :count / :avg measures may sort.  :list / :distinct stay
         ;; unsortable (array compare is not a leaderboard). Hybrids (base types
         ;; with Phase B measures) keep the strict rule: no aggregate alias in
-        ;; base Phase A.
+        ;; base Phase A.  A :target (FK) field passes the base-column rule
+        ;; (column is forced t on every :target field) and sorts by its joined
+        ;; display column: base Phase A runs on the join SQL for it
+        ;; (phase-a-join-required-p). Its legality is sibling-aware, so it is
+        ;; checked post-fields in valid-sortable-target-fields, not here.
         (when (getf def :sortable)
-          ;; Uniform rule: :target (FK) fields are never sortable.
-          ;; Base case (verified live): stage 2 rewrites :source
-          ;; :column-name to the joined table's display column,
-          ;; which base Phase A never joins (42P01 at click time).
-          ;; No claim made about rollups; the rule is uniform.
-          ;; Joined-column sort is the future relaxation.
-          ;; Mirrors the :searchable FK rejection below.
-          (when has-target
-            (report-e "compile-field"
-              ":sortable t is not valid on :target (FK) ~
-               fields; field ~s of type ~s."
-              ~new-field-key ~type-key))
           (if (getf model type-key :rollup)
             (when (member (u:tree-get field-def :source :agg)
                     '(:list :distinct))
@@ -3547,11 +3542,10 @@ correct there). Returns the effective :source plist."
               ":searchable t is not valid on :target (FK) fields; ~
                field ~s of type ~s."
               ~new-field-key ~type-key)))
-        ;; :widget :markdown requires :type :text + :column t and is
-        ;; never valid on :target fields (an FK field declares :type
-        ;; :text — its display type — while its storage type is
-        ;; forced to :uuid, so the explicit clause is required; the
-        ;; same pattern as the :searchable / :sortable rules).
+        ;; :widget :markdown requires :type :text + :column t and is never valid
+        ;; on :target fields (an FK field declares :type :text, its display
+        ;; type, while its storage type is forced to :uuid, so the explicit
+        ;; clause is required; the same pattern as the :searchable rule).
         (when (eq widget :markdown)
           (unless (eq (or field-type :text) :text)
             (report-e "compile-field"
@@ -3568,13 +3562,12 @@ correct there). Returns the effective :source plist."
               ":widget :markdown is not valid on :target (FK) ~
                fields; field ~s of type ~s."
               ~new-field-key ~type-key)))
-        ;; :filter-with is kind-dispatched here. :boolean requires
-        ;; :type :boolean and :column t; :reference requires :target
-        ;; and rejects :join-table (M2M chip filtering is automatic).
-        ;; The value rule itself is valid-filter-with-value's (it
-        ;; sees the plist); repeating the field facts here names the
-        ;; field on a bad value. The otherwise arm is the kind-set
-        ;; check — one case, one list, a kind added to
+        ;; :filter-with is kind-dispatched here. :boolean requires :type
+        ;; :boolean and :column t; :reference requires :target and rejects
+        ;; :join-table (M2M chip filtering is automatic).  The value rule itself
+        ;; is valid-filter-with-value's (it sees the plist); repeating the field
+        ;; facts here names the field on a bad value. The otherwise arm is the
+        ;; kind-set check. One case, one list, a kind added to
         ;; *filter-with-kinds* but forgotten here fails loudly.
         (let ((filter-with (getf ui-val :filter-with)))
           (when filter-with
@@ -3607,14 +3600,13 @@ correct there). Returns the effective :source plist."
                   ":filter-with kind must be :boolean or :reference; ~
                    field ~s of type ~s has ~s."
                   ~new-field-key ~type-key ~filter-with)))))
-        ;; :enabled-when is a button-only subkey (the :filter-with
-        ;; boolean-only rule is the precedent for widget-scoped :ui
-        ;; keys). Field existence is checked against MODEL — the
-        ;; synthesized status companions are already in it by this
-        ;; point (compile-base-type-def augmented the model before
-        ;; compile-fields), so a fresh (:complete-status …) gate
-        ;; compiles. Buttons are also rejected on rollups wholesale,
-        ;; so no button rule is needed there.
+        ;; :enabled-when is a button-only subkey (the :filter-with boolean-only
+        ;; rule is the precedent for widget-scoped :ui keys). Field existence is
+        ;; checked against MODEL. The synthesized status companions are already
+        ;; in it by this point (compile-base-type-def augmented the model before
+        ;; compile-fields), so a fresh (:complete-status ...) gate compiles.
+        ;; Buttons are also rejected on rollups wholesale, so no
+        ;; button rule is needed there.
         (let ((ew-rows (getf ui-val :enabled-when)))
           (when ew-rows
             (unless (equal field-type :button)
@@ -3867,15 +3859,13 @@ excluding the injected :id (base-field)."
 (defun valid-target-sibling-keys (type-key compiled-fields)
   ":private: Record-permalink synthetic-key compile guard: every
 singular target field derives \"<effective-field-key>-id\"
-(target-sibling-key), which must not equal any effective
-compiled field key on the type — a legal model can declare both
-:post and a :post-id target field, and the derived sibling would
-collide with the real field (:reference renaming has already
-happened at this stage, so a :reference to :post evaluates under
-its effective key :post-id; injected defaults and synthesized
-button-status fields are in the set; the injected :id is excluded
-from derivation). Signals report-e naming the colliding sibling
-key (the valid-field-names reserved-key precedent)."
+(target-sibling-key), which must not equal any effective compiled field key on
+the type. A legal model can declare both :post and a :post-id target field, and
+the derived sibling would collide with the real field (:reference renaming has
+already happened at this stage, so a :reference to :post evaluates under its
+effective key :post-id; injected defaults and synthesized button-status fields
+are in the set; the injected :id is excluded from derivation). Signals report-e
+naming the colliding sibling key (the valid-field-names reserved-key precedent)."
   (let ((effective-keys (u:plist-keys compiled-fields)))
     (loop for field-key in (singular-target-fields compiled-fields)
       for sibling = (target-sibling-key field-key)
@@ -3888,12 +3878,11 @@ key (the valid-field-names reserved-key precedent)."
 
 (defun target-identity-column (model target)
   ":private: The raw-model identity field key of TARGET (nil when
-TARGET has none — valid-target has already rejected that shape
-by the time suppressed-target-sibling-p runs). A compile-side
-companion to backend's identity-field: the suppression walk
-runs before *compiled-model* exists. Retained: the identity
-column remains the canonical display choice even under the
-column-set rule."
+TARGET has none. valid-target has already rejected that shape by the time
+suppressed-target-sibling-p runs). A compile-side companion to backend's
+identity-field: the suppression walk runs before *compiled-model*
+exists. Retained: the identity column remains the canonical display choice even
+under the column-set rule."
   (loop with fields = (u:tree-get model target :fields)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
@@ -3902,26 +3891,22 @@ column-set rule."
 
 (defun suppressed-target-sibling-p (type-key field-key field-def
                                      compiled-fields model)
-  ":private: T when FIELD-KEY's sibling emission is suppressed —
-the ambiguous display shapes the view's join walker cannot
-represent honestly: (a) two or more singular-target fields on
-the type sharing one :target type key (the join walker joins
-each target table once; the second field would display the
-first's value), (b) a :target equal to its owning type (no
-self-join alias — a degenerate join), or (c) an effective
-display-source table (the :source :table when present, the
-owning type otherwise) that differs from the :target (the
-display string is unmoored from the FK's referent — the
-pre-existing display-join gap). Deliberately not a compile
-error: the model is legal and must keep rendering; the
-suppression is the fail-closed half of the gap.
-The ambiguous shapes are keyed on the display SOURCE, never on
-the storage alias: two fields may legally read one target table
-through different display sources, and a field whose display
-:source :table equals the :target but whose :source :column is
-not that target's identity column is still unambiguous (the
-join edge is FK → target row; a non-identity display column on
-the target names the same row the storage UUID names)."
+  ":private: T when FIELD-KEY's sibling emission is suppressed. The ambiguous
+display shapes the view's join walker cannot represent honestly: (a) two or more
+singular-target fields on the type sharing one :target type key (the join walker
+joins each target table once; the second field would display the first's
+value), (b) a :target equal to its owning type (no self-join alias, a degenerate
+join), or (c) an effective display-source table (the :source :table when
+present, the owning type otherwise) that differs from the :target (the display
+string is unmoored from the FK's referent, the pre-existing display-join
+gap). Deliberately not a compile error: the model is legal and must keep
+rendering; the suppression is the fail-closed half of the gap.  The ambiguous
+shapes are keyed on the display SOURCE, never on the storage alias: two fields
+may legally read one target table through different display sources, and a field
+whose display :source :table equals the :target but whose :source :column is not
+that target's identity column is still unambiguous (the join edge is FK → target
+row; a non-identity display column on the target names the same row the storage
+UUID names)."
   (declare (ignore field-key))
   (let ((target (getf field-def :target))
         (source-table (u:tree-get field-def :source :table))
@@ -3950,15 +3935,14 @@ the target names the same row the storage UUID names)."
                 source-column))))))
 
 (defun view-display-column-keys (model target)
-  ":private: The display-viable field keys of TARGET — every field
-the join-walker's display tables actually expose for a view that
-reaches TARGET through an xref edge: TARGET's own :column fields
-(the single join edge display alias reads one of these) plus the
-default :id / timestamps (table-columns' projection). A display
-:source :column outside this set cannot ride any join edge into
-the owner's view — the field's display is unmoored from the FK's
-referent, the suppression (c) shape. Cached nothing, computed
-per call on the raw model (the compile walk runs once per type)."
+  ":private: The display-viable field keys of TARGET. Every field the join-walker's
+display tables actually expose for a view that reaches TARGET through an xref
+edge: TARGET's own :column fields (the single join edge display alias reads one
+of these) plus the default :id / timestamps (table-columns' projection). A
+display :source :column outside this set cannot ride any join edge into the
+owner's view. The field's display is unmoored from the FK's referent, the
+suppression (c) shape. Cached nothing, computed per call on the raw model (the
+compile walk runs once per type)."
   (append
     (loop with fields = (u:tree-get model target :fields)
       for field-key in fields by #'cddr
@@ -3985,6 +3969,84 @@ are Post MVP."
       field-def)
     into values
     finally (return (mapcan #'list keys values))))
+
+(defun valid-sortable-target-fields (model type-key compiled-fields)
+  ":private: Joined-column sort legality. The relaxed form of the
+\":target is never sortable\" rule. A :sortable t :target field sorts the list
+by its target's display column, reached through the field's own FK join in the
+:main view (phase-a-join-sql). Signals report-e unless, for every such field:
+
+  - the display :source :table is the :target (an omitted or different table
+    resolves the sort column off the target: the row's own column, or no column
+    at all);
+
+  - the :target is in the :main view's :tables (base Phase A joins exactly those
+    tables; no declared view means no join);
+
+  - the field is not a suppressed-target sibling (shared target or self-target:
+    the join walker joins each table once, so the sort would ride another
+    field's FK or the base row itself; per-field join aliasing is the
+    relaxation);
+
+  - the display source resolves to a column of the target: the source :view must
+    list the target in its :tables and the source :column must be one of the
+    target's display-viable column keys (view-display-column-keys). Stage 2
+    computes :source :column-name from exactly that lookup and leaves it nil
+    otherwise: an ORDER BY NIL at click time (a :users :roles M2M display
+    column, a source view missing the target, or a source with no :view at all);
+
+  - the :target is not :resources: every ordinary type's injected :id field
+    (default-fields) already targets :resources and its edge is first in field
+    order, so the walker joins resources on the row's own id, never the field's
+    FK.  Runs post-fields (compile-base-type-def) because the sibling shapes are
+    visible only across the whole compiled field set."
+  (loop with view-tables = (u:tree-get model type-key
+                             :views :main :tables)
+    for field-key in compiled-fields by #'cddr
+    for field-def in (cdr compiled-fields) by #'cddr
+    for target = (getf field-def :target)
+    for source = (getf field-def :source)
+    for source-view = (getf source :view)
+    for source-column = (getf source :column)
+    when (and target (getf field-def :sortable))
+    do
+    (unless (equal (getf source :table) target)
+      (report-e "valid-sortable-target-fields"
+        ":sortable t on :target field ~s of type ~s requires a ~
+         display :source whose :table is the target ~s."
+        ~field-key ~type-key ~target))
+    (unless (member target view-tables)
+      (report-e "valid-sortable-target-fields"
+        ":sortable t on :target field ~s of type ~s requires ~
+         target ~s in the :main view's :tables."
+        ~field-key ~type-key ~target view-tables))
+    (when (suppressed-target-sibling-p type-key field-key
+            field-def compiled-fields model)
+      (report-e "valid-sortable-target-fields"
+        ":sortable t on :target field ~s of type ~s is not ~
+         supported: the field shares its target with another ~
+         field or targets its own type."
+        ~field-key ~type-key))
+    (unless (and source-view
+               (member target (u:tree-get model type-key
+                            :views source-view :tables))
+               (member source-column
+                 (view-display-column-keys model target)))
+      (report-e "valid-sortable-target-fields"
+        ":sortable t on :target field ~s of type ~s requires a ~
+         display :source that resolves to a column of the target ~
+         ~s (the source :view must list the target; the source ~
+         :column must be one of its column fields, or :id / ~
+         timestamps)."
+        ~field-key ~type-key ~target))
+    (when (eq target :resources)
+      (report-e "valid-sortable-target-fields"
+        ":sortable t on :target field ~s of type ~s cannot ~
+         target :resources: the injected :id field already ~
+         targets it and the join walk takes that edge first, so ~
+         the sort would read the row's own resource, not the ~
+         field's referent."
+        ~field-key ~type-key))))
 
 (defun target-singular-p (field-def)
   ":private: The model-side spelling of the one singular-target
@@ -4093,7 +4155,7 @@ compiled :table-name and the field's :name-sql. ID on the grain is <grain>.id."
 (defun aggregate-sql-expression (agg qualified-column filter-sql)
   "Raw SQL aggregate expression for AGG over QUALIFIED-COLUMN, wrapped with
 FILTER (WHERE ...) when FILTER-SQL is non-empty. No COALESCE, no GROUP BY
-assumption — the rollup SELECT wraps display coalescing and the future hybrid
+assumption. The rollup SELECT wraps display coalescing and the future hybrid
 ORDER BY (Post MVP) uses the raw form. Never emits COUNT(DISTINCT ...)."
   (let ((expr (case agg
                 (:sum (format nil "sum(~a)" qualified-column))
@@ -4203,31 +4265,28 @@ fragments (FILTER conditions ANDed into every real measure)."
 
 (defun page-qualified-column (model of-type field-key)
   ":private: Fully qualified <table>.<column> for a page filter or
-projection column: the content type's compiled :table-name and the
-content field's compiled :name-sql. The WHERE resolves its columns
-from the content type's compiled fields, never from :page-columns —
-a clause may name any storage-legal column, projected or not; the
-SELECT list and the WHERE list answer different questions, as in
-any SQL select."
+projection column: the content type's compiled :table-name and the content
+field's compiled :name-sql. The WHERE resolves its columns from the content
+type's compiled fields, never from :page-columns.  A clause may name any
+storage-legal column, projected or not; the SELECT list and the WHERE list
+answer different questions, as in any SQL select."
   (format nil "~a.~a"
     (u:tree-get model of-type :table-name)
     (u:tree-get model of-type :fields field-key :name-sql)))
 
 (defun page-where-sql (model of-type clause index)
   ":private: One parameterized WHERE fragment for a page :filter
-clause. Discrete :eq / :ne literals are bind parameters — never
-embedded in quotes the way measure-model-filter-sql embeds them (a
-slug literal with an apostrophe would produce broken SQL) — except
-booleans, which use the measure truthiness forms in all four cases
-(:eq t → bare column, :eq nil → not column, :ne t → not column,
-:ne nil → bare column; Lisp nil is never a bind, and no IS NULL
-translation exists or is needed — a non-boolean nil literal is
-illegal in the DSL, so SQL-NULL comparison semantics never arise).
-:last-days / :calendar reuse the measure clock shapes (their values
-are validated integers and :month, never strings). INDEX is the
-1-based bind number this clause's placeholder uses. Returns (values
-fragment bind); BIND is nil for the truthiness and clock forms, so
-a zero-bind page is a legal compiled shape."
+clause. Discrete :eq / :ne literals are bind parameters, never embedded in
+quotes the way measure-model-filter-sql embeds them (a slug literal with an
+apostrophe would produce broken SQL) — except booleans, which use the measure
+truthiness forms in all four cases (:eq t → bare column, :eq nil → not column,
+:ne t → not column, :ne nil → bare column; Lisp nil is never a bind, and no IS
+NULL translation exists or is needed, a non-boolean nil literal is illegal in
+the DSL, so SQL-NULL comparison semantics never arise).  :last-days / :calendar
+reuse the measure clock shapes (their values are validated integers and :month,
+never strings). INDEX is the 1-based bind number this clause's placeholder
+uses. Returns (values fragment bind); BIND is nil for the truthiness and clock
+forms, so a zero-bind page is a legal compiled shape."
   (destructuring-bind (table column op value) clause
     (declare (ignore table))
     (let ((qualified (page-qualified-column model of-type column))
@@ -4261,15 +4320,13 @@ a zero-bind page is a legal compiled shape."
             nil))))))
 
 (defun page-where-parts (model type-key filter)
-  ":private: Fragments and bind parameters for every page :filter
-clause, in clause order: fragments and binds are built left to
-right, truthiness / clock clauses contribute no placeholder, and
-the bind numbering runs across clauses (a text bind, a boolean
-no-bind, a text bind is $1, bare column, $2). Returns (values
-fragments params); PARAMS may be () — a boolean identity column
-pins with a truthiness form and binds nothing — so the runtime
-builds its query as (cons sql params) and never assumes a
-parameter exists."
+  ":private: Fragments and bind parameters for every page :filter clause, in
+clause order: fragments and binds are built left to right, truthiness / clock
+clauses contribute no placeholder, and the bind numbering runs across clauses (a
+text bind, a boolean no-bind, a text bind is $1, bare column, $2). Returns
+(values fragments params); PARAMS may be (), a boolean identity column pins with
+a truthiness form and binds nothing, so the runtime builds its query as (cons
+sql params) and never assumes a parameter exists."
   (loop
     with of-type = (u:tree-get model type-key :of)
     with fragments = nil
@@ -6338,6 +6395,8 @@ legal. Signals report-e."
           (fields (let ((compiled (compile-fields type-key
                                   augmented-model)))
                     (valid-target-sibling-keys type-key compiled)
+                    (valid-sortable-target-fields augmented-model
+                      type-key compiled)
                     (mark-suppressed-target-siblings augmented-model
                       type-key compiled)))
           (table-name (table-name type-key built-in))
@@ -6844,12 +6903,66 @@ at startup."
   (add-system-user-settings)
   (add-root-fs-resources))
 
+(defun type-ddl-order (m existing)
+  ":private: Declaration-stable topological order of M's table
+types for DDL: an edge A->B exists only when B is a table type
+whose table is absent from EXISTING (a present table gets no
+CREATE and constrains nothing; a warm database has zero edges and
+returns declaration order unchanged). Kahn's algorithm with the
+earliest-declared ready node picked first, so a model with no
+forward references produces today's exact order. Rollup (:measure)
+and page shapes are not nodes. Self-edges are dropped (an inline
+self-FK is legal in one statement). Signals report-e naming the
+cycle's types when the walk stalls."
+  (let* ((nodes (loop for type-key in m by #'cddr
+                  unless (member (u:tree-get m type-key :phase-a-shape)
+                           '(:measure :page))
+                  collect type-key))
+         (edges (loop for type-key in nodes
+                  for targets = (remove-duplicates
+                                  (loop for field-def
+                                    in (u:plist-values
+                                         (u:tree-get m type-key :fields))
+                                    for target = (getf field-def :target)
+                                    when (and target
+                                           (not (eq target type-key))
+                                           (member target nodes)
+                                           (not (u:has existing
+                                                   (u:tree-get m target
+                                                     :table-name))))
+                                    collect target))
+                  append (list type-key targets)))
+         (done nil)
+         (remaining nodes))
+    (loop
+      (let ((ready (find-if
+                     (lambda (type-key)
+                       (every
+                         (lambda (dep)
+                           (or (member dep done)
+                             (not (member dep remaining))))
+                         (getf edges type-key)))
+                     remaining)))
+        (cond
+          (ready
+            (push ready done)
+            (setf remaining (remove ready remaining)))
+          ((null remaining) (return (nreverse done)))
+          (t
+            (report-e "type-ddl-order"
+              "Dependency cycle among types ~{~s~^, ~}: table ~
+               creation cannot be ordered (types targeting each ~
+               other)."
+              ~remaining edges)))))))
+
 (defun create-tables ()
   (loop with m = *compiled-model*
-    for type-key in m by #'cddr
+    for type-key in (type-ddl-order m (existing-db-tables))
     ;; Rollup (measure shape) and page shape: no physical table,
     ;; nothing to create. Do not probe information_schema with a
-    ;; nil :table-name and do not db:query nil.
+    ;; nil :table-name and do not db:query nil. (type-ddl-order
+    ;; already excludes these shapes; kept as the gate it has
+    ;; always been.)
     unless (member (u:tree-get m type-key :phase-a-shape)
              '(:measure :page))
     do

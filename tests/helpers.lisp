@@ -712,6 +712,14 @@ idempotent so repeated calls for the same user are safe."
     (explain! results)
     (when collect results)))
 
+(defun run-forward-ref-tests (&optional collect)
+  "Forward-reference (dependency-ordered DDL) tests."
+  (let ((results
+          (with-model "forward-ref-test" nil
+            (run 'forward-ref-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-static-options-tests (&optional collect)
   "Static dropdown :options tests."
   (let ((results
@@ -1312,6 +1320,16 @@ in the shared model context per house convention."
     (explain! results)
     (when collect results)))
 
+(defun run-target-sort-tests (&optional collect)
+  "Joined-column sort (:sortable t on :target fields): compile
+probes, Phase A SQL-shape pins, and be-list behavior. Seeds the
+target-sort-test fixture once; the suite itself is read-only."
+  (let ((results
+          (with-model "target-sort-test" #'tst-seed-fixture
+            (run 'target-sort-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -1334,6 +1352,7 @@ groups."
                    ("bi-m2m"         . run-bi-m2m-tests)
                    ("generator"      . run-generator-tests)
                    ("nullable-fk"    . run-nullable-fk-tests)
+                   ("forward-ref"    . run-forward-ref-tests)
                    ("static-options" . run-static-options-tests)
                    ("form-fields"    . run-form-fields-tests)
                    ("compose"        . run-compose-tests)
@@ -1380,7 +1399,8 @@ groups."
                                      . run-api-type-roles-access-tests)
                    ("model-text"    . run-model-text-tests)
                    ("styling"       . run-styling-tests)
-                    ("deploy-incoming" . run-deploy-incoming-tests))
+                    ("deploy-incoming" . run-deploy-incoming-tests)
+                   ("target-sort"   . run-target-sort-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

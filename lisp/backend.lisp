@@ -2769,8 +2769,9 @@ database query."
 ;;;
 ;;; Phase A selects a page of primary IDs using fast indexed queries on base
 ;;; columns (WHERE / ORDER BY / LIMIT / OFFSET). Join-table filters are also in
-;;; Phase A via JOIN + WHERE so that paging is honest.  Phase B then hydrates
-;;; only those IDs.
+;;; Phase A via JOIN + WHERE so that paging is honest. A sort on a :target
+;;; field also runs on the join SQL and orders by the target's display column.
+;;; Phase B then hydrates only those IDs.
 ;;;
 ;;; See docs/todo.org item 2 and workbench/list-plan/02-id-first-phase-a.org.
 
@@ -2783,12 +2784,26 @@ nil (meaning no limit / all rows). Otherwise clamps to [1, +max-limit+]."
   (when limit
     (min (max limit 1) +max-limit+)))
 
-(defun phase-a-select-sql (type-key filters)
-  ":private: Returns the base SQL string for Phase A — either the simple SELECT
-id FROM <table> or the SELECT DISTINCT ... JOIN version when filters reference
-joined tables."
+(defun phase-a-target-sort-p (type-key sort)
+  ":private: The :target type key when SORT names a :target (FK) field, else
+NIL. Such a sort orders by the target's display column, which lives on a joined
+table (the joined-column sort)."
+  (when sort
+    (u:tree-get *compiled-model* type-key :fields (car sort)
+      :target)))
+
+(defun phase-a-join-required-p (type-key filters sort)
+  ":private: True when Phase A must run on the join SQL: a filter references a
+joined table, or SORT names a :target field."
+  (or (filters-require-join-p type-key filters)
+    (phase-a-target-sort-p type-key sort)))
+
+(defun phase-a-select-sql (type-key filters sort)
+  ":private: Returns the base SQL string for Phase A: the simple SELECT id FROM
+<table>, or the SELECT DISTINCT ... JOIN version when filters reference joined
+tables or SORT names a :target field (the joined-column sort)."
   (let ((m *compiled-model*))
-    (if (filters-require-join-p type-key filters)
+    (if (phase-a-join-required-p type-key filters sort)
       (u:tree-get m type-key :views :main :phase-a-join-sql)
       (u:tree-get m type-key :views :main :phase-a-base-sql))))
 
@@ -2908,7 +2923,7 @@ param would reach Postgres as 'false'."
 
 (defun phase-a-query (type-key filters sort limit offset user
                        &key search)
-  ":private: Build and execute Phase A — select a page of primary IDs.
+  ":private: Build and execute Phase A: select a page of primary IDs.
 Returns (values ids total).
 
 FILTERS is the full filter list (user filters + RBAC ids + scope).
@@ -2917,7 +2932,7 @@ LIMIT is nil (no limit) or an integer (already clamped).
 OFFSET is an integer.
 SEARCH is nil or a non-blank string matched with ILIKE against the type's
 :searchable-fields (OR group), before paging."
-  (let* ((base-sql (phase-a-select-sql type-key filters))
+  (let* ((base-sql (phase-a-select-sql type-key filters sort))
           (where-result (add-where-clause base-sql filters user))
           (where-sql (car where-result))
           (where-params (cdr where-result))
@@ -2936,19 +2951,21 @@ SEARCH is nil or a non-blank string matched with ILIKE against the type's
               where-params))
           (where-result (cons where-sql where-params))
           (order-by (phase-a-build-order-by type-key sort))
-          ;; Build page SQL: ORDER BY always; LIMIT/OFFSET only when limit
-          ;; is non-nil (08b: add-page-clause, shared with the measure
-          ;; branch). When join-filters + sort are both in play, splice
-          ;; the sort column into the page projection: Postgres requires
-          ;; DISTINCT ORDER BY expressions to appear in the select list.
-          ;; The (id, sort-col) pair still dedups exactly — sort columns
-          ;; are base-table columns functionally determined by id. The
-          ;; count query below is fed the pre-splice strings, so :total
-          ;; never sees the extra column. Query in default plist mode
-          ;; and extract (getf row :id).
+          ;; Build page SQL: ORDER BY always; LIMIT/OFFSET only when limit is
+          ;; non-nil (08b: add-page-clause, shared with the measure branch).
+          ;; When Phase A runs on the join SQL (join-filters or a :target sort)
+          ;; and a sort is present, splice the sort column into the page
+          ;; projection: Postgres requires DISTINCT ORDER BY expressions to
+          ;; appear in the select list. The (id, sort-col) pair still dedups
+          ;; exactly. The sort column is functionally determined by id: a
+          ;; base-table column, or the display column of a :target field joined
+          ;; through that field's own FK (valid-sortable-target-fields
+          ;; guarantees the edge). The count query below is fed the pre-splice
+          ;; strings, so :total never sees the extra column. Query in default
+          ;; plist mode and extract (getf row :id).
           (page-sql
             (let* ((spliced-p (and
-                                (filters-require-join-p type-key filters)
+                                (phase-a-join-required-p type-key filters sort)
                                 sort))
                     (sort-col (when spliced-p
                                 (phase-a-order-by-column type-key sort)))

@@ -62,6 +62,7 @@
            :ui (:label "Owner" :widget :textbox :read-only t
                 :filter-with :reference)
            :target :users
+           :sortable t
            :source (:view :main :table :users :column :name :agg :first)
            :source-all (:table :users :column :name :agg :list)
            :column t :not-null t)

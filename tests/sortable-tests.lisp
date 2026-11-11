@@ -107,11 +107,12 @@ sort field does not exist."
   (loop for r in (getf (be-list :todos "admin") :records)
         do (be-delete :todos (getf r :id) "admin")))
 
-(test sortable-target-field-rejected
-  ":sortable t on a :target (FK) field is a compile error, uniformly
-(base types and rollups): stage 2 rewrites the sort column to the
-joined display column, which base Phase A never joins."
-  (signals error
+(test sortable-target-field-compiles
+  ":sortable t on a :target field compiles when the display source
+names the target and the target is in the :main view (the
+joined-column sort; the rejection shapes are pinned in
+target-sort-tests)."
+  (finishes
     (compile-model
       (list
         :things
@@ -132,9 +133,9 @@ joined display column, which base Phase A never joins."
           :add-form (list :fields t))))))
 
 (test sortable-target-field-compiles-without-sortable
-  "Positive control: the same inline model minus :sortable t compiles
-(proves the rejection above comes from the new guard, not fixture
-shape)."
+  "Control: the same inline model minus :sortable t still compiles
+(fixes the shape itself as legal, separate from the sortable
+question)."
   (finishes
     (compile-model
       (list
@@ -153,24 +154,3 @@ shape)."
           :list-form (list :fields t)
           :update-form (list :fields t)
           :add-form (list :fields t))))))
-
-(test sortable-target-field-rejected-on-rollup
-  ":sortable t on a :target field of a rollup grain pass-through is a
-compile error too (the uniform rule)."
-  (signals error
-    (compile-model
-      (list
-        :users-board
-        (list :rollup t
-          :grain :users
-          :views (list :main (list :tables '(:users)))
-          :list-form (list :fields t)
-          :fields (list
-                    (list :name
-                      (list :source (list :view :main :table :users
-                                      :column :name :agg :first)
-                        :sortable t))
-                    (list :user-count
-                      (list :type :integer
-                        :source (list :view :main :table :users
-                                  :column :id :agg :count)))))))))
