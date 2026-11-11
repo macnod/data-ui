@@ -301,14 +301,37 @@ for the placeholders."
       for index = (next-param-index sql)
       then (1+ (length (u:flatten values)))
       for (table-key field-key op-key value) in filters
+      ;; nil-valued :eq / :ne → is [not] null, no placeholder and no
+      ;; collected value. Decided on the raw value before anything is
+      ;; emitted, inside the loop: placeholder numbering counts the
+      ;; values collected so far, so a translation that collected a
+      ;; stray value would desynchronize every later $N (wrong bind or
+      ;; a bind-count error). Post-db-value-fix, a nil reaching the
+      ;; :eq arm would bind :null and never match (col = NULL is not
+      ;; true in three-valued logic) — this arm makes the intent
+      ;; match the SQL. :null from the wire is the same nil.
+      for null-eq-p = (and (member op-key '(:eq :ne))
+                        (or (null value) (equal value :null)))
       for fk-eq-p = (eq op-key :fk-eq)
-      for fk-eq-column = (when fk-eq-p
+      ;; A null :eq / :ne on a singular-target field compares the
+      ;; storage column too, not the display :source :column-name:
+      ;; two FKs to one table share the join (the suppressed
+      ;; sibling's display names the other leg's rows), and the
+      ;; display column is null-exactly-when-the-FK-is-null only as
+      ;; a LEFT JOIN accident. The same column :fk-eq pins.
+      for null-target-p = (and null-eq-p
+                            (singular-target-field-p
+                              (u:tree-get *compiled-model*
+                                table-key :fields field-key)))
+      for storage-p = (or fk-eq-p null-target-p)
+      for fk-eq-column = (when storage-p
                            (or (fk-eq-condition-column table-key
                                  field-key)
                              (report-ve "add-where-clause"
-                               "No storage column for :fk-eq field ~s ~
-                                on ~s." ~field-key ~table-key)))
-      for alias = (if fk-eq-p
+                               "No storage column for :fk-eq / null ~
+                                target field ~s on ~s." ~field-key
+                               ~table-key)))
+      for alias = (if storage-p
                     fk-eq-column
                     (to-sql-identifier
                       (u:tree-get *compiled-model*
@@ -328,17 +351,6 @@ for the placeholders."
                                 value index)))
       for has-all-fragments = (car exists-result)
       for has-all-values = (cadr exists-result)
-      ;; nil-valued :eq / :ne → is [not] null, no placeholder and no
-      ;; collected value. Decided on the raw value before anything is
-      ;; emitted, inside the loop: placeholder numbering counts the
-      ;; values collected so far, so a translation that collected a
-      ;; stray value would desynchronize every later $N (wrong bind or
-      ;; a bind-count error). Post-db-value-fix, a nil reaching the
-      ;; :eq arm would bind :null and never match (col = NULL is not
-      ;; true in three-valued logic) — this arm makes the intent
-      ;; match the SQL. :null from the wire is the same nil.
-      for null-eq-p = (and (member op-key '(:eq :ne))
-                        (or (null value) (equal value :null)))
       for placeholders = (cond
                            (null-eq-p nil)
                            ((member op-key '(:in :not-in))
@@ -376,7 +388,9 @@ for the placeholders."
       ;; alone — a standalone boolean expression, not the
       ;; "alias op value" shape the other operators produce.
       ;; The null-eq-p translation is "alias is [not] null" with
-      ;; no placeholder. :fk-eq emits the plain "= $N" shape
+      ;; no placeholder — a singular-target field's null rides its
+      ;; qualified storage column (the same column :fk-eq pins).
+      ;; :fk-eq emits the plain "= $N" shape
       ;; against its qualified physical column.
       collect (cond
                 (has-all-p placeholders)
@@ -1405,6 +1419,26 @@ exist, or points to a base or internal table."
       :params (list id)
       :result-type :single)))
 
+(defun id-dedup-filter (type-key field-key value)
+  ":private: The dedup filter tuple for FIELD-KEY of TYPE-KEY carrying
+wire VALUE. A singular-target field compares on its physical storage
+column: :fk-eq with the reference resolved to the target row's uuid
+(resolve-reference-id takes both wire spellings — uuid and display
+name). An :eq filter on a :target field never matches: its alias is
+the field's joined display column while db-value resolves the bind to
+a uuid, a text-versus-uuid compare — the skip-existing lookup misses,
+and the real INSERT dies on the identity unique index (23505). Null
+FK values keep the :eq spelling (valid-filter rejects a null :fk-eq;
+add-where-clause renders the null :eq as the display column IS NULL,
+which a null storage column satisfies under the LEFT JOIN)."
+  (if (and (singular-target-field-p
+             (u:tree-get *compiled-model* type-key :fields field-key))
+           (not (null value))
+           (not (equal value :null)))
+    (list type-key field-key :fk-eq
+      (resolve-reference-id type-key field-key value))
+    (list type-key field-key :eq value)))
+
 (defun id-from-data (type-key data)
   ":private: Returns the ID of the record of type TYPE-KEY that matches DATA.
 If DATA contains an :ID key, then the value associated with that key is
@@ -1412,7 +1446,9 @@ returned. Otherwise, this function expects DATA to contain a value for each
 local field (See the LOCAL-FIELDS function) of TYPE-KEY, and looks up the ID
 of the record that matches those values. If no record matches, then this
 function returns NIL. This function ignores any non-local fields in DATA.
-If DATA points to multiple records, then this function raises an error."
+If DATA points to multiple records, then this function raises an error.
+Singular-target fields match through their storage column (see
+ID-DEDUP-FILTER), the same comparison the INSERT itself writes."
   (or (getf data :id)
     (let ((filters (loop for field in (local-fields type-key)
                      for value = (getf data field)
@@ -1422,7 +1458,7 @@ If DATA points to multiple records, then this function raises an error."
                      ;; bind a function name as a uuid/timestamp).
                      unless (member value '(:generate-uuid :now))
                      do (valid-value-type type-key field value)
-                     collect (list type-key field :eq value))))
+                     collect (id-dedup-filter type-key field value))))
       (be-id type-key filters "admin"))))
 
 (defun id-to-type-key (id)

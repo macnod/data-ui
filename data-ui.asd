@@ -93,4 +93,5 @@
                 (:file "model-text-tests")
                 (:file "styling-tests")
                 (:file "deploy-incoming-tests")
-                (:file "target-sort-tests")))))
+                (:file "target-sort-tests")
+                (:file "fk-dedup-tests")))))

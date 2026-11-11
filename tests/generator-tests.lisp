@@ -169,7 +169,7 @@ recurring's :spawn pattern folded into chores, shopping was a
 temporary demo.)"
   (is (equal
         '("books" "chores" "file-server" "gift-tracker" "modelbank"
-           "parts" "todos" "widgets")
+           "parts" "scenebook" "todos" "widgets")
         (mapcar (lambda (path)
                   (u:replace-extension (u:filename-only path) ""))
           (generate-model-example-files)))))
