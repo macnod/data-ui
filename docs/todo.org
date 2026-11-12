@@ -952,6 +952,8 @@ Implemented as the storage-column comparison (the identity-fields-only alternati
 :CREATED: [2026-11-11 Wed]
 :END:
 An admin cannot grant the =admin= role to a user through the =:users= type (surfaced 2026-11-11 creating Mel's App accounts — a second admin cannot be made through the UI). Verified facts to carry into the plan: the Add form's roles palette pre-fill reads =:users= =type-roles= widened by =user-defined-type-roles= (=lisp/backend.lisp=), whose docstring says "excluding =admin=" — and the FR-11 grant gate (=valid-admin-only-user-roles=) covers only =ai-user= / =deployer=, so the =admin= exclusion there is nowhere stated as policy. Diagnosis of the exact failing path (palette omission vs write-path rejection) belongs to planning; the fix must let an admin grant =admin= without opening non-admin grant paths.
+
+Plan: [[file:~/workbench/admin-cannot-assign-admin-plan.org][admin-cannot-assign-admin-plan.org]].
 ** TODO Public =:page t= tabs not visible to guest   :backend:frontend:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-11-11 Wed]
