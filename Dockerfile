@@ -55,6 +55,7 @@ RUN url="${ROSWELL_URL_PREFIX}/${ROSWELL_VERSION}/roswell_${ROSWELL_VERSION#v}-1
 RUN ulimit -n 1048576 && ros install "sbcl-bin/${SBCL_VERSION}" && ros use "sbcl-bin/${SBCL_VERSION}"
 
 # 3rd-party packages (any order ok, so alphabetical)
+RUN ulimit -n 1048576 && ros install 3bmd
 RUN ulimit -n 1048576 && ros install babel
 RUN ulimit -n 1048576 && ros install cl-base64
 RUN ulimit -n 1048576 && ros install cl-csv
@@ -67,6 +68,7 @@ RUN ulimit -n 1048576 && ros install ironclad
 RUN ulimit -n 1048576 && ros install jose
 RUN ulimit -n 1048576 && ros install mgl-pax
 RUN ulimit -n 1048576 && ros install postmodern
+RUN ulimit -n 1048576 && ros install sanitize-html
 RUN ulimit -n 1048576 && ros install swank
 RUN ulimit -n 1048576 && ros install trivial-utf-8
 RUN ulimit -n 1048576 && ros install uiop
