@@ -61,6 +61,7 @@ RUN ulimit -n 1048576 && ros install cl-base64
 RUN ulimit -n 1048576 && ros install cl-csv
 RUN ulimit -n 1048576 && ros install cl-ppcre
 RUN ulimit -n 1048576 && ros install cl-unicode
+RUN ulimit -n 1048576 && ros install colorize
 RUN ulimit -n 1048576 && ros install drakma
 RUN ulimit -n 1048576 && ros install fiveam
 RUN ulimit -n 1048576 && ros install hunchentoot
