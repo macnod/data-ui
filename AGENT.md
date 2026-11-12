@@ -37,6 +37,8 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 
 Non-frontend code is SBCL Common Lisp, written by a human.
 
+- **New asd dependencies must also go in the `Dockerfile`.** The image installs libraries one `ros install <project>` per line; that list is not derived from `data-ui.asd`. The deploy compile gate runs on the host SBCL (where Quicklisp hides gaps), so a missing entry surfaces only ~4 minutes into a deploy, at the image-build smoke load (`Component X not found, required by data-ui`). Install *project* names, not system names: `3bmd` covers the `3bmd-ext-*` systems, but `colorize` (required by `3bmd-ext-code-blocks`) is a separate project — verify against the asd files in `~/.roswell/lisp/quicklisp/dists/quicklisp/software/`.
+
 ## Interaction Conventions
 
 - AI agents must not modify any Lisp source files outside `web/` and `tests/helpers.lisp` without special permission from a human. That code is complex and largely outside of AI's current capabilities.

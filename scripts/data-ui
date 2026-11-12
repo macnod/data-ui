@@ -1399,6 +1399,33 @@ function db_exec {
     fi
 }
 
+function prd_stage_archive {
+    # $1 = archive file on this host; prints the pod-local path.
+    # kubectl exec -i stdin streaming is unsafe for anything but a
+    # full-read consumer: the kubectl 1.35 snap (2026-11-11) never
+    # signals stdin EOF to a remote process that exits while the
+    # local side still has pending bytes — `pg_restore -l` wedged
+    # exactly so, hanging a prd restore at its TOC gate with prod
+    # untouched. `cat > file` reads to EOF and exits, so the upload
+    # terminates on every client version; pg_restore then takes the
+    # pod-local path as a file argument (options trailing it parse
+    # fine — GNU getopt permutation, verified live). A stray staged
+    # file after a hard kill is harmless: pod /tmp is ephemeral and
+    # the next stage truncates the same name.
+    local src="$1" dst="/tmp/data-ui-snapshot-$$-${RANDOM}.dump"
+    kubectl exec -i -n "$PRD_NAMESPACE" "deploy/$PRD_PG_DEPLOY" -- \
+        sh -c "cat > '$dst'" < "$src" \
+        || die "could not stage the archive into the postgres pod."
+    echo "$dst"
+}
+
+function prd_unstage_archive {
+    # Best-effort removal of a staged archive; never fails a restore.
+    [[ -n "${1:-}" ]] || return 0
+    kubectl exec -n "$PRD_NAMESPACE" "deploy/$PRD_PG_DEPLOY" -- \
+        rm -f -- "$1" >/dev/null 2>&1 || true
+}
+
 function wait_for_postgres {
     local quiet="$1"
     local interval=$SLEEP_INTERVAL
@@ -3127,10 +3154,50 @@ function container_pg_dump {
     db_exec pg_dump --format=custom --no-owner --no-privileges
 }
 
+function verify_snapshot_archive {
+    # The corrupt-archive gate, in the destination's own pg_restore
+    # (version-consistent with the server). prd must stage the
+    # archive in the pod first: pg_restore -l is an early-exit
+    # consumer, and kubectl exec -i never signals EOF to one (see
+    # prd_stage_archive) — streaming it hangs after printing the
+    # TOC. dev/stg stream through compose exec -T, which has no such
+    # bug. psql heredoc stdin (reset_public_schema) is a full-read
+    # consumer and verified clean on the same kubectl.
+    local path="$1" staged="" rc
+    if [[ "${ADDRESS_QUALIFIER:-}" == "prd" ]]; then
+        staged=$(prd_stage_archive "$path")
+        db_exec pg_restore -l "$staged" >/dev/null
+        rc=$?
+        prd_unstage_archive "$staged"
+        return "$rc"
+    fi
+    db_exec pg_restore -l < "$path" >/dev/null
+}
+
 function container_pg_restore {
     # Reads the custom-format archive from stdin. --single-transaction
     # makes the restore atomic: a failure leaves the schema exactly as
     # it was before the restore started.
+    # prd: stdin cannot stream through kubectl exec -i into pg_restore
+    # (client-version-dependent EOF behavior; the TOC listing already
+    # wedges on kubectl 1.35 — see prd_stage_archive). Buffer stdin to
+    # a host temp file, stage it in the pod, restore from the
+    # pod-local path, unstage. Covers both call sites (the snapshot
+    # and the rollback's safety dump). dev/stg keep compose -T
+    # streaming.
+    if [[ "${ADDRESS_QUALIFIER:-}" == "prd" ]]; then
+        local tmp staged rc
+        tmp=$(mktemp "${TMPDIR:-/tmp}/data-ui-restore-stdin.XXXXXX") \
+            || die "cannot create a restore staging temp file."
+        cat > "$tmp" || { rm -f "$tmp"; die "could not buffer the archive for staging."; }
+        staged=$(prd_stage_archive "$tmp")
+        rm -f "$tmp"
+        db_exec pg_restore --no-owner --no-privileges --exit-on-error \
+                --single-transaction "$staged"
+        rc=$?
+        prd_unstage_archive "$staged"
+        return "$rc"
+    fi
     db_exec pg_restore --no-owner --no-privileges --exit-on-error \
             --single-transaction
 }
@@ -3323,7 +3390,7 @@ function snapshot_restore {
     # pay for a safety dump of a live prod DB first).
     require_postgres_running
     mkdir -p "$SNAPSHOT_DIR"
-    if ! db_exec pg_restore -l < "$path" >/dev/null; then
+    if ! verify_snapshot_archive "$path"; then
         # Runs before any prd scale-to-0, so prod is still up here —
         # no trap armed, nothing to disarm; die plain.
         die "Snapshot '${name}' is not a readable archive;" \

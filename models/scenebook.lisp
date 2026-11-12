@@ -409,7 +409,7 @@
      ;; five targets as columns / chips.
      :list-form (:fields (:image :name :appearance :actor :scene
                          :character :costume))
-     :update-form (:fields (:appearance :actor :scene :character
+     :update-form (:fields (:name :appearance :actor :scene :character
                             :costume))
      :view-form (:fields (:image :name :appearance :actor :scene
                          :character :costume))
