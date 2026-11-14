@@ -333,5 +333,47 @@
       "model": "todos"
     },
     "expected": false
+  },
+  {
+    "name": "ne-empty-vs-empty-array",
+    "rows": [
+      [
+        "model",
+        "ne",
+        ""
+      ]
+    ],
+    "record": {
+      "model": []
+    },
+    "expected": false
+  },
+  {
+    "name": "eq-empty-literal-vs-empty-array",
+    "rows": [
+      [
+        "model",
+        "eq",
+        ""
+      ]
+    ],
+    "record": {
+      "model": []
+    },
+    "expected": true
+  },
+  {
+    "name": "empty-array-fails-closed",
+    "rows": [
+      [
+        "completed-at",
+        "ne",
+        "x"
+      ]
+    ],
+    "record": {
+      "completed-at": []
+    },
+    "expected": false
   }
 ]

@@ -121,7 +121,6 @@ Implemented 2026-10-12 per the plan ([[file:~/workbench/state-gated-buttons-plan
 Post-implementation notes: =enabled-when-holds= (a =*compiled-model*=-reading convenience over =eval-condition-rows=) is exported by the backend for hook / REPL use. The FE check is the manual chores-stg pass (no FE test runner exists; the shared fixture is its future replacement).
 
 Plan: [[file:~/workbench/state-gated-buttons-plan.org][state-gated-buttons-plan.org]].
-* MVP Now
 ** DONE Stay logged in across page refresh            :frontend:polish:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-07 Wed]
@@ -536,7 +535,7 @@ Implemented per the plan end to end:
 - Full suite via =scripts/data-ui tests=: 2269 checks, 44 groups, all passed. Live probes: fixture =fe-fields= shows =:column "name"= / =:title=; both =left join= lines in =phase-a-join-sql=; palettes =(guest admin)= / =("Apollo")=; modelbank =:user= carries =:filter-with :reference= and the palette lists users after the =:source-all= addition. The M2M stale-form timing change and the URL-seed arming path are pinned only by the manual browser pass (no JS test harness) — the plan's step 19 checks, still open.
 
 Corrected 2026-10-27: the Docs bullet above records that =model-reference.md='s =:filter-with= row shipped with "the same-target collapse" — that claim is false. Same-target selections do not collapse to one row and do not union: =fetchList= emits one target-keyed =:in= row per selected field and =add-where-clause= ANDs every row through the single joined column, so disjoint selections (=admin= through one =:users=-targeting field, =guest= through another) match nothing. The docs sentence (and the same stale sentence in =fetchList='s chip-block comment) is corrected by "Clickable reference chips in list cells" (its plan pins the contract with a dev-REPL probe); Post MVP "Same-target filter semantics" owns the joined-column-aliasing fix.
-I thi** DONE Clickable reference chips in list cells     :frontend:mvp:
+** DONE Clickable reference chips in list cells               :frontend:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-26 Mon]
 :COMPLETED: [2026-10-27 Tue]
@@ -947,9 +946,18 @@ Implemented from the plan (every step; no deviations). Compiler: =compile-field=
 Inserting a record whose identity already exists should return =inserted: false= with the existing row's id (the =/api/insert= docstring's promise); on a type with a =:target= field it 500s with a unique-constraint violation instead. Surfaced 2026-11-11 loading Mel's App scenebook through the ingestion runner: the second insert of a character (identity =MRLCMR-Jennifer=, =:script= → =:scripts=) died on =rt_characters_character_name_key= 23505. The built-in frontend hits the same wall — Add a character with a script picked, submit twice, the second Add is a 500.
 Mechanism (traced live): =be-insert='s skip-existing lookup =id-from-data= (=lisp/backend.lisp=) builds its dedup filters over *all* local fields, FK fields included. In =add-where-clause=, a filter on a =:target= field aliases to the field's joined display column (=rt_scripts.script_title= for scenebook's =:script=), but the bind value goes through =db-value= → =resolve-reference-id= first and arrives as the target's UUID. The WHERE compares a display column against a UUID — never matches — the lookup returns nil, =be-insert= proceeds to the real INSERT, and the identity unique index fires. Flat types (no FK fields) dedup fine, which is why tests pass. Diagnosis-to-fix belongs to planning (identity-fields-only dedup filters vs a storage-column comparison); the Mel's App runner works around it client-side with =GET /api/id= on the identity field.
 Implemented as the storage-column comparison (the identity-fields-only alternative rejected: =sty-unique-index= pins that a same-identity-different-payload insert must keep *signaling* the unique error — "the database rejects the duplicate whatever path wrote it" — so identity-only dedup filters would change the =/api/insert= contract the item is fixing toward). =lisp/backend.lisp=: new =id-dedup-filter= beside =id-from-data= — a singular-target field (=singular-target-field-p=) with a non-null value emits =:fk-eq= carrying =resolve-reference-id='s uuid (both wire spellings, uuid and display name, resolved exactly as the INSERT itself resolves them), everything else keeps =:eq=; =id-from-data= collects through it, =valid-value-type= and the =:generate-uuid= / =:now= skips unchanged. The new tests then exposed a second latent bug in the same mechanism family: =add-where-clause='s null arm on a =:target= field aliased to the display =:source :column-name=, and for a suppressed sibling (two FKs to one table share the join — =fk-eq-test='s =:crosspost= beside =:post=, both reading =rt_posts.post_title=) that names the *other leg's* rows, so the dedup still missed; a null =:eq= / =:ne= on a singular-target field now aliases to the same qualified storage column =:fk-eq= pins (=null-eq-p= moved above the alias computation, new =null-target-p= / =storage-p=; =fk-eq= emits =IS NULL= through the unchanged condition arm). REST-visible improvement in passing: a null =:eq= filter on an FK field now compares the right column. Null FK values never ride =:fk-eq= (=valid-filter= rejects a null =:fk-eq= by pinned contract). Tests: =tests/fk-dedup-tests.lisp= (two suites) — =fk-dedup-suite= on the seeded =fk-eq-test= fixture: the scenebook repro (same data twice → same id, =inserted= NIL), the display-name spelling, same-identity-different-FK still signals (the sty-unique-index doctrine carried to FK types), null-FK duplicate, one lookup mixing =:fk-eq= and =IS NULL=, and direct =id-from-data= probes (a two-FK row, and a row whose FK was written out-of-band via =be-set-field-value=); =fk-dedup-users-suite= on =nullable-fk-test= (seeded by =seed-fk-dedup-users-fixture=): a base-type =:users= target resolved by display name. =run-fk-dedup-tests= in =tests/helpers.lisp= registered as ="fk-dedup"= in =run-tests=; file registered in =data-ui.asd=. Full suite =scripts/data-ui tests=: 4016 checks, 60 groups, PASS. The Mel's App runner can now drop its =GET /api/id= workaround.
-** TODO Chip-to-record navigation           :frontend:backend:mvp:
+* MVP Now
+** DONE Promote models/local                          :scripts:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-12 Thu]
+:COMPLETED: [2026-11-13 Fri]
+:END:
+Implemented from the plan ([[file:~/workbench/promote-models-local-plan.org][promote-models-local-plan.org]]). =scripts/data-ui=: new =resolve_model_file <name>= beside =model_file_path= — the first existing of =models/<name>.lisp= / =models/local/<name>.lisp= (=set-model='s order minus =models/test/=; top-level shadows local; =model_file_path= stays the error-text helper). Swapped in at the four gates that resolved top-level only: the snapshot =dev:= arm (die names both locations), =create_profile= (die names both locations plus the absolute staging root it actually searched, and points at =install-model=), =profile_domain= (both field reads ride =DATA_UI_MODEL_PATH="$resolved"=; the =-stg= derivation untouched), and the =field= verb (which had no gate at all — a local model died inside ros). The version stamping followed: =write_snapshot_meta_atomically= and =snapshot_restore='s version compare resolve through the helper, so =dev:= / =stg:= saves of local models carry =model-version= lines and restores compare them. New verb =profile install-model <model>=: host-guarded (=STAGING_HOST=), never routes (=route_for_staging='s =profile= arm returns 1 for =install-model=), resolves the model in the invoking checkout, refuses a top-level file in either tree (the staging one with =deploy_check_identity='s both-trees message shape), gates declared =:name= == operand, size ≤ 1 MiB non-symlink, then temp → chmod 600 → sha256 verify → =mv= into =$STAGING_CHECKOUT/models/local/= (idempotent: identical bytes = no-op, differing bytes = overwrite notice). Usage texts updated (top-level =usage=, the =profile= case arm, the snapshot =dev:= bullet). Docs: =docs/cli.md= (profile intro, =create=, =expose=, new =install-model= paragraph, =field= section, =dev:= bullet, Publication-order section rewritten — the old text pinned the "no =models/local/= fallback" policy this item reverses), =docs/deployment.md= Demos, =docs/snapshots.md= =dev:= bullet. Deviation from plan: the =field= verb's =MODEL_NAME=/=DATA_UI_FIELD_NAME= assignments turned out not to cross to ros at all (plain shell vars, not exports — every internal caller prefixes them per call, so only the bare verb was broken; it printed =NIL= for every model, pre-existing). Fixed with =export= while in there; it is the reason =field books title= now works. Verified end to end on the live host: =snapshot save dev-mel-01 dev:mel-01= (meta carries =model=mel-01=, =model-version=0.3=), =install-model mel-01= lands mode 600 at =/data/data-ui/repos/staging/models/local/mel-01.lisp= (re-run = already installed; planted =staging models/mel-01.lisp= correctly refused naming both trees, then removed), =profile create mel-01= (via routing; the staging script was hand-updated with the dev copy so the routed arm had the resolver — =staging update= delivers it properly once this lands), =e-demo start mel-01= healthy with the three journal identity lines on the staging checkout, =/api/info= reports mel-01 v0.3, =snapshot save dev-mel-01-stg stg:mel-01= stamps the version through the routed save, =profile expose mel-01= = https://mel-01-stg.demo.data-ui.com (200, before and after the =PUBLIC_ORIGIN= restart). Regression spots: =dev:books= save (after =set-model books=), =field books title=, garbage name dies naming both locations. Full suite =scripts/data-ui tests=: PASS.
+
+** DONE Chip-to-record navigation           :frontend:backend:mvp:
 :PROPERTIES:
 :CREATED: [2026-11-11 Wed]
+:COMPLETED: [2026-11-12 Thu]
 :END:
 Surfaced 2026-11-11 showing the scenebook app (Mel's app) to a real user. The chip filters are a big hit, but a chip is also a *reference to a record*, and there is no way to get from a chip to that record — you can filter scenes by the character chip "Jenny", but you cannot get to Jenny's record in the Characters tab. The chip's value is a dead end from the list view.
 
@@ -966,6 +974,54 @@ Questions the plan must settle:
 - *URL shape.* The existing type + id hash grammar (the target-links / record-open path) — navigation is a tab switch plus record open, not a new route.
 
 Related: "Clickable reference chips in list cells" (DONE — the filter half of this same cell), the view-form target links (DONE — the navigation half on a different surface), "Same-target filter semantics" (Post MVP — shares the wire row-shape questions).
+Notes: [[file:~/workbench/chip-to-record-notes.org][chip-to-record-notes.org]] (design decisions, 2026-11-12: state-dependent click — first click filters, a click on a highlighted cell chip opens its record, filter-region chips remove; arrow plus tooltip on navigable highlighted chips).
+Implemented 2026-11-12 on =laureline/chip-to-record-navigation= (672b9d6) from the synthesized plan, with Donnie's decisions folded in. Clicking an unhighlighted cell chip filters as before; clicking a highlighted cell chip that has a record opens it (tab switch plus record open on the existing type + id hash route); clicking a filter-region chip or the ScopeChip anywhere removes the filter. Navigable highlighted chips show a ↗ arrow with =Open <value>= as title and aria-label. Reference chips navigate through the existing ="<field>-id"= sibling; M2M chips resolve through =/api/value-id=, using the new =:record-lookup= key that =fe-fields= (=lisp/backend.lisp=) emits on join-table fields, and show no arrow when the lookup is empty (no match, unreadable, or ambiguous). Click semantics live in =web/src/chipNav.ts= (=chipClickAction=, double-click guard =suppressChipClick= at 500 ms). Tests: =tests/chip-navigation-tests.lisp= (10 tests, 23 checks, including the ambiguity 500 "More than one match." on =/api/id= and =/api/value-id=), =web/src/chipNav.test.mjs= (=npm run test:chip-nav=, 33). Full suite: 4063 checks, 62 groups, PASS. Deviation: the suite is registered in =data-ui.asd= after =api-type-roles-access-tests=. Not done: the browser pass (plan step 22).
+Plan (synthesized, used for the implementation): [[file:~/workbench/grokbot/chip-to-record-navigation-plan.org][chip-to-record-navigation-plan.org]].
+Independent plans: [[file:~/workbench/grokbot/chip-to-record-navigation-plan-laureline.org][chip-to-record-navigation-plan-laureline.org]] (Laureline), [[file:~/workbench/grokbot/chip-to-record-navigation-plan-rose.org][chip-to-record-navigation-plan-rose.org]] (Rose). Earlier standalone plan, not used: [[file:~/workbench/chip-to-record-plan-hannah.org][chip-to-record-plan-hannah.org]] (Hannah).
+** DONE Chip-per-cell limit                   :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-13 Fri]
+:COMPLETED: [2026-11-13 Fri]
+:END:
+A cell can hold dozens of chip values (SceneBook: Jennifer's scenes cross-list carries 62 chips), stretching its row unreadably. Cap the rendered chips per cell with a trailing "+K more" element; the full set stays reachable through the view form and the chip picker. List cells landed 2026-11-13: =CELL_CHIP_LIMIT = 5= hardcoded in =web/src/App.tsx=, the cap applied in the main list's M2M chip branch (reference scalars are single chips; the child/related table renders clamped text — no other site), an inert =.chip-more= tail in =index.css=; verified live on the dev image (Jennifer: 5 chips + "+57 more"; Story Days at exactly 5 shows no tail); committed as =843da63=. The value stays hardcoded until [[*TODO Make row cell chip limit into a setting][Make row cell chip limit into a setting]] lands. The view form's chip fields follow once [[*TODO Tag chips in view-form][Tag chips in view-form]] lands. Pure frontend.
+** DONE Tag chips in view-form            :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-01 Sun]
+:COMPLETED: [2026-11-13 Fri]
+:END:
+In the view form, =:list= fields (e.g. =:tags=) render as a comma-separated plaintext string (=renderReadOnlyField= in =web/src/App.tsx= joins the values). List views already render the same values as chips — the =chipFieldMeta= / cell-chip treatment — and the view form should match. Pure frontend: chip spans in the read-only list-field branch; no backend, model, or wire changes.
+
+Plan: [[file:~/workbench/tag-chips-in-view-form-plan-glm.org][tag-chips-in-view-form-plan-glm.org]].
+
+Landed 2026-11-13: =ReadOnlyChipList= (new component, placed after the =ReadOnlyCtx= interface) renders array values as inert chip spans in =renderReadOnlyField='s default branch (=Array.isArray= gate ahead of the scalar fallback; empty arrays keep the em dash), a standalone =.chip-list= CSS block carries the flex-wrap row plus cursor-honesty overrides (=cursor: default=, resting hover border — an inert span must not promise a click), and =openEditForm='s stale roles comment now says read-only chips. Uncapped by design — Donnie's call on the plan's flagged question (2026-11-13): the view form is the detail surface, so the full set always renders; =CELL_CHIP_LIMIT= stays a list-cell-only constant, and [[*TODO Make row cell chip limit into a setting][Make row cell chip limit into a setting]] now covers one surface. Ride-along surfaces (Region expanded rows, edit-mode read-only arrays, page bodies) get chips by the same rule. Verified live on the dev image (Jennifer's view form: all 62 scene chips, no tail; sparse and empty cross-lists right; FK-link =<a>= chips and edit-mode CheckboxLists unchanged; list cells still capped at 5 + inert "+57 more"); =npm run build= clean; full suite =scripts/data-ui tests= PASS (4059 checks).
+** DONE View-form chip navigation    :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-13 Fri]
+:COMPLETED: [2026-11-13 Fri]
+:END:
+M2M cross-list chips in the view form (Tag chips in view-form's =ReadOnlyChipList=) render but do nothing on click — inert by that item's own "chip spans" wording, with click semantics deferred as chip-to-record's third surface. Donnie wants them clickable (2026-11-13, on seeing them live): single click opens the value's record via a lazy =GET /api/value-id= (the endpoint and the view form's =open= handler already exist; one fetch per click, no prefetch storm), FK-link affordance (button chips, title/aria "Open <value>", pointer cursor; no arrow glyph — every chip is navigable, the cell's differential marker would be constant noise). Bare =:list= fields (no join table), invisible target types, and unresolvable values (miss / ambiguity / unreadable row) stay inert or no-op silently — the M2M id must resolve before there is anything to open. Ride-along surfaces (public page bodies, Region rows, edit-mode read-only arrays) stay inert; only the view-form call site passes the nav facts (=chipMeta= through =ReadOnlyCtx=, gated by =m2mViewNav= in chipNav.ts). Pure frontend.
+
+Landed 2026-11-13 (filed and done the same day, on Donnie's live reaction to Tag chips in view-form's inert chips): =m2mViewNav= (new pure gate in =web/src/chipNav.ts=, 8 tests in =chipNav.test.mjs= via =npm run test:chip-nav=) decides navigability — an M2M field with lookup facts, an open handler, and a visible target type. =ReadOnlyCtx= gains =chipMeta= (the type's =buildChipFieldMeta= map), set by the view-form call site only; =ReadOnlyChipList= renders buttons with title/aria "Open <value>" when =onOpen= is present, inert spans everywhere else (public pages, Region rows, edit-mode read-only, bare =:list= fields). The click lazily resolves =GET /api/value-id= then opens the record (one fetch per click, no prefetch storm; a miss / ambiguity / unreadable row no-ops — the M2M id must resolve before there is anything to open, unlike the FK link's sibling id). No arrow glyph — every chip is navigable, so the cell's differential marker would be constant noise; the affordance matches the view form's own FK links. CSS: =.chip-list button.chip= (font reset, pointer; the inert cursor overrides now scoped to =span.chip=). Verified live on the dev image (Jennifer's Scenes: 62 buttons; click "002" opens scene 002 — the same uuid its appearance FK link targets; round trip via scene 002's Characters → Jennifer; wardrobe / story-days sparse fields navigable; list cells unchanged — 5 chips + inert "+57 more"; zero console errors); =npm run build= clean; full suite =scripts/data-ui tests= PASS (4062 checks). No backend, model, or wire changes.
+
+** DONE Column visibility                           :frontend:polish:mvp:
+:PROPERTIES:
+:CREATED: [2026-10-27 Tue]
+:COMPLETED: [2026-11-13 Fri]
+:END:
+A "Columns" control near the search/filter controls on record lists letting the user toggle which columns are visible — all visible by default (e.g. hide =Created= / =Updated= timestamps on the todos list for a clean look). The video shows it.
+
+- Popover with checkboxes over =list-form= field names, a search-as-you-type filter over those names (same anatomy as the M2M chip picker), and a "Show all" reset
+- Persistence in =localStorage=, per model + type key (e.g. =todos:todo=); stored names no longer in the schema are ignored (model drift)
+- Hiding every column is allowed (rows show row controls only)
+- Row-control columns: opening a record is the row click, not a column — never governed by the selector; the Delete column (the ✕ selection column) is selectable in the Columns control but hidden by default, and "Show all" never turns it on — the reset governs field columns only, the ✕ entry changes only by its own checkbox. Hiding the column removes the per-row selection checkboxes with it, so "Delete Selected" hides too (nothing to select); with the view-form Delete button skipped to Post MVP (2026-11-13, Donnie — [[*TODO Delete button in view-form][Delete button in view-form]]), deleting requires enabling the ✕ column through the Columns control first — the accepted trade. Permission gates unchanged: the column still requires a deletable row on the page (anyDeletable). (amended 2026-11-13, Mel's-app pass; default flipped to hidden the same day, Donnie)
+- Frontend-only; rollup lists excluded (v1 scope)
+
+Plans: [[file:~/workbench/column-visibility-plan-rose.org][column-visibility-plan-rose.org]], [[file:~/workbench/column-visibility-plan-kimi.org][column-visibility-plan-kimi.org]].
+
+Plan: [[file:~/workbench/column-visibility-plan.org][column-visibility-plan.org]]
+
+Landed 2026-11-13 (per the synthesized plan, no deviations): =web/src/columns.ts= (pure module — both key builders, =parseHiddenColumns=, =visibleListFields=, =supportsColumnVisibility=, the forms-presence rollup proxy), =web/src/columns.test.mjs= (21 tests, =npm run test:columns=), and =web/src/ColumnsPicker.tsx= (ChipPicker's anatomy with three deltas: label-wrapped checkboxes that never close the popover, a "Show all" footer, and pinned = the hidden set — checked means visible, schema order everywhere, search matches label or key, RENDER_CAP 8 + "N more — type to narrow"). App.tsx: =modelName= from =/api/info= =:name= (both authenticated consumers; empty-string default so nothing keys or writes pre-login), try/catch storage wrappers (silent fail), the =bumpHiddenColumns= write-only invalidator (the =setTokenVersion= shape — the store is the state, read at render beside =listFields=), =toggleHiddenColumn= / =showAllColumns= / =toggleDeleteColumn= (the ✕ column's own =data-ui-delete-column:<model>:<type>= key enforces "Show all never turns it on"; unchecking it clears the selection — a selection with no checkboxes is a trap), the ▦ button in the filter bar after the chip pickers (the bar condition gains the =supportsColumns && !hideList && listFields.length > 0= disjunct — a type with no other controls still gets the bar; mutual exclusion with the chip pickers both ways), thead + row-cell maps over =visibleFields= (=listFields= stays authoritative everywhere else — =deleteSelected='s name fallback keeps it so the confirm dialog survives a hidden name column), ✕ =<th>=/=<td>= gates gain =&& deleteColumnShown=, and Delete Selected gains the same second conjunct (type-level delete envelope first, page-visible ✕ truth second). No CSS, no Lisp, no wire changes; hidden sort/filter state stays live. Docs: README Current Status list-UX bullet, AGENT.md Status Digest frontend sentence, and the video-plan beat (todos, search "created", hide, reload, Show all). Verified live on the dev image (scenebook, admin and guest): popover in schema order with cap + "5 more"; search narrows by label ("descri") and by field key ("makeups"); uncheck removes th and cells together with the popover staying open; reload persistence with the key visible in DevTools and "Show all" removing it; type-switch isolation both directions; all-hidden rows render controls only, the Columns control still in the bar, and the row click still opens the view form; ✕ default hidden (no th, no checkboxes, no Delete Selected despite admin holding delete) → enable → checkboxes + Delete Selected → delete works (throwaway row) → uncheck clears selection and the button; drift via DevTools (bogus name + duplicate ignored, malformed JSON and =[]= all-visible); mutual exclusion both directions; no URL/hash change while toggling; logout/login round trip preserved both keys; zero console errors. Two cases not live-verifiable on this image, carried by the plan's analysis instead: the guest ✕ entry (the scenebook guest sees only page types — no list surface exists to exercise =anyDeletable= false there) and rollups (scenebook has none; the unit suite documents the forms-proxy collision — a form-less ordinary type is wire-identical to a rollup, escape = declare a =:view-form=). =npm run build= clean; all six node suites pass; full suite =scripts/data-ui tests= PASS (4059 checks, 62 groups — 3 fewer than the last recorded run with zero Lisp or test changes since, pre-existing run-to-run variance, all green).
+
 ** TODO Admin cannot assign admin                :backend:frontend:mvp:bug:
 :PROPERTIES:
 :CREATED: [2026-11-11 Wed]
@@ -973,11 +1029,26 @@ Related: "Clickable reference chips in list cells" (DONE — the filter half of 
 An admin cannot grant the =admin= role to a user through the =:users= type (surfaced 2026-11-11 creating Mel's App accounts — a second admin cannot be made through the UI). Verified facts to carry into the plan: the Add form's roles palette pre-fill reads =:users= =type-roles= widened by =user-defined-type-roles= (=lisp/backend.lisp=), whose docstring says "excluding =admin=" — and the FR-11 grant gate (=valid-admin-only-user-roles=) covers only =ai-user= / =deployer=, so the =admin= exclusion there is nowhere stated as policy. Diagnosis of the exact failing path (palette omission vs write-path rejection) belongs to planning; the fix must let an admin grant =admin= without opening non-admin grant paths.
 
 Plan: [[file:~/workbench/admin-cannot-assign-admin-plan.org][admin-cannot-assign-admin-plan.org]].
-** TODO Public =:page t= tabs not visible to guest   :backend:frontend:mvp:bug:
+** TODO Add a field to a running model                     :backend:scripts:mvp:
 :PROPERTIES:
-:CREATED: [2026-11-11 Wed]
+:CREATED: [2026-11-06 Fri]
 :END:
-In a =:guest-allowed t= model, a =:page t= projection with =:type-roles ("public")= should be reachable by the guest, but the page tabs do not render for a guest session. Verified live on the scenebook image (2026-11-11): the guest user holds =public= / =guest:exclusive=, yet =(be-types "guest")= returns NIL — no types at all, so the tab strip is empty and the guest lands on nothing. The authenticated surface works (=:home= / =:about= render for logged-in users); the gap is the type-visibility gate between the =public= role and the page types' type-level list permission. Companion of [[*TODO Public /p/ rendering for page types][Public /p/ rendering for page types]] (that item is the anonymous =/p/= URL surface; this one is the in-app guest surface) and consumer-side sibling of the =:landing-page= fallback work.
+An admin adds a field to a running model's source, reloads without dropping tables, restores a snapshot taken before the field existed, and finds the new field on every old row — NULL or the field's default — with the old data intact. Stays small by leaning on the admin and on documentation: he adds one nullable or defaulted field at a time, and the code only does the two mechanical steps. A =NOT NULL= field with no default is rejected, not invented. No type changes, renames, or drops — those stay with [[*TODO Migrations when the model changes][Migrations when the model changes]].
+
+Two changes. A second pass beside =create-tables= probes =information_schema.columns= and =ALTER TABLE ... ADD COLUMN=s a compiled column the table does not have yet, refusing =NOT NULL= without a default; =heal-model= and a fresh =set-model= grow the column themselves. A data-only snapshot restore skips =DROP SCHEMA public= and loads with =pg_restore --data-only=, so the column the new model just added survives. =(set-model ...)= on an already-loaded image still drops user tables — the safe reload is a restart or =heal-model=, and the snapshot docs must say so.
+
+Notes: [[file:~/workbench/data-only-restore-notes.org][data-only-restore-notes.org]]
+** TODO Notes field on the styling type                 :model:backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-13 Fri]
+:END:
+A free-text =:notes= field on the built-in =:styling= type: admin-facing memory on each slot row, never rendered — not a slot (=*styling-slots*= stays banner / footer / heading), not carried by =site-chrome= or =info-settings=, no sanitizer (plain text through the ordinary form machinery). Motivated 2026-11-13 resizing the scenebook banner: the knowledge that makes a slot edit work is non-obvious and lives nowhere the admin can see it. The stylesheet caps a banner img at 1.2em in the app header (=.app-header h1.banner img=, =web/src/index.css=) and 2em on =/p/= (=+public-style+=, =lisp/public-pages.lisp=); the lever is an inline =max-height= override, because inline =height= alone is silently clamped by the stylesheet cap — and one slot value renders at one size on both surfaces. A notes column beside the value gives each slot a place for that kind of hard-won fact ("banner: resize via inline max-height, not height") where the next editor will find it.
+Depends on [[*TODO Add a field to a running model][Add a field to a running model]]: =:styling= is a built-in type in =*base-model*=, so a live app (scenebook, running with data) cannot grow the field until that item lands — edit the base model, =ALTER TABLE ... ADD COLUMN= a nullable text column through the new pass, old rows and snapshot data intact. Nullable by requirement, not choice: that item rejects =NOT NULL= without a default, and existing rows must survive.
+** TODO Make row cell chip limit into a setting       :frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-11-13 Fri]
+:END:
+The per-cell chip cap is hardcoded — =CELL_CHIP_LIMIT = 5= in =web/src/App.tsx= (the Chip-per-cell limit item's landing). Turn it into a setting. Where the value lives was discussed 2026-11-13 and deliberately left open — frontend constant vs model =:ui= key vs styling slot vs settings column, tradeoffs recorded in [[file:~/workbench/data-only-restore-notes.org][data-only-restore-notes.org]]'s Origin section; the settings-column path becomes cheap once [[*TODO Add a field to a running model][Add a field to a running model]] lands (add the column, restore old data with =snapshot restore --data-only=).
 ** TODO Public /p/ rendering for page types    :backend:frontend:docs:mvp:
 :PROPERTIES:
 :CREATED: [2026-11-10 Tue]
@@ -997,13 +1068,6 @@ Fixture: extend =models/test/page-type-test.lisp= (already =:guest-allowed t=, w
 
 Successor of [[*DONE Page type (editable content pages)][Page type (editable content pages)]], companion of [[*DONE Bot-crawlable public pages][Bot-crawlable public pages]] (ordinary types). Plan source: [[file:~/workbench/page-type-plan.org][page-type-plan.org]], the "A page type is not a public /p/ page" paragraph.
 
-** TODO Add a field to a running model                     :backend:scripts:mvp:
-:PROPERTIES:
-:CREATED: [2026-11-06 Fri]
-:END:
-An admin adds a field to a running model's source, reloads without dropping tables, restores a snapshot taken before the field existed, and finds the new field on every old row — NULL or the field's default — with the old data intact. Stays small by leaning on the admin and on documentation: he adds one nullable or defaulted field at a time, and the code only does the two mechanical steps. A =NOT NULL= field with no default is rejected, not invented. No type changes, renames, or drops — those stay with [[*TODO Migrations when the model changes][Migrations when the model changes]].
-
-Two changes. A second pass beside =create-tables= probes =information_schema.columns= and =ALTER TABLE ... ADD COLUMN=s a compiled column the table does not have yet, refusing =NOT NULL= without a default; =heal-model= and a fresh =set-model= grow the column themselves. A data-only snapshot restore skips =DROP SCHEMA public= and loads with =pg_restore --data-only=, so the column the new model just added survives. =(set-model ...)= on an already-loaded image still drops user tables — the safe reload is a restart or =heal-model=, and the snapshot docs must say so.
 ** TODO Syntax check                              :model:backend:scripts:mvp:
 :PROPERTIES:
 :CREATED: [2026-11-07 Sat]
@@ -1037,18 +1101,6 @@ Shape: a type-level key beside =:page-description= (e.g. =:page-description-labe
 
 ** TODO Remove =:private:= from all doc strings                :maintenance:
 Public, exported function will carry the =:public:= label. We'll assume all the rest are private.
-** TODO Column visibility                        :frontend:polish:mvp:
-:PROPERTIES:
-:CREATED: [2026-10-27 Tue]
-:END:
-A "Columns" control near the search/filter controls on record lists letting the user toggle which columns are visible — all visible by default (e.g. hide =Created= / =Updated= timestamps on the todos list for a clean look). The video shows it.
-
-- Popover with checkboxes over =list-form= field names, a search-as-you-type filter over those names (same anatomy as the M2M chip picker), and a "Show all" reset
-- Persistence in =localStorage=, per model + type key (e.g. =todos:todo=); stored names no longer in the schema are ignored (model drift)
-- Hiding every column is allowed (rows show row controls only)
-- Row-control columns (Edit/Delete) are not fields and are always visible
-- Frontend-only; rollup lists excluded (v1 scope)
-
 ** PLANNING =record= CLI                                     :scripts:mvp:
 :PROPERTIES:
 :CREATED: [2026-10-27 Tue]
@@ -1077,11 +1129,6 @@ Notes: [[file:~/workbench/record-notes.org][record-notes.org]]
 
 Plan: [[file:~/workbench/record-cli-plan.org][record-cli-plan.org]]
 
-** TODO Tag chips in view-form                :frontend:polish:mvp:
-:PROPERTIES:
-:CREATED: [2026-11-01 Sun]
-:END:
-In the view form, =:list= fields (e.g. =:tags=) render as a comma-separated plaintext string (=renderReadOnlyField= in =web/src/App.tsx= joins the values). List views already render the same values as chips — the =chipFieldMeta= / cell-chip treatment — and the view form should match. Pure frontend: chip spans in the read-only list-field branch; no backend, model, or wire changes.
 ** TODO 30-second demo video                                      :docs:mvp:
 :PROPERTIES:
 :CREATED: [2026-08-09 Sun]
@@ -1097,6 +1144,37 @@ Montage concept (2026-10-24): ~20 seconds creating and deploying one simple app 
 :CREATED: [2026-11-08 Sun]
 :END:
 User profiles for apps that need them (blog is the named consumer): each user gets one profile they author about themselves — owner-only writes, open reads, public page addressed by username in guest-enabled apps, byline links from content, sitemap + person metadata. Requirements are drafted and shape-neutral: [[file:~/workbench/profiles-req.org][profiles-req.org]]. Vocabulary shape (how a profile is spelled in a model) is an open question for the planning stage.
+
+** TODO Deadlock under concurrent requests    :backend:mvp:bug:testing:
+:PROPERTIES:
+:CREATED: [2026-11-13 Fri]
+:END:
+The server can wedge permanently — every thread parked, nothing processed again until restart — when requests run concurrently. Incident 2026-11-13 (dev image, SceneBook): the frontend's 5-parallel multi-delete fired concurrent =/api/delete=s; three =be-delete=s arrived 03:53:33–36 UTC, logged step 1, and never completed; the server kept serving other requests for ~70 more seconds; five more =be-delete=s completed at 03:54:45; from that instant nothing processed again — new connections were still accepted (TCP) but never answered, and even a Slime =(* 2 3)= timed out. All 14 SBCL threads sat at 0% CPU (13 futex waits, one socket wait); Postgres was fully idle (no locks, no waiting queries, connections alive); the database stayed consistent throughout (committed cascades, no half-writes). Intermittent: an earlier 24-delete 5-parallel run completed fine. Recovery was a restart.
+
+Evidence: =tests/repl.log= (access log + pdebug trail for 2026-11-14T03:41–03:55 UTC), a =pg_stat_activity= snapshot taken during the wedge, thread states from =ps -L=.
+
+Established facts (2026-11-13 investigation): no locking exists anywhere in data-ui's Lisp — concurrency safety is delegated entirely to Hunchentoot (thread per request) and postmodern. Every query in the system runs through =a:with-rbac= (=cl-rbac=) → postmodern's connection pool (=:pooled-p t=): one shared =a:rbac-pg= instance, ~120 queries per =be-delete=, each query its own pool checkout/checkin (=with-rbac= per query; =rbac-query= is an =eval= per query). Postmodern's pool is properly locked (=:postmodern-thread-safe= verified present in the image) and never blocks — pop-or-create, push-back-on-disconnect. Leading hypothesis: a pooled connection ended up used by two threads at once (double checkout or double push), desynchronizing the shared socket — one thread waits forever for bytes the other consumed (the socket-wait thread), and a stop-the-world GC waiting on that thread freezes the entire runtime. How a connection could be handed out twice is the open question the plan must answer.
+
+The plan must: build a reproduction harness against the disposable test image (port 5445 — never a dev REPL or a deployed app) that hammers concurrent writes until the wedge recurs on demand; capture backtraces of the wedged image from outside (gdb attach — an in-image dumper freezes with everything else); identify the exact ownership chain; fix it where it lives (=cl-rbac='s postmodern usage, pool hygiene, or upstream postmodern); then prove the fix with the harness and remove [[*TODO Interim request serialization][Interim request serialization]].
+
+Related: a bulk-delete endpoint (discussed 2026-11-13, not yet an item) would reduce concurrent-delete pressure but does not cover concurrent inserts/updates — it is not a fix for this.
+** TODO Interim request serialization                 :backend:mvp:
+:PROPERTIES:
+:CREATED: [2026-11-13 Fri]
+:END:
+Until [[*TODO Deadlock under concurrent requests][Deadlock under concurrent requests]] is found and fixed, make a hang impossible by never running two database-touching operations at the same time. A slow demo survives; a frozen one does not (Donnie's call, 2026-11-13, the day the dev image wedged under concurrent deletes). Meant to be small, land before any multi-user demo, and come back out the moment the root-cause item is proven.
+
+Where the fix lives was settled 2026-11-13: in data-ui, not =cl-rbac=. A =cl-rbac= branch cannot reach deployed images — the Dockerfile installs =macnod/rbac= via =ros install=, which clones the default branch only — so a branch would need temporary Dockerfile/deploy-machinery changes to ship, and the dev checkout (=/home/macnod/common-lisp/cl-rbac=) would diverge from what deploys run: the guard would exist in dev but not in the demos it exists to protect. Redefining the library's =with-rbac= macro from data-ui at startup is also out — =cl-rbac= is already compiled by then, and macro redefinitions do not retro-expand compiled code.
+
+Shape: Donnie's =with-rbac-x= proposal, applied at handler granularity. A macro in data-ui that acquires a recursive lock and runs the body; the =lisp/rest.lisp= handler bodies are wrapped with it; the revert is one macro definition (→ =progn=) or one commit, and deploys pick it up through the ordinary image build. Granularity matters: wrapping data-ui's 34 direct =a:with-rbac= query sites is not enough, because =cl-rbac='s public functions (=a:user-allowed=, =a:remove-resource=, ...) open their own internal =with-rbac= blocks — roughly 100 of a =be-delete='s ~120 queries — so query-site renames serialize a minority of the traffic. Handler-body wrapping covers everything a request does.
+
+The plan still picks the coverage level and settles the actions question:
+
+- Write handlers only (=be-insert= / =be-update= / =be-delete= / =be-action= paths): reads stay parallel, covers every observed trigger (both wedges involved concurrent =be-delete=), smallest slowdown. Known risk: a read-path race would stay live, though none has been observed.
+- All database-touching handlers, reads included: strongest guarantee — no two requests' DB work ever overlaps, so no two threads can ever share a pooled connection — at the cost of serializing list loads too.
+- =/api/actions= hazard either way: a multi-minute action hook (=:deploy-model= image builds) holding the global lock would stall every other request for its duration. Likely excluded from the wrap, accepting write-risk on rare admin operations.
+
+Whatever the level: a recursive lock (a plain mutex self-deadlocks if any wrapped body ever nests), released in =unwind-protect=, no timeouts — a queued request waits. Acceptance: the reproduction harness from the root-cause item hammers the image with concurrent writes and cannot wedge it. Frontend note: multi-delete already runs sequential again (built 2026-11-13), so single-user flows cannot produce concurrent writes — this guard is for multiple users.
 
 * MVP Backlog
 ** TODO Type→widget inference                      :compiler:model:mvp:docs:
@@ -1826,6 +1904,12 @@ A page type with no backing table: form fields over a synthesized record, action
 :CREATED: [2026-11-08 Sun]
 :END:
 A built-in =:user-styles= type — the user-scope sibling of [[*TODO Styling type][Styling type]]. Rows are the =:secrets= shape (name/value, =:scope :user=, one set per user) under a controlled slot vocabulary like =:styling='s; the system reads them as the viewer, not as admin, and the UI surface is the Settings view, not an Admin tab. Slot names stay orthogonal between the scopes (=banner= never per-user, =dark-mode= never site-wide), and when a name exists in both (=theme= is the likely one), the layering rule is user slot > site slot > built-in default. Values are enums and strings, not authored HTML, so no sanitizer rides along. Dark mode stays in =:settings= until this lands; the trigger is the second per-user appearance preference, not the first.
+
+** TODO Delete button in view-form            :frontend:polish:
+:PROPERTIES:
+:CREATED: [2026-11-13 Fri]
+:END:
+The view form offers Edit (permission-gated) and Best Link but no Delete — deleting the record being viewed means closing the panel and hunting the list row's control. Add a Delete button beside Edit, gated on the record's =delete= permission flag, using the same confirmation and post-delete navigation as the list's row control. Pure frontend. Skipped out of MVP 2026-11-13 (Donnie) before planning; the accepted trade is recorded on the Column visibility item — with the Delete column hidden by default and no button, deleting means enabling the ✕ column through the Columns control first.
 
 * Scratch
 

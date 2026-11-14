@@ -398,9 +398,11 @@ contract this item does not change."
     (is (equal "v1"
           (th-atr-rest-value :type "notes" :id shared :field "body"
             :form "update-form" :token "atr-token-guest")))
-    (is (null (th-atr-rest-value :type "notes" :id private
-                :field "body" :form "update-form"
-                :token "atr-token-guest")))
+    ;; :null, not nil: rest-value sends a no-value scalar as JSON
+    ;; null (wire-field-value), and render-output is stubbed here
+    (is (eq :null (th-atr-rest-value :type "notes" :id private
+                    :field "body" :form "update-form"
+                    :token "atr-token-guest")))
     ;; column
     (is (equal '("shared")
           (getf (th-atr-rest-column :type "notes" :field "name"

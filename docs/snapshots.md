@@ -16,7 +16,7 @@ scripts/data-ui snapshot migrate        # one-time maintenance
 
 Every address is `<qualifier>:<name>`, both tokens mandatory — no defaults, no unqualified fallback:
 
-- `dev:<model>` — the built-in dev environment (the 5444 REPL), asserting the loaded model. `dev:books` requires `models/books.lisp` to exist and confirms the live model.
+- `dev:<model>` — the built-in dev environment (the 5444 REPL), asserting the loaded model. `dev:books` requires `models/books.lisp` or `models/local/books.lisp` (set-model's order) to exist and confirms the live model.
 - `stg:<profile>` — a host profile. `stg:books` resolves through `/data/data-ui/profiles/books/profile.env`; the model is the profile's `MODEL_NAME` (the tail is a profile name, not a model name).
 - `prd:<instance>` — a k3d production deploy. `prd:todos` resolves from the live cluster (namespace `dataui-<name>`); the tail IS the model name. Runs on the deploy host only, from a checkout (the verb `cd`s to it). See [Production](#production).
 

@@ -148,6 +148,19 @@ tr.row-clickable:hover {
   background: var(--hover-bg);
 }
 
+/* Delete-column checkboxes: ~2X the native size (~13px ->
+   1.6em, which grows the click target with it — the whole
+   point: missing the box opens the row's View form). Rides
+   --error-bright to read as the delete affordance the ✕
+   header promises. width/height on the input itself (not
+   transform: scale) so the hit area grows with the paint. */
+td input[type='checkbox'].row-select {
+  width: 1.6em;
+  height: 1.6em;
+  accent-color: var(--error-bright);
+  cursor: pointer;
+}
+
 @keyframes du-spin {
   to { transform: rotate(360deg); }
 }
@@ -195,7 +208,7 @@ tr.row-clickable:hover {
   font-size: 0.9em;
 }
 
-/* --- Clickable value chips (M2M and reference filter) --- */
+/* --- Clickable value chips (filter and chip-to-record) --- */
 
 .chip {
   display: inline-block;
@@ -225,6 +238,51 @@ tr.row-clickable:hover {
   align-items: center;
 }
 
+/* "+K more" tail on a truncated cell chip row (Chip-per-cell
+   limit): inert count, never a control — the full set stays
+   reachable through the view form and the chip picker. */
+.chip-more {
+  color: var(--muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* --- Read-only chip list (Tag chips in view-form) --- */
+
+/* Array-valued read-only fields (M2M cross-lists, :list
+   fields) render as chip spans — the list cell's treatment,
+   display-only. Standalone class, not .chip-cell: cells and
+   the view form evolve separately. */
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+  padding: 0.3rem 0;
+}
+
+/* Inert chips (no onOpen — ride-along surfaces, bare :list
+   fields): .chip bakes in cursor: pointer (it was born on
+   buttons); a display-only span must not promise a click. */
+.chip-list span.chip {
+  cursor: default;
+}
+
+.chip-list span.chip:hover {
+  border-color: var(--border);
+}
+
+/* Navigable chips (View-form chip navigation): M2M values
+   with a resolvable target render as buttons that open the
+   record — the FK-link affordance on this surface. The
+   global button rule resets color only, so the chrome reset
+   lands here; pointer + hover are the base .chip's own. */
+.chip-list button.chip {
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
 .chip-active .chip-x,
 .chip-x {
   display: inline-block;
@@ -236,6 +294,15 @@ tr.row-clickable:hover {
   font-size: 1em;
   font-weight: bold;
   cursor: pointer;
+}
+
+/* Navigation arrow inside a highlighted, navigable cell chip
+   (chip-to-record): the promise that the next click opens the
+   chip's record. Glyph only — aria-hidden, the button's own
+   label carries the "Open <value>" semantics. */
+.chip-arrow {
+  margin-left: 0.3rem;
+  font-weight: bold;
 }
 
 /* --- Field rows (View / Edit overlay form) --- */

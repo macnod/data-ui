@@ -1004,6 +1004,16 @@ derived value is asserted there)."
     (explain! results)
     (when collect results)))
 
+(defun run-wire-null-tests (&optional collect)
+  "REST wire shape of record values: nil scalars as JSON null, list
+fields and envelope collections as []. Runs on the modelbank-test
+fixture."
+  (let ((results
+          (with-model "modelbank-test" nil
+            (run 'wire-null-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-timestamp-null-tests (&optional collect)
   "Clear-to-NULL on nullable scalar columns: db-value nil→:null, the
 is [not] null filter translation, and the nil-element list-filter
@@ -1178,6 +1188,20 @@ tests/record-permalink-tests.lisp — load it first)."
           (with-model "record-permalink-test"
               #'seed-record-permalink-fixture
             (run 'record-permalink-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-chip-navigation-tests (&optional collect)
+  "Chip-to-record navigation: the fe-fields :record-lookup wire key on
+join-table fields, the be-value-id resolution legs (resolve, miss,
+RBAC fail-closed, ambiguity), and the /api/value-id + /api/id wire
+contract (ambiguity 500, empty miss) on the m2m-test fixture
+(chip-navigation-suite is defined in tests/chip-navigation-tests.lisp
+— load it first; the REST legs use the atr harness from
+api-type-roles-access-tests.lisp, which data-ui.asd loads first)."
+  (let ((results
+          (with-model "m2m-test" #'seed-m2m-fixture
+            (run 'chip-navigation-suite))))
     (explain! results)
     (when collect results)))
 
@@ -1406,6 +1430,7 @@ groups."
                    ("reference-chip" . run-reference-chip-tests)
                    ("timestamp-override" . run-timestamp-override-tests)
                    ("record-permalink" . run-record-permalink-tests)
+                   ("chip-navigation" . run-chip-navigation-tests)
                    ("public-pages" . run-public-pages-tests)
                    ("public-pages-empty"
                                      . run-public-pages-empty-tests)
@@ -1418,7 +1443,8 @@ groups."
                    ("styling"       . run-styling-tests)
                     ("deploy-incoming" . run-deploy-incoming-tests)
                    ("target-sort"   . run-target-sort-tests)
-                   ("fk-dedup"      . run-fk-dedup-tests))
+                   ("fk-dedup"      . run-fk-dedup-tests)
+                   ("wire-null"     . run-wire-null-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

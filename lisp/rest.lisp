@@ -467,6 +467,66 @@ or whitespace-only. Trims whitespace and silently clamps to 200 characters."
          (when (plusp (length clamped))
            clamped)))))
 
+;;
+;; Wire shape of record values (the [] truthy trap on records):
+;; plist-to-json renders nil as [], so a NULL scalar would reach the
+;; frontend as a truthy empty array. These helpers run only at the
+;; REST edge, after be-list / be-rec / be-val return: every internal
+;; reader (public pages, be-update's record, hooks, actions) keeps
+;; seeing nil.
+;;
+
+(defun list-valued-field-p (field-def)
+  ":private: T when FIELD-DEF's value is a list on the wire, so an empty
+value stays []: a :type :list field, a join-table (M2M) field, or a
+:list / :distinct aggregate. Every other field is a scalar."
+  (or (eq (getf field-def :type) :list)
+    (getf field-def :join-table)
+    (member (u:tree-get field-def :source :agg) '(:list :distinct))))
+
+(defun wire-field-value (type-key field-key value)
+  ":private: VALUE as it rides the wire: :null (JSON null) when VALUE is nil
+and FIELD-KEY is a scalar field of TYPE-KEY, else VALUE unchanged. Keys that
+are not model fields (the synthetic :roles, the capability flags, the
+<field>-id siblings) pass through untouched."
+  (let ((field-def (u:tree-get *compiled-model* type-key :fields field-key)))
+    (if (and (null value)
+          field-def
+          (not (list-valued-field-p field-def)))
+      :null
+      value)))
+
+(defun wire-record (type-key record)
+  ":private: RECORD (a field plist of TYPE-KEY) with each nil scalar value
+replaced by :null. List-valued fields keep nil, which plist-to-json renders
+as []."
+  (loop for (key value) on record by #'cddr
+    append (list key (wire-field-value type-key key value))))
+
+(defun wire-list-result (result)
+  ":private: A be-list RESULT with its :records passed through wire-record.
+The envelope's own keys (:records, :allowed-values, :type-roles, ...) are
+untouched, so an empty :records stays []."
+  (let ((type-key (getf result :type-key))
+        (records (getf result :records)))
+    (if (and type-key records)
+      (let ((copy (copy-list result)))
+        (setf (getf copy :records)
+          (mapcar (lambda (record) (wire-record type-key record)) records))
+        copy)
+      result)))
+
+(defun wire-item-result (result)
+  ":private: A be-rec RESULT with its :record passed through wire-record. A
+nil RESULT or a nil :record (unreadable or missing row) is returned as is."
+  (let ((type-key (getf result :type))
+        (record (getf result :record)))
+    (if (and type-key record)
+      (let ((copy (copy-list result)))
+        (setf (getf copy :record) (wire-record type-key record))
+        copy)
+      result)))
+
 (h:define-easy-handler (health :uri "/health") ()
   (format nil "OK~%"))
 
@@ -545,7 +605,7 @@ Optional. Free-text search term matched with ILIKE against fields marked
     ;; nothing — record-usage's self-log guard drops it.
     (record-usage user :list :on type-key :detail search-val
       :ip (h:real-remote-addr))
-    (render-output result)))
+    (render-output (wire-list-result result))))
 
 (h:define-easy-handler (rest-item :uri "/api/item" :default-request-type :get)
   (type id (form :init-form "update-form"))
@@ -590,7 +650,7 @@ GET /api/item"
       (record-usage user :view :on type-key
         :detail (usage-detail-for type-key id) :dedup nil
         :ip (h:real-remote-addr)))
-    (render-output result)))
+    (render-output (wire-item-result result))))
 
 (h:define-easy-handler (rest-id :uri "/api/id" :default-request-type :get)
   (type filters)
@@ -709,7 +769,7 @@ GET /api/value"
                     (error (e)
                       (abort-error e
                         :type type :id id :field field :form form)))))
-    (render-output result)))
+    (render-output (wire-field-value type-key field-key result))))
 
 (h:define-easy-handler (rest-column :uri "/api/column"
                          :default-request-type :get)
@@ -1407,8 +1467,10 @@ each key omitted when nil (the [] truthy trap: plist-to-json
 renders an unregistered nil key as a truthy empty array, so never
 emit a nil value for these keys)."
   (let ((settings (copy-list *top-level-settings*)))
+    ;; :null, not nil, for a user who can see no types: a nil landing
+    ;; page would serialize as the truthy [].
     (setf (getf settings :landing-page)
-          (be-landing-page user))
+          (or (be-landing-page user) :null))
     ;; Declared roles are deployment data that the frontend does not need
     (remf settings :new-roles)
     ;; The roles required by app-level endpoints are authorization

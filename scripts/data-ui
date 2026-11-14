@@ -66,6 +66,20 @@ function model_file_path {
     echo "models/${1}.lisp"
 }
 
+function resolve_model_file {
+    # First existing model file in set-model's search order minus
+    # models/test/ (test fixtures are not addressable): models/<name>.lisp,
+    # then models/local/<name>.lisp. Top-level shadows local, exactly
+    # like set-model. Empty when neither exists; model_file_path
+    # remains the error-text helper.
+    local name="$1"
+    if [[ -f "models/${name}.lisp" ]]; then
+        echo "models/${name}.lisp"
+    elif [[ -f "models/local/${name}.lisp" ]]; then
+        echo "models/local/${name}.lisp"
+    fi
+}
+
 function usage {
     cat <<EOF
 Usage:
@@ -119,10 +133,12 @@ profile create <model> [profile]
         list
         expose <profile>
         unexpose <profile>
+        install-model <model>
     Manage host profiles for locally-run instances.
 
-    create: host profile for a top-level model (models/<model>.lisp);
-    profile name defaults to the model name. Fails if the profile already
+    create: host profile for a model (models/<model>.lisp or
+    models/local/<model>.lisp, set-model's order); profile name
+    defaults to the model name. Fails if the profile already
     exists (no --force). Allocates free HTTP/Swank/DB ports, generates
     secrets, prints the admin password, and writes profile.env (mode 600).
     Does not start Postgres or the REPL.
@@ -142,15 +158,23 @@ profile create <model> [profile]
     https://<model :domain> -> 127.0.0.1:<HTTP_PORT>. Primary profiles only
     (profile name == model name). Requires sudo and must run on
     \$DEPLOY_HOST (default evo-x2), from a checkout containing
-    models/<model>.lisp (and ros). TLS is covered by the existing
-    *.demo.data-ui.com wildcard. Refuses if the domain is claimed by a
-    deployed instance: 'delete' it first. Warns (does not fail) if the
-    profile is not listening yet.
+    models/<model>.lisp or models/local/<model>.lisp (and ros). TLS is
+    covered by the existing *.demo.data-ui.com wildcard. Refuses if the
+    domain is claimed by a deployed instance: 'delete' it first. Warns
+    (does not fail) if the profile is not listening yet.
 
     unexpose: remove a profile's HAProxy exposure (backend file and map
     entry). Idempotent: prints 'not exposed' and exits 0 if there is
     nothing to remove. Requires sudo and must run on \$DEPLOY_HOST.
     'profile delete' does this cleanup automatically.
+
+    install-model: deliver a local-only model (models/local/<model>.lisp)
+    from the development checkout into the staging clone's
+    models/local/, where the dataui@<profile> unit's set-model reads it.
+    Runs on the deploy host (\$STAGING_HOST, default evo-x2 — the
+    staging update rule) from the development checkout, never routes,
+    and refuses a same-named top-level model in either tree. Committed
+    models arrive via staging update instead.
 
 tests
     Runs all the tests and reports success or failure.
@@ -162,7 +186,8 @@ stop
     Stops the database container and removes it. This is normally not necessary.
 
 field <model-name> <field-name>
-    Read a top-level field from a model file.
+    Read a top-level field from a model file (models/<model-name>.lisp
+    or models/local/<model-name>.lisp, set-model's order).
 
 debug
     Runs the tests, printing all output from postgres and docker compose.
@@ -476,8 +501,13 @@ function create_profile {
     [[ -n "$MODEL_NAME" ]] || { usage; exit 1; }
     valid_profile_name "$MODEL_NAME"
     valid_profile_name "$PROFILE_NAME"
-    if [[ ! -f "$(model_file_path "$MODEL_NAME")" ]]; then
-        die "No top-level model '${MODEL_NAME}' (looked for $(model_file_path "$MODEL_NAME"))"
+    local resolved
+    resolved=$(resolve_model_file "$MODEL_NAME")
+    if [[ -z "$resolved" ]]; then
+        # create runs post-routing, so this root is the staging
+        # checkout, not the checkout the operator typed the command
+        # in — name the absolute root explicitly.
+        die "No model '${MODEL_NAME}' (looked for models/${MODEL_NAME}.lisp, models/local/${MODEL_NAME}.lisp under $(canonical_checkout_root)). A development-checkout model must be delivered first: run '$SCRIPT_NAME profile install-model ${MODEL_NAME}' from the development checkout."
     fi
     if [[ -f "$(profile_env_path "$PROFILE_NAME")" ]]; then
         die "Profile '${PROFILE_NAME}' already exists. Use '$SCRIPT_NAME profile delete ${PROFILE_NAME}' first."
@@ -613,17 +643,17 @@ function profile_domain {
     # a pure file read via lisp/deployment.lisp; no database, no
     # compiler — see the unify-reads todo). MODEL_NAME is read from
     # the profile env, not sourced.
-    local name="$1" model domain
+    local name="$1" model domain resolved
     model=$(grep -oP '^MODEL_NAME=\K.*' "$(profile_env_path "$name")")
     [[ -n "$model" ]] || die "Profile '${name}' has no MODEL_NAME."
-    if [[ ! -f "$(model_file_path "$model")" ]]; then
-        die "No top-level model '${model}' (looked for $(model_file_path "$model"))."
-    fi
-    MODEL_NAME="$model" DATA_UI_FIELD_NAME="domain" get_model_field >/dev/null 2>&1 \
-        || die "Could not read :domain from $(model_file_path "$model")."
-    domain=$(MODEL_NAME="$model" model_field domain-stg)
+    resolved=$(resolve_model_file "$model")
+    [[ -n "$resolved" ]] \
+        || die "No model '${model}' (looked for models/${model}.lisp, models/local/${model}.lisp)."
+    MODEL_NAME="$model" DATA_UI_MODEL_PATH="$resolved" DATA_UI_FIELD_NAME="domain" get_model_field >/dev/null 2>&1 \
+        || die "Could not read :domain from ${resolved}."
+    domain=$(MODEL_NAME="$model" DATA_UI_MODEL_PATH="$resolved" model_field domain-stg)
     if [[ -z "$domain" || "$domain" == "NIL" ]]; then
-        domain=$(MODEL_NAME="$model" model_field domain)
+        domain=$(MODEL_NAME="$model" DATA_UI_MODEL_PATH="$resolved" model_field domain)
         [[ -n "$domain" && "$domain" != "NIL" ]] \
             || die "Model '${model}' has no :domain; cannot expose."
         local first="${domain%%.*}" rest="${domain#*.}"
@@ -757,6 +787,98 @@ function unexpose_profile {
     echo "PUBLIC_ORIGIN in ${env_path} is back to http://127.0.0.1:${http_port_env}; restart the profile so the image re-reads it."
 }
 
+function install_profile_model {
+    # profile install-model <model>: deliver a local-only model from
+    # the invoking (development) checkout into the staging clone's
+    # models/local/, so the dataui@<p> unit's set-model (which runs
+    # from the staging tree) can find it. The staging sibling of
+    # production's deploy-incoming -> models/local/<name>.lisp promote
+    # pattern; git cannot carry the file (the ignore is the point) and
+    # staging update never installs ignored files. Never routes: the
+    # invoking script is the only side that knows both paths.
+    local model="$1"
+    # First of all, the staging-update / activate-modelbank host guard
+    # shape: the verb writes host-local tree state and never routes,
+    # so a wrong-host invocation must be a visible error, never a copy
+    # onto some other machine's /data.
+    [[ "$(hostname)" == "$STAGING_HOST" ]] \
+        || die "profile install-model must run on ${STAGING_HOST} (this is $(hostname))."
+    [[ -n "$model" ]] || die "Usage: $SCRIPT_NAME profile install-model <model>"
+    [[ -z "${2:-}" ]] || die "install-model takes exactly one argument (the model name)."
+    # create_profile's pattern, run before any path is built: ../x and
+    # the empty arg die here, not inside mkdir -p / cp.
+    valid_profile_name "$model"
+    cd "$(canonical_checkout_root)" 2>/dev/null \
+        || die "cannot cd to the invoking checkout $(canonical_checkout_root)."
+    # Local-only by two refusals. First: a top-level file in the
+    # invoking checkout (committed or uncommitted — a dirty one is the
+    # same collision once staging update lands it).
+    if [[ -f "models/${model}.lisp" ]]; then
+        die "top-level file models/${model}.lisp exists (committed or uncommitted); staging update delivers committed models."
+    fi
+    local src
+    src=$(resolve_model_file "$model")
+    [[ -n "$src" ]] \
+        || die "No local model '${model}' (looked for models/${model}.lisp, models/local/${model}.lisp)."
+    # The -x gate matches the router on the same canonicalized path,
+    # so a non-executable script fails here with the right hint
+    # instead of inside the router with the wrong one.
+    local staging_root
+    staging_root=$(readlink -m "$STAGING_CHECKOUT")
+    [[ -x "${staging_root}/scripts/data-ui" ]] \
+        || die "No staging checkout at ${staging_root}; run 'scripts/data-ui staging update' first."
+    # Second refusal: a canonical model in the staging tree.
+    # resolve-model-path prefers the canonical file, so the unit would
+    # silently run the upstream model once staging update lands it —
+    # deploy_check_identity's upstream-collision refusal, transplanted.
+    if [[ -f "${staging_root}/models/${model}.lisp" ]]; then
+        die "canonical model already in the staging checkout at ${staging_root}/models/${model}.lisp; the unit would run it, not the delivered copy (dev tree: $(canonical_checkout_root)/models/${model}.lisp absent, staging tree: present)."
+    fi
+    # Declared-:name gate (delete_selected / migrate_legacy_vip_
+    # identities' model_field name pattern): the file name is the
+    # address every later lookup keys on. Before any destination
+    # mutation.
+    local declared
+    declared=$(MODEL_NAME="$model" DATA_UI_MODEL_PATH="$src" model_field name)
+    [[ -n "$declared" && "$declared" != "NIL" ]] \
+        || die "Model has no :name."
+    [[ "$declared" == "$model" ]] \
+        || die "Model :name is '${declared}' but the install operand is '${model}'; they must match."
+    # Source cleanliness gate (install_deploy_candidate's shape minus
+    # the token machinery; take_model_snapshot's cap): a symlinked or
+    # oversized source dies before any destination mutation.
+    local size
+    [[ -f "$src" && ! -L "$src" ]] \
+        || die "Model source must be a regular file, not a symlink: ${src}."
+    size=$(stat -c %s "$src")
+    (( size > 0 )) || die "Model source is empty: ${src}."
+    (( size <= 1048576 )) || die "Model source is larger than 1 MiB (${size} bytes): ${src}."
+    # Overwrite is allowed — models/local/ is runtime state.
+    local dest tmp got
+    dest="${staging_root}/models/local/${model}.lisp"
+    mkdir -p "${staging_root}/models/local"
+    if [[ -f "$dest" ]]; then
+        if [[ "$(sha256sum "$src" | cut -d' ' -f1)" == "$(sha256sum "$dest" | cut -d' ' -f1)" ]]; then
+            echo "already installed (identical bytes): ${dest}"
+            echo "Installed ${model}: ${src} -> ${dest}"
+            return 0
+        fi
+        echo "overwriting ${dest} (bytes differ)"
+    fi
+    # Temp-then-mv onto the dest (install_deploy_candidate's shape —
+    # same VIP sensitivity; a bare cp onto the final name can strand a
+    # partial file on a mid-write death, and the mode survives the
+    # same-directory mv).
+    tmp="${staging_root}/models/local/.${model}.lisp.tmp.$$"
+    cp -- "$src" "$tmp" || { rm -f "$tmp"; die "cannot stage the model copy."; }
+    chmod 600 "$tmp"
+    got=$(sha256sum "$tmp" | cut -d' ' -f1)
+    [[ "$got" == "$(sha256sum "$src" | cut -d' ' -f1)" ]] \
+        || { rm -f "$tmp"; die "model copy hash mismatch after the copy."; }
+    mv "$tmp" "$dest" || { rm -f "$tmp"; die "cannot install the model copy."; }
+    echo "Installed ${model}: ${src} -> ${dest}"
+}
+
 function load_profile {
     local name="$1"
     valid_profile_name "$name"
@@ -854,8 +976,10 @@ function resolve_snapshot_address {
     # it IS the grammar spec.
     case "$qualifier" in
         dev)
-            if [[ ! -f "$(model_file_path "$name")" ]]; then
-                die "No top-level model '${name}' for ${role} address dev:${name} (looked for $(model_file_path "$name"))."
+            local resolved
+            resolved=$(resolve_model_file "$name")
+            if [[ -z "$resolved" ]]; then
+                die "No top-level model '${name}' for ${role} address dev:${name} (looked for models/${name}.lisp, models/local/${name}.lisp)."
             fi
             export_repl_environment
             render_init_sql
@@ -3225,20 +3349,22 @@ function write_snapshot_meta_atomically {
     # file — never from /api/info. model-version is best-effort
     # (get_model_field reads the model file; a ros blip must not fail
     # a save); its absence is legal.
-    local staged="$1" src_address="$2" model="$3" version
+    local staged="$1" src_address="$2" model="$3" version resolved
     {
         echo "model=${model}"
         echo "source-address=${src_address}"
         echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         # prd-motivated but qualifier-blind: a Deploy-button instance
-        # may have no models/<model>.lisp in this checkout (it lives
-        # in the deploy clone's models/local/). No file → no
-        # model_field call → no model-version line; dev/stg always
-        # have the file, so no behavior change there. The guard lives
-        # here, not in the resolver, so verb_stop's stg-p-last refresh
-        # and every other caller get the same skip.
-        if [[ -f "models/${model}.lisp" ]]; then
-            version=$(MODEL_NAME="$model" model_field version)
+        # may have no model file in this checkout (it lives in the
+        # deploy clone's models/local/). Local-only models exist in
+        # dev and stg trees too, so the resolver answers for every
+        # qualifier: no file at either location → no model_field call
+        # → no model-version line (the genuine prd/deploy-clone skip).
+        # The guard lives here, not in the resolver, so verb_stop's
+        # stg-p-last refresh and every other caller get the same skip.
+        resolved=$(resolve_model_file "$model")
+        if [[ -n "$resolved" ]]; then
+            version=$(MODEL_NAME="$model" DATA_UI_MODEL_PATH="$resolved" model_field version)
             if [[ -n "$version" && "$version" != "NIL" ]]; then
                 echo "model-version=${version}"
             fi
@@ -3366,14 +3492,14 @@ function snapshot_restore {
     # Model-version compare is tri-state: warn only when BOTH sides
     # have a version and they differ (migration stubs carry none and
     # must not journal a warning on every nightly restore forever).
-    local snap_version dest_version
+    local snap_version dest_version resolved
     snap_version="$(meta_read "$name" model-version)"
-    if [[ -f "models/${ADDRESS_MODEL}.lisp" ]]; then
-        dest_version=$(MODEL_NAME="$ADDRESS_MODEL" model_field version)
+    resolved=$(resolve_model_file "$ADDRESS_MODEL")
+    if [[ -n "$resolved" ]]; then
+        dest_version=$(MODEL_NAME="$ADDRESS_MODEL" DATA_UI_MODEL_PATH="$resolved" model_field version)
     else
         dest_version=""
-        echo "note: no models/${ADDRESS_MODEL}.lisp in this checkout" \
-             "(deployed instance); skipping the version compare" >&2
+        echo "note: no models/${ADDRESS_MODEL}.lisp or models/local/${ADDRESS_MODEL}.lisp in this checkout (deployed instance); skipping the version compare" >&2
     fi
     if [[ -n "$snap_version" && -n "$dest_version" \
           && "$dest_version" != "NIL" \
@@ -5078,7 +5204,12 @@ function route_for_staging {
     staging_root=$(readlink -m "$STAGING_CHECKOUT")
     [[ "$root" == "$staging_root" ]] && return 1
     case "$action" in
-        profile|e-demo|demo)
+        profile)
+            # install-model never routes (its source lives in the
+            # invoking checkout); the rest of the profile verbs do.
+            [[ "${2:-}" != "install-model" ]] || return 1
+            ;;
+        e-demo|demo)
             ;;
         repl|db|psql)
             [[ -n "${2:-}" ]] || return 1
@@ -5236,8 +5367,11 @@ case "$ACTION" in
             unexpose)
                 unexpose_profile "$3"
                 ;;
+            install-model)
+                install_profile_model "$3"
+                ;;
             *)
-                echo "Usage: $SCRIPT_NAME profile {create|delete|list|expose|unexpose} ..."
+                echo "Usage: $SCRIPT_NAME profile {create|delete|list|expose|unexpose|install-model} ..."
                 echo
                 echo "Manage host profiles (locally-run instances)."
                 echo "  create <model> [profile] Create a host profile"
@@ -5245,6 +5379,7 @@ case "$ACTION" in
                 echo "  list                     List host profiles and status"
                 echo "  expose <profile>         Route the domain via HAProxy"
                 echo "  unexpose <profile>       Remove the HAProxy exposure"
+                echo "  install-model <model>    Deliver a local model to staging"
                 exit 1
                 ;;
         esac
@@ -5287,8 +5422,13 @@ case "$ACTION" in
         ;;
     field)
         cd "$(canonical_checkout_root)" 2>/dev/null || true
-        MODEL_NAME="$2"
-        DATA_UI_FIELD_NAME="$3"
+        # export: the eval form reads these through uiop:getenv, and the
+        # old plain assignments never crossed to ros — every internal
+        # caller (model_field) prefixes them per call, so only the bare
+        # verb was affected (it printed NIL for every field; pre-existing,
+        # surfaced by this item's verification).
+        export MODEL_NAME="$2"
+        export DATA_UI_FIELD_NAME="$3"
         if [[ -z "$MODEL_NAME" ]]; then
             echo "Model name required."
             exit 1
@@ -5297,7 +5437,16 @@ case "$ACTION" in
             echo "Field name required."
             exit 1
         fi
-        get_model_field
+        # Resolver swap: a local-only model previously died inside
+        # ros (the deployment reader's error) because nothing checked
+        # the path; the gate lives here now. field never routes, so
+        # the invoking checkout is the only tree searched.
+        resolved_model=$(resolve_model_file "$MODEL_NAME")
+        if [[ -z "$resolved_model" ]]; then
+            echo "No model '${MODEL_NAME}' (looked for models/${MODEL_NAME}.lisp, models/local/${MODEL_NAME}.lisp)." >&2
+            exit 1
+        fi
+        DATA_UI_MODEL_PATH="$resolved_model" get_model_field
         ;;
     deploy)
         # Fail-fast parsing (operand grammar, --from spec, unknown

@@ -6,6 +6,14 @@ import { apiFetch, setTokens, clearTokens, getAccessToken,
 import StarRating from './StarRating'
 import CheckboxList from './CheckboxList'
 import ChipPicker from './ChipPicker'
+import ColumnsPicker from './ColumnsPicker'
+import { chipClickAction, refNavTarget, lookupKey,
+         m2mViewNav, parseValueIdResult,
+         suppressChipClick } from './chipNav'
+import type { ChipClick } from './chipNav'
+import { columnsStorageKey, deleteColumnStorageKey,
+         parseHiddenColumns, visibleListFields,
+         supportsColumnVisibility } from './columns'
 import FilePath from './FilePath'
 import SearchSelect from './SearchSelect'
 import { parseHash, canonicalize, buildUrlState,
@@ -93,6 +101,13 @@ interface Field {
   // reference chip picker's :in row. Never a bare nil (plist-to-json
   // would emit []).
   column?: string
+  // :record-lookup wire value (fe-fields, :join-table fields
+  // only): the /api/value-id call resolving one chip value
+  // to its target row — type = the joined target type,
+  // field = the target-side column the chip displays.
+  // Absent on every other field (never a bare nil —
+  // plist-to-json emits []).
+  'record-lookup'?: { type?: string, field?: string }
   // :enabled-when wire value (button-only, dual-consumed): AND-
   // composed [field, op, literal] rows. Keywords serialize as
   // downcased strings (plist-to-json), so ops arrive as "ne" etc.
@@ -844,13 +859,17 @@ function RegionPanel({
 // absent/undefined field or null value fails the row — except
 // an empty-literal eq/ne, where the empty class (null / "")
 // answers directly (the :eq "" mirror of the :ne "" rule).
+// An empty array is Lisp nil on the wire (an empty list, or a
+// NULL scalar from an older backend), so it reads as null here,
+// exactly as the Lisp evaluator sees nil.
 // Type mismatch fails ordering rows and :not-in. Never throws.
 const evalEnabledRow = (
   row: [string, string, any],
   record: Record<string, any>
 ): boolean => {
   const [field, op, literal] = row
-  const value = record?.[field]
+  const raw = record?.[field]
+  const value = Array.isArray(raw) && raw.length === 0 ? null : raw
   const empty = (v: any) =>
     v === null || v === undefined || v === ''
   if ((op === 'eq' || op === 'ne') && empty(literal)) {
@@ -925,29 +944,51 @@ const filterWithDefault = (
 // (checkbox-list whose source table differs from the listed type)
 // and reference (:filter-with :reference on a field whose table is
 // the :target and carries the wire :column). One membership rule,
-// two call sites — the render-site memo and fetchList's in-fetch
-// rebuild — so the pickers shown and the rows emitted can never
-// diverge. Discovery walks the whole form key set, the boolean
+// three call sites — the render-site memo, fetchList's in-fetch
+// rebuild, and the chip-nav lookup effect — so the pickers shown,
+// the rows emitted, and the lookups issued can never diverge. The
+// meta also carries each family's navigation facts (lookup for
+// M2M, target for reference), which membership does not depend
+// on. Discovery walks the whole form key set, the boolean
 // precedent (listFields is the rendered column set and can diverge
 // from the form the query covers).
 const buildChipFieldMeta = (
   form: Record<string, Field>, type: string
 ): Record<string, { table: string,
                     column?: string,
-                    label: string, m2m: boolean }> => {
+                    lookup?: { type: string, field: string },
+                    label: string, m2m: boolean,
+                    target?: string }> => {
   const meta: Record<string, { table: string,
                                column?: string,
-                               label: string, m2m: boolean }> = {}
+                               lookup?:
+                                 { type: string, field: string },
+                               label: string, m2m: boolean,
+                               target?: string }> = {}
   for (const f of formFieldKeys(form)) {
     const fld = form[f]
     if (fld['widget'] === 'checkbox-list'
         && fld.table && fld.table !== type) {
-      meta[f] = { table: fld.table, label: fld.label, m2m: true }
+      // Navigation facts (M2M): the /api/value-id lookup rides
+      // the wire record-lookup only when both halves are
+      // non-empty strings; membership never depends on it.
+      const lk = fld['record-lookup']
+      meta[f] = { table: fld.table, label: fld.label, m2m: true,
+        ...(lk && typeof lk.type === 'string'
+            && lk.type !== ''
+            && typeof lk.field === 'string'
+            && lk.field !== ''
+          ? { lookup: { type: lk.type, field: lk.field } }
+          : {}) }
     } else if (filterWithKind(fld['filter-with']) === 'reference'
                && fld.table && fld.table !== type
                && fld.column) {
+      // Navigation facts (reference): the wire target names the
+      // true :target type — never fld.table (a :ui :table hint
+      // may override the display source).
       meta[f] = { table: fld.table, column: fld.column,
-                  label: fld.label, m2m: false }
+                  label: fld.label, m2m: false,
+                  target: fld.target }
     }
   }
   return meta
@@ -976,10 +1017,54 @@ const boolDefaultsOf = (
 // value does not compile (no overlap between Field and boolean);
 // structural typing makes the wire value assignable here. Do not
 // add 'hide-list' to Field (it is not a field).
+// Value equality for the update diff (submitForm): primitives
+// strictly, arrays element-wise (checkbox-list / image-list). An
+// empty array, null, and undefined are one value — the backend
+// spells an empty scalar null and an empty list [], and either
+// may sit opposite an absent key.
+const sameWireValue = (a: any, b: any): boolean => {
+  const isEmpty = (v: any) =>
+    v === null || v === undefined
+    || (Array.isArray(v) && v.length === 0)
+  if (isEmpty(a) || isEmpty(b)) return isEmpty(a) && isEmpty(b)
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length
+      && a.every((x, i) => sameWireValue(x, b[i]))
+  }
+  return a === b
+}
+
 const formFieldKeys = (
   form: Record<string, any> | undefined
 ): string[] =>
   Object.keys(form || {}).filter(k => k !== 'hide-list')
+
+// localStorage wrappers for the Columns control (column
+// visibility): each in try/catch, silent fail — a blocked or
+// corrupted localStorage must never blank the app (the token
+// restore's posture). Storage is per-origin per model+type;
+// the key builders and parse live in columns.ts.
+const readStored = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+const writeStored = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // silent by contract
+  }
+}
+const clearStored = (key: string) => {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    // silent by contract
+  }
+}
 
 interface ListResponse {
   status: string
@@ -1123,6 +1208,14 @@ const normId = (id: string | null): string | null =>
 // stay aligned.
 const PAGE_SIZE = 20
 
+// Chip-per-cell limit (its todo): an M2M cell renders at most
+// this many chips plus a "+K more" tail — a cross-list can carry
+// dozens (SceneBook: a character's 76 scene chips) and stretch
+// its row unreadably. The full set stays reachable through the
+// view form and the chip picker. Hardcoded for now; "Make row
+// cell chip limit into a setting" carries the eventual setting.
+const CELL_CHIP_LIMIT = 5
+
 // Interactive descendants disarm the row click (and the row's
 // Enter handler): native controls by tag, div-based ones (the
 // lightbox thumbnails' data-no-row-click marker) by attribute.
@@ -1238,8 +1331,14 @@ function renderCellValue(
   }
 
   if (widget === 'stars') {
+    // Same projection as the View-mode branch: [] (nil) / null /
+    // '' are no rating — a blank cell, not five hollow stars and
+    // a "0".
     const num = typeof val === 'number' ? val
-      : val ? Number(val) : null
+      : Array.isArray(val)
+        ? val.length > 0 ? Number(val[0]) : null
+        : typeof val === 'string' && val.trim() !== ''
+          ? Number(val) : null
     if (num == null || isNaN(num)) return ''
     return <StarRating value={num} />
   }
@@ -1252,6 +1351,57 @@ function renderCellValue(
   }
 
   return text
+}
+
+// Shared cell-chip renderer (chip-to-record navigation): one
+// <button> for both chip families and both states, so the markup
+// is identical and only the nav computation differs at the call
+// sites. Stays a button even when navigable (swapping to an <a>
+// would unmount the focused button — keyboard focus drops to
+// body), which also keeps it inside INTERACTIVE_SELECTOR, so the
+// row click and the row's Enter handler stay disarmed. The state-
+// dependent click: unhighlighted filters; highlighted + nav in
+// hand navigates (arrow glyph shown, "Open <value>"); highlighted
+// without nav unfilters, exactly as before. A multi-click acts as
+// one click — clickGuard (fed event.detail and the ms since this
+// chip's filter click) drops the 2nd+ click of a double-click and
+// any navigate/unfilter within CHIP_DBLCLICK_MS of the filter
+// click, so filtering stays filtering even when the arrow appears
+// in the same render (the reference sibling is row data) or the
+// button remounts on the re-fetch.
+function CellChip({ value, active, nav, onFilter, onOpen,
+                    clickGuard }: {
+  value: string, active: boolean,
+  nav: { type: string, id: string } | null,
+  onFilter: () => void,
+  onOpen: (t: string, id: string) => void,
+  clickGuard: (detail: number,
+    action: ChipClick) => boolean
+}) {
+  const action = chipClickAction(active, nav)
+  const title =
+    action === 'navigate' ? `Open ${value}`
+    : active ? `Remove filter: ${value}`
+    : `Filter by ${value}`
+  return (
+    <button
+      type="button"
+      className={active ? 'chip chip-active' : 'chip'}
+      title={title} aria-label={title}
+      onClick={e => {
+        if (clickGuard(e.detail, action)) return
+        action === 'navigate'
+          ? onOpen(nav!.type, nav!.id)
+          : onFilter()
+      }}>
+      {value}
+      {action === 'navigate' && (
+        <span
+          className="chip-arrow"
+          aria-hidden="true">↗</span>
+      )}
+    </button>
+  )
 }
 
 function ImagePreview({
@@ -1720,6 +1870,14 @@ interface ReadOnlyCtx {
   viewTypeList: string[]
   isViewForm: boolean
   open: ((t: string, id: string) => void) | null
+  // M2M chip navigation (View-form chip navigation): the
+  // current type's buildChipFieldMeta map — per-field lookup
+  // facts for cross-list values. Only the view-form call
+  // site sets it; every other surface (public page bodies,
+  // Region rows, edit-mode read-only fields) leaves it
+  // absent, and their chips stay inert spans.
+  chipMeta?: Record<string, { m2m: boolean,
+    lookup?: { type: string, field: string } }> | null
   // The heading slot's lifted style (the publisher override for
   // :widget :heading); null / absent = the widget's built-in
   // default. Only the page-body call site sets it in v1 — the
@@ -1727,6 +1885,46 @@ interface ReadOnlyCtx {
   // sites (page-only widget, pages have no list / overlay / edit
   // mode).
   headingStyle?: React.CSSProperties | null
+}
+
+// Read-only chip list (Tag chips in view-form): array values —
+// M2M cross-lists, :list fields — render as chip spans, the
+// list cell's treatment, display-only (no filter, no
+// navigation). Uncapped by design (Donnie, 2026-11-13): the
+// view form is the detail surface where the full set lives,
+// so every value renders — CELL_CHIP_LIMIT stays a list-cell
+// concern. Empty renders the em dash, the house empty
+// pattern.
+//
+// View-form chip navigation: with onOpen present (the
+// view-form call site, M2M fields whose target resolves),
+// chips become buttons that open the value's record — the
+// FK-link affordance on this surface (title "Open <value>",
+// pointer cursor; no arrow glyph: every chip is navigable,
+// so the cell's differential marker would be constant
+// noise). Every other surface keeps the inert span.
+function ReadOnlyChipList({ values, onOpen }: {
+  values: any[], onOpen?: (value: string) => void
+}) {
+  if (values.length === 0) {
+    return <div style={{ color: 'var(--muted-2)' }}>—</div>
+  }
+  return (
+    <span className="chip-list">
+      {values.map(v => onOpen ? (
+        <button
+          key={String(v)}
+          type="button"
+          className="chip"
+          title={`Open ${v}`}
+          aria-label={`Open ${v}`}
+          onClick={() => onOpen(String(v))}
+        >{String(v)}</button>
+      ) : (
+        <span key={String(v)} className="chip">{String(v)}</span>
+      ))}
+    </span>
+  )
 }
 
 function renderReadOnlyField(
@@ -1895,9 +2093,49 @@ function renderReadOnlyField(
     }
   }
 
+  // List-field chips (Tag chips in view-form): array values —
+  // M2M cross-lists and :list fields — render as chip spans,
+  // the list cell's treatment, display-only. Uncapped: the
+  // view form is the detail surface, so the full set renders.
+  // Empty arrays keep the em dash.
+  //
+  // View-form chip navigation (chip-to-record's third
+  // surface): an M2M field with lookup facts, an open
+  // handler, and a visible target gets clickable chips — one
+  // lazy /api/value-id per click, then open. A miss /
+  // ambiguity / unreadable row resolves null and the click
+  // no-ops (the M2M id must resolve before there is anything
+  // to open). Bare :list fields and surfaces without chipMeta
+  // stay inert.
+  if (Array.isArray(value)) {
+    const open = ctx?.open
+    const lookup = m2mViewNav(
+      ctx?.chipMeta?.[ctx.fieldKey], open,
+      ctx?.viewTypeList ?? [])
+    return (
+      <ReadOnlyChipList
+        values={value}
+        onOpen={lookup && open
+          ? async v => {
+              let id: string | null = null
+              try {
+                const res = await apiFetch(
+                  `/api/value-id?type=${
+                    encodeURIComponent(lookup.type)}` +
+                  `&field=${encodeURIComponent(lookup.field)}` +
+                  `&value=${encodeURIComponent(v)}`)
+                if (res.ok)
+                  id = parseValueIdResult(await res.json())
+              } catch { id = null }
+              if (id != null) open(lookup.type, id)
+            }
+          : undefined}
+      />
+    )
+  }
+
   // Default read-only: plain text display
-  const text = Array.isArray(value) ? value.join(', ')
-    : formatNumber(value, field)
+  const text = formatNumber(value, field)
   return (
     <div style={{
       padding: '0.3rem 0',
@@ -1914,22 +2152,26 @@ function renderReadOnlyField(
 // fallback), so the two cannot drift on clearing semantics. A
 // valid scope renders "Post: <title> ×" when the title has
 // resolved and "Post ×" while unresolved or after a failed
-// lookup — never the uuid. The × is clearScope, never
+// lookup — never the uuid. The whole chip clears (chip-to-
+// record: every filter-region chip removes on a body click);
+// the × is a glyph. The clear is clearScope, never
 // toggleChipFilter (the scope is not a listFilters entry).
 function ScopeChip({ title, onClear }: {
   title: string | null
   onClear: () => void
 }) {
   return (
-    <span className="chip chip-active">
+    <button
+      type="button"
+      className="chip chip-active"
+      title="Clear post scope"
+      onClick={onClear}
+    >
       {title != null ? `Post: ${title}` : 'Post'}
-      <button
-        type="button"
+      <span
         className="chip-x"
-        title="Clear post scope"
-        onClick={onClear}
-      >×</button>
-    </span>
+        aria-hidden="true">×</span>
+    </button>
   )
 }
 
@@ -2016,6 +2258,27 @@ function App() {
   const [passwordConfirm, setPasswordConfirm] =
     useState<Record<string, string>>({})
   const [selectedIds, setSelectedIds] = useState<string[]>([])
+  // Multi-delete in-flight progress: null = idle, otherwise
+  // {done, total} counts settled requests (successes and
+  // failures both count — it is a progress bar, not a result).
+  // Drives the Delete Selected button's disabled state and its
+  // "Deleting n/m" label, and (via the beforeunload guard in
+  // deleteSelected) warns before a reload truncates the batch.
+  const [deleting, setDeleting] =
+    useState<{ done: number; total: number } | null>(null)
+  // Rows deleted by the in-flight (or just-finished) multi-delete
+  // run, removed from the table as each request settles — the
+  // visible list shrinking IS the progress feedback. Cleared when
+  // fresh list data lands (the envelope is the truth; local
+  // bookkeeping only bridges the gap until the post-run refetch).
+  const [goneIds, setGoneIds] = useState<Set<string>>(new Set())
+  // Post-run completion notice ("Deleted n of m rows"), shown
+  // briefly so the run ends with an explicit all-clear instead of
+  // silence. Cleared by timer or when the next run starts.
+  const [deleteSummary, setDeleteSummary] =
+    useState<{ ok: number; failed: number; total: number } | null>(null)
+  const deleteSummaryTimer = useRef<ReturnType<
+    typeof setTimeout> | null>(null)
   const [editRecord, setEditRecord] = useState<any>(null)
   // Plan 03 (region renderer): the normalized single region
   // spec retained from the open path's /api/item envelope
@@ -2097,6 +2360,15 @@ function App() {
   const [listError, setListError] =
     useState<ListErrorOwner | null>(null)
   const [title, setTitle] = useState('Data UI')
+  // Model identity from /api/info's :name — the deployment
+  // identity ("scenebook"), not :title (display prose). Keys
+  // the Columns control's localStorage sets (per model+type).
+  // Empty string until /api/info lands: reads return the
+  // all-visible default and writes no-op — no data-ui-prefixed
+  // garbage keys can be written pre-login. Not cleared on
+  // logout: one origin serves exactly one model, and the next
+  // login's /api/info re-lands the same value.
+  const [modelName, setModelName] = useState('')
   // Styling slots (banner / footer) from /api/info; null = absent
   // (slotFromInfo normalizes blank / non-string to null so a
   // removed slot clears on the next fetch).
@@ -2182,6 +2454,48 @@ function App() {
     Map<string, Promise<string | null>>>(new Map())
   const titleSeqRef = useRef(0)
   const titleKeyRef = useRef<string | null>(null)
+  // Chip-to-record lookups (M2M chips): epoch-keyed id
+  // cache (state, so a landing lookup re-renders the
+  // arrow), an in-flight set, and a generation fencing
+  // commits across clears (resetSessionState /
+  // resetListQuery).
+  const [chipNavIds, setChipNavIds] =
+    useState<Record<string, string | null>>({})
+  const chipNavInFlight = useRef<Set<string>>(new Set())
+  const chipNavGen = useRef(0)
+  const clearChipNav = () => {
+    ++chipNavGen.current
+    chipNavInFlight.current.clear()
+    setChipNavIds({})
+  }
+  // Cell-chip double-click guard (chip-to-record): the last
+  // filter click (performance.now()) per field+value. A
+  // multi-click must act as one click — click 1 filters and
+  // click 2 must not navigate (reference arrows appear in the
+  // same render: the "<field>-id" sibling is row data) or
+  // unfilter (an M2M lookup is still in flight). The
+  // browser's own count (event.detail) is not enough — the
+  // filter's re-fetch can remount the button and reset it —
+  // so navigate/unfilter clicks are also dropped within
+  // CHIP_DBLCLICK_MS of the chip's filter click. Only filter
+  // clicks arm the guard; keyboard Enter (detail 0) filters,
+  // and a second Enter after the window navigates.
+  const chipFilterClickRef = useRef<
+    Map<string, number>>(new Map())
+  const chipClickGuard = (f: string, v: string) =>
+    (detail: number, action: ChipClick): boolean => {
+      const key = `${f}\u0000${v}`
+      if (action === 'filter') {
+        if (detail > 1) return true
+        chipFilterClickRef.current.set(
+          key, performance.now())
+        return false
+      }
+      const at = chipFilterClickRef.current.get(key)
+      return suppressChipClick(detail,
+        at === undefined ? null
+          : performance.now() - at)
+    }
   // Chip picker (searchable chip filtering): which chip field's
   // picker is open, or null. Lifted here, not owned per-picker,
   // so opening one closes any other. Not cleared by
@@ -2192,6 +2506,21 @@ function App() {
   const [chipPickerOpen, setChipPickerOpen] = useState<
     string | null
   >(null)
+  // Columns popover (column visibility): joins the
+  // one-popover-at-a-time contract — opening it closes any
+  // chip picker, and a chip picker opening closes it.
+  const [columnsPickerOpen, setColumnsPickerOpen] =
+    useState(false)
+  // Write-only re-render invalidator for the hidden-column
+  // sets (the setTokenVersion shape): the store IS the state
+  // — localStorage is read at render, beside listFields — so
+  // a toggle / Show all / ✕-toggle writes storage and bumps
+  // this counter to force the re-render that re-reads it. No
+  // React mirror of the stored set exists (no stale-closure
+  // or cross-tab-sync bug class, and zero flash on type /
+  // model switches). Every bump uses the functional-updater
+  // form — the setter type declares one required argument.
+  const [, bumpHiddenColumns] = useState(0)
   // App state in the URL (Step 2.5): names the type whose first
   // fetch went out without its form-dependent rows (not-ilike /
   // bool :eq) because data did not yet belong to it — a URL
@@ -2689,6 +3018,10 @@ function App() {
     setDebouncedNotTerm('')
     setListFilters({})
     setBoolFilters({})
+    // Chip-nav lookups (M2M ids) die with the list identity:
+    // re-entry re-resolves through the lookup effect, so a
+    // renamed or deleted target cannot stay cached.
+    clearChipNav()
     // The scope clears with the list identity (plan 04): a
     // scope omitted here would survive a type change and emit
     // against the wrong type. clearScope is the explicit
@@ -2751,6 +3084,7 @@ function App() {
     ++sessionEpochRef.current
     titleCacheRef.current.clear()
     titleInFlightRef.current.clear()
+    clearChipNav()
     ++titleSeqRef.current
     titleKeyRef.current = null
     setScopeTitle(null)
@@ -3141,7 +3475,7 @@ function App() {
     // Filter out the current user's own exclusive role from the
     // roles — it's injected automatically by the backend and should
     // never appear as a manual checkbox or be sent back. Harmless
-    // in view mode (roles render as comma-joined text).
+    // in view mode (roles render as read-only chips).
     const myExclusive = `${loggedInUser}:exclusive`
     const cleanRoles = (fullRecord.roles || []).filter(
       (r: string) => r !== myExclusive
@@ -3270,12 +3604,18 @@ function App() {
         if (navRef.current.generation !== gen) return
         const t = info.result?.['title']
         if (t) setTitle(String(t))
+        const mn = info.result?.['name']
+        if (typeof mn === 'string' && mn !== '') {
+          setModelName(mn)
+        }
         setBanner(slotFromInfo(info.result, 'banner'))
         setFooter(slotFromInfo(info.result, 'footer'))
         setHeadingStyle(
           headingStyleFromInfo(slotFromInfo(info.result, 'heading')))
+        // Strict string: a user with no visible types gets a nil
+        // landing page, which an older backend sent as the truthy [].
         const lp = info.result?.['landing-page']
-        if (lp) {
+        if (typeof lp === 'string' && lp !== '') {
           setViewMode('app')
           // Reset query state in the same batch as the type change
           // so one fetch lands on page 1 of the landing type.
@@ -3692,14 +4032,34 @@ function App() {
     // derived, 'hide-list' excluded — the seeded phantom-field
     // leak). On-form empty arrays (checkbox-list / image-list
     // "clear all") still go out; empty strings stay dropped.
+    // Update diff (edit mode): only fields whose value differs from
+    // the loaded record go out — an untouched field stays absent and
+    // its column untouched (be-update's full-data fills absent keys
+    // from the record). Sending an untouched empty field was not a
+    // no-op: an empty write-through field (a raterless viewer's My
+    // Rating) decoded to an explicit clear and inserted a NULL row.
+    // A changed field cleared to blank (textbox emptied, star ✕)
+    // goes out as null, the clear-to-NULL spelling, instead of being
+    // dropped. Password widgets keep the old rule (blank means keep).
     const { roles, ...rest } = formValues
     const allowedKeys = new Set(formFieldKeys(formDef))
     const filteredRest = Object.fromEntries(
-      Object.entries(rest).filter(
-        ([k, v]) =>
-          allowedKeys.has(k) &&
-          (typeof v !== 'string' || v.trim() !== '')
-      )
+      Object.entries(rest)
+        .filter(([k]) => allowedKeys.has(k))
+        .flatMap(([k, v]): [string, any][] => {
+          const blank = typeof v === 'string' && v.trim() === ''
+          const widget = formDef[k]['widget'] || ''
+          if (!isEditMode
+              || widget === 'password-new'
+              || widget === 'password-read') {
+            return blank ? [] : [[k, v]]
+          }
+          const before = editRecord?.[k]
+          const next = blank ? null : v
+          if (sameWireValue(next, before)
+              || (blank && before === '')) return []
+          return [[k, next]]
+        })
     )
     const payload: any = { type, data: filteredRest }
     if (roles) payload.roles = roles
@@ -3747,11 +4107,14 @@ function App() {
   }
 
   const deleteSelected = async () => {
-    if (selectedIds.length === 0) return
+    if (selectedIds.length === 0 || deleting != null) return
 
     const toDelete = records.filter((r: any) => selectedIds.includes(r.id))
     const nameField = listFields.includes('name') ? 'name' : listFields[0]
-    const names = toDelete.map((r: any) => r[nameField] || r.id).join(', ')
+    const nameOf = (r: any) =>
+      typeof r[nameField] === 'string' && r[nameField] !== ''
+        ? r[nameField] : r.id
+    const names = toDelete.map(nameOf).join(', ')
 
     if (!confirm(`Delete ${names}?`)) return
 
@@ -3759,21 +4122,143 @@ function App() {
     // trailing selection clear + refresh run only when no
     // navigation superseded the delete.
     const gen = navGen.current
-    for (const id of selectedIds) {
-      const payload = { type, filters: id }
-      const res = await apiFetch('/api/delete', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      })
-      if (!res.ok) {
-        alert(await errorMessage(res, 'Failed to delete'))
-        break
+    const ids = [...selectedIds]
+    // Reload guard: every pending delete dies with the document
+    // on a reload/navigation, silently leaving selected rows
+    // undeleted (the "only some rows deleted" bug — the access
+    // log showed a reload landing mid-loop). Confirm before
+    // leaving while deletes are still in flight.
+    const guard = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      // Legacy browsers ignore preventDefault and read
+      // returnValue instead.
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', guard)
+    setDeleting({ done: 0, total: ids.length })
+    // A new run supersedes any lingering completion notice (and
+    // its clear timer) from the previous one.
+    if (deleteSummaryTimer.current != null) {
+      clearTimeout(deleteSummaryTimer.current)
+      deleteSummaryTimer.current = null
+    }
+    setDeleteSummary(null)
+    const failures: { name: string; message: string }[] = []
+    let ok = 0
+    try {
+      // Delete concurrency: 1 (sequential). The 5-wide pool
+      // triggered a server-side deadlock in the dev image
+      // (2026-11-13: concurrent be-deletes wedged every SBCL
+      // thread in futex waits — 0% CPU, no request processed
+      // again until restart; an earlier 5-wide run survived, so
+      // it is an intermittent race in the backend/RBAC path, not
+      // a deterministic count). Sequential requests cannot
+      // produce concurrent be-deletes from one client. The real
+      // fix is server-side (a batch endpoint processing rows in
+      // one handler thread); until then, one at a time — the
+      // banner, vanishing rows, and reload guard keep the run
+      // observable.
+      const queue = [...ids]
+      const worker = async () => {
+        for (let id = queue.shift(); id != null; id = queue.shift()) {
+          const payload = { type, filters: id }
+          let message: string | null = null
+          try {
+            const res = await apiFetch('/api/delete', {
+              method: 'POST',
+              body: JSON.stringify(payload)
+            })
+            if (!res.ok) {
+              message = await errorMessage(res, 'Failed to delete')
+            }
+          } catch (err) {
+            // A network-level throw used to escape the loop as
+            // an unhandled rejection — the run stopped with no
+            // feedback at all. Report it like any other failure.
+            message = err instanceof Error ? err.message
+              : 'Failed to delete'
+          }
+          if (message != null) {
+            const row = toDelete.find((r: any) => r.id === id)
+            failures.push({ name: row ? nameOf(row) : id, message })
+          } else {
+            // Success: drop the row from the table immediately
+            // (goneIds) — the shrinking list is the progress
+            // feedback; the post-run refetch reconciles.
+            ok++
+            setGoneIds(prev => {
+              const next = new Set(prev)
+              next.add(id)
+              return next
+            })
+          }
+          setDeleting(d => d == null ? d : { ...d, done: d.done + 1 })
+        }
       }
+      await Promise.all(
+        Array.from({ length: Math.min(1, ids.length) }, worker))
+    } finally {
+      window.removeEventListener('beforeunload', guard)
+      setDeleting(null)
+    }
+    // Completion notice: the run ends with an explicit tally
+    // instead of silence (failures still get the detailed
+    // alert). Self-clearing; the refetch below is the durable
+    // truth.
+    setDeleteSummary({ ok, failed: failures.length, total: ids.length })
+    deleteSummaryTimer.current = setTimeout(() => {
+      deleteSummaryTimer.current = null
+      setDeleteSummary(null)
+    }, 6000)
+    if (failures.length > 0) {
+      alert(`Failed to delete ${failures.length} of ${ids.length}: `
+        + failures.map(f => `${f.name} (${f.message})`).join('; '))
     }
     if (navRef.current.generation === gen) {
       setSelectedIds([])
       fetchListRef.current()
     }
+  }
+
+  // ---- Column visibility (Columns control) ----
+  // Handlers close over the render-derived values, the same
+  // posture as deleteSelected (it closes over listFields):
+  // each writes localStorage and bumps the invalidator; the
+  // next render re-reads the store. No key until modelName
+  // is known — writes no-op pre-login.
+
+  const toggleHiddenColumn = (name: string) => {
+    if (!modelName) return
+    const next = hiddenColumns.includes(name)
+      ? hiddenColumns.filter(n => n !== name)
+      : [...hiddenColumns, name]
+    const key = columnsStorageKey(modelName, type)
+    if (next.length === 0) {
+      clearStored(key)
+    } else {
+      writeStored(key, JSON.stringify(next))
+    }
+    bumpHiddenColumns(v => v + 1)
+  }
+
+  const showAllColumns = () => {
+    if (!modelName) return
+    clearStored(columnsStorageKey(modelName, type))
+    bumpHiddenColumns(v => v + 1)
+  }
+
+  const toggleDeleteColumn = () => {
+    if (!modelName) return
+    const key = deleteColumnStorageKey(modelName, type)
+    if (deleteColumnShown) {
+      clearStored(key)
+      // A selection with no checkboxes is a trap (the
+      // sort-change handler clears it for the same reason).
+      setSelectedIds([])
+    } else {
+      writeStored(key, 'true')
+    }
+    bumpHiddenColumns(v => v + 1)
   }
 
   useEffect(() => {
@@ -3831,6 +4316,10 @@ function App() {
       parkedHistoryRef.current = false
       const t = info.result?.['title']
       if (t) setTitle(String(t))
+      const mn = info.result?.['name']
+      if (typeof mn === 'string' && mn !== '') {
+        setModelName(mn)
+      }
       setBanner(slotFromInfo(info.result, 'banner'))
       setFooter(slotFromInfo(info.result, 'footer'))
       setHeadingStyle(
@@ -3949,8 +4438,8 @@ function App() {
         // dropped as invalid: existing landing-page resolution,
         // unchanged.
         let resolved: string | null = null
-        if (lp) {
-          resolved = String(lp)
+        if (typeof lp === 'string' && lp !== '') {
+          resolved = lp
         } else {
           const firstUser = typeInfos.find(
             t => t.category === 'user'
@@ -4461,6 +4950,66 @@ function App() {
   }, [loggedIn, type, scopeVia, scopeId, scopeTargetType,
       scopeTitleKey])
 
+  // ---- chip-to-record lookups (M2M chips) ----
+  // Resolves each highlighted M2M chip value to its target row
+  // id via GET /api/value-id, so the cell chip can show its
+  // navigate arrow (the lookup facts ride the wire
+  // record-lookup; the reference family needs no lookup — its
+  // ids are the rows' "<field>-id" siblings). Same shape as the
+  // scope-title machinery: epoch in every key (a guest miss
+  // cannot suppress a later session's hit), in-flight dedup,
+  // and a generation fence dropping commits across clears. A
+  // miss / unreadable row / ambiguity (the 500) / network error
+  // caches null — an absent affordance, never listError — so
+  // there is no retry storm. Gated on the arrived form (the
+  // fetchList guard) so it never resolves against a departed
+  // type's form. Must stay before the render body's early
+  // returns (React #310).
+  useEffect(() => {
+    if (!loggedIn) return
+    if (data?.result?.['type-key'] !== type) return
+    const meta = buildChipFieldMeta(
+      data.result['list-form'] || {}, type)
+    const visible =
+      types.map(t => t.name.toLowerCase())
+    const epoch = sessionEpochRef.current
+    const gen = chipNavGen.current
+    for (const [f, values] of Object.entries(listFilters)) {
+      const m = meta[f]
+      if (!m || !m.m2m || !m.lookup) continue
+      if (!visible.includes(
+            m.lookup.type.toLowerCase())) continue
+      for (const v of values) {
+        const key = lookupKey(epoch, m.lookup.type,
+                              m.lookup.field, v)
+        if (key in chipNavIds
+            || chipNavInFlight.current.has(key))
+          continue
+        chipNavInFlight.current.add(key)
+        const { type: lt, field: lf } = m.lookup
+        ;(async () => {
+          let id: string | null = null
+          try {
+            const res = await apiFetch(
+              `/api/value-id?type=${
+                  encodeURIComponent(lt)}` +
+                `&field=${encodeURIComponent(lf)}` +
+                `&value=${encodeURIComponent(v)}`)
+            if (res.ok)
+              id = parseValueIdResult(await res.json())
+          } catch { id = null }
+          if (chipNavGen.current !== gen
+              || sessionEpochRef.current !== epoch)
+            return
+          chipNavInFlight.current.delete(key)
+          setChipNavIds(prev =>
+            ({ ...prev, [key]: id }))
+        })()
+      }
+    }
+  }, [loggedIn, type, data, listFilters, types,
+      chipNavIds])
+
   // App state in the URL, Step 4: the history listener
   // (back / forward). The writer above mirrors state → URL on
   // commit; this mirrors URL → state on history navigation.
@@ -4657,6 +5206,12 @@ function App() {
   // Delete Selected never targets off-page rows. Same-page filter
   // changes are cleared explicitly in their handlers.
   useEffect(() => { setSelectedIds([]) }, [currentPage])
+
+  // Fresh list data supersedes local delete bookkeeping: whatever
+  // the new envelope carries is live, whatever it dropped is gone
+  // (the post-delete refetch lands here, as does any mid-run
+  // fetch — both are fresher than the goneIds set).
+  useEffect(() => { setGoneIds(new Set()) }, [data])
 
   // Poll for status updates when a button field's status starts
   // with "running". Re-fetches the record via /api/item and
@@ -5107,9 +5662,17 @@ function App() {
   }
 
   const listFields = formFieldKeys(data.result['list-form'])
-  const records = data.result.records
+  // Local delete bookkeeping bridges the gap between the first
+  // successful delete of a run and the post-run refetch: rows in
+  // goneIds are hidden here (and in the record count) so the list
+  // visibly shrinks as deletes settle. A fresh envelope clears
+  // goneIds (below) — server truth supersedes local state.
+  const records = goneIds.size > 0
+    ? data.result.records.filter((r: any) => !goneIds.has(r.id))
+    : data.result.records
   // Visible type names (lowercased) for the FK link gate; the
   // openPermalink callback routes an intercepted link click
+  // and highlighted cell chips (chip-to-record navigation)
   // through the same open path as a permalink arrival.
   const viewTypeNames = types.map(t => t.name.toLowerCase())
   const openPermalink = (t: string, id: string) => {
@@ -5132,12 +5695,46 @@ function App() {
   // question).
   const anyDeletable =
     records.some((r: any) => r.delete === true)
+  // ---- Column visibility, derived per render ----
+  // The store is the state: localStorage is read here, beside
+  // listFields (the compute-at-render posture — chipFieldMeta,
+  // anyDeletable), and writes bump bumpHiddenColumns to
+  // re-render. No modelName yet → all-visible defaults, writes
+  // no-op (pre-login belt-and-suspenders: no table renders
+  // before /api/info lands). Stored names not in the live
+  // listFields drop out here (model drift ignored by
+  // construction; new fields appear automatically).
+  const hiddenColumns = modelName
+    ? parseHiddenColumns(
+        readStored(columnsStorageKey(modelName, type)))
+    : []
+  // The ✕ column's stored preference: "true" = shown, absent
+  // = hidden (the default — the amendment). Page-level
+  // anyDeletable still gates the column itself; this is only
+  // the user's on/off.
+  const deleteColumnShown = modelName
+    ? readStored(
+        deleteColumnStorageKey(modelName, type)) === 'true'
+    : false
+  const visibleFields =
+    visibleListFields(listFields, hiddenColumns)
+  const columnOptions = listFields.map(f => ({
+    name: f,
+    label: data.result['list-form']![f].label || f
+  }))
+  // Rollup exclusion via the forms-presence proxy (see
+  // columns.ts): a rollup never carries forms, so it never
+  // gets the control; an ordinary type declaring no forms is
+  // wrongly excluded too — accepted v1 scope.
+  const supportsColumns =
+    supportsColumnVisibility(data.result)
   // Description block lookup; both list-mode render sites (main
   // return + the "No records" early-return shell) consume it.
   const typeInfo = types.find(t => t.name === type)
 
   // Chip eligibility, both families, via buildChipFieldMeta (the
-  // same function fetchList calls — one membership rule): M2M
+  // same function fetchList and the chip-nav lookup effect call —
+  // one membership rule): M2M
   // (checkbox-list whose source table differs from the listed
   // type; e.g. users.roles, table "roles" ≠ "users") and
   // reference (:filter-with :reference, table is the :target,
@@ -5318,16 +5915,38 @@ function App() {
               Add
             </button>
           )}
-          {data.result.delete && (
-            <button onClick={deleteSelected} style={{ marginLeft: '0.5rem' }}>
-              Delete Selected
+          {/* Delete Selected: the type-level delete envelope
+              keeps its position as the first conjunct
+              (deliberately type-level, per the anyDeletable
+              comment); the second conjunct is the page-visible
+              ✕ truth — with the ✕ column hidden there is
+              nothing to select, so the button goes with it
+              (deleting means enabling the ✕ column through
+              the Columns control first — the accepted trade,
+              view-form Delete button Post MVP). */}
+          {data.result.delete && deleteColumnShown && (
+            <button onClick={deleteSelected} style={{ marginLeft: '0.5rem' }}
+                    disabled={deleting != null}>
+              {deleting != null
+                ? `Deleting ${deleting.done}/${deleting.total}\u2026`
+                : 'Delete Selected'}
             </button>
           )}
         </div>
       )}
+      {/* The filter bar. The Columns disjunct: a type with no
+          search, no chips, no boolean filters, and no scope
+          still renders a bar with exactly one control (the ▦
+          icon) — column curation is not a data filter
+          (precedent: "Hide exclusive" renders on roles
+          regardless of the other controls). hideList types
+          get nothing (no table, nothing to curate) and
+          rollups are excluded by the forms proxy. */}
       {!(showAddForm || isEditMode) && recordError == null &&
         (scope.kind !== 'none' || hasSearchable
-         || hasChipFields || boolFilterFields.length > 0) && (
+         || hasChipFields || boolFilterFields.length > 0
+         || (supportsColumns && !hideList
+             && listFields.length > 0)) && (
         <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
           {hasSearchable && (
             <>
@@ -5440,12 +6059,48 @@ function App() {
                 options={opts}
                 selected={listFilters[f] || []}
                 open={chipPickerOpen === f}
-                onOpenChange={o =>
-                  setChipPickerOpen(o ? f : null)}
+                onOpenChange={o => {
+                  setChipPickerOpen(o ? f : null)
+                  // One popover at a time: a chip picker
+                  // opening closes the Columns popover (the
+                  // Columns control reciprocates).
+                  if (o) setColumnsPickerOpen(false)
+                }}
                 onToggle={v => toggleChipFilter(f, v)}
               />
             )
           })}
+          {/* Columns control (column visibility): after the
+              chip pickers, before the scope chip — near the
+              filters, per the item's own wording. Self-gates
+              on the same conjunction as the bar's disjunct:
+              forms-bearing list type (rollup proxy), a table
+              to curate, and at least one column. Opening it
+              closes any chip picker (the mutual-exclusion
+              contract, the picker's onOpenChange above).
+              Hiding every column is allowed — the control
+              itself is the way back, and the row click (view
+              form) is not a column, never governed by the
+              selector. */}
+          {supportsColumns && !hideList
+            && listFields.length > 0 && (
+            <ColumnsPicker
+              fields={columnOptions}
+              hidden={hiddenColumns}
+              showDeleteEntry={anyDeletable}
+              deleteColumnShown={deleteColumnShown}
+              open={columnsPickerOpen}
+              onOpenChange={o => {
+                setColumnsPickerOpen(o)
+                // One popover at a time: Columns opening
+                // closes any open chip picker.
+                if (o) setChipPickerOpen(null)
+              }}
+              onToggleField={toggleHiddenColumn}
+              onToggleDeleteColumn={toggleDeleteColumn}
+              onShowAll={showAllColumns}
+            />
+          )}
           {/* Post-scope chip (plan 04): a sibling of the active
               chip spans with its own × — never an entry in
               listFilters. "Post: <title> ×" when resolved,
@@ -5454,22 +6109,31 @@ function App() {
           {scope.kind === 'valid' && (
             <ScopeChip title={scopeTitle} onClear={clearScope} />
           )}
+          {/* Active chip filters, filter region (chip-to-record):
+              the whole chip is one button that removes the
+              filter — removal lives only here, so a body click
+              anywhere on the chip clears it (the × is a glyph,
+              not a nested button). */}
           {Object.entries(listFilters)
             .filter(([, values]) => values.length > 0)
-            .map(([fieldKey, values]) =>
-              values.map(v => (
-                <span key={`${fieldKey}:${v}`} className="chip chip-active">
-                  {chipFieldMeta[fieldKey]
-                    ? `${chipFieldMeta[fieldKey].label}: ` : ''}{v}
-                  <button
-                    type="button"
+            .map(([fieldKey, values]) => {
+              const label = chipFieldMeta[fieldKey]
+                ? `${chipFieldMeta[fieldKey].label}: ` : ''
+              return values.map(v => (
+                <button
+                  key={`${fieldKey}:${v}`}
+                  type="button"
+                  className="chip chip-active"
+                  title={`Remove filter: ${label}${v}`}
+                  onClick={() => toggleChipFilter(fieldKey, v)}
+                >
+                  {label}{v}
+                  <span
                     className="chip-x"
-                    title="Remove filter"
-                    onClick={() => toggleChipFilter(fieldKey, v)}
-                  >×</button>
-                </span>
+                    aria-hidden="true">×</span>
+                </button>
               ))
-            )}
+            })}
           {anyFilterActive && (
             <button
               type="button"
@@ -5622,7 +6286,8 @@ function App() {
                       record: formValues,
                       viewTypeList: viewTypeNames,
                       isViewForm: true,
-                      open: openPermalink
+                      open: openPermalink,
+                      chipMeta: chipFieldMeta
                     }
                   )}
                 </FieldRow>
@@ -5663,7 +6328,11 @@ function App() {
               // field; the value column holds the bare checkbox
               // (the old inline "☑ Label" put this field's label
               // in a different place than every other widget's).
-              const checked = !!formValues[f]
+              // Strict: a NULL boolean (null, or [] from an older
+              // backend) is unchecked, matching the list cell and
+              // View mode.
+              const checked = formValues[f] === true
+                || formValues[f] === 'true'
               return (
                 <FieldRow key={f} field={fieldMeta}>
                   <input
@@ -5679,7 +6348,9 @@ function App() {
               return (
                 <FieldRow key={f} field={fieldMeta}>
                   <select
-                    value={formValues[f] || ''}
+                    value={typeof formValues[f] === 'string'
+                      || typeof formValues[f] === 'number'
+                      ? String(formValues[f]) : ''}
                     onChange={e =>
                       setFormValues({ ...formValues, [f]: e.target.value })
                     }
@@ -6012,14 +6683,50 @@ function App() {
         />
       )}
 
+      {/* Multi-delete status: an unmissable progress line while
+          the batch runs (the button label is easy to miss — real
+          report: "I had to wait a long time wondering if the
+          delete was working"), and a brief explicit tally when it
+          finishes, so the run never ends in silence. Rendered only
+          in the main list view; region tables don't multi-delete. */}
+      {(deleting != null || deleteSummary != null) && !hideList && (
+        <div
+          role="status"
+          style={{
+            margin: '0.75rem 0 0 1.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            color: deleteSummary != null && deleteSummary.failed > 0
+              ? 'var(--error)' : 'var(--muted)'
+          }}
+        >
+          {deleting != null ? (
+            <>
+              <progress value={deleting.done} max={deleting.total} />
+              <span>
+                Deleting rows… {deleting.done} of {deleting.total}
+              </span>
+            </>
+          ) : deleteSummary != null && (
+            <span>
+              Deleted {deleteSummary.ok} of {deleteSummary.total}
+              {' rows'}
+              {deleteSummary.failed > 0
+                ? ` — ${deleteSummary.failed} failed` : ''}
+            </span>
+          )}
+        </div>
+      )}
+
       {!hideList && (
       <table>
         <thead>
           <tr>
-            {anyDeletable && (
-              <th style={{ width: '40px', textAlign: 'center', color: 'var(--error-bright)' }}>✕</th>
+            {anyDeletable && deleteColumnShown && (
+              <th style={{ width: '42px', textAlign: 'center', color: 'var(--error-bright)' }}>✕</th>
             )}
-            {listFields.map(f => {
+            {visibleFields.map(f => {
               const field = data.result['list-form']![f]
               if (field.sortable === true) {
                 const isActive = sortField === f
@@ -6082,10 +6789,11 @@ function App() {
               onKeyDown={hasViewForm
                 ? e => handleRowKeyDown(e, rec) : undefined}
             >
-              {anyDeletable && (
+              {anyDeletable && deleteColumnShown && (
                 <td style={{ textAlign: 'center' }}>
                   {(rec as RecordCaps).delete === true && (
                     <input
+                      className="row-select"
                       type="checkbox"
                       checked={selectedIds.includes(rec.id)}
                       onChange={() => toggleSelect(rec.id)}
@@ -6093,7 +6801,7 @@ function App() {
                   )}
                 </td>
               )}
-              {listFields.map(f => {
+              {visibleFields.map(f => {
                 const field = data.result['list-form']![f]
                 // Global one-line rule: text cells clamp to one
                 // line with an ellipsis; the full value rides
@@ -6128,6 +6836,32 @@ function App() {
                 const refVal = meta && !meta.m2m
                   && typeof rec[f] === 'string' && rec[f] !== ''
                     ? rec[f] : null
+                // M2M chip navigation target (chip-to-record):
+                // the epoch-keyed lookup id for this value —
+                // {type, id} when the /api/value-id lookup has
+                // landed with a hit, null while pending,
+                // missed, or absent (no wire record-lookup
+                // facts — a bare :list field filters but never
+                // navigates). Computed in the component body
+                // like refVal, same reason.
+                const m2mNav = (
+                  m: { lookup?:
+                        { type: string, field: string } }
+                    | undefined,
+                  v: string
+                ): { type: string, id: string } | null => {
+                  if (!m || !m.lookup) return null
+                  const id = chipNavIds[lookupKey(
+                    sessionEpochRef.current, m.lookup.type,
+                    m.lookup.field, v)]
+                  return typeof id === 'string' && id !== ''
+                    ? { type: m.lookup.type, id } : null
+                }
+                // Reference chip active flag, hoisted for the
+                // CellChip props (nav is gated on it — an
+                // unhighlighted chip always filters).
+                const refActive = refVal !== null
+                  && (listFilters[f] || []).includes(refVal)
                 // Clamp exemption couples to the render
                 // branches, not membership alone.
                 const chipRendered =
@@ -6151,40 +6885,52 @@ function App() {
                     {meta && meta.m2m && Array.isArray(rec[f])
                       ? (
                         <span className="chip-cell">
-                          {(rec[f] as string[]).map(v => {
+                          {(rec[f] as string[])
+                            .slice(0, CELL_CHIP_LIMIT).map(v => {
                             const active =
                               (listFilters[f] || []).includes(v)
                             return (
-                              <button
+                              <CellChip
                                 key={v}
-                                type="button"
-                                className={active
-                                  ? 'chip chip-active' : 'chip'}
-                                title={active
-                                  ? `Remove filter: ${v}`
-                                  : `Filter by ${v}`}
-                                onClick={() =>
+                                value={String(v)}
+                                active={active}
+                                nav={active
+                                  ? m2mNav(meta, String(v))
+                                  : null}
+                                onFilter={() =>
                                   toggleChipFilter(f, String(v))}
-                              >{String(v)}</button>
+                                onOpen={openPermalink}
+                                clickGuard={chipClickGuard(
+                                  f, String(v))}
+                              />
                             )
                           })}
+                          {(rec[f] as string[]).length
+                            > CELL_CHIP_LIMIT && (
+                            <span className="chip-more">
+                              +{(rec[f] as string[]).length
+                                - CELL_CHIP_LIMIT} more
+                            </span>
+                          )}
                         </span>
                       )
                       : meta && !meta.m2m && refVal !== null
                       ? (
                         <span className="chip-cell">
-                          <button
-                            type="button"
-                            className={(listFilters[f] || [])
-                              .includes(refVal)
-                              ? 'chip chip-active' : 'chip'}
-                            title={(listFilters[f] || [])
-                              .includes(refVal)
-                              ? `Remove filter: ${refVal}`
-                              : `Filter by ${refVal}`}
-                            onClick={() =>
+                          <CellChip
+                            value={refVal}
+                            active={refActive}
+                            nav={refActive
+                              ? refNavTarget(meta.target,
+                                  rec[`${f}-id`], refVal,
+                                  viewTypeNames)
+                              : null}
+                            onFilter={() =>
                               toggleChipFilter(f, refVal)}
-                          >{refVal}</button>
+                            onOpen={openPermalink}
+                            clickGuard={chipClickGuard(
+                              f, refVal)}
+                          />
                         </span>
                       )
                       : renderCellValue(rec[f], field)}
@@ -6228,7 +6974,14 @@ function App() {
             </button>
           </div>
         )}
-        <span className="record-count">{totalRecords} records</span>
+        <span className="record-count">
+          {/* goneIds subtraction keeps the count in step with the
+              rows already removed mid-run (selection is
+              current-page only, so every gone id counts against
+              this total); the post-run refetch lands the durable
+              number. */}
+          {Math.max(0, totalRecords - goneIds.size)} records
+        </span>
       </div>
       )}
       <AppFooter footer={footer} />

@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "test:url-state": "node src/urlState.test.mjs",
     "test:region": "node src/region.test.mjs",
+    "test:chip-nav": "node src/chipNav.test.mjs",
+    "test:columns": "node src/columns.test.mjs",
     "test:public-link": "node src/publicLink.test.mjs",
     "test:styling-html": "node src/stylingHtml.test.mjs"
   },

@@ -55,7 +55,7 @@ Without `[profile]`, uses built-in dev defaults. With `[profile]`, loads that pr
 
 #### `profile`
 
-Manages host profiles — named local instances (see [Host profiles](#host-profiles)). `create` makes one for a top-level model, `delete` destroys one, `list` shows the existing ones, and `expose` / `unexpose` toggle its reachability through the HAProxy TLS front door.
+Manages host profiles — named local instances (see [Host profiles](#host-profiles)). `create` makes one for a model, `delete` destroys one, `list` shows the existing ones, `expose` / `unexpose` toggle its reachability through the HAProxy TLS front door, and `install-model` delivers a local-only model into the staging clone.
 
 Subcommands:
 
@@ -64,8 +64,9 @@ Subcommands:
 - `list` — List host profiles with model, ports, and status
 - `expose <profile>` — Make a profile publicly reachable via HAProxy
 - `unexpose <profile>` — Remove the HAProxy exposure
+- `install-model <model>` — Deliver a local-only model to the staging checkout
 
-**`create <model> [profile]`** creates a host profile for a top-level model. The model must exist as `models/<model>.lisp` (test fixtures under `models/test/` are not accepted). The profile name defaults to the model name; pass a second argument for a different profile name.
+**`create <model> [profile]`** creates a host profile for a model. The model must exist as `models/<model>.lisp` or `models/local/<model>.lisp` (set-model's order; test fixtures under `models/test/` are not accepted). A local-only model must be delivered to the staging checkout first — run `profile install-model <model>` from the development checkout. The profile name defaults to the model name; pass a second argument for a different profile name.
 
     scripts/data-ui profile create <model> [profile]
 
@@ -106,7 +107,7 @@ Behavior:
 Behavior:
 
 - Primary profiles only (profile name equals its `MODEL_NAME`; `modelbank` yes, `modelbank-2` no)
-- Requires `sudo` and must run on `DEPLOY_HOST` (default `evo-x2`), from a checkout containing `models/<model>.lisp` (and `ros`)
+- Requires `sudo` and must run on `DEPLOY_HOST` (default `evo-x2`), from a checkout containing `models/<model>.lisp` or `models/local/<model>.lisp` (and `ros`)
 - The hostname comes from the model's `:domain-stg` when present, else `:domain` with `-stg` suffixed onto the first DNS label (the compiler's default derivation, duplicated here because the script reads the raw model file); the model must have a `:domain`, or the profile cannot be exposed
 - Refuses if the domain is claimed by a deployed instance (use `delete` first) or by another profile (use `profile unexpose` first); re-exposing the same profile is idempotent
 - Rewrites `PUBLIC_ORIGIN` in the profile's `profile.env` to `https://<domain>` (the public pages' canonical origin) and prints that the profile must be restarted so the image re-reads the variable
@@ -124,6 +125,24 @@ Behavior:
 **Example:**
 
     scripts/data-ui profile unexpose modelbank
+
+**`install-model <model>`** delivers a local-only model (`models/local/<model>.lisp`) from the development checkout into the staging clone's `models/local/`, where the `dataui@<profile>` unit's `set-model` reads it — git cannot carry the file (the ignore is the point), and `staging update` never installs ignored files. It is the staging sibling of production's `deploy-incoming` → `models/local/<name>.lisp` promote pattern.
+
+    scripts/data-ui profile install-model <model>
+
+Behavior:
+
+- Runs on the deploy host (`STAGING_HOST`, default `evo-x2` — the `staging update` rule), from the development checkout; it never routes
+- Refuses a same-named top-level `models/<model>.lisp` in either the development or the staging tree (committed models arrive via `staging update`; the canonical file would win in the staging unit's `set-model`)
+- Requires the file's declared `:name` to match the operand; regular file, non-empty, ≤1 MiB, not a symlink
+- Copies via temp + SHA-256 verify + `mv` (mode 600); overwrites an existing delivered copy when the bytes differ, and is a no-op when they match
+- `profile delete` deliberately keeps the delivered model; removing it is a hand `rm` in the staging clone
+
+The Mel's-app workflow shape: `install-model` (dev checkout) → `profile create` → `e-demo start` → `snapshot save <name> stg:<profile>`.
+
+**Example:**
+
+    scripts/data-ui profile install-model mel-01
 
 #### `tests`
 
@@ -169,7 +188,7 @@ Stops and removes the test database container (including volumes). Normally not 
 
 #### `field`
 
-Reads a top-level field from `models/<model-name>.lisp`. Used internally by the deploy pipeline, but can be called directly.
+Reads a top-level field from `models/<model-name>.lisp` or `models/local/<model-name>.lisp` (set-model's order). Used internally by the deploy pipeline, but can be called directly.
 
 **Example:**
 
@@ -246,7 +265,7 @@ Subcommands:
 
 **Addresses:** every address is `<qualifier>:<name>`, both tokens mandatory on `save` / `restore` — no defaults, no unqualified fallback. The one-arg forms (`snapshot restore books`, `snapshot save books-1`) are hard errors that name both legal shapes. The second token is the SOURCE on `save`, the DESTINATION on `restore` — same position, same vocabulary, role fixed by the verb.
 
-- `dev:<model>` — the built-in dev environment (the 5444 REPL), asserting the loaded model: `dev:books` requires `models/books.lisp` and confirms the live model via `/api/info` when reachable
+- `dev:<model>` — the built-in dev environment (the 5444 REPL), asserting the loaded model: `dev:books` requires `models/books.lisp` or `models/local/books.lisp` (set-model's order) and confirms the live model via `/api/info` when reachable
 - `stg:<profile>` — a host profile: `stg:books` resolves `/data/data-ui/profiles/books/profile.env`; model identity is its `MODEL_NAME` (the colon-tail is a PROFILE name, not a model name: `stg:mybooks` may run `MODEL_NAME=todos`)
 - `prd:<instance>` — a k3d production deploy: `prd:todos` resolves from the live cluster (namespace `dataui-<name>`, its Secret, the files PV). The tail IS the model name. Must run on the deploy host (`$DEPLOY_HOST`), from a checkout (the verb `cd`s there like the demo verbs — it shells out to `lisp/deployment.lisp` for best-effort model-version reads). There is no ssh re-exec: snapshots read cluster truth and host files that only exist on the deploy host.
 
@@ -329,7 +348,7 @@ Both drive the `dataui@<profile>` systemd units. See [Host profiles](#host-profi
 
 ### Publication order
 
-`profile create <model>` runs in the staging checkout, so it reads staging's `models/<model>.lisp`: a new model must be committed and published to the staging upstream (normally `private/master`) *before* `profile create` can see it. There is no `models/local/` fallback for profiles — VIP (uncommitted) models are Docker deploys only, never host profiles.
+`profile create <model>` runs in the staging checkout, so it reads staging's model files: a committed model must be published to the staging upstream (normally `private/master`) and delivered by `staging update` *before* `profile create` can see it, and a local-only model must be delivered by `profile install-model <model>` from the development checkout. `create` resolves both locations (set-model's order: `models/<model>.lisp`, then `models/local/<model>.lisp`).
 
 ### Host profiles
 

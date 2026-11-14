@@ -26,6 +26,10 @@
 // - Keyboard support is native only (Tab / Space); proper
 //   combobox keyboard navigation for the shared picker anatomy
 //   is tracked as a Post MVP backlog item.
+// - An empty target arrives as [] (plist-to-json renders nil as a
+//   truthy empty array — the [] truthy trap), so anything that is
+//   not a non-empty string counts as no selection: no checked
+//   radio row renders.
 
 import { useState } from 'react'
 import {
@@ -36,14 +40,16 @@ const SCROLL_MAX_HEIGHT = '7.5rem'
 
 interface SearchSelectProps {
   options: string[]
-  value: string | null
+  value: unknown
   clearable: boolean
   onChange: (v: string | null) => void
 }
 
 function SearchSelect({
-  options, value, clearable, onChange
+  options, value: rawValue, clearable, onChange
 }: SearchSelectProps) {
+  const value: string | null =
+    typeof rawValue === 'string' && rawValue !== '' ? rawValue : null
   const [query, setQuery] = useState('')
   const trimmed = query.trim().toLowerCase()
 

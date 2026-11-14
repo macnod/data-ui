@@ -20,6 +20,8 @@ On `GET /api/list` and `GET /api/item`: records of a public type carry an option
 
 ## Data retrieval
 
+**Empty values in records.** On `GET /api/list`, `GET /api/item`, and `GET /api/value`, a record field with no value is JSON `null` when the field is a scalar (text, number, boolean, timestamp, uuid, a `:target` reference, a password, an `:avg` / `:sum` / `:count` aggregate) and `[]` when the field is list-valued (`:type :list`, a `:join-table` field, or a `:list` / `:distinct` aggregate). The envelope's collections (`records`, `allowed-values` entries, `type-roles`) are always arrays, `[]` when empty. The conversion happens at the REST edge (`wire-record` in `lisp/rest.lisp`); `be-list` / `be-rec` / `be-val` still return Lisp nil to internal callers. Inbound, `null` and `[]` both decode to nil, so either spelling of an empty value sent back on an update means the same thing (an explicit clear); leave a key out to leave its column untouched.
+
 ### `GET /api/list`
 
 List records for a type. Returns records, form schemas (`list-form`, `add-form`, `update-form`, `view-form`), `allowed-values` for dropdown/checkbox fields, permission flags (`create`, `delete`, `update`), the type's RBAC role names (`type-roles` — see [`POST /api/insert`](#post-apiinsert)), and paging keys `total` and `sort`. Each of `add-form`, `update-form`, `view-form` may carry `hide-list` (a JSON boolean) beside its field entries; `true` means the client should hide the list table, pagination, and record count while that form is open; absent (and `false`, the explicit-show spelling) means show; `list-form` never carries it. `/api/item`'s `fields` object is the same form-schema plist, so the flag rides there too; clients that read only `record` can ignore it.
@@ -38,7 +40,7 @@ List records for a type. Returns records, form schemas (`list-form`, `add-form`,
 
 **Filter operators** (lowercase in JSON): `eq`, `ne`, `gt`, `lt`, `gte`, `lte`, `like`, `ilike`, `not-like`, `not-ilike`, `in`, `not-in`, `has-all`, `fk-eq`. Filters may target a joined table's fields (the example above targets the `tags` joiner through the listed type). `has-all` is field-scoped instead — the row is `[listedType, m2mFieldKey, "has-all", values]` — and targets the listed type's M2M list field (the field must declare `:join-table`); values AND: the record must have all of them (`in` stays has-any). A reference-chip row is target-keyed — `[targetType, targetIdentityColumn, "in", values]`, e.g. `["users","name","in",["admin"]]` — comparing the target's identity display values directly against the joined target table (union within the row; unknown names match zero rows, never a 400). `fk-eq` compares an FK field's storage column (the row uuid): the row is `[listedType, fkFieldKey, "fk-eq", rowUuid]`, e.g. `["comments","post","fk-eq","<uuid>"]` — field-scoped to the listed type's singular `:target` field (no `:join-table`); values are uuids only (`nil`, `:null`, and display names are rejected); cross-type `fk-eq` rows and rollups are rejected.
 
-**Response** (in addition to `records`, forms, `allowed-values`, permission flags): `total` (always present — pre-paging count of matching records; may exceed the number of returned records) and `sort` (the effective sort: `{"field": "...", "dir": "asc"|"desc"}`). When no sort was requested, `sort` reports the type's `:default-sort` declaration when one exists, else the rollup default policy (first sortable measure, `desc`) on a rollup type, else `null` on a base type.
+**Response** (in addition to `records`, forms, `allowed-values`, permission flags): `total` (always present — pre-paging count of matching records; may exceed the number of returned records) and `sort` (the effective sort: `{"field": "...", "dir": "asc"|"desc"}`). When no sort was requested, `sort` reports the type's `:default-sort` declaration when one exists, else the rollup default policy (first sortable measure, `desc`) on a rollup type, else `null` on a base type. Among the form field entries, fields with a `:join-table` carry `record-lookup` — `{"type": ..., "field": ...}`, the `/api/value-id` parameters that resolve a chip value to its row (omitted on every other field) — and singular-target fields keep their `target` / `column` keys plus the records' `"<field>-id"` siblings, unchanged.
 
 **Per-record flags:** every record object carries `update` / `delete` JSON booleans computed from the caller's permissions on that record's own resource (row-level — the same gate as [`POST /api/update`](#post-apiupdate) / [`POST /api/delete`](#post-apidelete); a creator with `create` but no type-level `update` gets `update: true` on rows her exclusive role sits on). Rollup records carry both `false`. The envelope `create` / `update` / `delete` flags stay type-level (Add / Delete Selected gating, legacy consumers). `/api/column` is unaffected — it projects one field key per row and discards the record plists, so the flag keys never reach its output.
 
@@ -68,7 +70,7 @@ Fetch a single column value from a record. Row-level: the caller needs `read` on
 
 ### `GET /api/value-id`
 
-Resolve a record UUID by a field value — the identity-lookup arm of `/api/id`, through `be-value-id`; it returns an ID and does not read any column's value. Same row-level read gate: a value the caller cannot read resolves to a null result.
+Resolve a record UUID by a field value — the identity-lookup arm of `/api/id`, through `be-value-id`; it returns an ID and does not read any column's value. Same row-level read gate: a value the caller cannot read resolves to a null result. This is also the built-in frontend's chip-to-record lookup (highlighted join-table cell chips resolve their displayed values here); a miss — no match, or a row the caller cannot read — is `result: []`; more than one match is an error (500, "More than one match.") — the chip lookup reads it as a miss.
 
 **Parameters:** `type`, `field`, `value`.
 
@@ -155,7 +157,7 @@ Available types, each entry an object: `name` (string), `category` (`user` / `se
 
 ### `GET /api/info`
 
-Schema metadata, landing page resolution (per-user via `be-landing-page`). Includes the top-level settings (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:guest-allowed`, with `:landing-page` resolved per user). Carries optional `banner`, `footer`, and `heading` strings — the sanitized `:styling` slot values, each key omitted when the slot has no row or a blank value (never `null` / `[]`).
+Schema metadata, landing page resolution (per-user via `be-landing-page`). Includes the top-level settings (`:title`, `:name`, `:version`, `:domain`, `:domain-stg`, `:repl`, `:guest-allowed`, with `:landing-page` resolved per user; `null` when the user can see no types). Carries optional `banner`, `footer`, and `heading` strings — the sanitized `:styling` slot values, each key omitted when the slot has no row or a blank value (never `null` / `[]`).
 
 ### `GET /api/public-info`
 

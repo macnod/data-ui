@@ -18,7 +18,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 - **Dead-code decisions** — `docs/model-accessors.md` (check before removing anything that looks unused)
 - **Backlog** — `docs/todo.org`
 - **Demo video suggestions** → `~/workbench/video-plan.org` — running list of beats to capture (shots, pauses, points to land). Video work starts December 15; whenever a moment in the UI or flow would demo well, add it there.
-- **Mel's app** → `~/workbench/mels-app-notes.org` — the film continuity tracker (first expressly requested app): data model with settled decisions, what works today, build checklist. Read before any "Mel's app" work.
+- **Mel's app** → `~/workbench/mels-app/notes.org` — the film continuity tracker (first expressly requested app): schema with settled decisions, in-flight work, deployment story, seeding policy, checklist. Ops beside it in `~/workbench/mels-app/` (loading-runbook.org, runner, acceptance). Read before any "Mel's app" work.
 
 ## Key Architecture
 
@@ -142,7 +142,7 @@ Org outline hierarchy: `*` section, `**` parent todo, `***` its direct children 
 
 - **End-to-end proven:** `scripts/data-ui deploy todos` → https://todo.demo.data-ui.com (k3d, HAProxy, TLS) — production, always built from the production clone at `/data/data-ui/repos/production`. Staging (host profiles + `profile expose`, serving each model's `:domain-stg`, derived as `-stg` on the first DNS label of `:domain`) is the flagship environment during MVP: it hosts Model Bank and has the Deploy button. Demo apps run as systemd units via the `e-demo` / `demo` verbs with nightly golden resets (`scripts/data-ui`, `ops/`); host apps load the staging clone at `/data/data-ui/repos/staging`, never a development checkout (updated by `staging update`; Model Bank activates separately via `staging activate-modelbank`). Development Lisp work happens in the development repo.
 - Full CRUD on all types (built-in RBAC types included); JWT auth (plus guest login via `:guest-allowed` / `:guest-auto` / `:api-roles`); view-level and field-level scoping; write-through core path; action hooks (`:deploy-model`, `:generate-model`, `:spawn`); rollups (Phase A); file upload / list / delete (two-phase upload: `multipart` to `/api/upload`, then JSON `/api/insert` with the `file-token`).
-- Frontend: type selector with categories, dynamic lists / forms, inline edit, sortable columns, debounced search with negative ("Not…") terms, filter chips, pagination driven by `total`, rollup lists (server-side sortable measures), role management, image lightbox.
+- Frontend: type selector with categories, dynamic lists / forms, inline edit, sortable columns, debounced search with negative ("Not…") terms, filter chips, user-controlled column visibility (Columns control, per-browser per model+type localStorage, rollups excluded), pagination driven by `total`, rollup lists (server-side sortable measures), role management, image lightbox.
 - Known gaps: `:agg` fields on regular types are not sortable (use a rollup); file update unimplemented; one flaky scoping test; UI polish pending.
 - Full catalog: README → Current Status; `docs/model-reference.md` → Known gaps and gotchas.
 

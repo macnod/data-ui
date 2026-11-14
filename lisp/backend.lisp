@@ -599,13 +599,16 @@ insert/update."
 
 (defun make-resource-name (type-key data)
   ":private: Returns a resource name for DATA, representing a new or existing
-record of type TYPE-KEY. This name is composed of the type-key, the first 10
-characters of the stringified value associated with one of the fields in DATA,
-and a random UUID. If the :name field is present in DATA and valid for TYPE-KEY,
-that field value is chosen.  Otherwise, the first non-base field from the
-compiled model that appears in DATA is used. The resulting ID looks like this:
+record of type TYPE-KEY. This name is composed of the downcased type-key, the
+downcased key of the chosen field, the sanitized stringified value of that
+field, and a random UUID. The field is :name when DATA carries a non-nil :name
+value; otherwise the first non-base field in DATA's own order that carries a
+value is used. The value has characters other than alphanumerics, dashes, and
+slashes replaced with dashes, a leading and a trailing dash stripped, and the
+result capped at 32 characters; an empty or absent value yields NIL. The
+resulting name looks like this:
 
-  todos:todo-1:6b3de23c-bf06-9b80-1e8e-40e9b66c3eaa
+  todos:name:todo-1:6b3de23c-bf06-9b80-1e8e-40e9b66c3eaa
 
 This function signals error conditions for the following:
 
@@ -879,16 +882,21 @@ a normal field and unaffected."
                          :not-null (getf field-def :not-null)
                          :sortable (getf field-def :sortable)
                          :searchable (getf field-def :searchable))
-                         ;; :column rides the leading plist only on
-                         ;; :target fields (the target's identity
-                         ;; display column, downcased string — the
-                         ;; reference chip picker's :in row names it).
-                         ;; Never an unconditional nil: add-to-plist
-                         ;; emits every union key, and a nil :column
-                         ;; would serialize as "column":[] through
-                         ;; plist-to-json's nil-value default. column is
-                         ;; not an *ui-keys* member, so the :ui spread
-                         ;; can never collide with it.
+                         ;; Two relation keys ride the leading
+                         ;; plist, one per field family. :column
+                         ;; rides it only on :target fields (the
+                         ;; target's identity display column,
+                         ;; downcased string — the reference chip
+                         ;; picker's :in row names it);
+                         ;; :record-lookup (the clause below) rides
+                         ;; it only on :join-table fields — the M2M
+                         ;; chip lookup. Never an unconditional nil:
+                         ;; add-to-plist emits every union key, and
+                         ;; a nil :column would serialize as
+                         ;; "column":[] through plist-to-json's
+                         ;; nil-value default. Neither key is an
+                         ;; *ui-keys* member, so the :ui spread can
+                         ;; never collide with them.
                          (when (getf field-def :target)
                            (list
                              :column
@@ -903,7 +911,21 @@ a normal field and unaffected."
                              ;; including suppression-marked ones;
                              ;; the sibling's absence withholds the
                              ;; link on those, not this key).
-                             :target (getf field-def :target))))
+                             :target (getf field-def :target)))
+                         ;; :record-lookup rides join-table fields
+                         ;; only: the /api/value-id call (type +
+                         ;; field) that resolves one chip value to
+                         ;; its target row (chip-to-record
+                         ;; navigation). Omitted, never nil,
+                         ;; elsewhere.
+                         (let ((jt (getf field-def :join-table))
+                               (st (u:tree-get field-def :source :table))
+                               (sc (u:tree-get field-def :source :column)))
+                           (when (and jt st sc)
+                             (list :record-lookup
+                                   (list :type st
+                                         :field (string-downcase
+                                                  (string sc)))))))
                      ui)))
         ;; Form-level :hide-list (sibling of :fields) rides the same
         ;; form object as a boolean — but only when declared. append
