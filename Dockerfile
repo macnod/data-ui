@@ -114,4 +114,8 @@ COPY --from=web-build /web/dist /app/web
 # (No ${DATA_UI_SBCL_HEAP_GB:+...} trick here: a default expansion and
 # a conditional expansion in one expansion is not a thing; the case
 # spells out all three paths.)
-ENTRYPOINT ["/bin/sh", "-c", 'H=${DATA_UI_SBCL_HEAP_GB:-2}; [ "$H" = 0 ] || set -- --dynamic-space-size "${H}GB"; exec ros run -- "$@" --disable-debugger --eval "(require :data-ui)" --eval "(data-ui::main)"']
+# Exec-form arrays are JSON: single quotes are not string delimiters
+# there, so a single-quoted element swallows the rest of the line and
+# the whole array becomes the sh -c script ("[/bin/sh,: not found").
+# The escaped double quotes are load-bearing.
+ENTRYPOINT ["/bin/sh", "-c", "H=${DATA_UI_SBCL_HEAP_GB:-2}; [ \"$H\" = 0 ] || set -- --dynamic-space-size \"${H}GB\"; exec ros run -- \"$@\" --disable-debugger --eval \"(require :data-ui)\" --eval \"(data-ui::main)\""]
