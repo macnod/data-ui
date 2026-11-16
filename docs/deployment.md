@@ -71,13 +71,26 @@ That's it. The output ends with:
       NodePort:  http://172.18.0.2:30303
       Swank:     kubectl -n dataui-todos port-forward deploy/dataui-todos 4005:4005
 
-Open the domain, log in as `admin` with the password from [Secrets](#secrets-and-how-to-get-the-admin-password), and you are looking at your deployed application.
+Open the domain, log in as `admin` with the password from [Secrets](#secrets-and-how-to-get-the-admin-password), and you are looking at your deployed application. If you've been developing against the dev REPL and want the app *with its data* in production, see [First deploy of an app you've been developing](#first-deploy-of-an-app-youve-been-developing) below.
 
 Requirements:
 
 - A **clean production clone** at `$DEPLOY_CHECKOUT` — the deploy fast-forwards it to the selected revision and refuses to touch a dirty tree (your development checkout is never inspected, cleaned, or pushed). `deploy-bootstrap` creates the clone on a fresh host.
 - `sudo` access on the deploy host (for the HAProxy update, nothing else).
 - The one-time host setup already done: k3d cluster, HAProxy, TLS certificate (see [TLS](#tls-certificates-that-renew-themselves)).
+
+### First deploy of an app you've been developing
+
+The one command above assumes the code is already at `public/master` and an empty database is fine. When you've been developing against the dev REPL and want the app *with its data* in production, the code should already be committed and pushed to `private/master` (your normal development flow), and then:
+
+    scripts/publish-data-ui --prefer-private "SceneBook v0.6: …"  # code reaches public/master
+    scripts/data-ui deploy scenebook
+    scripts/data-ui snapshot restore dev-scenebook prd:scenebook  # dev data travels over
+    scripts/data-ui snapshot save prd-scenebook prd:scenebook     # optional known-good marker
+
+- `deploy` builds the production clone at `public/master`: committed but unpublished work never ships (publish first, or `deploy --from private/master`)
+- a fresh deploy starts empty (RBAC seeded, no user rows); the snapshot restore replaces the schema with the dump's — model name must match, and uploaded files ride along in the files tar
+- after the restore, the working admin password is the cluster Secret's `admin-password` (restore re-stamps the destination's own — see [Secrets](#secrets-and-how-to-get-the-admin-password))
 
 ### Where the deployed code comes from (`$DEPLOY_CHECKOUT`)
 

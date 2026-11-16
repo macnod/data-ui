@@ -260,6 +260,7 @@ Subcommands:
 - `save <name> <src-address>` — Save the source's database state
 - `restore <name> <dst-address>` — Restore a snapshot onto a destination
 - `list` — List the shared pool; names + provenance
+- `copy <src-name> <dst-name> [<model>]` — Copy a snapshot triple to a new name in the pool; with `<model>`, the copy's `.meta` is retargeted to that model (for restoring into a renamed instance; see [snapshots.md](snapshots.md#copying-a-snapshot))
 - `drop <name>` — Delete a snapshot (dump + files tar + .meta)
 - `migrate` — One-time maintenance: rename legacy slots, stub .meta (idempotent)
 
@@ -323,6 +324,11 @@ Back up (and recover) a production instance:
 
     scripts/data-ui snapshot save chores-backup prd:chores
     scripts/data-ui snapshot restore prd-chores-prerestore prd:chores
+
+**Seeding a renamed instance:** a `prd:` address asserts the instance name as the model, so `stg-todos-golden` (model `todos`) cannot restore into `prd:todos-hannah` directly. Copy it under a new name with the model retargeted, then restore the copy:
+
+    scripts/data-ui snapshot copy stg-todos-golden hannah-todos-seed todos-hannah
+    scripts/data-ui snapshot restore hannah-todos-seed prd:todos-hannah
 
 **Listing and deleting snapshots:**
 
@@ -410,7 +416,7 @@ The script reads several environment variables with hardcoded defaults. Override
 - `DATA_UI_STATE` (default: `/data/data-ui`; the root for profiles, snapshots, and deploy state)
 - `K3D_CLUSTER` (default: `evo-x2`)
 - `DRY_RUN` (set to `1` for dry-run deploys)
-- `FORCE` (set to `1` to skip the delete / profile-delete confirmations, to skip the delete verb's farewell snapshot (`prd-<name>-last`), and as the one escape when `snapshot save` hits an unreachable `dev:` `/api/info`. It NEVER overrides a snapshot model mismatch, and the restore-unreachable skip needs no FORCE.)
+- `FORCE` (set to `1` to skip the delete / profile-delete confirmations, to let `snapshot copy` overwrite an existing destination, to skip the delete verb's farewell snapshot (`prd-<name>-last`), and as the one escape when `snapshot save` hits an unreachable `dev:` `/api/info`. It NEVER overrides a snapshot model mismatch, and the restore-unreachable skip needs no FORCE.)
 
 ---
 

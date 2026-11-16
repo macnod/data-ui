@@ -1528,14 +1528,15 @@ allowed-values-for-field-excludes-other-users-exclusives)."
       (be-delete :users
         `((:users :name :eq ,user)) "admin"))))
 
-(test allowed-values-for-field-excludes-settings-from-users-roles
+(test allowed-values-for-field-excludes-system-roles-from-users-roles
   "The :users type's :roles allowed-values excludes system internals
-like settings, admin, logged-in, and every exclusive role — a
-stricter set than selectable-roles, since exclusive roles are never
-assignable on users. This is the path the Add form hits for :users."
+like settings, logged-in, and every exclusive role — a stricter set
+than selectable-roles, since exclusive roles are never assignable on
+users. The admin viewer (an admin-role holder) sees admin, ai-user
+and deployer. This is the path the Add form hits for :users."
   (let ((roles (getf (allowed-values :users "admin") :roles)))
     (is-false (member "settings" roles :test 'equal))
-    (is-false (member "admin" roles :test 'equal))
+    (is-true (member "admin" roles :test 'equal))
     (is-false (member "admin:exclusive" roles :test 'equal))
     (is-false (member "guest:exclusive" roles :test 'equal))
     (is-false (member "logged-in" roles :test 'equal))
@@ -1559,11 +1560,36 @@ assignable on users. This is the path the Add form hits for :users."
         (is-false (member "deployer" roles :test 'equal)))
       (be-delete :users `((:users :name :eq ,user)) "admin"))))
 
+(test fr11-palette-hides-admin-from-non-admin
+  "Non-admin :users roles palette omits admin too (FR-11's third
+admin-only role) — the palette side of the item."
+  (let ((user "fr11-palette-admin-user"))
+    (th-make-user user :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (let ((roles (getf (allowed-values :users user) :roles)))
+        (is-false (member "admin" roles :test 'equal)))
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
+
 (test fr11-palette-shows-admin-only-roles-to-admin
   "Admin :users roles palette still lists ai-user / deployer."
   (let ((roles (getf (allowed-values :users "admin") :roles)))
     (is-true (member "ai-user" roles :test 'equal))
     (is-true (member "deployer" roles :test 'equal))))
+
+(test fr11-palette-shows-admin-to-admin-holder
+  "A second admin (holds the admin role, granted via a:add-user-role)
+sees admin, ai-user and deployer in the :users palette — the headline
+fix: admin is a visible checkbox for every admin holder, not just the
+user named admin."
+  (let ((user "fr11-palette-admin2"))
+    (th-make-user user)
+    (a:add-user-role *rbac* user "admin")
+    (unwind-protect
+      (let ((roles (getf (allowed-values :users user) :roles)))
+        (is-true (member "admin" roles :test 'equal))
+        (is-true (member "ai-user" roles :test 'equal))
+        (is-true (member "deployer" roles :test 'equal)))
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
 
 (test fr11-non-admin-cannot-add-admin-only-role
   "FR-11 the hole: non-admin be-update :users with keyword :roles
@@ -1587,6 +1613,54 @@ bypasses every gate and is not coverage."
       (be-delete :users `((:users :name :eq ,actor)) "admin")
       (be-delete :users `((:users :name :eq ,target)) "admin"))))
 
+(test fr11-non-admin-cannot-add-admin-on-update
+  "The escalation regression: be-update validated only the roles the
+actor holds (remove-existing-non-user-roles), so a user-creator could
+add any existing role it lacked. The non-admin's be-update :users
+with keyword :roles including admin signals, and the target still
+lacks admin."
+  (let ((actor "fr11-esc-actor")
+        (target "fr11-esc-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email")
+            actor
+            :roles '("public" "admin")))
+        (is-false (a:user-has-role *rbac* target "admin")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-non-admin-cannot-add-unheld-role-on-update
+  "The holder check on adds closes the escalation for every role,
+not just the admin-only ones: adding role-creator (exists, not held)
+signals; adding todo-users (held) still succeeds."
+  (let ((actor "fr11-unheld-actor")
+        (target "fr11-unheld-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email")
+            actor
+            :roles '("public" "role-creator")))
+        (is-false (a:user-has-role *rbac* target "role-creator"))
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          actor
+          :roles '("public" "todo-users"))
+        (is-true (a:user-has-role *rbac* target "todo-users")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
 (test fr11-belt-data-plist-roles
   "Belt: non-admin be-update :users with :roles *inside* data
 including ai-user signals (the update-join-tables path)."
@@ -1604,6 +1678,67 @@ including ai-user signals (the update-join-tables path)."
       (be-delete :users `((:users :name :eq ,actor)) "admin")
       (be-delete :users `((:users :name :eq ,target)) "admin"))))
 
+(test fr11-belt-echo-actor-role-admin
+  "The belt escalation: the belt used to baseline on the *actor's*
+roles, so a payload echoing one of them (user-creator) slipped admin
+through. The echo shape is the point — the bare (\"public\"
+\"admin\") shape passed either way. Now it signals and the target
+still lacks admin."
+  (let ((actor "fr11-belt-esc-actor")
+        (target "fr11-belt-esc-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email"
+              :roles ("public" "user-creator" "admin"))
+            actor))
+        (is-false (a:user-has-role *rbac* target "admin")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-belt-unheld-role
+  "The belt's holder check: data-plisted roles naming a role the
+actor does not hold (role-creator) signal."
+  (let ((actor "fr11-belt-unheld-actor")
+        (target "fr11-belt-unheld-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email"
+              :roles ("public" "user-creator" "role-creator"))
+            actor))
+        (is-false (a:user-has-role *rbac* target "role-creator")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-belt-echo-actor-role-ai-user
+  "The ai-user shape of the belt hole (an existing gap on master for
+ai-user): an actor holding ai-user sends data-plisted (\"public\"
+\"ai-user\") for a fresh target, and it signals."
+  (let ((actor "fr11-belt-ai-actor")
+        (target "fr11-belt-ai-target"))
+    (th-make-user actor :roles '("ai-user" "user-creator"))
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email"
+              :roles ("public" "ai-user"))
+            actor))
+        (is-false (a:user-has-role *rbac* target "ai-user")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
 (test fr11-create-regression-guard
   "Create regression guard: non-admin be-insert :users with keyword
 :roles including ai-user signals — the existing valid-user-roles
@@ -1618,6 +1753,94 @@ holder check. The test pins it so a future loosening fails loudly."
           :roles '("public" "ai-user")))
       (be-delete :users `((:users :name :eq ,actor)) "admin")
       (be-delete :users '((:users :name :eq "fr11-created")) "admin"))))
+
+(test rbac-add-user-belt-new-user
+  "A direct rbac-add-user call (the be-insert-internal path) as a
+non-admin with :roles including admin signals — the belt treats every
+role as an add for a user that does not exist yet, so the user is
+never created."
+  (let ((actor "fr11-rbac-belt-actor")
+        (target "fr11-rbac-belt-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator"))
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (rbac-add-user :users
+            `(:name ,target :password "password-1" :email "no-email")
+            actor
+            :roles '("admin")))
+        (is-false (a:get-id *rbac* "users" target)))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-nil-baseline-on-create
+  "The nil-baseline hole on create: a non-admin actor that itself holds
+deployer cannot create a user with deployer or admin through the direct
+rbac-add-user / be-insert-internal path. The belt's baseline is the new
+user's memberships — nil, the user does not exist yet — not the actor's,
+so a role the actor happens to hold is still an add. The be-insert-internal
+deployer shape is the sharp one: its own holder check passes (the actor
+holds deployer), so only the FR-11 belt can stop it. A held non-admin-only
+role (user-creator) must still be grantable, so the fix does not
+over-block."
+  (let ((actor "fr11-nil-create-actor")
+        (target "fr11-nil-create-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator" "deployer"))
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (rbac-add-user :users
+            `(:name ,target :password "password-1" :email "no-email")
+            actor
+            :roles '("public" "deployer")))
+        (is-false (a:get-id *rbac* "users" target))
+        (signals validation-error
+          (be-insert-internal :users
+            `(:name ,target :password "password-1" :email "no-email")
+            actor
+            :roles '("public" "deployer")))
+        (is-false (a:get-id *rbac* "users" target))
+        (signals validation-error
+          (rbac-add-user :users
+            `(:name ,target :password "password-1" :email "no-email")
+            actor
+            :roles '("public" "admin")))
+        (is-false (a:get-id *rbac* "users" target))
+        (rbac-add-user :users
+          `(:name ,target :password "password-1" :email "no-email")
+          actor
+          :roles '("public" "user-creator"))
+        (is-true (a:user-has-role *rbac* target "user-creator")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-nil-baseline-on-update
+  "The nil-baseline hole on the be-update data-plist belt: a non-admin
+actor that holds deployer cannot add deployer to a target user who
+currently has no roles. The belt passes the target's memberships as the
+baseline; nil must mean every submitted role is an add, not fall back
+to the actor's own roles (which contain deployer, so the grant would
+slip through). The target is built with raw a:add-user plus
+a:remove-user-role because every be-insert-created user holds base
+roles."
+  (let ((actor "fr11-nil-update-actor")
+        (target "fr11-nil-update-target"))
+    (th-make-user actor :roles '("todo-users" "user-creator" "deployer"))
+    (a:add-user *rbac* target "no-email" "password-1")
+    (dolist (r (a:list-user-role-names *rbac* target))
+      (a:remove-user-role *rbac* target r))
+    (unwind-protect
+      (progn
+        (is-false (a:list-user-role-names *rbac* target))
+        (signals validation-error
+          (be-update :users
+            `((:users :name :eq ,target))
+            `(:name ,target :password nil :email "no-email"
+              :roles ("public" "deployer"))
+            actor))
+        (is-false (a:user-has-role *rbac* target "deployer")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
 
 (test fr11-admin-can-add-and-strip
   "Admin be-update :users adding ai-user succeeds, then stripping it
@@ -1638,6 +1861,65 @@ also succeeds."
           "admin"
           :roles '("public"))
         (is-false (a:user-has-role *rbac* target "ai-user")))
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-admin-holder-can-grant-admin-and-admin-only
+  "A second admin (holds the admin role) grants exactly like the user
+named admin: be-insert a user that already holds admin, and
+be-update another user to add then strip admin, ai-user and deployer."
+  (let ((actor "fr11-admin2")
+        (created "fr11-admin2-created")
+        (target "fr11-admin2-target"))
+    (th-make-user actor)
+    (a:add-user-role *rbac* actor "admin")
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        ;; Create path: a user born holding admin.
+        (be-insert :users
+          `(:name ,created :password "password-1" :email "no-email")
+          actor
+          :roles '("public" "admin"))
+        (is-true (a:user-has-role *rbac* created "admin"))
+        ;; Update path: add then strip every admin-only role.
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          actor
+          :roles '("public" "admin" "ai-user" "deployer"))
+        (is-true (a:user-has-role *rbac* target "admin"))
+        (is-true (a:user-has-role *rbac* target "ai-user"))
+        (is-true (a:user-has-role *rbac* target "deployer"))
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          actor
+          :roles '("public"))
+        (is-false (a:user-has-role *rbac* target "admin"))
+        (is-false (a:user-has-role *rbac* target "ai-user"))
+        (is-false (a:user-has-role *rbac* target "deployer")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,created)) "admin")
+      (be-delete :users `((:users :name :eq ,target)) "admin"))))
+
+(test fr11-admin-holder-can-grant-unheld-role
+  "The holder check exempts admins: a second admin who does not hold
+role-creator can still add it."
+  (let ((actor "fr11-admin3")
+        (target "fr11-admin3-target"))
+    (th-make-user actor)
+    (a:add-user-role *rbac* actor "admin")
+    (th-make-user target)
+    (unwind-protect
+      (progn
+        (is-false (a:user-has-role *rbac* actor "role-creator"))
+        (be-update :users
+          `((:users :name :eq ,target))
+          `(:name ,target :password nil :email "no-email")
+          actor
+          :roles '("public" "role-creator"))
+        (is-true (a:user-has-role *rbac* target "role-creator")))
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
       (be-delete :users `((:users :name :eq ,target)) "admin"))))
 
 (test fr11-non-admin-can-strip-stale-grant
@@ -1877,6 +2159,84 @@ round-trip covers guest); here admin changes admin's own email."
       '(:name "admin" :password nil :email "no-email")
       "admin")
     (is (equal id (a:get-id *rbac* "users" "admin")))))
+
+;; Built-in admin invariant: the user named admin always keeps the
+;; admin role and cannot be deleted, by any actor including itself.
+;; With a permanent root admin, second admins may demote themselves
+;; or each other freely — no last-admin counting.
+
+(test admin-keeps-admin-role
+  "Admin stripping its own admin role via keyword :roles signals,
+and admin still holds admin. Destructive on failure, so the cleanup
+re-grants the role."
+  (unwind-protect
+    (progn
+      (signals validation-error
+        (be-update :users
+          '((:users :name :eq "admin"))
+          '(:name "admin" :password nil :email "no-email")
+          "admin"
+          :roles '("public")))
+      (is-true (a:user-has-role *rbac* "admin" "admin")))
+    (unless (a:user-has-role *rbac* "admin" "admin")
+      (a:add-user-role *rbac* "admin" "admin"))))
+
+(test admin-keeps-admin-role-data-plist
+  "The same strip sent as data-plisted :roles (the update-join-tables
+path) signals too, and admin still holds admin."
+  (unwind-protect
+    (progn
+      (signals validation-error
+        (be-update :users
+          '((:users :name :eq "admin"))
+          '(:name "admin" :password nil :email "no-email"
+            :roles ("public"))
+          "admin"))
+      (is-true (a:user-has-role *rbac* "admin" "admin")))
+    (unless (a:user-has-role *rbac* "admin" "admin")
+      (a:add-user-role *rbac* "admin" "admin"))))
+
+(test second-admin-can-demote-self
+  "A second admin removing its own admin role succeeds — only the
+user named admin is pinned."
+  (let ((user "demote-self-admin"))
+    (th-make-user user)
+    (a:add-user-role *rbac* user "admin")
+    (unwind-protect
+      (progn
+        (be-update :users
+          `((:users :name :eq ,user))
+          `(:name ,user :password nil :email "no-email")
+          user
+          :roles '("public"))
+        (is-false (a:user-has-role *rbac* user "admin")))
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
+
+(test fr12-second-admin-cannot-edit-admin-record
+  "FR-12 stays name-based: a second admin's be-update :users on the
+admin record signals (the settled decision — a second admin is not
+the user named admin for record protection)."
+  (let ((user "fr12-second-admin"))
+    (th-make-user user)
+    (a:add-user-role *rbac* user "admin")
+    (unwind-protect
+      (progn
+        (signals validation-error
+          (be-update :users
+            '((:users :name :eq "admin"))
+            '(:name "admin" :password nil :email "no-email")
+            user))
+        (is-true (a:get-id *rbac* "users" "admin")))
+      (be-delete :users `((:users :name :eq ,user)) "admin"))))
+
+(test admin-cannot-be-deleted
+  "Admin deleting itself signals, and admin still exists. The gate
+fires in be-delete before any deletion runs, so the assertion is
+safe; this test runs last in the block because a failure here cannot
+be repaired inside the suite."
+  (signals validation-error
+    (be-delete :users '((:users :name :eq "admin")) "admin"))
+  (is-true (a:get-id *rbac* "users" "admin")))
 
 (test allowed-values-for-field-excludes-other-users-exclusives
   "The :users :roles palette never contains another user's

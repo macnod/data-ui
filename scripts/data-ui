@@ -23,6 +23,32 @@ TIMEOUT=60
 SLEEP_INTERVAL=1
 SLEEP_MAX=10
 
+# SBCL heap for every `ros run` below, in GB: DATA_UI_SBCL_HEAP_GB=4
+# gives --dynamic-space-size 4GB. Default 2 GB (the dev REPL hit the
+# 1 GB SBCL default hard enough to kill the image; 2 is the sane
+# everywhere default, and the four demos pin themselves back down via
+# profile.env). "0" = SBCL's own default (1 GB dynamic space for
+# sbcl-bin 2.5.10 on this host — verified via (sb-ext:dynamic-space-
+# size)); the sentinel keeps an override path to the bare default
+# without making every launcher understand "unset". SBCL validates the
+# value (bogus input fails startup, not silently). Profiles inherit
+# this via profile.env (ops/profile-run.sh) and containers via the k8s
+# manifest env. The flag rides before the Lisp options
+# (--disable-debugger, --eval): a C runtime option after --eval is "in
+# the middle of Lisp options" and SBCL dies before the REPL. A
+# FUNCTION, refreshed per site, not a frozen top-level array:
+# load_profile imports profile.env long after this point, and named
+# REPLs / stg snapshot paths must see the profile's value.
+DATA_UI_SBCL_HEAP_GB="${DATA_UI_SBCL_HEAP_GB:-2}"
+function refresh_sbcl_heap_args {
+    if [[ "$DATA_UI_SBCL_HEAP_GB" != "0" ]]; then
+        SBCL_HEAP_ARGS=(--dynamic-space-size "${DATA_UI_SBCL_HEAP_GB}GB")
+    else
+        SBCL_HEAP_ARGS=()
+    fi
+}
+refresh_sbcl_heap_args
+
 # D15: one env-overridable state root for all growing host state
 # (profiles, snapshots, deploy). /data as a host convention is product
 # precedent (apply_manifests hardcodes /data/k8s/data-ui/...); the
@@ -266,6 +292,7 @@ traffic
 snapshot save <name> <src-address>
          restore <name> <dst-address>
          list
+         copy <src-name> <dst-name> [<model>]
          drop <name>
          migrate
     Save or restore a snapshot between explicit environments. Every
@@ -294,9 +321,17 @@ snapshot save <name> <src-address>
     files/ top-level entry, so tars are portable across environments
     and old tars restore retroactively. Restore swaps it back in
     after the database.
+    copy duplicates a snapshot triple under a new name (the source is
+    untouched; an existing destination needs FORCE=1). With <model>,
+    the copy's .meta gets model=<model> (plus copied-from and
+    copied-model-from), so it restores into an instance whose model
+    name differs, e.g. a renamed deploy: copy stg-todos-golden
+    hannah-todos-seed todos-hannah, then restore hannah-todos-seed
+    prd:todos-hannah.
     migrate is a one-time maintenance verb (idempotent): renames
     legacy profile-keyed slots to stg-<p>-* and stubs their .meta.
-    FORCE=1 skips confirmations and is the only escape for
+    FORCE=1 skips confirmations, lets 'copy' overwrite an existing
+    destination, and is the only escape for
     'save' + unreachable dev: /api/info; it never overrides a
     model mismatch, and restore-unreachable skips need no FORCE.
 
@@ -1665,7 +1700,10 @@ function start_repl {
     if [[ -n "${MODEL_NAME:-}" ]]; then
         evals+=(--eval "(set-model \"${MODEL_NAME}\")")
     fi
-    DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" ros run -- "${evals[@]}"
+    # After load_profile: a named REPL may have imported
+    # DATA_UI_SBCL_HEAP_GB from profile.env since script start.
+    refresh_sbcl_heap_args
+    DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" "${evals[@]}"
 }
 
 function run_tests {
@@ -1683,7 +1721,7 @@ function run_tests {
     mkdir -p "$DOCUMENT_ROOT" "$FS_TEMP_DIRECTORY"
     build_load_contract_evals
     DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" \
-        ros run -- --disable-debugger \
+        ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" --disable-debugger \
             "${LOAD_CONTRACT_EVALS[@]}" \
             --eval '(in-package :data-ui)' \
             --eval '(init)' \
@@ -1701,7 +1739,7 @@ function run_tests {
 }
 
 function generate_readme {
-    ros run -- --disable-debugger \
+    ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" --disable-debugger \
         --eval '(asdf:load-system :rbac :force t)' \
         --load "$TEST_FILE" \
         --eval "(rbac::generate-readme)" --quit
@@ -1713,7 +1751,7 @@ function generate_readme {
 }
 
 function compile {
-    ros run -- --disable-debugger \
+    ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" --disable-debugger \
         --eval "(push (uiop:getcwd) asdf:*central-registry*)" \
         --eval "(ql:register-local-projects)" \
         --eval "(asdf:load-system :rbac :force t)" \
@@ -1802,7 +1840,7 @@ function get_model_field {
     # it that way.
     local model_path="${DATA_UI_MODEL_PATH:-models/${MODEL_NAME}.lisp}"
     DATA_UI_MODEL_PATH="$model_path" \
-        ros run -- --disable-debugger \
+        ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" --disable-debugger \
         --load "lisp/deployment.lisp" \
         --eval '(in-package :deployment)' \
         --eval '(let* ((path (uiop:getenv "DATA_UI_MODEL_PATH"))
@@ -1955,7 +1993,7 @@ function compile_model {
     build_load_contract_evals
     DATA_UI_MODEL_PATH="$model_path" \
     DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" \
-        ros run -- --disable-debugger \
+        ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" --disable-debugger \
             "${LOAD_CONTRACT_EVALS[@]}" \
             --eval '(in-package :data-ui)' \
             --eval '(init-database)' \
@@ -3842,6 +3880,102 @@ function snapshot_drop {
     echo "Deleted snapshot '${name}'"
 }
 
+function snapshot_copy {
+    # Copies a snapshot triple to a new name in the same pool: <src>
+    # <dst> [<model>]. The source is never modified. With <model>, the
+    # copy's .meta is retargeted (model=<model>, copied-model-from=<old
+    # model>) so it restores into an instance whose address model
+    # differs from the source's — e.g. stg-todos-golden into the
+    # renamed deploy prd:todos-hannah (prd addresses assert the
+    # instance name as the model, and restore refuses a mismatch).
+    # Every other .meta key (source-address, timestamp, model-version)
+    # rides along unchanged; copied-from=<src> records the hop. A
+    # meta-less source with no <model> stays meta-less (provenance
+    # still unknown; list keeps saying so). Staged to temp names and
+    # moved onto the slot names only when the whole triple staged, as
+    # save does. An existing <dst> is refused unless FORCE=1, and a
+    # forced copy drops a stale files side the source lacks.
+    local src="$1" dst="$2" model="${3:-}"
+    local sdump sfiles smeta ddump dfiles dmeta
+    local dump_tmp meta_tmp files_tmp old_model
+    valid_snapshot_name "$src"
+    valid_snapshot_name "$dst"
+    if [[ -n "$model" ]]; then
+        [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] \
+            || die "Invalid model name '${model}' (must match ^[A-Za-z0-9][A-Za-z0-9_-]*$)"
+    fi
+    [[ "$src" != "$dst" ]] || die "snapshot copy: source and destination are the same name '${src}'."
+    sdump="${SNAPSHOT_DIR}/${src}.dump"
+    sfiles="$(snapshot_files_path "$src")"
+    smeta="$(meta_path "$src")"
+    ddump="${SNAPSHOT_DIR}/${dst}.dump"
+    dfiles="$(snapshot_files_path "$dst")"
+    dmeta="$(meta_path "$dst")"
+    [[ -f "$sdump" ]] || die "snapshot '${src}' not found at ${sdump}."
+    if [[ -e "$ddump" || -e "$dfiles" || -e "$dmeta" ]] && [[ -z "$FORCE" ]]; then
+        die "snapshot '${dst}' already exists; FORCE=1 overwrites it."
+    fi
+    dump_tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+    meta_tmp=""
+    files_tmp=""
+    if ! cp "$sdump" "$dump_tmp"; then
+        rm -f "$dump_tmp"
+        die "could not copy ${sdump}; snapshot '${dst}' not written."
+    fi
+    if [[ -f "$sfiles" ]]; then
+        files_tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+        if ! cp "$sfiles" "$files_tmp"; then
+            rm -f "$dump_tmp" "$files_tmp"
+            die "could not copy ${sfiles}; snapshot '${dst}' not written."
+        fi
+    fi
+    if [[ -f "$smeta" || -n "$model" ]]; then
+        meta_tmp=$(mktemp "${SNAPSHOT_DIR}/.tmp-XXXXXX")
+        old_model="$(meta_read "$src" model)"
+        if ! {
+                if [[ -f "$smeta" ]]; then
+                    # Parsed, never sourced; earlier copy keys are
+                    # replaced, not stacked.
+                    grep -v -E '^(copied-from|copied-model-from)=' "$smeta" \
+                        | { if [[ -n "$model" ]]; then grep -v '^model='; else cat; fi; } \
+                        || true
+                fi
+                if [[ -n "$model" ]]; then
+                    echo "model=${model}"
+                fi
+                echo "copied-from=${src}"
+                if [[ -n "$model" && -n "$old_model" \
+                      && "$model" != "$old_model" ]]; then
+                    echo "copied-model-from=${old_model}"
+                fi
+             } > "$meta_tmp"; then
+            rm -f "$dump_tmp" "$files_tmp" "$meta_tmp"
+            die "could not write .meta; snapshot '${dst}' not written."
+        fi
+    fi
+    mv "$dump_tmp" "$ddump"
+    if [[ -n "$files_tmp" ]]; then
+        mv "$files_tmp" "$dfiles"
+    else
+        rm -f "$dfiles"
+    fi
+    if [[ -n "$meta_tmp" ]]; then
+        mv "$meta_tmp" "$dmeta"
+    else
+        rm -f "$dmeta"
+    fi
+    echo "Copied snapshot '${src}' → '${dst}':"
+    echo "  ${ddump}"
+    if [[ -n "$files_tmp" ]]; then
+        echo "  ${dfiles}"
+    fi
+    if [[ -n "$meta_tmp" ]]; then
+        echo "  ${dmeta} (model: $(meta_read "$dst" model))"
+    else
+        echo "  (no .meta: source '${src}' has none)"
+    fi
+}
+
 function snapshot_migrate {
     # One-time migration to address-keyed slots (stays in the tree as
     # a maintenance verb; idempotent, safe to re-run by hand if the
@@ -4775,7 +4909,7 @@ function staging_update_child {
     local warm_start=$SECONDS
     build_load_contract_evals
     DATA_UI_EXPECTED_CHECKOUT="$LOAD_CONTRACT_CHECKOUT" \
-        ros run -- --disable-debugger \
+        ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" --disable-debugger \
             "${LOAD_CONTRACT_EVALS[@]}" \
             --eval '(format t "pre-warm: :data-ui loaded~%")' \
             --quit \
@@ -5531,6 +5665,13 @@ case "$ACTION" in
                     || die "snapshot drop takes exactly one argument (the snapshot name)."
                 snapshot_drop "$3"
                 ;;
+            copy)
+                [[ -n "${3:-}" && -n "${4:-}" ]] \
+                    || die "snapshot copy needs a source and a destination name: '$SCRIPT_NAME snapshot copy <src-name> <dst-name> [<model>]' (e.g. stg-todos-golden hannah-todos-seed todos-hannah)."
+                [[ -z "${6:-}" ]] \
+                    || die "snapshot copy takes two or three arguments (source name, destination name, optional model)."
+                snapshot_copy "$3" "$4" "${5:-}"
+                ;;
             migrate)
                 [[ -z "${3:-}" ]] \
                     || die "snapshot migrate takes no arguments (one-time maintenance verb; idempotent)."
@@ -5538,13 +5679,16 @@ case "$ACTION" in
                 ;;
             *)
                 cat >&2 <<SNAPUSAGE
-Usage: $SCRIPT_NAME snapshot {save|restore|list|drop|migrate} ...
+Usage: $SCRIPT_NAME snapshot {save|restore|list|copy|drop|migrate} ...
 
 Save or restore a snapshot between explicit environments.
 
     save <name> <src-address>      e.g. books-1 dev:books
     restore <name> <dst-address>   e.g. books-1 stg:books
     list                           shared pool; names + provenance + timestamp
+    copy <src> <dst> [<model>]     copy the triple; <model> retargets .meta
+                                   (e.g. stg-todos-golden hannah-todos-seed
+                                   todos-hannah, for prd:todos-hannah)
     drop <name>                    removes .dump + .files.tar.gz + .meta
     migrate                        one-time: rename legacy slots,
                                    stub .meta (idempotent)
@@ -5558,8 +5702,9 @@ verb scales the app to 0 for a restore, see docs/snapshots.md).
 The one-arg muscle-memory forms are hard errors; the message
 names the legal shapes.
 
-FORCE=1 meanings: skip the delete/profile confirmations, and the
-one escape on 'save' when dev:'s /api/info is unreachable. It
+FORCE=1 meanings: skip the delete/profile confirmations, let
+'copy' overwrite an existing destination, and the one escape on
+'save' when dev:'s /api/info is unreachable. It
 NEVER overrides a model mismatch, and the restore-unreachable skip
 needs no FORCE at all.
 SNAPUSAGE

@@ -1973,6 +1973,70 @@ test_routing_preserved_and_local_defaults() {
     (( st != 0 )) || fail "save stg: without a profile must fail inside staging"
 }
 
+test_snapshot_copy_triple_and_retarget() {
+    # snapshot copy: pool-only, no database. Covers plain copy,
+    # model retarget, missing source, existing destination, FORCE=1,
+    # invalid names, and a meta-less source; the source is never
+    # modified.
+    local P="$H/state/snapshots" before
+    mkdir -p "$P"
+    echo dump-golden > "$P/stg-todos-golden.dump"
+    echo tar-golden > "$P/stg-todos-golden.files.tar.gz"
+    printf 'model=todos\nsource-address=stg:todos\ntimestamp=2026-11-01T04:10:00Z\nmodel-version=3\n' \
+        > "$P/stg-todos-golden.meta"
+    before=$(cd "$P" && sha256sum stg-todos-golden.*)
+    # plain copy: triple duplicated, model kept, copied-from added
+    expect_ok run_cli snapshot copy stg-todos-golden plain-copy
+    assert_eq "$(cat "$P/plain-copy.dump")" "dump-golden"
+    assert_eq "$(cat "$P/plain-copy.files.tar.gz")" "tar-golden"
+    assert_eq "$(cat "$P/plain-copy.meta")" "$(printf 'model=todos\nsource-address=stg:todos\ntimestamp=2026-11-01T04:10:00Z\nmodel-version=3\ncopied-from=stg-todos-golden')"
+    # retarget: model replaced, other keys kept, provenance recorded
+    expect_ok run_cli snapshot copy stg-todos-golden hannah-todos-seed todos-hannah
+    assert_eq "$(cat "$P/hannah-todos-seed.meta")" "$(printf 'source-address=stg:todos\ntimestamp=2026-11-01T04:10:00Z\nmodel-version=3\nmodel=todos-hannah\ncopied-from=stg-todos-golden\ncopied-model-from=todos')"
+    # a copy of a copy replaces the copy keys instead of stacking them
+    expect_ok run_cli snapshot copy hannah-todos-seed second-hop todos2
+    assert_eq "$(grep -c '^copied-from=' "$P/second-hop.meta")" "1"
+    assert_contains "$(cat "$P/second-hop.meta")" "copied-from=hannah-todos-seed"
+    assert_contains "$(cat "$P/second-hop.meta")" "copied-model-from=todos-hannah"
+    # missing source
+    expect_die "snapshot 'nope' not found" run_cli snapshot copy nope x1
+    assert_no_file "$P/x1.dump"
+    # existing destination refused, untouched
+    echo old > "$P/taken.dump"
+    expect_die "already exists; FORCE=1" run_cli snapshot copy stg-todos-golden taken
+    assert_eq "$(cat "$P/taken.dump")" "old"
+    # a stray .meta alone also counts as existing
+    echo model=x > "$P/half.meta"
+    expect_die "already exists" run_cli snapshot copy stg-todos-golden half
+    # FORCE=1 overwrites
+    expect_ok env FORCE=1 run_cli snapshot copy stg-todos-golden taken
+    assert_eq "$(cat "$P/taken.dump")" "dump-golden"
+    assert_file "$P/taken.meta"
+    # invalid names (both slots, and the model)
+    expect_die "Invalid snapshot name 'stg:todos'" run_cli snapshot copy stg:todos x2
+    expect_die "Invalid snapshot name '-bad'" run_cli snapshot copy stg-todos-golden -bad
+    expect_die "Invalid model name 'a:b'" run_cli snapshot copy stg-todos-golden x3 a:b
+    expect_die "same name" run_cli snapshot copy stg-todos-golden stg-todos-golden
+    expect_die "needs a source and a destination" run_cli snapshot copy stg-todos-golden
+    expect_die "two or three arguments" run_cli snapshot copy a b c d
+    assert_no_file "$P/x2.dump"; assert_no_file "$P/x3.dump"
+    # meta-less source: plain copy stays meta-less; retarget stubs one
+    echo dump-bare > "$P/bare.dump"
+    expect_ok run_cli snapshot copy bare bare-copy
+    assert_file "$P/bare-copy.dump"
+    assert_no_file "$P/bare-copy.meta"
+    assert_no_file "$P/bare-copy.files.tar.gz"
+    expect_ok run_cli snapshot copy bare bare-retarget todos-hannah
+    assert_eq "$(cat "$P/bare-retarget.meta")" "$(printf 'model=todos-hannah\ncopied-from=bare')"
+    # FORCE over a destination with a tar the source lacks drops it
+    expect_ok env FORCE=1 run_cli snapshot copy bare taken
+    assert_no_file "$P/taken.files.tar.gz"
+    assert_no_file "$P/taken.meta"
+    # no temp files left behind; source untouched
+    assert_eq "$(ls -A "$P" | grep -c '^\.tmp-')" "0"
+    assert_eq "$(cd "$P" && sha256sum stg-todos-golden.*)" "$before"
+}
+
 test_routing_inner_arms_enter_staging_first() {
     make_staging_clone
     # a model present ONLY in staging resolves for routed profile create
@@ -2849,6 +2913,7 @@ main() {
 
     t routing_preserved_and_local_defaults
     t routing_inner_arms_enter_staging_first
+    t snapshot_copy_triple_and_retarget
     t routing_named_repl_db_psql_run_no_npm
     t routing_active_profile_repl_refusal_mutates_nothing
     t routing_wrong_hosts_fail_before_mutation

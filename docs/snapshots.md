@@ -2,7 +2,7 @@
 
 A snapshot captures a Data UI environment — its database and uploaded files — as a portable artifact in one shared pool (`/data/data-ui/snapshots/`, the `DATA_UI_STATE` root). Snapshots move state between environments: audition dev data in staging, promote auditioned data to golden, or bring staging data back into dev.
 
-All commands run from the repo root via `scripts/data-ui snapshot …`. For the command reference see [cli.md](cli.md); for the surrounding deployment machinery see [deployment.md](deployment.md).
+All commands run from the repo root via `scripts/data-ui snapshot …`. For the command reference see [cli.md](cli.md); for the surrounding deployment machinery see [deployment.md](deployment.md); for changing a model whose data must survive a snapshot round trip (the restore-then-reload ordering, `heal-model` vs restart, hand SQL) see [migration.md](migration.md).
 
 ## The grammar
 
@@ -10,6 +10,7 @@ All commands run from the repo root via `scripts/data-ui snapshot …`. For the 
 scripts/data-ui snapshot save    <name> <src-address>
 scripts/data-ui snapshot restore <name> <dst-address>
 scripts/data-ui snapshot list
+scripts/data-ui snapshot copy    <src-name> <dst-name> [<model>]
 scripts/data-ui snapshot drop    <name>
 scripts/data-ui snapshot migrate        # one-time maintenance
 ```
@@ -257,7 +258,22 @@ Names are otherwise plain, and the pool is flat. A hand-run `save` naming a slot
 - `save` + unreachable `prd:` skips the confirm quietly (identity is the namespace + Secret, already checked);
 - `restore` + unreachable (either qualifier) skips the confirm — the app-down restore is the natural shape, and the nightly reset depends on this branch. Under `prd:` the confirm is skipped outright (see [Production](#production)).
 
-`FORCE=1` buys exactly one thing — the unreachable-dev save escape — plus the usual confirmation skips. It never overrides a model mismatch.
+`FORCE=1` buys exactly one thing here — the unreachable-dev save escape — plus the usual confirmation skips (and, outside this policy, letting `copy` overwrite an existing destination). It never overrides a model mismatch.
+
+### Copying a snapshot
+
+`snapshot copy <src-name> <dst-name> [<model>]` duplicates a snapshot under a new name in the pool: `<src>.dump`, `<src>.files.tar.gz` (when present), and `<src>.meta`. Both names go through the snapshot-name check, the source must have a `.dump`, and the source is never modified. A destination that already exists (any of its three files) is refused unless `FORCE=1`; a forced copy replaces the whole destination triple, dropping a files tar or `.meta` the source lacks. The copy stages to temp names and moves onto the destination names only when everything staged, like `save`.
+
+The copy's `.meta` keeps every source key and adds `copied-from=<src>`. With `<model>` (same charset as names), the `model` key is replaced and `copied-model-from=<old model>` records what it was; `source-address`, `timestamp`, and `model-version` stay as they were, so the provenance still points at where the data came from. A source without a `.meta` gets a stub (`model` plus `copied-from`) when `<model>` is given, and stays `.meta`-less otherwise.
+
+The use case is a renamed instance. A `prd:` address asserts the instance name as the model, and restore refuses a model mismatch, so a `todos` snapshot cannot restore straight into a test deploy named `todos-hannah`. The schema is the same (only the name differs), so retarget a copy and restore that:
+
+```sh
+scripts/data-ui snapshot copy stg-todos-golden hannah-todos-seed todos-hannah
+scripts/data-ui snapshot restore hannah-todos-seed prd:todos-hannah
+```
+
+Retargeting is a deliberate assertion that the data fits the named model; restore still checks the archive and re-stamps the destination's admin password as usual. Drop the copy when the test instance is gone.
 
 ### One-time migration
 

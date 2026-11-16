@@ -804,7 +804,11 @@ all the right fields when we perform inserts or updates."
 
 (defun user-defined-type-roles ()
   ":private: Returns a deduplicated list of all roles associated with
-user-defined types (non-:built-in), excluding \"admin\"."
+user-defined types (non-:built-in), minus \"admin\": this is the Add
+form's pre-checked :roles set for :users (the :type-roles pre-fill),
+and pre-checking \"admin\" would make every new user an admin by
+default. The palette (allowed-values-for-field) decides which roles
+can be chosen."
   (remove "admin"
     (remove-duplicates
       (loop
@@ -1229,23 +1233,51 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
 ;; BEGIN Database helper functions
 ;;
 
-(defun admin-only-user-roles ()
-  '("ai-user" "deployer"))
+(defun admin-user-p (user)
+  ":private: T when USER holds the admin role. Donnie, 2026-11-13:
+a holder of admin grants roles exactly like the user named admin
+(FR-11 included). Not for FR-12 record protection, which stays
+name-based."
+  (and user
+    (a:user-has-role *rbac* user *admin-role*)
+    t))
 
-(defun valid-admin-only-user-roles (user new-roles
-                                     &optional existing-roles)
-  ":private: FR-11 gate. Signals a validation error when a non-admin actor is
-*adding* an admin-only role (ai-user / deployer) to a user's membership.
-Stripping a stale grant is allowed (demos cannot lock a VIP in). Keyword :roles
-on a non-:users be-insert / be-update is resource roles and must not call this."
-  (unless (equal user "admin")
-    (let* ((existing (or existing-roles
+(defun admin-only-user-roles ()
+  '("admin" "ai-user" "deployer"))
+
+(defun valid-admin-only-user-roles
+    (user new-roles &optional (existing-roles nil existing-supplied-p))
+  ":private: FR-11 gate. Signals a validation error when a non-admin actor
+(one not holding the admin role) is *adding* an admin-only role (admin /
+ai-user / deployer) to a user's membership. Stripping a stale grant is
+allowed (demos cannot lock a VIP in). Keyword :roles on a non-:users
+be-insert / be-update is resource roles and must not call this.
+EXISTING-ROLES is the target's current memberships — the baseline the
+adds are computed against — and NIL is meaningful: a user that does not
+exist yet, or holds no roles, makes every submitted role an add. An
+explicitly empty baseline must not fall back to the actor's own roles
+(or an actor holding an admin-only role could hand it out); only an
+unsupplied EXISTING-ROLES defaults to USER's own memberships."
+  (unless (admin-user-p user)
+    (let* ((existing (if existing-supplied-p
+                       existing-roles
                        (a:list-user-role-names *rbac* user)))
            (adds (set-difference new-roles existing :test 'equal)))
       (loop for role in (admin-only-user-roles)
         when (member role adds :test 'equal)
         do (report-ve "valid-admin-only-user-roles"
-             "Only admin may assign role ~s to a user." ~role)))))
+             "Only an admin may assign role ~s to a user." ~role)))))
+
+(defun valid-builtin-admin-keeps-role (user-name new-roles)
+  ":private: The built-in admin user always keeps the admin role: no
+actor, the user named admin included, may submit a membership list for
+that user that drops it. Second admins may still demote themselves or
+each other — only the user named admin is pinned. Shared by update-roles
+(the keyword :roles path) and the be-update data-plist belt."
+  (when (and (equal user-name a:*admin*)
+             (not (member *admin-role* new-roles :test 'equal)))
+    (report-ve "valid-builtin-admin-keeps-role"
+      "User ~s must keep the ~s role." ~user-name ~*admin-role*)))
 
 (defun protected-users ()
   ":private: FR-12. Extra protected user names from the PROTECTED_USERS
@@ -1310,12 +1342,21 @@ the update fails."
               (existing-roles (a:list-user-role-names *rbac* user-name))
               (to-add (set-difference roles existing-roles :test 'equal))
               (to-remove (set-difference existing-roles roles :test 'equal)))
-        ;; FR-11 gate: the single must-gate. The Edit form's keyword
-        ;; :roles path lands here (App.tsx sends roles top-level →
-        ;; REST → be-update &key roles → this branch). be-update has
-        ;; already loosened the holder check with
-        ;; remove-existing-non-user-roles; this is the re-tightening.
+        ;; FR-11 gate: admin-only roles (admin / ai-user / deployer)
+        ;; may only be *added* by an admin-role holder. The Edit
+        ;; form's keyword :roles path lands here (App.tsx sends
+        ;; roles top-level → REST → be-update &key roles → this
+        ;; branch); be-update has already loosened the holder check
+        ;; with remove-existing-non-user-roles. Stripping a stale
+        ;; grant stays allowed.
         (valid-admin-only-user-roles user roles existing-roles)
+        ;; Holder check on adds: be-update validated only the roles
+        ;; the actor holds (remove-existing-non-user-roles), so a
+        ;; user-creator could add any role. Removals stay free.
+        (valid-user-roles user to-add)
+        ;; Built-in admin invariant (the be-update belt enforces the
+        ;; same on the data-plist path).
+        (valid-builtin-admin-keeps-role user-name roles)
         (loop for role in to-add
           do (a:add-user-role *rbac* user-name role))
         (loop for role in to-remove
@@ -1962,32 +2003,33 @@ palette must not fail the parent list."
               (equal field-key :roles))
           ;; Users can never be assigned an exclusive role directly,
           ;; so no :exclusive-suffixed role belongs on this palette.
-          ;; FR-11: ai-user / deployer are admin-only assignments —
-          ;; hide them from non-admins (the visible path; the write
-          ;; gate lives in update-roles).
-          (remove-if
-            (lambda (r)
-              (or (member r '("admin" "settings" "logged-in")
-                          :test 'equal)
-                  (and (not (equal user "admin"))
-                    (member r (admin-only-user-roles) :test 'equal))
-                  (exclusive-role-p r)))
-            values)
+          ;; FR-11: admin, ai-user and deployer are admin-only
+          ;; assignments, hidden from non-admins (the visible path;
+          ;; the write gate lives in update-roles).
+          (let ((admin (admin-user-p user)))
+            (remove-if
+              (lambda (r)
+                (or (member r '("settings" "logged-in") :test 'equal)
+                    (and (not admin)
+                      (member r (admin-only-user-roles) :test 'equal))
+                    (exclusive-role-p r)))
+              values))
           values)))))
 
 (defun selectable-roles (type-key user)
   ":private: Returns the list of roles the current USER can assign on
-TYPE-KEY. For admin, returns all roles minus system exclusives: admin,
-admin:exclusive, guest:exclusive, settings, the auto-granted logged-in,
-and the viewer's own exclusive. For other users, returns the user's own
-roles plus \"public\" plus the type's :type-roles plus every other
-user's shareable exclusive role (point-to-point sharing)."
+TYPE-KEY. For an admin-role holder, returns all roles minus system
+exclusives: admin, admin:exclusive, guest:exclusive, settings, the
+auto-granted logged-in, and the viewer's own exclusive. For other
+users, returns the user's own roles plus \"public\" plus the type's
+:type-roles plus every other user's shareable exclusive role
+(point-to-point sharing)."
   (let ((system-exclusives
           (list* "admin" "admin:exclusive" "guest:exclusive" "settings"
                  "logged-in"           ; auto-granted, not assignable
                  (when user
                    (list (a:exclusive-role-for user))))))
-    (if (equal user "admin")
+    (if (admin-user-p user)
       (remove-if
         (lambda (r) (member r system-exclusives :test 'equal))
         (a:list-role-names *rbac*))
@@ -2442,13 +2484,13 @@ assigned by any user for point-to-point sharing. Excludes
 
 (defun valid-user-roles (user roles)
   ":private: Returns nil (success) if every role in ROLES exists and either
-USER is 'admin', USER has every role in ROLES, or the role is another
-user's exclusive role (for point-to-point sharing). Otherwise, raises a
-validation error."
+USER holds the admin role, USER has every role in ROLES, or the role is
+another user's exclusive role (for point-to-point sharing). Otherwise,
+raises a validation error."
   (valid-existing-user user)
   (valid-existing-roles roles)
   (let* ((user-roles (a:list-user-role-names *rbac* user))
-         (non-user-roles (if (equal user "admin")
+         (non-user-roles (if (admin-user-p user)
                            nil
                            (remove-if
                              (lambda (r)
@@ -3915,11 +3957,22 @@ instead)."
           ;; rides update-join-tables (the role-users join) instead of
           ;; the keyword path. The frontend never sends this shape
           ;; (App.tsx destructures roles out of data), but a direct
-          ;; caller could. Bound for effect inside the let*.
+          ;; caller could. The baseline is the *target* user's current
+          ;; memberships, so a payload naming one of the actor's own
+          ;; roles can't slip an unheld or admin-only role through;
+          ;; adds also clear the holder check, and the built-in admin
+          ;; keeps its admin role. Bound for effect inside the let*.
           (roles-belt (when (and (equal type-key :users)
                               (getf data :roles))
-                        (valid-admin-only-user-roles user
-                          (getf data :roles))))
+                        (let* ((existing (a:list-user-role-names *rbac*
+                                         (getf record :name)))
+                               (adds (set-difference (getf data :roles)
+                                       existing :test 'equal)))
+                          (valid-admin-only-user-roles user
+                            (getf data :roles) existing)
+                          (valid-user-roles user adds)
+                          (valid-builtin-admin-keeps-role
+                            (getf record :name) (getf data :roles)))))
           ;; FR-12 gate: system accounts and base roles are
           ;; admin-only to change. Runs immediately after the record
           ;; load — before hooks, before the main update, before
@@ -4020,6 +4073,14 @@ treated as the UUID of the record to be deleted."
     ;; delete (record is loaded as "admin", so :name is always
     ;; present; uuid nil = nothing matched, nothing to protect).
     (valid-protected-record type-key record user)
+    ;; Built-in admin invariant: the user named admin can never be
+    ;; deleted, by any actor including itself (FR-12 above already
+    ;; protects the record from non-admins).
+    (when (and (equal type-key :users)
+               (equal (getf record :name) a:*admin*))
+      (let ((admin-name a:*admin*))
+        (report-ve "be-delete"
+          "User ~s cannot be deleted." ~admin-name)))
     (valid-existing-file-or-directory type-key logical-path)
     (when (and uuid (user-allowed-resource user uuid "delete"))
       (run-lifecycle-hooks pre-delete type-key nil user

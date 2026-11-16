@@ -106,9 +106,12 @@ COPY --from=web-build /web/dist /app/web
 # --disable-debugger: on unhandled error, print a backtrace and exit
 # instead of hanging at an interactive debugger prompt until the
 # liveness probe kills the container.
-ENTRYPOINT [ \
-    "ros", "run", "--", \
-    "--disable-debugger", \
-    "--eval", "(require :data-ui)", \
-    "--eval", "(data-ui::main)" \
-]
+# SBCL heap: DATA_UI_SBCL_HEAP_GB, in GB (see scripts/data-ui).
+# Default 2 GB; "0" = SBCL's bare default (1 GB). An invalid value
+# fails container startup, not silently. ENTRYPOINT's exec form cannot
+# expand environment variables, so a tiny sh -c form bridges the
+# variable to ros. The heap flag must ride before the Lisp options.
+# (No ${DATA_UI_SBCL_HEAP_GB:+...} trick here: a default expansion and
+# a conditional expansion in one expansion is not a thing; the case
+# spells out all three paths.)
+ENTRYPOINT ["/bin/sh", "-c", 'H=${DATA_UI_SBCL_HEAP_GB:-2}; [ "$H" = 0 ] || set -- --dynamic-space-size "${H}GB"; exec ros run -- "$@" --disable-debugger --eval "(require :data-ui)" --eval "(data-ui::main)"']

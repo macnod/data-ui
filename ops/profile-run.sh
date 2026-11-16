@@ -96,7 +96,18 @@ psql -h "$DB_HOST" -p "$DB_PORT" -d "$DB_NAME" -U "$DB_USER" \
 # the guard. All inputs cross as environment variables read by
 # constant --eval forms.
 export DATA_UI_EXPECTED_CHECKOUT="${DATA_UI_CHECKOUT}"
-exec ros run -- --disable-debugger \
+# SBCL heap: DATA_UI_SBCL_HEAP_GB, in GB (see scripts/data-ui).
+# Default 2 GB; "0" = SBCL's own bare default (1 GB dynamic space).
+# profile.env can set it per profile (the four demos pin 1). The flag
+# rides BEFORE the Lisp options: a C runtime option after --eval is
+# "in the middle of Lisp options".
+DATA_UI_SBCL_HEAP_GB="${DATA_UI_SBCL_HEAP_GB:-2}"
+if [[ "$DATA_UI_SBCL_HEAP_GB" != "0" ]]; then
+    SBCL_HEAP_ARGS=(--dynamic-space-size "${DATA_UI_SBCL_HEAP_GB}GB")
+else
+    SBCL_HEAP_ARGS=()
+fi
+exec ros run -- "${SBCL_HEAP_ARGS[@]+"${SBCL_HEAP_ARGS[@]}"}" --disable-debugger \
     --eval '(let ((c (uiop:getenv "DATA_UI_EXPECTED_CHECKOUT")))
               (push (uiop:ensure-directory-pathname c)
                     asdf:*central-registry*))' \

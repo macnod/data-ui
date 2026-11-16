@@ -173,11 +173,15 @@ respect the rbac length cap."
 (defun rbac-add-user (type-key data user &key roles)
   (declare (ignore type-key))
   (let ((all-roles (add-to-list roles "settings")))
-    ;; FR-11 belt: guard non-REST callers that reach rbac-add-user directly with
-    ;; ai-user / deployer in the membership list. The REST create path is
-    ;; already closed upstream by be-insert's unfiltered valid-user-roles
-    ;; (holder check, admin exempt).
-    (valid-admin-only-user-roles user all-roles)
+    ;; FR-11 belt: guards non-REST callers (be-insert-internal, e.g.
+    ;; the add-user-setting-rows hook) that reach rbac-add-user
+    ;; directly; the REST create path is closed upstream by
+    ;; be-insert's holder check (valid-user-roles, admin exempt).
+    ;; Existing roles are the *new* user's memberships — nil for a
+    ;; user that doesn't exist yet — so every submitted role counts
+    ;; as an add.
+    (valid-admin-only-user-roles user all-roles
+      (a:list-user-role-names *rbac* (getf data :name)))
     (pl:pdebug :in "rbac-add-user" :user user
       :roles roles :all-roles all-roles)
     (a:add-user *rbac*
