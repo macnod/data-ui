@@ -315,7 +315,7 @@
        (:type :text :searchable t
          :ui (:label "Summary" :widget :textbox)
          :source (:view :main :column :summary :agg :first)
-         :validations (:max-length :max 8000)
+         :validations ((:max-length :max 8000))
          :column t)
       :description
        (:type :text
@@ -372,7 +372,7 @@
        (:type :text :searchable t
          :ui (:label "Summary" :widget :textbox)
          :source (:view :main :column :summary :agg :first)
-         :validations (:max-length :max 8000)
+         :validations ((:max-length :max 8000))
          :column t)
       :description
        (:type :text
