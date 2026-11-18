@@ -1525,11 +1525,15 @@ GET /api/css-variables"
 guest path. When the model sets :guest-allowed and USERNAME is the guest
 user, returns the guest's user ID without checking PASSWORD (the guest
 account carries only a seed placeholder password, which is not documented
-anywhere). Otherwise delegates to a:login, which returns NIL on any
-mismatch."
+anywhere). Otherwise both values must be strings: RBAC's login generic
+specializes on (RBAC-PG STRING STRING), so a nil or non-string value on
+either side returns NIL — the caller's ordinary mismatch path — instead
+of signaling no-applicable-method. Empty strings stay on the a:login
+path, where RBAC's own validators reject them."
   (if (and (equal username *guest*) (model-guest-allowed))
     (a:get-id *rbac* "users" *guest*)
-    (a:login *rbac* username password)))
+    (when (and (stringp username) (stringp password))
+      (a:login *rbac* username password))))
 
 (h:define-easy-handler (rest-login :uri "/api/login" :default-request-type :post)
   ()

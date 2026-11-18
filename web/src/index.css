@@ -18,6 +18,10 @@
   --input-bg: #fff;
   --input-border: #ccc;
   --button-bg: #f0f0f0;
+  /* Shared markdown reading measure: .page-body and .markdown-body
+     both resolve from this one declaration — the product-wide
+     reading column, defined once. */
+  --markdown-measure: 44rem;
 }
 
 .dark {
@@ -340,13 +344,14 @@ td input[type='checkbox'].row-select {
 }
 
 /* Page document (:page t). A reading column, not a full-bleed
-   property sheet: 44rem is the public renderer's main measure,
-   left-aligned under the tabs (centering would push the title
-   right of them). form-no-labels on the same element collapses
-   the gutter when no field draws a label. Images and pre blocks
-   stay inside the measure — a wide asset must not blow it out. */
+   property sheet: the shared --markdown-measure (the public
+   renderer's main measure), left-aligned under the tabs
+   (centering would push the title right of them). form-no-labels
+   on the same element collapses the gutter when no field draws
+   a label. Images and pre blocks stay inside the measure — a
+   wide asset must not blow it out. */
 .page-body {
-  max-width: 44rem;
+  max-width: var(--markdown-measure);
   margin-top: 1rem;
 }
 
@@ -356,6 +361,32 @@ td input[type='checkbox'].row-select {
 }
 
 .page-body pre {
+  overflow-x: auto;
+}
+
+/* Shared markdown measure: every rendered markdown body reads
+   at the page measure — one hoisted custom property drives
+   both .page-body and here. Capped on the Markdown
+   component's own wrapper div — never on a container — so
+   the view-form TOC (companion item) can sit beside capped
+   prose instead of inside a capped container. img/pre/table
+   containment mirrors .page-body: a wide asset or table must
+   not blow out the measure. */
+.markdown-body {
+  max-width: var(--markdown-measure);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown-body pre {
+  overflow-x: auto;
+}
+
+.markdown-body table {
+  display: block;
   overflow-x: auto;
 }
 

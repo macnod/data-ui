@@ -8,7 +8,7 @@ import remarkGfm from 'remark-gfm'
 // the component).
 export function Markdown({ text }: { text: string }) {
   return (
-    <div style={{ lineHeight: 1.5 }}>
+    <div className="markdown-body" style={{ lineHeight: 1.5 }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

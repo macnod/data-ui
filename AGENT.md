@@ -17,7 +17,7 @@ Detail lives in the docs, not here. Consult the right one before touching the co
 - **Snapshots** — grammar, save/restore semantics, prerestore slots, password re-stamping → `docs/snapshots.md`. **Migrations** (changing a model whose data must survive: snapshot → fresh REPL → restore → `set-model` → hand SQL; `heal-model` vs restart; the backlog plans-M2M worked example) → `docs/migration.md`. Read migration.md before editing any model against live data or reasoning about restore-then-reload ordering.
 - **Lisp style and error reporting** — `u:` preference, small functions, `report-e` / `report-ve`, `valid-*` naming → `docs/lisp-style.md` (read before writing any Lisp: tests, helpers, or engine code with permission). When dealing with `report-ve` (or `report-e`), read the macro documentation in `lisp/aux.lisp` first — the tilde-prefixed var-spec convention is easy to misread as a typo and both macros signal (they do not return).
 - **Dead-code decisions** — `docs/model-accessors.md` (check before removing anything that looks unused)
-- **Backlog** — `docs/todo.org`
+- **Backlog** — the production Data UI Backlog app (`backlog.demo.data-ui.com`) — see *Feature and Issue Tracking* below
 - **Demo video suggestions** → `~/workbench/video-plan.org` — running list of beats to capture (shots, pauses, points to land). Video work starts December 15; whenever a moment in the UI or flow would demo well, add it there.
 - **Mel's app** → `~/workbench/mels-app/notes.org` — the film continuity tracker (first expressly requested app): schema with settled decisions, in-flight work, deployment story, seeding policy, checklist. Ops beside it in `~/workbench/mels-app/` (loading-runbook.org, runner, acceptance). Read before any "Mel's app" work.
 
@@ -48,7 +48,7 @@ Non-frontend code is SBCL Common Lisp, written by a human.
 - Before any code is written, a thorough discussion of the goals must happen.
 - Some functions with no in-codebase callers are intentionally retained; see `docs/model-accessors.md` before removing "dead" code.
 - Prose in `.md` and `.org` files (docs, backlog items, plans) is never hard-wrapped: one paragraph per line, one list item per line — a newline ends a paragraph or a list item, never a sentence fragment; viewers wrap for display. See `~/r/elisp/ai/global.md` → Prose Line Length.
-- Emacs buffers visiting project files typically run `auto-revert-mode` + `auto-save-visited-mode`. Agent-side edits to a file whose visiting buffer is **unmodified** are safe — auto-revert syncs it within seconds. A **modified** buffer is the hazard: auto-save-visited writes it back over the disk edit. Before editing any file that has a live Emacs buffer (e.g. `docs/todo.org`), check with the helper (in `~/r/elisp/dc-ai.el`), and if it returns non-nil, flag it to the human instead of editing:
+- Emacs buffers visiting project files typically run `auto-revert-mode` + `auto-save-visited-mode`. Agent-side edits to a file whose visiting buffer is **unmodified** are safe — auto-revert syncs it within seconds. A **modified** buffer is the hazard: auto-save-visited writes it back over the disk edit. Before editing any file that has a live Emacs buffer (e.g. `docs/model-reference.md`), check with the helper (in `~/r/elisp/dc-ai.el`), and if it returns non-nil, flag it to the human instead of editing:
 
       (eval "(ai-buffer-edit-hazard-p \"PATH\")") ; nil = safe, t = flag it
 
@@ -111,23 +111,16 @@ Rules:
 
 ## Feature and Issue Tracking
 
-`docs/todo.org` is the canonical backlog (org TODO / PLANNING / IN-PROGRESS / READY / DONE states + tags). Refer to it when deciding what to work on next.
+The production Data UI Backlog app (`backlog.demo.data-ui.com`, model `models/backlog.lisp` — the project dogfooding itself) is the canonical backlog: items with status, tags, contributors, plans, and a dated journal of notes. The old org files (`docs/todo.org`, `docs/done.org`) were deleted at the November 2026 cutover; git history keeps them.
 
-When `docs/todo.org` grows too large, DONE items are moved (cut, not copied) from its `* Done` section to `docs/done.org`, the archive. New DONE items still land in `docs/todo.org` first, with their `:COMPLETED:` drawer, and are pruned to the archive in batches. Drawer dates move with the item; `fix-data-ui-todo-dates` (see below) targets only `docs/todo.org`.
+Items move through six states — `10 Open` → `20 Planning` (a plan is being drafted) → `30 Ready` (plan approved; waiting to implement) → `40 Implementing` → `50 Code Complete` → `60 Done`. Approval to `30 Ready` is Donnie's; `60 Done` follows his review and commit of an implementation. The "next" item is the lowest queue-slot among non-`60 Done` items. Item titles stay short — a noun phrase naming the ask; spec details belong in the description, never the title.
 
-Lifecycle: TODO → PLANNING (a plan is being drafted) → READY (plan complete and approved; waiting to implement) → IN-PROGRESS (being implemented) → DONE. Plan completion and review happen at READY, not IN-PROGRESS; flip to IN-PROGRESS only when implementation actually begins.
+Plans (kinds Independent, Simple, Synthesized) and journal notes (kinds Event, Note, Review, Update) live on the item rows. The plan ping-pong loop (review-plan / update-plan) runs at `20 Planning` and closes on the reviewer's `nothing substantive`. All backlog work goes through the project-scoped skill family in `.agents/skills/` — create-item, create-note, change-item-state, create-independent-plan, create-simple-plan, synthesize-plan, review-plan, update-plan, implement-plan — each acting as the invoking agent's own machine account over the app's REST API (identity: global.md → Agent Identity).
 
-- Every item carries a `:PROPERTIES:` drawer with `:CREATED:` (and, once done, `:COMPLETED:`) org inactive timestamps, e.g. `[2026-08-10 Sun]`.
-- New items: include the drawer with `:CREATED:` set to today. Marking DONE: set `:COMPLETED:` to today.
-- Titles are as short as possible — a noun phrase naming the ask, long enough only to disambiguate among siblings. Spec details (`:widget :markdown`, `:ui (:help ...)`, dev/stg/prod) belong in the item body, never the title: "Markdown widget", not "Markdown widget (`=:widget :markdown=`)".
-- **After any change to `docs/todo.org`, run `(fix-data-ui-todo-dates)`** (defined in `~/r/elisp/dc-ai.el`, no parameters). It enforces the date rules; just write today's date and run it. Currently *disabled* (`dc-ai-fix-todo-dates-enabled` is nil) — it returns 0 and touches nothing. Skip it until it is re-enabled.
+Two planning modes:
 
-Org outline hierarchy: `*` section, `**` parent todo, `***` its direct children (children inherit tags/context). Never mix — do not put `**` children under a `**` parent; always step to `***`:
-
-    * Post MVP
-    ** TODO Lifecycle side effects
-    *** TODO Cross-table upsert
-    *** TODO HTTP fetch/post
+- **Collaborative plan** — two agents each run `create-independent-plan`; then one of those or a third agent runs `synthesize-plan`; the review is a ping-pong where one agent runs `review-plan` and another runs `update-plan`, until a `review-plan` comes back `nothing substantive`; Donnie then marks the item `30 Ready`.
+- **Simple plan** — the plan is written by a single agent running `create-simple-plan`. The review usually proceeds the same ping-pong way, unless the plan is really simple, in which case Donnie reviews it himself and flips the item to `30 Ready`.
 
 ## Working with the Frontend
 

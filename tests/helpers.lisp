@@ -1371,6 +1371,21 @@ load it first)."
     (explain! results)
     (when collect results)))
 
+(defun run-rest-tests (&optional collect)
+  "REST endpoint tests: the POST /api/login malformed-credential
+matrix, its usage-row pins, and the tokenless-refresh control
+(tests/rest-tests.lisp, rest-suite). test-model does not set
+:guest-allowed, so the guest-name cases take the ordinary branch.
+The fixture's :button actions resolve from the registry at compile
+time, so action-tests.lisp must be loaded before set-model
+(harmless when already loaded)."
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (let ((results
+          (with-model "test-model" nil
+            (run 'rest-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -1444,7 +1459,8 @@ groups."
                     ("deploy-incoming" . run-deploy-incoming-tests)
                    ("target-sort"   . run-target-sort-tests)
                    ("fk-dedup"      . run-fk-dedup-tests)
-                   ("wire-null"     . run-wire-null-tests))
+                   ("wire-null"     . run-wire-null-tests)
+                   ("rest"          . run-rest-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

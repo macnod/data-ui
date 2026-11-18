@@ -103,10 +103,23 @@ model-guest-allowed reads it back."
 
 (test guest-passwordless-login-succeeds
   "login-user-id returns the guest user id for any password,
-including the empty string."
+including the empty string, nil, and non-string values."
   (let ((guest-id (th-ga-user-id "guest")))
     (is (equal guest-id (login-user-id "guest" "bogus")))
-    (is (equal guest-id (login-user-id "guest" "")))))
+    (is (equal guest-id (login-user-id "guest" "")))
+    (is (equal guest-id (login-user-id "guest" nil)))
+    (is (equal guest-id (login-user-id "guest" 42)))))
+
+(test login-user-id-non-string-args
+  "The ordinary branch guards both arguments with stringp: nil and
+non-string usernames or passwords return nil instead of signaling
+no-applicable-method on RBAC's string-specialized login (the
+missing-username login 500)."
+  (is-false (login-user-id nil "x"))
+  (is-false (login-user-id 42 "x"))
+  (is-false (login-user-id "admin" nil))
+  (is-false (login-user-id "admin" 42))
+  (is-false (login-user-id nil nil)))
 
 (test guest-has-public-but-not-logged-in
   "The seeded guest user carries public (read-only) and its
@@ -126,10 +139,11 @@ password still fails, and admin's real password still works."
         (login-user-id "ga-user" "password-1"))))
 
 (test guest-login-disabled-without-key
-  "Without :guest-allowed, guest login falls back to a:login, so a
-wrong password fails even though login-user-id is the entry point.
-Loads the fixture file, strips the key, and recompiles via the
-set-model list method."
+  "Without :guest-allowed, guest login takes the ordinary branch, so
+a wrong password fails even though login-user-id is the entry point,
+and a non-string password returns nil rather than signaling. Loads
+the fixture file, strips the key, and recompiles via the set-model
+list method."
   (let* ((file (u:join-paths *package-root* "models" "test"
                 "guest-allowed-test.lisp"))
           (model (with-open-file (s file) (second (read s)))))
@@ -137,7 +151,13 @@ set-model list method."
     (set-model model)
     (is (null (model-guest-allowed)))
     (is-false (login-user-id "guest" "bogus"))
-    (is-false (login-user-id "guest" "")))
+    (is-false (login-user-id "guest" ""))
+    ;; Guest access off: a non-string password on the guest name
+    ;; takes the ordinary branch — nil, a clean 401 at the endpoint,
+    ;; not the no-applicable-method 500. That is the fix, not a
+    ;; regression.
+    (is-false (login-user-id "guest" nil))
+    (is-false (login-user-id "guest" 42)))
   ;; Restore the fixture model for any later tests in this suite.
   (set-model "guest-allowed-test")
   (is (eq t (model-guest-allowed))))
