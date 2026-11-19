@@ -154,7 +154,12 @@ function renderRegionField(
 // parent's view form (plan 03 — "Region renderer"). One
 // component owns its fetch (/api/list on the child type,
 // form=view-form, the fixed fk-eq filter, the region's :sort),
-// its pager, accordion expansion, and the Add/Reply panel. It
+// its pager, accordion expansion, and the Add/Reply panel.
+// Collapsed-row columns come from the child's list-form — the
+// tab shape, so a region never widens past the type's own list
+// declaration (a journal description is reading surface, not a
+// column); the expanded row renders the full view-form, where
+// a field dropped from the columns still appears. It
 // never touches App state: no setData, no formValues, no query
 // setters, no router — the child payload (rows, forms, create
 // flag) lives in region-local state. Requests are fenced by a
@@ -382,6 +387,10 @@ function Region({ spec, parentId, onShowAll }: {
   const create = region?.result?.create === true
   const viewForm = region?.result?.['view-form']
   const addForm = region?.result?.['add-form']
+  // The child's list-form — the collapsed-row column set (the
+  // tab shape). Rides the same response (fe-fields emits every
+  // declared form), so honoring it costs no second fetch.
+  const listForm = region?.result?.['list-form']
   const records = region?.result?.records || []
   const total = region?.result?.total ?? 0
   const roles = normalizeRoles(
@@ -554,6 +563,14 @@ function Region({ spec, parentId, onShowAll }: {
   if (!viewForm) return null
 
   const viewFieldKeys = formFieldKeys(viewForm)
+  // Columns come from the child's list-form; the view-form
+  // fallback only guards a degenerate envelope (the :children
+  // compile checks, valid-children-region-surface, guarantee
+  // the child declares a list-form) — it keeps a response that
+  // somehow lacks one from rendering a zero-column table.
+  const columnForm = formFieldKeys(listForm).length > 0
+    ? listForm! : viewForm
+  const columnFieldKeys = formFieldKeys(columnForm)
   const totalPages = Math.max(1,
     Math.ceil(total / PAGE_SIZE))
   const page = Math.floor(offset / PAGE_SIZE) + 1
@@ -582,8 +599,8 @@ function Region({ spec, parentId, onShowAll }: {
       <table>
         <thead>
           <tr>
-            {viewFieldKeys.map(f => (
-              <th key={f}>{viewForm[f].label}</th>
+            {columnFieldKeys.map(f => (
+              <th key={f}>{columnForm[f].label}</th>
             ))}
           </tr>
         </thead>
@@ -626,8 +643,8 @@ function Region({ spec, parentId, onShowAll }: {
                   }
                 }}
               >
-                {viewFieldKeys.map(f => {
-                  const field = viewForm[f]
+                {columnFieldKeys.map(f => {
+                  const field = columnForm[f]
                   const text = cellText(rec[f], field)
                   return (
                     <td
@@ -648,7 +665,7 @@ function Region({ spec, parentId, onShowAll }: {
               {expandedId === rec.id && (
                 <tr>
                   <td
-                    colSpan={viewFieldKeys.length}
+                    colSpan={columnFieldKeys.length}
                     style={{ padding: '0.5rem 0.25rem' }}
                   >
                     {viewFieldKeys.map(f => (
