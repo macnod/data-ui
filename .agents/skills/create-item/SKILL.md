@@ -104,7 +104,7 @@ DATA=$(jq -nc --arg item "$TITLE" --arg author "Rose" --arg date "$NOW" \
   '{item:$item, kind:"Event", title:"Created",
     author:$author, date:$date}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 ```
 
 ### 5b. Insert the Details note (overflow path only)
@@ -118,7 +118,7 @@ DATA=$(jq -nc --arg item "$TITLE" --arg author "Rose" --arg date "$NOW" \
     author:$author, date:$date,
     summary:$summary, description:$desc}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -134,9 +134,9 @@ $B --name rose item type=items id=$ITEM_ID \
       contributors, roles, "public-url"}'
 ```
 
-Check: `public-url` present; `roles` contains public, backlog-agents, contributors (admin and your own exclusive role are hidden from your view — that is expected); slot/status/tags/contributors match what you submitted. Verify the event the same way (`type=notes`): `public-url` present. When the overflow path ran, verify the Details note the same way: every field matches what you submitted (title Details, kind Note, your summary, the full body), `public-url` present.
+Check: `public-url` present; `roles` contains public, backlog-agents, contributors (admin and your own exclusive role are hidden from your view — that is expected); slot/status/tags/contributors match what you submitted. Verify the event the same way (`type=notes`): title, kind, author, and date match what you submitted. When the overflow path ran, verify the Details note the same way: every field matches what you submitted (title Details, kind Note, your summary, the full body).
 
-Report to Donnie: the title, the slot with its neighbors (the items before and after), the public-url, and confirmation of the Created event. When the overflow path ran, also report that the description was filed as a summary with the full details in the Details note — give the note's public-url and the body's word count. If anything failed mid-way, say exactly what landed and what didn't (no transactions — the item insert stands even if the event or Details-note insert fails).
+Report to Donnie: the title, the slot with its neighbors (the items before and after), the public-url, and confirmation of the Created event. When the overflow path ran, also report that the description was filed as a summary with the full details in the Details note — give the body's word count. If anything failed mid-way, say exactly what landed and what didn't (no transactions — the item insert stands even if the event or Details-note insert fails).
 
 ## Inputs
 

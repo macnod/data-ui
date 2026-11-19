@@ -167,7 +167,7 @@ DATA=$(jq -nc --arg title "Update disposition — $N" --arg item "$ITEM_TITLE" \
     author:$author, date:$date,
     summary:$summary, description:$desc}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -190,16 +190,15 @@ Verify both writes:
 
 ```bash
 $B --name rose item type=notes id=$NOTE_ID \
-  | jq '.result.record | {title, item, kind, author, date, summary,
-      "public-url"}'
+  | jq '.result.record | {title, item, kind, author, date, summary}'
 
 $B --name rose item type=plans id=$PLAN_ID \
   | jq '.result.record | {title, kind, author, summary, "updated-at"}'
 ```
 
-Check: every note field matches what you submitted; `public-url` present; the note appears in the item's journal (the child region under the item's view-form, newest first). On the plan row: the description carries the folds (spot-check one accepted change is present) and `updated-at` bumped — plans sort by it, so the updated plan surfaces first in the plans tab. Plans carry no `public-url` (non-public rows) — reference the plan by title.
+Check: every note field matches what you submitted; the note appears in the item's journal (the child region under the item's view-form, newest first). On the plan row: the description carries the folds (spot-check one accepted change is present) and `updated-at` bumped — plans sort by it, so the updated plan surfaces first in the plans tab. Plans carry no `public-url` (non-public rows) — reference the plan by title.
 
-Report to Donnie: the item title and its state; the feedback source and round (which review was folded, which disposition number this is); **the disposition itself** — he reads it in the report, the note is the durable copy; what landed (plan row updated or untouched, note filed); the note's `public-url` and the item's `public-url`; the contributors addition if any. Sequential writes, no transactions — say exactly what landed and what didn't: a failed plan update leaves the note unwritten (by design); a failed note insert after a landed plan update leaves the fold in place with no disposition — the disposition lives only in this report, and a re-run with the same feedback hits the step 6 backstop and offers to write the missing note.
+Report to Donnie: the item title and its state; the feedback source and round (which review was folded, which disposition number this is); **the disposition itself** — he reads it in the report, the note is the durable copy; what landed (plan row updated or untouched, note filed); the item's `public-url`; the contributors addition if any. Sequential writes, no transactions — say exactly what landed and what didn't: a failed plan update leaves the note unwritten (by design); a failed note insert after a landed plan update leaves the fold in place with no disposition — the disposition lives only in this report, and a re-run with the same feedback hits the step 6 backstop and offers to write the missing note.
 
 ## Inputs
 

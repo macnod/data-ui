@@ -133,7 +133,7 @@ DATA=$(jq -nc --arg title "Review findings — $N" --arg item "$ITEM_TITLE" \
     author:$author, date:$date,
     summary:$summary, description:$desc}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -156,13 +156,12 @@ $B --name rose update type=items filters=$ITEM_ID data="$DATA" | jq .
 
 ```bash
 $B --name rose item type=notes id=$NOTE_ID \
-  | jq '.result.record | {title, item, kind, author, date, summary,
-      "public-url"}'
+  | jq '.result.record | {title, item, kind, author, date, summary}'
 ```
 
-Check: every field matches what you submitted; `public-url` present; the note appears in the item's journal (the child region under the item's view-form, newest first).
+Check: every field matches what you submitted; the note appears in the item's journal (the child region under the item's view-form, newest first).
 
-Report to Donnie: the item title and its state; the mode and round, and what triggered it (journal state or his instruction); **the findings themselves** — he reads them in the report, the note is the durable copy; the note's `public-url` and the item's `public-url`; the contributors addition if any. Two writes, no transactions — the note insert stands even if the contributors update fails; say exactly what landed and what didn't.
+Report to Donnie: the item title and its state; the mode and round, and what triggered it (journal state or his instruction); **the findings themselves** — he reads them in the report, the note is the durable copy; the item's `public-url`; the contributors addition if any. Two writes, no transactions — the note insert stands even if the contributors update fails; say exactly what landed and what didn't.
 
 ## Inputs
 

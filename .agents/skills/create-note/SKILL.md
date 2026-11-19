@@ -61,7 +61,7 @@ DATA=$(jq -nc --arg title "$NOTE_TITLE" --arg item "$ITEM_TITLE" \
     author:$author, date:$date,
     summary:$summary, description:$desc}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -71,13 +71,12 @@ $B --name rose insert type=notes data="$DATA" \
 
 ```bash
 $B --name rose item type=notes id=$NOTE_ID \
-  | jq '.result.record | {title, item, kind, author, date, summary,
-      "public-url"}'
+  | jq '.result.record | {title, item, kind, author, date, summary}'
 ```
 
-Check: every field matches what you submitted, `public-url` present. The note appears in the item's journal automatically (notes embed under the item's view-form, newest first).
+Check: every field matches what you submitted. The note appears in the item's journal automatically (notes embed under the item's view-form, newest first).
 
-Report to Donnie: the item title, the note title, the summary, the note's `public-url`, and the item's `public-url`. A single insert — if it failed, nothing landed; report the error verbatim, no blind retries.
+Report to Donnie: the item title, the note title, the summary, and the item's `public-url`. A single insert — if it failed, nothing landed; report the error verbatim, no blind retries.
 
 ## Inputs
 
@@ -92,5 +91,5 @@ Report to Donnie: the item title, the note title, the summary, the note's `publi
 - The only filter issued here is the items title `in` lookup — never `["notes","item","eq",...]` (same-type `:eq` on a reference field 500s; backlog-api has the detail).
 - `summary` is the search surface: titles and summaries are the searchable note fields, descriptions never (nothing index-bearing on big text columns). The 1000-char cap keeps summaries safe for any index that may one day sit on the column.
 - Reference fields submit display names (`item` = the item title, `kind` = "Note", `author` = your author row name); list fields submit arrays; JSON wire keys are hyphenated (`data=` payloads).
-- Roles: notes are public rows, `["public", "backlog-agents", "contributors"]` — same spelling as every public insert in this family.
+- Roles: notes are non-public rows, `["backlog-agents", "contributors"]` — the plans treatment; they carry no `public-url`, so reports reference them by title.
 - Agents **create** and **update** but never **delete**; this skill only inserts.

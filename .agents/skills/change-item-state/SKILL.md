@@ -77,7 +77,7 @@ DATA=$(jq -nc --arg title "→ $STATE" --arg item "$TITLE" \
   '{title:$title, item:$item, kind:"Event",
     author:$author, date:$date}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -92,12 +92,12 @@ $B --name rose item type=items id=$ITEM_ID \
   | jq '.result.record | {title, status, contributors, "updated-at", "public-url"}'
 
 $B --name rose item type=notes id=$EVENT_ID \
-  | jq '.result.record | {title, item, kind, author, date, "public-url"}'
+  | jq '.result.record | {title, item, kind, author, date}'
 ```
 
-Check: item `status` is the new state; `updated-at` bumped; contributors include you when the 40+ rule fired; the event's title/author/date are right and it has a `public-url`.
+Check: item `status` is the new state; `updated-at` bumped; contributors include you when the 40+ rule fired; the event's title/author/date are right.
 
-Report to Donnie: the item title, **old → new** status, the contributors addition (if any), the event's `public-url` (on re-entry, noting the stale prior event by its date), and the item's `public-url`. No transactions — if the event insert failed, the status change stands; say exactly what landed and what didn't.
+Report to Donnie: the item title, **old → new** status, the contributors addition (if any), the event referenced by title (on re-entry, note the stale prior event's date), and the item's `public-url`. No transactions — if the event insert failed, the status change stands; say exactly what landed and what didn't.
 
 ## Inputs
 

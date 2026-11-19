@@ -164,7 +164,7 @@ DATA=$(jq -nc --arg title "→ 20 Planning" --arg item "$ITEM_TITLE" \
   '{title:$title, item:$item, kind:"Event",
     author:$author, date:$date}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -187,7 +187,7 @@ DATA=$(jq -nc --arg title "$NOTE_TITLE" --arg item "$ITEM_TITLE" \
     author:$author, date:$date,
     summary:$summary, description:$desc}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -204,9 +204,9 @@ $B --name rose item type=items id=$ITEM_ID \
       "updated-at", "public-url"}'
 ```
 
-Read the event and the note back the same way (`type=notes`, by id). Check: every plan field matches what you submitted; plan `roles` contain backlog-agents and contributors (admin and your own exclusive role are hidden from your view — expected); item `status` is `20 Planning`, its `plans` include the new title, its `contributors` include Donnie, you, and every candidate author, `updated-at` bumped; the note carries a `public-url`. Plans carry **no** `public-url` (non-public rows) — reference the plan by title; it surfaces first in the plans tab (default sort is updated-at descending).
+Read the event and the note back the same way (`type=notes`, by id). Check: every plan field matches what you submitted; plan `roles` contain backlog-agents and contributors (admin and your own exclusive role are hidden from your view — expected); item `status` is `20 Planning`, its `plans` include the new title, its `contributors` include Donnie, you, and every candidate author, `updated-at` bumped; the event and the note carry the right title, kind, author, and date. Plans carry **no** `public-url` (non-public rows) — reference the plan by title; it surfaces first in the plans tab (default sort is updated-at descending).
 
-Report to Donnie: the item title, **old → new** status (or "already `20 Planning` — no flip, no event"), the synthesized plan title with its summary, which candidates were folded in (titles + authors), each conflict and its winner (one line each), any synthesizer-contributed path that beat all inputs (flag these clearly — they are new, not merged), anything flagged for review, the note's `public-url`, and the item's `public-url`.
+Report to Donnie: the item title, **old → new** status (or "already `20 Planning` — no flip, no event"), the synthesized plan title with its summary, which candidates were folded in (titles + authors), each conflict and its winner (one line each), any synthesizer-contributed path that beat all inputs (flag these clearly — they are new, not merged), anything flagged for review, the synthesis note by title, and the item's `public-url`.
 
 No transactions — sequential writes, stop on the first failure, and report exactly what landed. A failed item update leaves the plan real (findable in the plans tab, attached via its own item reference) but unlinked, the item unflipped and contributors un-ensured — complete by hand or re-run the update. A failed event insert leaves the flip and link standing. A failed note insert leaves the plan, link, and flip standing — only the journal record is missing; file it by hand (create-note) or re-run.
 

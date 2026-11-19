@@ -109,7 +109,7 @@ DATA=$(jq -nc --arg title "→ 40 Implementing" --arg item "$ITEM_TITLE" \
   '{title:$title, item:$item, kind:"Event",
     author:$author, date:$date}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -152,7 +152,7 @@ DATA=$(jq -nc --arg title "→ 50 Code Complete" --arg item "$ITEM_TITLE" \
   '{title:$title, item:$item, kind:"Event",
     author:$author, date:$date}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -171,7 +171,7 @@ DATA=$(jq -nc --arg title "Implementation summary" --arg item "$ITEM_TITLE" \
     author:$author, date:$date,
     summary:$summary, description:$desc}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -186,13 +186,13 @@ $B --name rose item type=items id=$ITEM_ID \
 
 for ID in $EVENT_40_ID $EVENT_50_ID $NOTE_ID; do
   $B --name rose item type=notes id=$ID \
-    | jq -c '.result.record | {title, kind, author, date, "public-url"}'
+    | jq -c '.result.record | {title, kind, author, date}'
 done
 ```
 
-Check: item `status` is `50 Code Complete`; `contributors` include Donnie and you; `updated-at` bumped; each event and the note exist with the right author and a `public-url`.
+Check: item `status` is `50 Code Complete`; `contributors` include Donnie and you; `updated-at` bumped; each event and the note exist with the right author and date.
 
-Report to Donnie: the item title and its full state path (`30 → 40 → 50`, or `40 → 50` resuming, with the original-start date on a resume); the plan source used (canonical plan title + kind — noting title drift — or **item description, flagged**); files touched; test results including the final gate (`scripts/data-ui tests`) and the frontend build when `web/` changed; the events' and note's `public-url`s (noting stale prior ones by date); the item's `public-url`. **All changes are unstaged** — he reviews, commits, then flips `60 Done` (by hand or change-item-state). No transactions — on partial failure say exactly what landed: a failed 50-flip leaves the work real but the item at `40 Implementing` (re-run step 8); a failed note insert leaves both flips standing (re-run step 9).
+Report to Donnie: the item title and its full state path (`30 → 40 → 50`, or `40 → 50` resuming, with the original-start date on a resume); the plan source used (canonical plan title + kind — noting title drift — or **item description, flagged**); files touched; test results including the final gate (`scripts/data-ui tests`) and the frontend build when `web/` changed; the events and note referenced by title (noting stale prior ones by date); the item's `public-url`. **All changes are unstaged** — he reviews, commits, then flips `60 Done` (by hand or change-item-state). No transactions — on partial failure say exactly what landed: a failed 50-flip leaves the work real but the item at `40 Implementing` (re-run step 8); a failed note insert leaves both flips standing (re-run step 9).
 
 ## Inputs
 

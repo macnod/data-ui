@@ -119,7 +119,7 @@ DATA=$(jq -nc --arg title "→ 20 Planning" --arg item "$ITEM_TITLE" \
   '{title:$title, item:$item, kind:"Event",
     author:$author, date:$date}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -136,9 +136,9 @@ $B --name rose item type=items id=$ITEM_ID \
       "updated-at", "public-url"}'
 ```
 
-Check: every plan field matches what you submitted; plan `roles` contain backlog-agents and contributors (admin and your own exclusive role are hidden from your view — expected); item `status` is `20 Planning` (when flipped), its `plans` include the new title, its `contributors` include Donnie and you, `updated-at` bumped. Plans carry **no** `public-url` (non-public rows) — reference the plan by title; it surfaces first in the plans tab (default sort is updated-at descending). When the event was stamped, read it back the same way (`type=notes`) and check its `public-url`.
+Check: every plan field matches what you submitted; plan `roles` contain backlog-agents and contributors (admin and your own exclusive role are hidden from your view — expected); item `status` is `20 Planning` (when flipped), its `plans` include the new title, its `contributors` include Donnie and you, `updated-at` bumped. Plans carry **no** `public-url` (non-public rows) — reference the plan by title; it surfaces first in the plans tab (default sort is updated-at descending). When the event was stamped, read it back the same way (`type=notes`) and check its title, kind, author, and date.
 
-Report to Donnie: the item title, **old → new** status (or "already `20 Planning` — no flip, no event"), the plan title with its summary, the contributors ensured, the event's `public-url` (on re-entry, noting the stale prior event by its date), and the item's `public-url`. No transactions — if a later write failed, say exactly what landed: a failed item update leaves the plan real (findable in the plans tab, attached via its own item reference) but unlinked and the item unflipped — complete by hand or re-run the update; a failed event insert leaves the flip and link standing.
+Report to Donnie: the item title, **old → new** status (or "already `20 Planning` — no flip, no event"), the plan title with its summary, the contributors ensured, the event referenced by title (on re-entry, note the stale prior event's date), and the item's `public-url`. No transactions — if a later write failed, say exactly what landed: a failed item update leaves the plan real (findable in the plans tab, attached via its own item reference) but unlinked and the item unflipped — complete by hand or re-run the update; a failed event insert leaves the flip and link standing.
 
 ## Inputs
 
@@ -148,7 +148,7 @@ Report to Donnie: the item title, **old → new** status (or "already `20 Planni
 ## Notes
 
 - Plans identity is `(:title)` alone — globally unique, once in the world (contrast notes' `(:title :item)` per-item; the production index is `ix_rt_plans_identity` on `plan_title` only). The `<short name> - <agent>` convention is the uniqueness guard across agents; re-filing on the same item collides with your own prior plan → stop, report, ask.
-- Plans are non-public rows — roles `["backlog-agents", "contributors"]`, no `public-url`. Journal events (notes) are public rows — the step 8 spelling.
+- Plans are non-public rows — roles `["backlog-agents", "contributors"]`, no `public-url`. Journal events (notes) are non-public rows too — the step 8 spelling.
 - The only filters issued here are the items title `in` lookup and that same row applied to `type=notes` (target-keyed `:in` — the journal read). Never `["notes","item","eq",...]` or `["plans","item","eq",...]` (same-type `:eq` on a reference field 500s; backlog-api has the detail).
 - `summary` is the search surface: titles and summaries are the searchable plan fields, descriptions never — nothing index-bearing on the big text columns; a plan is a whole file (the model's own design note).
 - Sequential writes: plan insert → item update → event insert — never parallel.

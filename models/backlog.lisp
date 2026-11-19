@@ -22,9 +22,10 @@
 ;; drawer-stamp events (kind Event). Descriptions are never
 ;; :searchable — nothing index-bearing on the big text columns (a
 ;; plan is a whole file); search lives on titles and summaries.
-;; Every public row is inserted with roles ["public"
-;; "backlog-agents" "contributors"], plans with
-;; ["backlog-agents" "contributors"] — the API pre-selects nothing.
+;; Notes are inserted with roles ["backlog-agents"
+;; "contributors"], mirroring plans; the public rows are items,
+;; states, tags, and authors, inserted with ["public"
+;; "backlog-agents" "contributors"] — the API pre-selects nothing.
 ;;
 ;; Author: Rosie (glm-5.3) from the plan; Donnie Cameron
 ;; Created: 2026-11-15
@@ -32,7 +33,7 @@
 ;;
 '(:title "Data UI Backlog"
   :name "backlog"
-  :version "0.1"
+  :version "0.2"
   :domain "backlog.demo.data-ui.com"
   :domain-stg "backlog-stg.demo.data-ui.com"
   ;; WARNING: :repl must be nil in production
@@ -212,7 +213,7 @@
    :plan-kinds
    (:table t
      :create :auto :update :auto :delete :auto :display t
-     :type-roles ("contributors" "public")
+     :type-roles ("backlog-agents" "contributors")
      :default-sort (:name :asc)
      :views (:main (:tables (:plan-kinds)))
      :fields
@@ -233,7 +234,7 @@
    :note-kinds
    (:table t
      :create :auto :update :auto :delete :auto :display t
-     :type-roles ("contributors" "public")
+     :type-roles ("backlog-agents" "contributors")
      :default-sort (:name :asc)
      :views (:main (:tables (:note-kinds)))
      :fields
@@ -265,7 +266,7 @@
    :notes
    (:table t
      :create :auto :update :auto :delete :auto :display t
-     :type-roles ("backlog-agents" "contributors" "public")
+     :type-roles ("backlog-agents" "contributors")
      :default-sort (:date :desc)
      :views (:main (:tables (:notes :items :authors :note-kinds))
              :items (:tables (:items))
@@ -313,7 +314,7 @@
          :column t)
       :summary
        (:type :text :searchable t
-         :ui (:label "Summary" :widget :textbox)
+         :ui (:label "Summary" :widget :markdown)
          :source (:view :main :column :summary :agg :first)
          :validations ((:max-length :max 8000))
          :column t)
@@ -322,7 +323,9 @@
          :ui (:label "Description" :widget :markdown)
          :source (:view :main :column :description :agg :first)
          :column t))
-     :list-form (:fields t) :update-form (:fields t)
+     :list-form (:fields (:title :item :kind :author :date :summary
+                         :created-at :updated-at))
+     :update-form (:fields t)
      :view-form (:fields t) :add-form (:fields t))
 
    :plans
@@ -370,7 +373,7 @@
          :column t)
       :summary
        (:type :text :searchable t
-         :ui (:label "Summary" :widget :textbox)
+         :ui (:label "Summary" :widget :markdown)
          :source (:view :main :column :summary :agg :first)
          :validations ((:max-length :max 8000))
          :column t)
@@ -379,7 +382,9 @@
          :ui (:label "Plan" :widget :markdown)
          :source (:view :main :column :description :agg :first)
          :column t))
-     :list-form (:fields t) :update-form (:fields t)
+     :list-form (:fields (:title :item :kind :author :summary
+                         :created-at :updated-at))
+     :update-form (:fields t)
      :view-form (:fields t) :add-form (:fields t))
 
    ;; The About tab, last in the Home strip.

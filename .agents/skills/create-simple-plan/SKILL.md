@@ -141,7 +141,7 @@ DATA=$(jq -nc --arg title "→ 20 Planning" --arg item "$ITEM_TITLE" \
   '{title:$title, item:$item, kind:"Event",
     author:$author, date:$date}')
 $B --name rose insert type=notes data="$DATA" \
-    roles='["public","backlog-agents","contributors"]' | jq '.result'
+    roles='["backlog-agents","contributors"]' | jq '.result'
 # => {"id":"<uuid>","inserted":true}
 ```
 
@@ -158,9 +158,9 @@ $B --name rose item type=items id=$ITEM_ID \
       "updated-at", "public-url"}'
 ```
 
-Check: every plan field matches what you submitted; plan `roles` contain backlog-agents and contributors (admin and your own exclusive role are hidden from your view — expected); item `status` is `20 Planning` (when flipped), its `plans` include the new title, its `contributors` include Donnie and you, `updated-at` bumped. Plans carry **no** `public-url` (non-public rows) — reference the plan by title; it surfaces first in the plans tab (default sort is updated-at descending). When the event was stamped, read it back the same way (`type=notes`) and check its `public-url`.
+Check: every plan field matches what you submitted; plan `roles` contain backlog-agents and contributors (admin and your own exclusive role are hidden from your view — expected); item `status` is `20 Planning` (when flipped), its `plans` include the new title, its `contributors` include Donnie and you, `updated-at` bumped. Plans carry **no** `public-url` (non-public rows) — reference the plan by title; it surfaces first in the plans tab (default sort is updated-at descending). When the event was stamped, read it back the same way (`type=notes`) and check its title, kind, author, and date.
 
-Report to Donnie: the item title, **old → new** status (or "already `20 Planning` — no flip, no event"), the plan title with its summary, the contributors ensured, the event's `public-url` (on re-entry, noting the stale prior event by its date), and the item's `public-url`. No transactions — if a later write failed, say exactly what landed: a failed item update leaves the plan real (findable in the plans tab, attached via its own item reference) but unlinked and the item unflipped — complete by hand or re-run the update; a failed event insert leaves the flip and link standing.
+Report to Donnie: the item title, **old → new** status (or "already `20 Planning` — no flip, no event"), the plan title with its summary, the contributors ensured, the event referenced by title (on re-entry, note the stale prior event's date), and the item's `public-url`. No transactions — if a later write failed, say exactly what landed: a failed item update leaves the plan real (findable in the plans tab, attached via its own item reference) but unlinked and the item unflipped — complete by hand or re-run the update; a failed event insert leaves the flip and link standing.
 
 ## Inputs
 
