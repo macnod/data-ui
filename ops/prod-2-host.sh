@@ -56,21 +56,33 @@ dockerfile_ros_targets() {
     # host_base's Quicklisp replay, one source of truth with the
     # image build: every "RUN ulimit -n N && ros install <rest>" line
     # in the Dockerfile, reduced to what a host-side
-    # "ros install <target>" can actually take. The reduction is the
-    # point — the rest of the RUN line is Docker's, not ours: a shell
-    # chain after && is not replayable as arguments, Docker quoting
-    # is not shell quoting (text from an expansion is never re-quoted
-    # or re-expanded), and a target still holding ${...} references a
-    # Docker ARG (sbcl-bin — host_base installs it separately from
-    # the parsed ARG), not a Quicklisp project.
+    # "ros install <target>" can actually take — in FILE ORDER.
+    # Both halves are load-bearing:
+    #  - Reduction: the rest of the RUN line is Docker's, not ours —
+    #    a shell chain after && is not replayable as arguments,
+    #    Docker quoting is not shell quoting (text from an expansion
+    #    is never re-quoted or re-expanded), and a target still
+    #    holding ${...} references a Docker ARG (sbcl-bin —
+    #    host_base installs it separately from the parsed ARG), not a
+    #    Quicklisp project.
+    #  - File order: it is the dependency order. The macnod/* github
+    #    systems resolve each other through ~/.roswell/local-projects,
+    #    not the quicklisp dist ("specific order important here" in
+    #    the Dockerfile), so a later system's load needs the earlier
+    #    ones installed first — sort -u alphabetized dc-eclectic
+    #    ahead of dc-time/p-log and the bake died SYSTEM-NOT-FOUND.
+    #    Duplicates (post-reduction) keep their first occurrence.
     local line
+    local -A seen=()
     while IFS= read -r line; do
         line="${line%%&&*}"
         line="${line//\"/}"
         line="${line%${line##*[![:space:]]}}"   # the && cut leaves the space before it
         [[ -n "$line" && "$line" != *'${'* ]] || continue
+        [[ -z "${seen[$line]+x}" ]] || continue
+        seen[$line]=1
         printf '%s\n' "$line"
-    done < <(sed -n 's/^RUN ulimit -n [0-9]* && ros install //p' "$1" | sort -u)
+    done < <(sed -n 's/^RUN ulimit -n [0-9]* && ros install //p' "$1")
 }
 
 # ---------------------------------------------------------------------------

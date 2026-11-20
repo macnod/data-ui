@@ -4270,28 +4270,36 @@ source_host_fns() { # extract testable functions from ops/prod-2-host.sh
 }
 
 test_host_ros_replay_is_clean() {
-    # The first-bake regression: Dockerfile lines "RUN ulimit -n N &&
-    # ros install <rest>" must replay as ONE clean host-side target —
-    # never the && chain, never Docker quoting, never an unexpanded
-    # ${ARG} (the literal ${SBCL_VERSION} reached roswell's install.ros
-    # and crashed it with UNDEFINED-FUNCTION on the first bake).
+    # Two bake regressions, one replay: Dockerfile lines
+    # "RUN ulimit -n N && ros install <rest>" must play back as ONE
+    # clean host-side target, in FILE ORDER. Bake #1 died on shape —
+    # the && chain, Docker quoting, and the unexpanded ${SBCL_VERSION}
+    # reached roswell as literal argv (UNDEFINED-FUNCTION). Bake #2
+    # died on order — sort -u alphabetized macnod/dc-eclectic ahead of
+    # macnod/dc-time, but the github local-projects systems resolve
+    # each other, not the quicklisp dist ("specific order important
+    # here" in the Dockerfile), so eclectic's load died
+    # SYSTEM-NOT-FOUND.
     source_host_fns
     local d="$H/Dockerfile.fixture"
     cat > "$d" <<'EOF'
 ARG SBCL_VERSION="2.5.10"
 RUN ulimit -n 1048576 && ros install "sbcl-bin/${SBCL_VERSION}" && ros use "sbcl-bin/${SBCL_VERSION}"
 RUN ulimit -n 1048576 && ros install 3bmd
-RUN ulimit -n 1048576 && ros install macnod/rbac
+RUN ulimit -n 1048576 && ros install macnod/dc-time
+RUN ulimit -n 1048576 && ros install macnod/dc-eclectic
 RUN ulimit -n 1048576 && ros install hunchentoot && ros use hunchentoot
+RUN ulimit -n 1048576 && ros install macnod/dc-time
 RUN ulimit -n 1048576 && ros run -- --eval "(ql:register-local-projects)" --quit
 RUN ulimit -n 1048576 && mkdir -p /app/shared-files
 EOF
     local out
     out=$(dockerfile_ros_targets "$d")
     assert_eq "$out" "3bmd
-hunchentoot
-macnod/rbac" "exactly the plain targets, sorted: sbcl-bin skipped (installed from the parsed ARG), the && tail cut, ros run / mkdir never harvested"
-    # Belt and braces on the exact argv shapes that crashed the bake.
+macnod/dc-time
+macnod/dc-eclectic
+hunchentoot" "the plain targets in FILE order — dc-eclectic stays after dc-time (alphabetical flips them), the duplicate dc-time keeps one, sbcl-bin is skipped (installed from the parsed ARG), the && tail is cut, ros run / mkdir never harvested"
+    # Belt and braces on the exact argv shapes that crashed bake #1.
     assert_not_contains "$out" '${' "no unexpanded Docker ARG text"
     assert_not_contains "$out" '"' "no Docker quoting carried into host argv"
     assert_not_contains "$out" '&&' "no shell chain carried into host argv"
