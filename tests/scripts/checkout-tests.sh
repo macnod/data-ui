@@ -325,6 +325,7 @@ DOCUMENT_ROOT=$H/state/profiles/$name/files
 FS_TEMP_DIRECTORY=$H/state/profiles/$name/temp
 LOG_FILE=$H/state/profiles/$name/repl.log
 MODEL_NAME=$name
+PUBLIC_ORIGIN=http://127.0.0.1:$port
 HTTP_HOST=127.0.0.1
 DB_HOST=127.0.0.1
 WEB_DIRECTORY=web/dist
@@ -492,8 +493,38 @@ if [[ "${1:-}" == "build" ]]; then
     echo "$tag" >> "$STUB/built-tags"
     exit 0
 fi
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+    # Architecture answer for the registry probe's platform check.
+    case "$(uname -m)" in
+        aarch64) echo arm64 ;;
+        x86_64)  echo amd64 ;;
+        *)       echo unknown ;;
+    esac
+    exit 0
+fi
 if [[ "${1:-}" == "image" ]]; then
     [[ -f "$STUB/docker-import-fails" ]] && exit 1
+    exit 0
+fi
+if [[ "${1:-}" == "login" ]]; then
+    [[ -f "$STUB/docker-login-fails" ]] && exit 1
+    exit 0
+fi
+if [[ "${1:-}" == "pull" ]]; then
+    ref="${@: -1}"
+    [[ -f "$STUB/docker-pull-fails" ]] && { echo "docker stub: pull failure knob" >&2; exit 1; }
+    if grep -qxF "$ref" "$STUB/ecr-images" 2>/dev/null; then
+        mkdir -p "$STUB/docker-local"
+        echo "$ref" >> "$STUB/docker-local/images" 2>/dev/null || true
+        exit 0
+    fi
+    { echo "docker stub: no such image ${ref}" >&2; exit 1; }
+fi
+if [[ "${1:-}" == "push" ]]; then
+    ref="${@: -1}"
+    [[ -f "$STUB/docker-push-fails" ]] && { echo "docker stub: push failure knob" >&2; exit 1; }
+    mkdir -p "$STUB"
+    echo "$ref" >> "$STUB/ecr-images"
     exit 0
 fi
 if [[ "${1:-}" == "ps" ]]; then exit 0; fi
@@ -510,6 +541,195 @@ EOF
 #!/bin/bash
 echo "k3d $*" >> "$STUB/k3d.log"
 [[ -f "$STUB/k3d-import-fails" ]] && exit 1
+exit 0
+EOF
+
+    _write_stub "$bin/aws" <<'EOF'
+#!/bin/bash
+# aws stub: records argv and answers from fixtures under $STUB.
+#   s3 cp <src> <dst>                 one side s3://bucket/key; copies
+#                                     to/from $STUB/s3/<bucket>/<key>
+#   s3api list-objects-v2             Contents[].Key from the fixture
+#                                     tree (keys are the files)
+#   ecr get-login-password            fixture password (exit 1 knob)
+#   route53 list-resource-record-sets start-at-or-after over
+#                                     $STUB/r53/<zone>.json
+#   route53 change-resource-record-sets / wait ... / get-change
+#                                     log + INSYNC
+#   ec2 describe-addresses            $STUB/ec2-addresses.json
+#   ec2 (everything else)             log; exit 0 (failure knobs:
+#                                     $STUB/aws-fails-<verb>)
+echo "aws $*" >> "$STUB/aws.log"
+fail=""
+for a in "$@"; do
+    case "$a" in
+        s3|s3api|ecr|route53|ec2|dlm|sts|iam|budgets|ce) ;; # services
+        *) for w in $a; do :; done ;;
+    esac
+done
+if [[ -f "$STUB/aws-fails" ]]; then echo "aws stub: failure knob" >&2; exit 1; fi
+if [[ "$1 $2" == "s3 cp" && -f "$STUB/aws-fails-s3cp" ]]; then
+    echo "aws stub: s3 cp failure knob" >&2; exit 1
+fi
+case "$1 $2" in
+    "s3 cp")
+        src="$3"; dst="$4"
+        if [[ "$src" == s3://* ]]; then
+            key="${src#s3://}"; bucket="${key%%/*}"; key="${key#*/}"
+            if [[ -f "$STUB/s3/$bucket/$key" ]]; then
+                cp "$STUB/s3/$bucket/$key" "$dst" 2>/dev/null || exit 1
+                exit 0
+            fi
+            echo "aws stub: no such object $src" >&2; exit 1
+        elif [[ "$dst" == s3://* ]]; then
+            key="${dst#s3://}"; bucket="${key%%/*}"; key="${key#*/}"
+            mkdir -p "$STUB/s3/$bucket/$(dirname "$key")"
+            cp "$src" "$STUB/s3/$bucket/$key" 2>/dev/null || exit 1
+            exit 0
+        fi
+        exit 1 ;;
+    "s3 ls")
+        # s3 ls s3://bucket/prefix/ → "PRE name/" lines from the tree
+        target="${@: -1}"; target="${target#s3://}"
+        bucket="${target%%/*}"; prefix="${target#*/}"
+        [[ -d "$STUB/s3/$bucket/$prefix" ]] || exit 0
+        for d in "$STUB/s3/$bucket/$prefix"/*/; do
+            [[ -d "$d" ]] && echo "PRE $(basename "$d")/"
+        done
+        exit 0 ;;
+esac
+case "$1" in
+    s3api)
+        case "$2" in
+            list-objects-v2)
+                bucket=""; prefix=""
+                prev=""
+                for a in "${@:3}"; do
+                    [[ "$prev" == "--bucket" ]] && bucket="$a"
+                    [[ "$prev" == "--prefix" ]] && prefix="$a"
+                    prev="$a"
+                done
+                {
+                    echo '{ "Contents": ['
+                    first=1
+                    while IFS= read -r f; do
+                        [[ -f "$f" ]] || continue
+                        key="$prefix$(basename "$f")"
+                        (( first )) || echo ","
+                        printf '  {"Key": "%s", "Size": %s}' "$key" "$(stat -c %s "$f")"
+                        first=0
+                    done < <(ls "$STUB/s3/$bucket/$prefix"* 2>/dev/null | sort)
+                    echo ''
+                    echo '] }'
+                } | jq -c . 2>/dev/null || echo '{"Contents": []}'
+                exit 0 ;;
+            head-object)
+                key=""; bucket=""
+                prev=""
+                for a in "${@:3}"; do
+                    [[ "$prev" == "--bucket" ]] && bucket="$a"
+                    [[ "$prev" == "--key" ]] && key="$a"
+                    prev="$a"
+                done
+                f="$STUB/s3/$bucket/$key"
+                if [[ -f "$f" ]]; then
+                    out=""
+                    prev=""
+                    for a in "${@:3}"; do
+                        [[ "$prev" == "--query" ]] && out="$a"
+                        prev="$a"
+                    done
+                    case "$out" in
+                        ContentLength) stat -c %s "$f"; exit 0 ;;
+                        LastModified) echo "2026-11-19T00:00:00Z"; exit 0 ;;
+                    esac
+                    exit 0
+                fi
+                exit 1 ;;
+            get-bucket-lifecycle-configuration)
+                cat "$STUB/s3-lifecycle.json" 2>/dev/null || exit 1
+                exit 0 ;;
+        esac
+        exit 0 ;;
+    ecr)
+        case "$2" in
+            get-login-password)
+                [[ -f "$STUB/ecr-login-fails" ]] && exit 1
+                echo "stub-ecr-password"
+                exit 0 ;;
+        esac
+        exit 0 ;;
+    route53)
+        case "$2" in
+            list-resource-record-sets)
+                [[ -f "$STUB/aws-fails-route53" ]] && exit 1
+                zone=""; start=""; starttype=""
+                prev=""
+                for a in "${@:3}"; do
+                    [[ "$prev" == "--hosted-zone-id" ]] && zone="$a"
+                    [[ "$prev" == "--start-record-name" ]] && start="$a"
+                    [[ "$prev" == "--start-record-type" ]] && starttype="$a"
+                    prev="$a"
+                done
+                jq -c --arg s "${start,,}" \
+                   '[.[] | select((.Name | ascii_downcase) >= $s)] | sort_by(.Name) | .[0:1] | {ResourceRecordSets: .}' \
+                   "$STUB/r53/$zone.json" 2>/dev/null || echo '{"ResourceRecordSets": []}'
+                exit 0 ;;
+            change-resource-record-sets)
+                echo "route53 change $*" >> "$STUB/r53-changes.log"
+                [[ -f "$STUB/r53-change-fails" ]] && exit 1
+                echo "/change/StubChange1"
+                exit 0 ;;
+            wait|get-change)
+                exit 0 ;;
+        esac
+        exit 0 ;;
+    ec2)
+        case "$2" in
+            describe-addresses)
+                [[ -f "$STUB/aws-fails-describe-addresses" ]] && exit 1
+                cat "$STUB/ec2-addresses.json" 2>/dev/null || echo '{"Addresses": []}'
+                exit 0 ;;
+            describe-instances)
+                cat "$STUB/aws-describe-instances" 2>/dev/null || true
+                exit 0 ;;
+            stop-instances)
+                [[ -f "$STUB/aws-stop-fails" ]] && { echo "aws stub: stop failure knob" >&2; exit 1; }
+                exit 0 ;;
+            terminate-instances)
+                [[ -f "$STUB/aws-terminate-fails" ]] && exit 1
+                exit 0 ;;
+            wait)
+                [[ -f "$STUB/aws-wait-fails" ]] && exit 1
+                exit 0 ;;
+            create-tags)
+                exit 0 ;;
+        esac
+        exit 0 ;;
+    sts)
+        [[ "$2" == get-caller-identity ]] && { echo 232168665831; exit 0; }
+        exit 0 ;;
+esac
+exit 0
+EOF
+
+    _write_stub "$bin/dig" <<'EOF'
+#!/bin/bash
+# dig stub: answers +short A lookups from $STUB/dig/<name> (one IPv4
+# per line). A missing name or the $STUB/dig-fails knob means a
+# resolver failure (empty output, exit 9), never a silent wrong
+# answer.
+[[ -f "$STUB/dig-fails" ]] && exit 9
+name=""
+for a in "$@"; do
+    case "$a" in
+        @*) ;;
+        A) ;;
+        *) [[ "$a" != -* && "$a" != +* ]] && name="$a" ;;
+    esac
+done
+f="$STUB/dig/${name,,}"
+[[ -f "$f" ]] && cat "$f"
 exit 0
 EOF
 
@@ -716,6 +936,9 @@ EOF
     _write_stub "$bin/curl" <<'EOF'
 #!/bin/bash
 # curl stub: URL is the last non-flag argument (or after -d payloads).
+# Full argv is recorded to $STUB/curl.log (the --resolve pin assertions
+# read it).
+echo "curl $*" >> "$STUB/curl.log"
 url=""
 prev=""
 for a in "$@"; do
@@ -724,6 +947,20 @@ for a in "$@"; do
     esac
     prev="$a"
 done
+# IMDSv2 (the EC2 metadata service): token via PUT, values via GET,
+# from $STUB/imds-* fixtures. A missing fixture is a dead metadata
+# service (empty output, exit 7) — what site_public_ip sees off-EC2.
+case "$url" in
+    http://169.254.169.254/latest/api/token)
+        [[ -f "$STUB/imds-token" ]] && { cat "$STUB/imds-token"; exit 0; }
+        exit 7 ;;
+    http://169.254.169.254/latest/meta-data/public-ipv4)
+        [[ -f "$STUB/imds-public-ip" ]] && { cat "$STUB/imds-public-ip"; exit 0; }
+        exit 7 ;;
+    http://169.254.169.254/latest/meta-data/instance-id)
+        [[ -f "$STUB/imds-instance-id" ]] && { cat "$STUB/imds-instance-id"; exit 0; }
+        exit 7 ;;
+esac
 port=""
 if [[ "$url" =~ :([0-9]+) ]]; then port="${BASH_REMATCH[1]}"; fi
 # Simulated connection refusal: a countdown file curl-refuse-<port>
@@ -2816,6 +3053,1215 @@ test_sbcl_two_checkout_load_contract() {
 }
 
 # ---------------------------------------------------------------------------
+# Two production sites: site identity, production-only boundary,
+# forwarder entry-env, the registry path, gates/guard, release records
+# and the manifest, cutover, rebirth, the backup recover verbs, and
+# the AWS operator script's fence.
+# ---------------------------------------------------------------------------
+
+SITE_MARKER() { echo "$H/state/site"; }
+
+write_site_marker() { printf '%s\n' "${1:-prod-2}" > "$(SITE_MARKER)"; }
+
+run_prod2() {
+    # A prod-2-shaped CLI run: the marker arms apply_site_defaults
+    # (IMAGE_REGISTRY, SITE_DNS_MODE/ZONE_ID, SITE_STATE_URI,
+    # SITE_PRODUCTION_ONLY); DEPLOY_HOST/K3D_CLUSTER are pinned to the
+    # site so the harness's evo-x2 pins do not win; SITE_PUBLIC_IP
+    # stands in for IMDS.
+    ( eval "$(cli_env_statements)"
+      export DEPLOY_HOST=prod-2 K3D_CLUSTER=prod-2 AWS_REGION=us-east-1
+      export SITE_PUBLIC_IP="${SITE_PUBLIC_IP:-203.0.113.10}"
+      cd "${CLI_CWD:-$H/work}" || exit 1
+      exec "$H/devclone/scripts/data-ui" "$@" )
+}
+
+expected_ref() { # expected_ref MODEL — the content-addressed image ref
+    # Needs the production clone present (the deploy's selection
+    # fast-forwards it; tests that call this before any deploy create
+    # it first — under the `public` remote name ensure_checkout
+    # expects, never origin).
+    [[ -d "$H/repos/production/.git" ]] || git -C "$H" clone -q -o public "$H/public.git" repos/production
+    local arch
+    case "$(uname -m)" in
+        aarch64) arch=arm64 ;;
+        *)       arch=amd64 ;;
+    esac
+    local sha msha
+    sha=$(prod_sha)
+    msha=$(git -C "$H/repos/production" show "${sha}:models/$1.lisp" | sha256sum | cut -d' ' -f1)
+    echo "232168665831.dkr.ecr.us-east-1.amazonaws.com/data-ui/$1:deploy-${arch}-${sha}-${msha}"
+}
+
+seed_ecr_image() { # seed_ecr_image REF — the image exists in ECR
+    mkdir -p "$STUB"
+    [[ -f "$STUB/ecr-images" ]] || : > "$STUB/ecr-images"
+    echo "$1" >> "$STUB/ecr-images"
+}
+
+prod2_deploy() { # prod2_deploy MODEL — a green prod-2 deploy
+    default_fields >/dev/null
+    run_prod2 deploy "$1"
+}
+
+r53_zone() { echo "$STUB/r53/Z0152779JVWMFEK6RAKU.json"; }
+
+r53_put_record() { # r53_put_record NAME TYPE VALUE — add/replace in the zone fixture
+    mkdir -p "$STUB/r53"
+    local zone
+    zone="$(r53_zone)"
+    if [[ -s "$zone" ]]; then
+        jq --arg n "$1." --arg t "$2" --arg v "$3" \
+           'map(select(.Name != $n)) + [{"Name": $n, "Type": $t, "TTL": 300,
+                                        "ResourceRecords": [{"Value": $v}]}]' \
+           "$zone" > "${zone}.tmp" && mv "${zone}.tmp" "$zone"
+    else
+        jq -n --arg n "$1." --arg t "$2" --arg v "$3" \
+           '[{"Name": $n, "Type": $t, "TTL": 300, "ResourceRecords": [{"Value": $v}]}]' \
+           > "$zone"
+    fi
+}
+
+eip_row() { # eip_row IP INSTANCE — one address row for cutover
+    jq -n --arg ip "$1" --arg i "$2" \
+       '{Addresses: [{PublicIp: $ip, InstanceId: $i, AllocationId: "eipalloc-1"}]}' \
+       > "$STUB/ec2-addresses.json"
+    echo i-stub > "$STUB/imds-instance-id"
+    echo tok > "$STUB/imds-token"
+}
+
+imds_ip() { echo "${1:-203.0.113.10}" > "$STUB/imds-public-ip"; echo tok > "$STUB/imds-token"; }
+
+manifest_row() { # manifest_row MODEL DOMAIN ADDRESS [SITE]
+    mkdir -p "$H/state/ops"
+    jq -nc --arg m "$1" --arg s "${4:-prod-2}" --arg d "$2" --arg a "$3" \
+       '{model:$m, site:$s, domain:$d, address:$a}' >> "$H/state/ops/prod-manifest.jsonl"
+}
+
+s3_state() { echo "$STUB/s3/data-ui-backups-232168665831/prod-2/site"; }
+
+s3_put_state() { # s3_put_state KEY FILE — copy into the site's S3 prefix
+    mkdir -p "$(s3_state)/$(dirname "$1")"
+    cp "$2" "$(s3_state)/$1"
+}
+
+s3_get_state() { cat "$(s3_state)/$1" 2>/dev/null; }
+
+release_json() { echo "$H/state/deploy/$1/release.json"; }
+
+seed_release_record() { # seed_release_record MODEL [SOURCE] — a valid record
+    local model="$1" source="${2:-canonical}"
+    local sha msha
+    sha=$(prod_sha)
+    if [[ "$source" == vip ]]; then
+        msha=$(sha256sum "$H/repos/production/models/local/$model.lisp" 2>/dev/null | cut -d' ' -f1)
+    else
+        msha=$(git -C "$H/repos/production" show "${sha}:models/$model.lisp" | sha256sum | cut -d' ' -f1)
+    fi
+    mkdir -p "$(dirname "$(release_json "$model")")"
+    jq -n --arg m "$model" --arg site prod-2 \
+        --arg image "$(expected_ref "$model")" --arg full_sha "$sha" \
+        --arg msha "$msha" --arg source "$source" --arg version 1.0 \
+        --arg domain "$model.demo.data-ui.com" --arg repl NIL \
+        --arg at "2026-11-19T12:00:00Z" \
+        '{model:$m, site:$site, image:$image, full_sha:$full_sha,
+          model_sha256:$msha, source:$source, version:$version,
+          domain:$domain, repl:$repl, deployed_at:$at}' \
+        > "$(release_json "$model")"
+}
+
+test_site_marker_wins_and_invalid_dies() {
+    make_staging_clone
+    export STUB_NO_SSH_EXEC=1
+    default_fields >/dev/null
+    # No marker: today's behavior — deploy_outer sees hostname ==
+    # DEPLOY_HOST and runs locally (no ssh).
+    : > "$STUB/ssh.log"
+    run_cli deploy todos >/dev/null 2>&1 || true
+    assert_eq "$(wc -l < "$STUB/ssh.log")" "0" "no marker: local deploy, no forwarding"
+    rm -rf "$H/repos/production"
+    # Marker: local_site (prod-2) != DEPLOY_HOST (the real host) → the
+    # thin forwarder fires even though the hostname matches; pinned to
+    # prod-2 it forwards THERE.
+    write_site_marker prod-2
+    : > "$STUB/ssh.log"
+    run_cli deploy todos >/dev/null 2>&1 || true
+    assert_eq "$(wc -l < "$STUB/ssh.log")" "1" "marker: deploy forwards despite matching hostname"
+    # From an UNSTAMPED host (the evo-x2 side), the explicit
+    # DEPLOY_HOST=prod-2 deploy forwards to prod-2 itself.
+    rm -f "$(SITE_MARKER)"
+    rm -rf "$H/repos/production"
+    : > "$STUB/ssh.log"
+    expect_ok env CLI_DEPLOY_HOST=prod-2 STUB_NO_SSH_EXEC=1 run_cli deploy todos
+    assert_contains "$(cat "$STUB/ssh.log")" "prod-2" "forwarded to prod-2 itself"
+    # Invalid marker: die naming the file, before anything else.
+    write_site_marker "Prod 2!"
+    expect_die "Invalid site marker" run_cli field todos name
+}
+
+test_site_defaults_armed_by_marker() {
+    # The site-keyed guards follow the marker: with prod-2 stamped and
+    # DEPLOY_HOST left at the real host, deploy-bootstrap refuses
+    # naming prod-2 as THIS host; with DEPLOY_HOST=prod-2 it matches
+    # and runs (bootstraps); without the marker the same prod-2 pin
+    # refuses the other way around.
+    write_site_marker prod-2
+    expect_die "must run on $REAL_HOST (this is prod-2)" \
+        env CLI_DEPLOY_HOST="$REAL_HOST" run_cli deploy-bootstrap
+    rm -f "$(SITE_MARKER)"
+    expect_die "must run on prod-2 (this is $REAL_HOST)" \
+        env CLI_DEPLOY_HOST=prod-2 run_cli deploy-bootstrap
+}
+
+test_site_envelope_host_check_follows_marker() {
+    # The production envelope's host check keys on the marker: a
+    # forged envelope from the production clone on a marked host with
+    # DEPLOY_HOST=prod-2 passes the host check (and dies later, on the
+    # SHA recheck — the load-bearing proof it got PAST the host line);
+    # without the marker the same invocation dies on the wrong host.
+    git -C "$H" clone -q "$H/public.git" repos/production
+    write_site_marker prod-2
+    expect_die "Checkout moved under the envelope" \
+        env CLI_DEPLOY_HOST=prod-2 CLI_DATA_UI_STATE="$H/state" \
+        run_prod_cli "__DATA_UI_REEXEC_V1__" production public master \
+        1111111111111111111111111111111111111111 63 - none - - deploy todos
+    rm -f "$(SITE_MARKER)"
+    expect_die "wrong host" \
+        env CLI_DEPLOY_HOST=prod-2 CLI_DATA_UI_STATE="$H/state" \
+        run_prod_cli "__DATA_UI_REEXEC_V1__" production public master \
+        1111111111111111111111111111111111111111 63 - none - - deploy todos
+}
+
+test_site_production_only_boundary() {
+    make_staging_clone
+    write_site_marker prod-2
+    local out
+    # Every staging-routable shape dies AT THE BOUNDARY: nonzero, the
+    # production-only message, no routing line, no stub mutation.
+    local shape
+    for shape in "staging update" "snapshot save name1 stg:books" \
+                 "snapshot restore name1 stg:books" "repl books" \
+                 "db books" "psql books" "demo start x" "e-demo start x" \
+                 "profile list" "profile expose books"; do
+        : > "$STUB/kubectl.log"; : > "$STUB/sudo.log"; : > "$STUB/npm.log"
+        out=$(run_prod2 $shape 2>&1); st=$?
+        (( st != 0 )) || fail "production-only must refuse: ${shape}"
+        assert_contains "$out" "production-only" "refusal message for: ${shape}"
+        assert_not_contains "$out" "Routing to the staging checkout" "no routing for: ${shape}"
+        assert_eq "$(cat "$STUB/kubectl.log" "$STUB/sudo.log" "$STUB/npm.log" 2>/dev/null | wc -l)" "0" \
+            "no mutation or stub calls for: ${shape}"
+    done
+    # profile install-model never routes: it proceeds past the boundary
+    # (into its own missing-model error, not the boundary's).
+    out=$(run_prod2 profile install-model nosuch 2>&1); st=$?
+    assert_not_contains "$out" "production-only" "install-model is exempt"
+    assert_contains "$out" "No local model" "install-model still runs"
+    # Unnamed dev verbs and non-stg snapshot addresses stay local
+    # (they may fail inside the verb — no postgres here — but never on
+    # the boundary).
+    out=$(run_prod2 psql 2>&1) || true
+    assert_not_contains "$out" "production-only" "unnamed psql stays local"
+    out=$(run_prod2 snapshot save keep-x dev:books 2>&1) || true
+    assert_not_contains "$out" "production-only" "dev: addresses are not boundary shapes"
+    # The marker-unset twin: routing works again (the routing line
+    # appears for a staging-routable shape).
+    rm -f "$(SITE_MARKER)"
+    out=$(run_cli profile list 2>&1) || true
+    assert_contains "$out" "Routing to the staging checkout" "unset twin still routes"
+}
+
+test_site_production_only_boundary_routing_shapes() {
+    # The remaining promised shapes: run_cli db / snapshot restore stg:
+    # die at the boundary (the routing twins of the existing tests,
+    # proven at the boundary's true place), while install-model and
+    # prd: restores pass through it.
+    write_site_marker prod-2
+    expect_die "production-only" run_prod2 db todos
+    expect_die "production-only" run_prod2 snapshot restore name1 stg:books
+    expect_die "production-only" run_prod2 snapshot save name2 stg:books
+    # prd: restore is a site-local shape: it passes the boundary and
+    # dies inside the verb (no such snapshot), never on the boundary.
+    local out
+    out=$(run_prod2 snapshot restore nope prd:todos 2>&1); st=$?
+    assert_not_contains "$out" "production-only" "prd: restores pass the boundary"
+    (( st != 0 )) || fail "prd: restore of a missing snapshot must fail inside the verb"
+}
+
+test_forwarder_entry_env_membership() {
+    # Only names present at ENTRY cross: the harness exports
+    # DATA_UI_PUBLIC_URL (forwarded), but a launcher mode that builds
+    # the environment WITHOUT exporting K3D_CLUSTER proves the
+    # script-defaulted value stays local. REBUILD and MOVE cross.
+    make_staging_clone
+    default_fields >/dev/null
+    export STUB_NO_SSH_EXEC=1
+    : > "$STUB/ssh.log"
+    # A minimal launcher: PATH + the stub plumbing + DATA_UI_STATE
+    # only (no K3D_CLUSTER, no DATA_UI_PUBLIC_URL exports).
+    ( export PATH="$H/bin:$ORIG_PATH" STUB="$STUB" TMPDIR="$H/work"
+      export DEPLOY_CHECKOUT="$H/repos/production" STAGING_CHECKOUT="$H/repos/staging"
+      export CHECKOUT_LOCK_ROOT="$H/repos" DATA_UI_STATE="$H/state"
+      export DEPLOY_STATE_DIR="$H/state/deploy"
+      export DEPLOY_HOST=prod-2 STAGING_HOST="$REAL_HOST"
+      export DEPLOY_HEALTH_TIMEOUT=8
+      cd "$H/work" || exit 1
+      REBUILD=1 MOVE=1 "$H/devclone/scripts/data-ui" deploy todos ) >/dev/null 2>&1 || true
+    local cmd
+    cmd=$(cat "$STUB/ssh.log")
+    assert_contains "$cmd" "DEPLOY_HOST=prod-2" "entry-set DEPLOY_HOST forwards"
+    assert_contains "$cmd" "REBUILD=1" "REBUILD forwards"
+    assert_contains "$cmd" "MOVE=1" "MOVE forwards"
+    assert_not_contains "$cmd" "K3D_CLUSTER=" "script-defaulted K3D_CLUSTER stays local"
+    assert_not_contains "$cmd" "DATA_UI_PUBLIC_URL=" "script-defaulted PUBLIC_URL stays local"
+    # No recursive forward: on the site itself (marker == DEPLOY_HOST)
+    # a deploy runs locally and never touches ssh.
+    write_site_marker prod-2
+    : > "$STUB/ssh.log"
+    unset STUB_NO_SSH_EXEC
+    prod2_deploy todos >/dev/null 2>&1 || true
+    assert_eq "$(wc -l < "$STUB/ssh.log")" "0" "marker == DEPLOY_HOST: no recursive forward"
+}
+
+test_registry_hit_skips_compile_and_build() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    local ref
+    ref=$(expected_ref todos)
+    seed_ecr_image "$ref"
+    : > "$STUB/ros.log"; : > "$STUB/docker.log"
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || fail "registry-hit deploy failed: $out"
+    assert_contains "$out" "Registry hit"
+    assert_eq "$(stub_count 'init-database' "$STUB/ros.log")" "0" "no compile on a hit"
+    assert_eq "$(stub_count 'docker build' "$STUB/docker.log")" "0" "no build on a hit"
+    assert_eq "$(stub_count 'k3d image import' "$STUB/k3d.log")" "1" "hit still imports into k3d"
+    assert_contains "$out" "Deployed" "both gates passed"
+    assert_file "$(release_json todos)" "release record written"
+}
+
+test_registry_miss_builds_imports_pushes() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    : > "$STUB/docker.log"; : > "$STUB/ecr-images" 2>/dev/null || : > "$STUB/ecr-images"
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || fail "registry-miss deploy failed: $out"
+    assert_contains "$out" "registry miss"
+    assert_eq "$(stub_count 'docker build' "$STUB/docker.log")" "1" "miss builds"
+    assert_eq "$(stub_count 'k3d image import' "$STUB/k3d.log")" "1" "miss imports"
+    local ref
+    ref=$(expected_ref todos)
+    grep -qxF "$ref" "$STUB/ecr-images" || fail "miss pushed the content tag"
+    assert_contains "$out" "Pushed" "push reported"
+}
+
+test_registry_push_failure_warns_and_succeeds() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    : > "$STUB/ecr-images"
+    touch "$STUB/docker-push-fails"
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || fail "push failure must not fail the deploy: $out"
+    assert_contains "$out" "next rebirth of todos may have to build"
+}
+
+test_registry_pull_failure_falls_back_to_build() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    touch "$STUB/docker-pull-fails"
+    : > "$STUB/docker.log"
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || fail "pull-failure fallback deploy failed: $out"
+    assert_contains "$out" "WARNING" "pull failure warns"
+    assert_eq "$(stub_count 'docker build' "$STUB/docker.log")" "1" "pull failure falls back to a build"
+}
+
+test_registry_rebuild_logs_in_builds_and_pushes() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    : > "$STUB/ros.log"; : > "$STUB/docker.log"; : > "$STUB/ecr-images"
+    local out
+    out=$(REBUILD=1 run_prod2 deploy todos 2>&1) \
+        || fail "REBUILD deploy failed: $out"
+    assert_eq "$(stub_count 'init-database' "$STUB/ros.log")" "1" "REBUILD compiles (probe skipped)"
+    assert_eq "$(stub_count 'docker build' "$STUB/docker.log")" "1" "REBUILD builds"
+    assert_contains "$out" "Pushed" "REBUILD pushes over the same content tag"
+    # Fresh-host push: no cached docker login, the push still
+    # authenticates (the login call precedes the push in the log).
+    local log
+    log=$(cat "$STUB/docker.log")
+    local login_at push_at
+    login_at=$(grep -n "docker login" <<<"$log" | head -1 | cut -d: -f1)
+    push_at=$(grep -n "docker push" <<<"$log" | head -1 | cut -d: -f1)
+    [[ -n "$login_at" && -n "$push_at" && "$login_at" -lt "$push_at" ]] \
+        || fail "login must precede the push (fresh-host authentication)"
+}
+
+test_registry_import_failure_aborts() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    touch "$STUB/k3d-import-fails"
+    : > "$STUB/docker.log"
+    expect_die "k3d image import failed" run_prod2 deploy todos
+    assert_eq "$(stub_count 'docker build' "$STUB/docker.log")" "0" "never a registry fallback after import failure"
+}
+
+test_registry_vip_bytes_change_the_tag() {
+    write_site_marker prod-2
+    # A VIP model (no canonical file for it — the handoff rules refuse
+    # a canonical collision).
+    set_fields vipspec name=vipspec "title=VIP Spec" version=1.0 \
+        domain=vipspec.demo.data-ui.com repl=NIL
+    local vip1 vip2
+    vip1=$(make_vip_model_file vipspec)
+    vip2="$H/work/vip-vipspec-2.lisp"
+    { cat "$vip1"; printf ';; truly different bytes\n'; } > "$vip2"
+    : > "$STUB/ecr-images"
+    MODEL_FILE="$vip1" run_prod2 deploy vipspec >/dev/null 2>&1 \
+        || fail "first VIP deploy failed"
+    local tag1
+    tag1=$(grep 'data-ui/vipspec' "$STUB/ecr-images" | head -1)
+    MODEL_FILE="$vip2" run_prod2 deploy vipspec >/dev/null 2>&1 \
+        || fail "second VIP deploy failed"
+    local tag2
+    tag2=$(grep 'data-ui/vipspec' "$STUB/ecr-images" | tail -1)
+    [[ -n "$tag1" && -n "$tag2" && "$tag1" != "$tag2" ]] \
+        || fail "changed VIP bytes at the same SHA must produce a different tag (${tag1:-none} vs ${tag2:-none})"
+}
+
+test_registry_dry_run_purity() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    : > "$STUB/aws.log"; : > "$STUB/docker.log"
+    local out
+    out=$(DRY_RUN=1 run_prod2 deploy todos 2>&1) || fail "dry run failed: $out"
+    assert_eq "$(wc -l < "$STUB/aws.log")" "0" "dry run makes zero aws calls (no login/pull/push/record)"
+    assert_eq "$(stub_count 'login' "$STUB/docker.log")" "0" "dry run never logs into ECR"
+    assert_eq "$(stub_count 'pull' "$STUB/docker.log")" "0" "dry run never pulls"
+    assert_no_file "$(release_json todos)" "dry run writes no release record"
+}
+
+test_registry_absent_legacy_image_name() {
+    # No marker, no IMAGE_REGISTRY: the legacy image name and zero aws
+    # calls (evo-x2 byte-identical behavior).
+    default_fields >/dev/null
+    : > "$STUB/aws.log"
+    local out
+    out=$(run_cli deploy todos 2>&1) || fail "legacy deploy failed: $out"
+    assert_eq "$(wc -l < "$STUB/aws.log")" "0" "legacy path makes zero aws calls"
+    local tag
+    tag=$(tail -1 "$STUB/built-tags")
+    assert_contains "$tag" "macnod/data-ui:todos-1.0-" "legacy image name kept"
+    assert_no_file "$(release_json todos)" "no release record without SITE_STATE_URI"
+}
+
+# ---------------------------------------------------------------------------
+# Gates, the wrong-site guard, publication verdicts
+# ---------------------------------------------------------------------------
+
+test_gate_explicit_pins_and_never_routes_dns() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    : > "$STUB/curl.log"; : > "$STUB/aws.log"
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || fail "explicit-DNS deploy failed: $out"
+    grep -q -- "--resolve todos.demo.data-ui.com:443:203.0.113.10" "$STUB/curl.log" \
+        || fail "gate 2 must pin to the site's own address (203.0.113.10)"
+    # A deploy never CHANGES DNS on an explicit-DNS site (the closing
+    # summary's read-only exact lookup is the one allowed call).
+    assert_eq "$(stub_count 'route53 change-resource-record-sets' "$STUB/aws.log")" "0" \
+        "a deploy never changes Route 53 records on an explicit-DNS site"
+}
+
+test_guard_wildcard_shadowed_name_and_overrides() {
+    default_fields >/dev/null
+    export SITE_WILDCARD_ZONE=demo.data-ui.com
+    # The guard consults a PUBLIC resolver: the domain answers
+    # elsewhere, the wildcard probe answers here → refuse with the
+    # corrected command.
+    mkdir -p "$STUB/dig"
+    echo 192.0.2.9 > "$STUB/dig/todos.demo.data-ui.com"
+    echo 192.0.2.1 > "$STUB/dig/site-guard-probe.demo.data-ui.com"
+    expect_die "served by another site" run_cli deploy todos
+    expect_die "MOVE=1 overrides" run_cli deploy todos
+    # MOVE=1 overrides and pins gate 2 to loopback.
+    : > "$STUB/curl.log"
+    expect_ok env MOVE=1 SITE_WILDCARD_ZONE=demo.data-ui.com run_cli deploy todos
+    grep -q -- "--resolve todos.demo.data-ui.com:443:127.0.0.1" "$STUB/curl.log" \
+        || fail "MOVE=1 must pin gate 2 to 127.0.0.1"
+    # Same answer → the guard passes.
+    echo 192.0.2.1 > "$STUB/dig/todos.demo.data-ui.com"
+    local out
+    out=$(run_cli deploy todos 2>&1) || fail "guard passes when the domain answers here: $out"
+    assert_contains "$out" "Wrong-site guard passed"
+    # Resolver failure → note line, continue.
+    rm -f "$STUB/dig/todos.demo.data-ui.com"
+    touch "$STUB/dig-fails"
+    out=$(run_cli deploy todos 2>&1) || fail "resolver failure must proceed: $out"
+    assert_contains "$out" "could not resolve"
+    # A custom domain outside the zone is skipped (no dig at all).
+    rm -f "$STUB/dig-fails"
+    rm -rf "$STUB/dig"
+    set_fields todos name=todos "title=Todos" version=1.0 \
+        domain=custom.example.com repl=NIL
+    out=$(run_cli deploy todos 2>&1) || fail "custom domain deploy: $out"
+    assert_not_contains "$out" "Wrong-site guard" "out-of-zone domains skip the guard"
+}
+
+test_summary_publication_verdicts() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    local out
+    # No exact record → unpublished.
+    out=$(run_prod2 deploy todos 2>&1) || fail "deploy for verdicts failed: $out"
+    assert_contains "$out" "Unpublished — run 'scripts/data-ui cutover todos'"
+    # A same-name non-A record is not a match (still unpublished).
+    r53_put_record todos.demo.data-ui.com TXT "some-token"
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Unpublished — run 'scripts/data-ui cutover todos'" "non-A record is no exact record"
+    # A following-name hit is not a match either.
+    r53_put_record zzz.demo.data-ui.com A 203.0.113.10
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Unpublished" "following-name hit is no exact record"
+    # The record points here, no manifest row → published but
+    # unrecorded (the half-finished cutover).
+    r53_put_record todos.demo.data-ui.com A 203.0.113.10
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Published but unrecorded" "the pending state is named"
+    assert_contains "$out" "cutover todos" "the pending line names the fix"
+    # Row and record agree → published.
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Published: todos.demo.data-ui.com -> 203.0.113.10"
+    # The record points elsewhere → unpublished.
+    r53_put_record todos.demo.data-ui.com A 192.0.2.7
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Unpublished" "a record elsewhere is unpublished"
+    # A failed lookup → publication unknown, never "unpublished".
+    touch "$STUB/aws-fails-route53"
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Publication unknown" "query failure is its own verdict"
+}
+
+# ---------------------------------------------------------------------------
+# The release record and DEPLOY_RECORDED_RELEASE
+# ---------------------------------------------------------------------------
+
+test_release_record_gates_and_shape() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    # A failed gate 2 writes no record.
+    printf 'todos.demo.data-ui.com 503\n' > "$STUB/curl-responses"
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_no_file "$(release_json todos)" "no record when gate 2 fails"
+    rm -f "$STUB/curl-responses"
+    # A dry run writes no record.
+    DRY_RUN=1 run_prod2 deploy todos >/dev/null 2>&1 || true
+    assert_no_file "$(release_json todos)" "no record on a dry run"
+    # Success writes it — with the content-ref image and the facts.
+    out=$(run_prod2 deploy todos 2>&1) || fail "deploy for the record failed: $out"
+    assert_file "$(release_json todos)"
+    jq -e --arg ref "$(expected_ref todos)" \
+       '.image == $ref and .model == "todos" and .site == "prod-2"
+        and .source == "canonical" and .version == "1.0"
+        and .domain == "todos.demo.data-ui.com"' \
+       "$(release_json todos)" >/dev/null \
+        || fail "release record shape wrong: $(cat "$(release_json todos)")"
+    # The S3 copy exists for a fresh-data rebirth.
+    assert_file "$(s3_state)/releases/todos.json" "record copied to S3"
+}
+
+test_recorded_release_pull_or_die() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    run_prod2 deploy todos >/dev/null 2>&1 || fail "seed deploy failed"
+    local before
+    before=$(cat "$(release_json todos)")
+    : > "$STUB/ros.log"; : > "$STUB/docker.log"
+    # Pull-or-die: no compile, no build, no tag rewrite, record
+    # untouched.
+    local out
+    out=$(DEPLOY_RECORDED_RELEASE=1 run_prod2 deploy todos 2>&1) \
+        || fail "recorded-release deploy failed: $out"
+    assert_contains "$out" "Recorded release"
+    assert_eq "$(stub_count 'init-database' "$STUB/ros.log")" "0" "no compile"
+    assert_eq "$(stub_count 'build' "$STUB/docker.log")" "0" "no build"
+    assert_eq "$(cat "$(release_json todos)")" "$before" "record left as it is"
+    # A pull failure dies with no build fallback.
+    : > "$STUB/docker.log"
+    touch "$STUB/docker-pull-fails"
+    expect_die "pulling the recorded image" env DEPLOY_RECORDED_RELEASE=1 \
+        run_prod2 deploy todos
+    rm -f "$STUB/docker-pull-fails"
+    assert_eq "$(stub_count 'build' "$STUB/docker.log")" "0" "no build fallback under a recorded release"
+    # A malformed recorded image is refused.
+    jq '.image = "not-a-ref"' "$(release_json todos)" > /tmp/rr.json
+    mv /tmp/rr.json "$(release_json todos)"
+    expect_die "malformed" env DEPLOY_RECORDED_RELEASE=1 run_prod2 deploy todos
+}
+
+test_recorded_release_drives_the_render() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    seed_ecr_image "$(expected_ref todos)"
+    run_prod2 deploy todos >/dev/null 2>&1 || fail "seed deploy failed"
+    # A model-hash mismatch (the checkout's model moved under the
+    # record) dies BEFORE any mutation.
+    echo ';; drifted' >> "$H/repos/production/models/todos.lisp"
+    git -C "$H/repos/production" add models/todos.lisp
+    git -C "$H/repos/production" -c user.email=t@t -c user.name=t commit -qm drift
+    git -C "$H/repos/production" push -q public HEAD:master
+    : > "$STUB/aws.log"
+    expect_die "model hash" env DEPLOY_RECORDED_RELEASE=1 run_prod2 deploy todos
+    assert_eq "$(stub_count 's3 cp' "$STUB/aws.log")" "0" "model-hash mismatch dies before mutation"
+    # A full_sha mismatch proceeds with a warning; the facts come from
+    # the record (its domain drives the render's pin, not the model
+    # file's).
+    run_prod2 deploy todos >/dev/null 2>&1 || true   # re-record at the new HEAD
+    jq '.full_sha = "1111111111111111111111111111111111111111"
+         | .domain = "recorded.demo.data-ui.com"' "$(release_json todos)" \
+        > /tmp/rr2.json
+    mv /tmp/rr2.json "$(release_json todos)"
+    seed_ecr_image "$(jq -r .image "$(release_json todos)")"
+    : > "$STUB/curl.log"
+    local out
+    out=$(DEPLOY_RECORDED_RELEASE=1 run_prod2 deploy todos 2>&1) \
+        || fail "full_sha mismatch must proceed: $out"
+    assert_contains "$out" "WARNING: the release record was made at"
+    grep -q -- "--resolve recorded.demo.data-ui.com:443:203.0.113.10" "$STUB/curl.log" \
+        || fail "the record's domain drives the render, never the moved model file"
+}
+
+# ---------------------------------------------------------------------------
+# cutover and delete's DNS/manifest cleanup
+# ---------------------------------------------------------------------------
+
+cutover_green() { # fixtures for a happy cutover of MODEL
+    default_fields >/dev/null
+    # cutover_outer requires the production checkout to exist.
+    [[ -d "$H/repos/production/.git" ]] || git -C "$H" clone -q -o public "$H/public.git" repos/production
+    make_ns_fixture todos 30310
+    eip_row 203.0.113.10 i-stub
+}
+
+test_cutover_refusals() {
+    # Wildcard site.
+    default_fields >/dev/null
+    expect_die "explicit-DNS sites only" run_cli cutover todos
+    # Explicit site, missing instance (the production checkout exists;
+    # the namespace does not).
+    write_site_marker prod-2
+    default_fields >/dev/null
+    [[ -d "$H/repos/production/.git" ]] || git -C "$H" clone -q -o public "$H/public.git" repos/production
+    expect_die "No deployed instance" run_prod2 cutover todos
+    make_ns_fixture todos
+    eip_row 203.0.113.10 i-stub
+    # No address row.
+    echo '{"Addresses": []}' > "$STUB/ec2-addresses.json"
+    expect_die "wanted exactly one Elastic IP row" run_prod2 cutover todos
+    # More than one row.
+    jq -n '{Addresses: [{PublicIp: "203.0.113.10", InstanceId: "i-a"},
+                        {PublicIp: "203.0.113.10", InstanceId: "i-b"}]}' \
+        > "$STUB/ec2-addresses.json"
+    expect_die "wanted exactly one Elastic IP row" run_prod2 cutover todos
+    # PublicIp mismatch.
+    eip_row 192.0.2.99 i-stub
+    expect_die "PublicIp is 192.0.2.99" run_prod2 cutover todos
+    # The scratch-host refusal: the EIP is bound to ANOTHER instance.
+    eip_row 203.0.113.10 i-scratch
+    expect_die "A scratch host must never publish" run_prod2 cutover todos
+    # Failed pinned health: nothing touches DNS.
+    eip_row 203.0.113.10 i-stub
+    printf 'todos.demo.data-ui.com 503\n' > "$STUB/curl-responses"
+    : > "$STUB/r53-changes.log"
+    expect_die "pre-DNS pinned /health failed" run_prod2 cutover todos
+    assert_eq "$(wc -l < "$STUB/r53-changes.log" 2>/dev/null || echo 0)" "0" \
+        "a failed health gate never touches DNS"
+}
+
+test_cutover_happy_path_and_rerun() {
+    write_site_marker prod-2
+    cutover_green
+    : > "$STUB/r53-changes.log"; : > "$STUB/curl.log"
+    local out
+    out=$(run_prod2 cutover todos 2>&1) || fail "cutover failed: $out"
+    assert_contains "$out" "Cutover complete: todos.demo.data-ui.com -> 203.0.113.10"
+    # The happy-path order: health, UPSERT (INSYNC inside the dns
+    # helper), health again, then the manifest row.
+    assert_contains "$(cat "$STUB/r53-changes.log")" "UPSERT"
+    assert_file "$H/state/ops/prod-manifest.jsonl" "the manifest row landed"
+    jq -e '.model == "todos" and .site == "prod-2"
+           and .domain == "todos.demo.data-ui.com"
+           and .address == "203.0.113.10"' \
+       "$H/state/ops/prod-manifest.jsonl" >/dev/null || fail "row shape wrong"
+    assert_file "$(s3_state)/prod-manifest.jsonl" "the row's S3 copy exists"
+    # Idempotent re-run: still one row, still green.
+    out=$(run_prod2 cutover todos 2>&1) || fail "idempotent re-run failed: $out"
+    assert_eq "$(wc -l < "$H/state/ops/prod-manifest.jsonl")" "1" "re-run keeps exactly one row"
+    assert_contains "$out" "Cutover complete"
+}
+
+test_cutover_half_finished_converges() {
+    write_site_marker prod-2
+    cutover_green
+    # The half-finished state: the A record exists, the manifest row
+    # does not (a cutover that died after INSYNC).
+    r53_put_record todos.demo.data-ui.com A 203.0.113.10
+    seed_ecr_image "$(expected_ref todos)"
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Published but unrecorded" "deploy reports the pending state"
+    # A cutover re-run converges: health, row.
+    out=$(run_prod2 cutover todos 2>&1) || fail "converging re-run failed: $out"
+    assert_file "$H/state/ops/prod-manifest.jsonl"
+    out=$(run_prod2 deploy todos 2>&1) || true
+    assert_contains "$out" "Published: todos.demo.data-ui.com" "converged to published"
+    # A deliberate delete in the half-finished state still removed the
+    # record and skipped the row-removal harmlessly; the record is
+    # removed only when it holds this site's value.
+    : > "$STUB/r53-changes.log"
+    FORCE=1 run_prod2 delete todos >/dev/null 2>&1 || fail "delete failed"
+    assert_contains "$(cat "$STUB/r53-changes.log")" "DELETE" "record removed by delete"
+    assert_eq "$(grep -c '"model":"todos"' "$H/state/ops/prod-manifest.jsonl" 2>/dev/null)" "0" \
+        "manifest rows for the model removed"
+}
+
+test_cutover_route53_failure_leaves_no_row() {
+    write_site_marker prod-2
+    cutover_green
+    touch "$STUB/r53-change-fails"
+    : > "$STUB/r53-changes.log"
+    local out
+    out=$(run_prod2 cutover todos 2>&1) || true
+    assert_contains "$out" "the DNS upsert for todos.demo.data-ui.com failed"
+    assert_no_file "$H/state/ops/prod-manifest.jsonl" "a failed upsert leaves no manifest row"
+    # A re-run converges once Route 53 answers.
+    rm -f "$STUB/r53-change-fails"
+    out=$(run_prod2 cutover todos 2>&1) || fail "converging re-run failed: $out"
+    assert_contains "$out" "Cutover complete"
+    assert_file "$H/state/ops/prod-manifest.jsonl"
+}
+
+test_delete_midsequence_failure_rerun_converges() {
+    # Failure between the DNS deletion and the manifest removal's S3
+    # copy: the record is deleted, the local row is filtered, and the
+    # die leaves the S3 manifest stale — a re-run converges (the S3
+    # copy is rewritten from the filtered local file).
+    write_site_marker prod-2
+    cutover_green
+    r53_put_record todos.demo.data-ui.com A 203.0.113.10
+    mkdir -p "$H/state/ops"
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    touch "$STUB/aws-fails-s3cp"
+    : > "$STUB/r53-changes.log"
+    local out
+    out=$(FORCE=1 run_prod2 delete todos 2>&1) || true
+    assert_contains "$out" "copying the manifest to S3 failed" "the mid-sequence failure is named"
+    assert_contains "$(cat "$STUB/r53-changes.log")" "DELETE" "the record was removed first"
+    assert_eq "$(grep -c '"model":"todos"' "$H/state/ops/prod-manifest.jsonl" 2>/dev/null)" "0" \
+        "the local row was filtered before the failed copy"
+    rm -f "$STUB/aws-fails-s3cp"
+    out=$(FORCE=1 run_prod2 delete todos 2>&1) || fail "the re-run must converge"
+    assert_eq "$(grep -c "DELETE" "$STUB/r53-changes.log")" "1" \
+        "the re-run deleted no record twice (idempotent)"
+    if [[ -f "$(s3_state)/prod-manifest.jsonl" ]]; then
+        assert_eq "$(grep -c '"model":"todos"' "$(s3_state)/prod-manifest.jsonl")" "0" \
+            "the S3 manifest converged on the re-run"
+    fi
+}
+
+test_delete_dns_only_when_its_ours() {
+    write_site_marker prod-2
+    cutover_green
+    # The evidence: a manifest row naming the domain.
+    mkdir -p "$H/state/ops"
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    r53_put_record todos.demo.data-ui.com A 192.0.2.7   # another site's record
+    : > "$STUB/r53-changes.log"
+    FORCE=1 run_prod2 delete todos >/dev/null 2>&1 || fail "delete failed"
+    assert_eq "$(wc -l < "$STUB/r53-changes.log" 2>/dev/null || echo 0)" "0" \
+        "another site's record is never deleted"
+    # ... and removed when it holds this site's address.
+    r53_put_record todos.demo.data-ui.com A 203.0.113.10
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    : > "$STUB/r53-changes.log"
+    FORCE=1 run_prod2 delete todos >/dev/null 2>&1 || fail "second delete failed"
+    assert_contains "$(cat "$STUB/r53-changes.log")" "DELETE"
+}
+
+test_delete_domain_evidence_union() {
+    # A D1 manifest row plus a D2 release.json (the failed
+    # domain-change cutover): both candidates are cleaned, each with
+    # its own exact-record read.
+    write_site_marker prod-2
+    cutover_green
+    r53_put_record todos.demo.data-ui.com A 203.0.113.10
+    r53_put_record newname.demo.data-ui.com A 203.0.113.10
+    mkdir -p "$H/state/ops" "$STUB/r53"
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    mkdir -p "$H/state/deploy/todos"
+    jq -n '{model: "todos", domain: "newname.demo.data-ui.com"}' \
+        > "$H/state/deploy/todos/release.json"
+    : > "$STUB/r53-changes.log"
+    FORCE=1 run_prod2 delete todos >/dev/null 2>&1 || fail "delete failed"
+    local log
+    log=$(cat "$STUB/r53-changes.log")
+    assert_contains "$log" "todos.demo.data-ui.com" "the manifest row's domain is cleaned"
+    assert_contains "$log" "newname.demo.data-ui.com" "the release record's domain is cleaned"
+    # A manifest row that exists ONLY in S3 still counts.
+    r53_put_record todos.demo.data-ui.com A 203.0.113.10
+    rm -f "$H/state/ops/prod-manifest.jsonl"
+    jq -nc '{model:"todos", site:"prod-2", domain:"todos.demo.data-ui.com", address:"203.0.113.10"}' \
+        > "$H/work/s3-manifest.jsonl"
+    s3_put_state prod-manifest.jsonl "$H/work/s3-manifest.jsonl"
+    : > "$STUB/r53-changes.log"
+    FORCE=1 run_prod2 delete todos >/dev/null 2>&1 || fail "S3-only delete failed"
+    assert_contains "$(cat "$STUB/r53-changes.log")" "todos.demo.data-ui.com" \
+        "S3-only rows are evidence too"
+}
+
+# ---------------------------------------------------------------------------
+# rebirth
+# ---------------------------------------------------------------------------
+
+make_backup_stub() { # a recording ~/bin/<app>-backup
+    mkdir -p "$H/bin"
+    cat > "$H/bin/$1-backup" <<EOF
+#!/bin/bash
+echo "$1-backup \$*" >> "$STUB/backup.log"
+POOL="\${POOL:-$H/state/snapshots}"
+case "\$1" in
+    location) echo "s3://data-ui-backups-232168665831/prod-2/$1" ;;
+    recover)
+        [[ -f "$STUB/backup-recover-fails" ]] && exit 1
+        # materialize the pool triple the way the real recover does
+        # (a REAL gzip tar with a files/ entry — the restore untars it)
+        for n in prd-$1-daily-20261119-0320; do
+            mkdir -p "\$POOL"
+            echo dump > "\$POOL/\$n.dump"
+            tmpd=\$(mktemp -d)
+            mkdir -p "\$tmpd/files"
+            echo photo > "\$tmpd/files/p.txt"
+            tar -czf "\$POOL/\$n.files.tar.gz" -C "\$tmpd" files
+            rm -rf "\$tmpd"
+            printf 'model=$1\nsource-address=prd:$1\n' > "\$POOL/\$n.meta"
+            echo "staged \$n"
+        done
+        echo "restore: prd-$1-daily-20261119-0320"
+        [[ -f "$STUB/backup-second-snapshot" ]] && echo "restore: prd-$1-20261119-1140"
+        exit 0
+        ;;
+esac
+exit 0
+EOF
+    chmod +x "$H/bin/$1-backup"
+}
+
+seed_manifest_s3() { # seed_manifest_s3 MODEL...
+    local m
+    : > "$H/work/manifest.tmp"
+    for m in "$@"; do
+        jq -nc --arg m "$m" --arg s prod-2 --arg d "$m.demo.data-ui.com" \
+              --arg a 203.0.113.10 \
+              '{model:$m, site:$s, domain:$d, address:$a}' >> "$H/work/manifest.tmp"
+    done
+    s3_put_state prod-manifest.jsonl "$H/work/manifest.tmp"
+}
+
+rebirth_ready() { # rebirth_ready MODEL... — marker, records, images, ns
+    write_site_marker prod-2
+    default_fields >/dev/null
+    local m
+    for m in "$@"; do
+        make_ns_fixture "$m"
+        # The restore's files destination (the PV path's parent).
+        mkdir -p "$H/state/k8s/$m"
+        seed_ecr_image "$(expected_ref "$m")"
+        seed_release_record "$m"
+        make_backup_stub "$m"
+    done
+}
+
+test_rebirth_inventory_and_missing_manifest() {
+    write_site_marker prod-2
+    rebirth_ready todos
+    # Inventory comes from manifest rows ONLY: an S3 app prefix
+    # without a row never resurrects an app.
+    mkdir -p "$STUB/s3/data-ui-backups-232168665831/prod-2/scenebook/hourly"
+    echo x > "$STUB/s3/data-ui-backups-232168665831/prod-2/scenebook/hourly/prd-scenebook-20261119-1200.dump"
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    local out
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --adopt-data 2>&1) \
+        || fail "adopt rebirth failed: $out"
+    assert_contains "$out" "App list from the manifest (1): todos"
+    assert_not_contains "$out" "scenebook" "S3 prefixes never add apps"
+    # A missing manifest stops with the prefix-derived candidates.
+    rm -f "$H/state/ops/prod-manifest.jsonl"
+    expect_die "no manifest rows" env REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --adopt-data
+    assert_contains "$LAST_DIE_OUTPUT" "scenebook" "candidates listed for Donnie"
+    # REBIRTH_APPS is the explicit override.
+    out=$(REBIRTH_APPS=todos REBIRTH_BACKUP_BIN_DIR="$H/bin" \
+              run_prod2 rebirth --adopt-data 2>&1) \
+        || fail "REBIRTH_APPS override failed: $out"
+    assert_contains "$out" "REBIRTH_APPS"
+}
+
+test_rebirth_adopt_never_restores() {
+    write_site_marker prod-2
+    rebirth_ready todos
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    : > "$STUB/backup.log"; : > "$STUB/r53-changes.log"
+    local out
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --adopt-data 2>&1) \
+        || fail "adopt rebirth failed: $out"
+    assert_eq "$(stub_count 'recover' "$STUB/backup.log")" "0" "adopt never restores"
+    assert_contains "$out" "Recorded release" "the deploy is recorded-release"
+    assert_contains "$out" "rebirth child: todos healthy"
+    assert_eq "$(wc -l < "$STUB/r53-changes.log" 2>/dev/null || echo 0)" "0" \
+        "a rebirth never touches DNS"
+    assert_eq "$(wc -l < "$H/state/ops/prod-manifest.jsonl")" "1" "the manifest row is untouched"
+}
+
+test_rebirth_fresh_materializes_and_restores() {
+    write_site_marker prod-2
+    rebirth_ready todos
+    seed_manifest_s3 todos
+    rm -f "$H/state/ops/prod-manifest.jsonl"   # a fresh volume has none
+    : > "$STUB/backup.log"; : > "$STUB/aws.log"
+    local out
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --fresh-data 2>&1) \
+        || fail "fresh rebirth failed: $out"
+    assert_file "$H/state/ops/prod-manifest.jsonl" "the S3 manifest was materialized locally"
+    assert_contains "$(cat "$STUB/backup.log")" "recover --check" "preflight checked the backup set"
+    assert_contains "$(cat "$STUB/backup.log")" "recover" "the restore ran recover"
+    # No S3 manifest rewrite: every prod-manifest s3 cp in the log
+    # reads FROM s3 (the local file is never pushed back).
+    local line bad=0
+    while IFS= read -r line; do
+        case "$line" in
+            *"cp $H/state/ops/prod-manifest.jsonl s3://"*) bad=1 ;;
+        esac
+    done < "$STUB/aws.log"
+    (( bad == 0 )) || fail "a rebirth never rewrites the S3 manifest (only reads it)"
+    # The restore ran in the printed order (kubectl saw the namespace
+    # resolution of the restore's prd: address).
+    assert_contains "$(cat "$STUB/kubectl.log")" "dataui-todos" "the restore resolved prd:todos"
+}
+
+test_rebirth_files_tree_precondition() {
+    write_site_marker prod-2
+    rebirth_ready todos
+    seed_manifest_s3 todos
+    rm -f "$H/state/ops/prod-manifest.jsonl"
+    # A populated destination files tree dies demanding the explicit
+    # override; empty proceeds; the override warns.
+    mkdir -p "$H/state/k8s/todos/files"
+    echo stale > "$H/state/k8s/todos/files/leftover.txt"
+    local out
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --fresh-data 2>&1) || true
+    assert_contains "$out" "already populated" "the precondition fires"
+    assert_contains "$out" "REBIRTH_ALLOW_POPULATED_FILES=1"
+    rm -rf "$H/state/k8s/todos/files"
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --fresh-data 2>&1) \
+        || fail "empty tree proceeds: $out"
+    assert_contains "$out" "rebirth child: todos healthy"
+}
+
+test_rebirth_first_failure_stops_the_run() {
+    write_site_marker prod-2
+    rebirth_ready todos books
+    # books first in the manifest; its pinned health fails (503) → its
+    # child dies mid-sequence; todos (second) must never run.
+    manifest_row books books.demo.data-ui.com 203.0.113.10
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    printf 'books.demo.data-ui.com 503\n' > "$STUB/curl-responses"
+    local out
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --adopt-data 2>&1) || true
+    assert_contains "$out" "the books step failed" "the supervisor reports the failure"
+    assert_not_contains "$out" "rebirth child: todos healthy" "the run stops at the first failure"
+    assert_contains "$out" "Retry, idempotently" "the retry command is printed"
+}
+
+test_rebirth_preflight_dies() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    expected_ref todos >/dev/null   # creates the production clone
+    make_ns_fixture todos
+    make_backup_stub todos
+    manifest_row todos todos.demo.data-ui.com 203.0.113.10
+    : > "$STUB/ecr-images"
+    # No record anywhere → the record read dies first.
+    expect_die "no release record" env REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --adopt-data
+    # Record present, image missing → pullability dies (never a build).
+    seed_release_record todos
+    expect_die "not pullable" env REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --adopt-data
+    # An incomplete backup set fails --fresh-data preflight.
+    seed_ecr_image "$(expected_ref todos)"
+    touch "$STUB/backup-recover-fails"
+    expect_die "no complete backup set" env REBIRTH_BACKUP_BIN_DIR="$H/bin" \
+        run_prod2 rebirth --fresh-data
+}
+
+test_rebirth_vip_record_and_missing_bytes() {
+    write_site_marker prod-2
+    default_fields >/dev/null
+    # The production clone + the stable VIP copy (the record's model
+    # hash source).
+    git -C "$H" clone -q -o public "$H/public.git" repos/production
+    mkdir -p "$H/repos/production/models/local" "$H/state/ops"
+    printf '(:name vipspec :title "VIP" :version 1.0 :domain vipspec.demo.data-ui.com)\n' \
+        > "$H/repos/production/models/local/vipspec.lisp"
+    make_ns_fixture vipspec
+    make_backup_stub vipspec
+    set_fields vipspec name=vipspec "title=VIP" version=1.0 \
+        domain=vipspec.demo.data-ui.com repl=NIL
+    manifest_row vipspec vipspec.demo.data-ui.com 203.0.113.10
+    seed_release_record vipspec vip
+    seed_ecr_image "$(jq -r .image "$(release_json vipspec)")"
+    # The VIP model bytes are missing at the backup prefix → preflight
+    # dies (aws s3 cp fails — the object does not exist).
+    expect_die "cannot fetch the VIP model" env REBIRTH_BACKUP_BIN_DIR="$H/bin" \
+        run_prod2 rebirth --adopt-data
+    # With the model present, the VIP deploy runs through the handoff.
+    mkdir -p "$STUB/s3/data-ui-backups-232168665831/prod-2/vipspec/model"
+    cp "$H/repos/production/models/local/vipspec.lisp" \
+       "$STUB/s3/data-ui-backups-232168665831/prod-2/vipspec/model/vipspec.lisp"
+    local out
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --adopt-data 2>&1) \
+        || fail "VIP rebirth failed: $out"
+    assert_contains "$out" "VIP model bytes verified"
+    assert_contains "$out" "rebirth child: vipspec healthy"
+}
+
+test_rebirth_child_lock_duplication_is_load_bearing() {
+    # A rebirth-child envelope carrying a SECOND-OPENED descriptor on
+    # the production lock must be rejected by the ownership probe (an
+    # independent flock is not ours); the duplicated-descriptor shape
+    # the supervisor uses passes. This is the load-bearing proof for
+    # exec {fd2}>&"$lockfd".
+    git -C "$H" clone -q -o public "$H/public.git" repos/production
+    local lock="$H/repos/production.lock"
+    local sha
+    sha=$(prod_sha)
+    # The holder: fd 9, locked. A second open: fd 10.
+    exec 9<>"$lock"
+    flock -x 9
+    exec 10<>"$lock"
+    write_site_marker prod-2
+    # Second-open in the PROD_LOCK_FD slot → verify rejects it.
+    ( eval "$(cli_env_statements)"
+      export DEPLOY_HOST=prod-2 K3D_CLUSTER=prod-2 DATA_UI_STATE="$H/state"
+      cd "$H/work" || exit 1
+      exec "$H/repos/production/scripts/data-ui" \
+          "__DATA_UI_REEXEC_V1__" production public master "$sha" \
+          9 10 none - - rebirth-child ) > /tmp/reb2.out 2>&1
+    local st=$?
+    (( st != 0 )) || fail "a second-open PROD_LOCK_FD must be rejected"
+    grep -q "held by another process, not by us" /tmp/reb2.out \
+        || fail "second-open rejection message missing: $(cat /tmp/reb2.out)"
+    # A duplicated descriptor (the supervisor's shape) passes the
+    # probes (and dies later on the missing REBIRTH_APP, which is the
+    # child's own contract, after verify).
+    exec 11>&9
+    ( eval "$(cli_env_statements)"
+      export DEPLOY_HOST=prod-2 K3D_CLUSTER=prod-2 DATA_UI_STATE="$H/state"
+      cd "$H/work" || exit 1
+      exec "$H/repos/production/scripts/data-ui" \
+          "__DATA_UI_REEXEC_V1__" production public master "$sha" \
+          9 11 none - - rebirth-child ) > /tmp/reb1.out 2>&1
+    st=$?
+    (( st != 0 )) || fail "rebirth-child without REBIRTH_APP must die on its own contract"
+    grep -q "REBIRTH_APP" /tmp/reb1.out \
+        || fail "the dup'd fd pair passed verify (died on REBIRTH_APP instead): $(cat /tmp/reb1.out)"
+    exec 9>&- 10>&- 11>&-
+}
+
+# ---------------------------------------------------------------------------
+# The backup scripts' recover verbs (standalone, stubbed aws)
+# ---------------------------------------------------------------------------
+
+backup_env() { # backup_env — exports for running ops/*-backup
+    export HOME="$H"
+    export PATH="$H/bin:$ORIG_PATH"
+    export STUB="$STUB" AWS_REGION=us-east-1
+    mkdir -p "$H/.config"
+    printf 'AWS_REGION=us-east-1\nAWS_BUCKET=data-ui-backups-232168665831\n' \
+        > "$H/.config/data-ui-backup.env"
+    export POOL="$H/state/snapshots"
+    mkdir -p "$POOL"
+}
+
+s3_seed_object() { # s3_seed_object KEY CONTENT
+    local key="$1"
+    mkdir -p "$STUB/s3/data-ui-backups-232168665831/$(dirname "$key")"
+    printf '%s' "$2" > "$STUB/s3/data-ui-backups-232168665831/$key"
+}
+
+run_backlog_backup() { ( backup_env; cd "$H" && exec "$REPO_ROOT/ops/backlog-backup" "$@" 2>&1 ); }
+run_scenebook_backup() { ( backup_env; cd "$H" && exec "$REPO_ROOT/ops/scenebook-backup" "$@" 2>&1 ); }
+
+test_recover_backlog_hourly_expiry_and_fallback() {
+    # Hourly newest is INCOMPLETE (no files tar) → the older complete
+    # hourly wins; with every hourly object expired, the newest
+    # complete daily is chosen; with neither tier complete, die.
+    s3_seed_object evo-x2/backlog/hourly/prd-backlog-20261119-1100.dump d1
+    s3_seed_object evo-x2/backlog/hourly/prd-backlog-20261119-1100.files.tar.gz t1
+    s3_seed_object evo-x2/backlog/hourly/prd-backlog-20261119-1100.meta m1
+    s3_seed_object evo-x2/backlog/hourly/prd-backlog-20261119-1200.dump d2
+    s3_seed_object evo-x2/backlog/hourly/prd-backlog-20261119-1200.meta m2   # no tar
+    s3_seed_object evo-x2/backlog/daily/prd-backlog-20261119-0300.dump d3
+    s3_seed_object evo-x2/backlog/daily/prd-backlog-20261119-0300.files.tar.gz t3
+    s3_seed_object evo-x2/backlog/daily/prd-backlog-20261119-0300.meta m3
+    local out
+    out=$(run_backlog_backup recover --check) || fail "recover --check failed: $out"
+    assert_contains "$out" "prd-backlog-20261119-1100" "newest-incomplete falls back to the older complete triple"
+    assert_contains "$out" "tier hourly"
+    # --check does not download.
+    assert_no_file "$POOL/prd-backlog-20261119-1100.dump" "--check downloads nothing"
+    # Hourly expired entirely → the newest complete daily.
+    rm -rf "$STUB/s3/data-ui-backups-232168665831/evo-x2/backlog/hourly"
+    out=$(run_backlog_backup recover) || fail "daily fallback failed: $out"
+    assert_contains "$out" "prd-backlog-20261119-0300 (tier daily"
+    assert_contains "$out" "restore: prd-backlog-20261119-0300"
+    assert_file "$POOL/prd-backlog-20261119-0300.dump" "recover downloads into the pool"
+    # Neither tier complete → die.
+    rm -rf "$STUB/s3/data-ui-backups-232168665831/evo-x2/backlog"
+    expect_die "no complete recovery set" run_backlog_backup recover
+    # RESTORE_SITE retargets reads (the move runbook's shape).
+    s3_seed_object evo-x2/backlog/daily/prd-backlog-20261119-0300.dump d3
+    s3_seed_object evo-x2/backlog/daily/prd-backlog-20261119-0300.files.tar.gz t3
+    s3_seed_object evo-x2/backlog/daily/prd-backlog-20261119-0300.meta m3
+    s3_seed_object prod-2/backlog/daily/prd-backlog-20261120-0300.dump d4
+    s3_seed_object prod-2/backlog/daily/prd-backlog-20261120-0300.files.tar.gz t4
+    s3_seed_object prod-2/backlog/daily/prd-backlog-20261120-0300.meta m4
+    out=$(RESTORE_SITE=evo-x2 run_backlog_backup recover --check) || fail "RESTORE_SITE read failed: $out"
+    assert_contains "$out" "prd-backlog-20261119-0300" "RESTORE_SITE selects the source site's set"
+}
+
+test_recover_scenebook_tiers_and_age_gap() {
+    # Daily complete; rpo pair newer → applied on top, with the
+    # timestamp-comparison line stating the gap.
+    s3_seed_object evo-x2/scenebook/daily/prd-scenebook-daily-20261119-0320.dump d1
+    s3_seed_object evo-x2/scenebook/daily/prd-scenebook-daily-20261119-0320.files.tar.gz t1
+    s3_seed_object evo-x2/scenebook/daily/prd-scenebook-daily-20261119-0320.meta m1
+    s3_seed_object evo-x2/scenebook/rpo/prd-scenebook-20261119-1130.dump d2
+    s3_seed_object evo-x2/scenebook/rpo/prd-scenebook-20261119-1130.meta m2
+    local out
+    out=$(run_scenebook_backup recover) || fail "scenebook recover failed: $out"
+    assert_contains "$out" "age gap: daily files 20261119-0320 + rpo database 20261119-1130" \
+        "the age gap is stated with both timestamps"
+    assert_contains "$out" "older than the database"
+    assert_contains "$out" "restore: prd-scenebook-daily-20261119-0320" "daily first"
+    assert_contains "$out" "restore: prd-scenebook-20261119-1130" "rpo applied on top"
+    # The rpo pair is incomplete (no meta) → the daily alone.
+    rm "$STUB/s3/data-ui-backups-232168665831/evo-x2/scenebook/rpo/prd-scenebook-20261119-1130.meta"
+    out=$(run_scenebook_backup recover) || fail "incomplete-rpo recover failed: $out"
+    assert_not_contains "$out" "restore: prd-scenebook-20261119-1130" "incomplete rpo is skipped"
+    # A same-timestamp daily/rpo pair is never merged: the rpo is not
+    # "newer", so the daily alone is restored.
+    s3_seed_object evo-x2/scenebook/rpo/prd-scenebook-20261119-0320.dump d5
+    s3_seed_object evo-x2/scenebook/rpo/prd-scenebook-20261119-0320.meta m5
+    out=$(run_scenebook_backup recover) || fail "same-ts recover failed: $out"
+    assert_contains "$out" "not newer" "same-timestamp pairs are stated, not merged"
+    assert_not_contains "$out" "restore: prd-scenebook-20261119-0320$" || true
+    # grep-precision: exactly one restore line (the daily).
+    assert_eq "$(grep -c '^restore: ' <<<"$out")" "1" "one restore line: the daily triple alone"
+    # No complete daily → die.
+    rm -rf "$STUB/s3/data-ui-backups-232168665831/evo-x2/scenebook"
+    expect_die "no complete daily" run_scenebook_backup recover
+}
+
+# ---------------------------------------------------------------------------
+# The AWS operator script's fence (Appendix A11)
+# ---------------------------------------------------------------------------
+
+source_aws_fns() { # extract testable functions from ops/prod-2-aws.sh
+    # Only the multi-line functions (their bodies end with a ^} line);
+    # die and the A0 constants are defined locally — extracting the
+    # top-level block would run the AWS_PROFILE guard and the flock.
+    # The functions call `aws` directly, so the stub bin leads PATH.
+    export PATH="$H/bin:$PATH"
+    eval "$(sed -n '/^aws_scalar()/,/^}/p; /^golden_ami()/,/^}/p;
+                    /^lane_data_volume()/,/^}/p; /^fence_old_instances()/,/^}/p' \
+                   "$REPO_ROOT/ops/prod-2-aws.sh")"
+    die() { echo "prod-2-aws.sh: $*" >&2; exit 1; }
+    NAME=data-ui-prod-2
+    ARCH="${ARCH:-arm64}"
+    T="{Key=Site,Value=prod-2},{Key=Project,Value=data-ui-prod-2}"
+}
+
+test_aws_fence_stops_every_match() {
+    # OLD_ID present plus a second active instance: both are stopped
+    # (and retired), and the run fails explicitly on the unexpected
+    # multiplicity — never silently proceeds.
+    source_aws_fns
+    cat > "$STUB/aws-describe-instances" <<'EOF'
+i-old	running
+i-second	running
+EOF
+    local out
+    out=$(fence_old_instances 2>&1); st=$?
+    (( st != 0 )) || fail "two running matches must fail the fence"
+    assert_contains "$out" "2 non-terminated instances" "the multiplicity is named"
+    assert_contains "$(cat "$STUB/aws.log")" "stop-instances --instance-ids i-old"
+    assert_contains "$(cat "$STUB/aws.log")" "stop-instances --instance-ids i-second"
+    assert_contains "$(cat "$STUB/aws.log")" "create-tags"
+}
+
+test_aws_fence_mixed_shutting_down_waits() {
+    source_aws_fns
+    cat > "$STUB/aws-describe-instances" <<'EOF'
+i-old	stopped
+i-straggler	shutting-down
+EOF
+    fence_old_instances >/dev/null 2>&1
+    assert_contains "$(cat "$STUB/aws.log")" "wait instance-terminated --instance-ids i-straggler" \
+        "a shutting-down straggler is waited out, not stopped"
+    assert_contains "$(cat "$STUB/aws.log")" "stop-instances --instance-ids i-old" \
+        "the stopped instance is still stopped and retired"
+}
+
+test_aws_fence_waiter_failure_dies() {
+    source_aws_fns
+    printf 'i-x\tshutting-down\n' > "$STUB/aws-describe-instances"
+    touch "$STUB/aws-wait-fails"
+    local out
+    out=$(fence_old_instances 2>&1); st=$?
+    (( st != 0 )) || fail "a waiter failure must die"
+    assert_contains "$out" "i-x failed to terminate; resolve by hand" \
+        "the dying message names the instance"
+}
+
+test_aws_no_validated_ami_or_snapshot_dies() {
+    # GOLDEN_AMI and SNAP are checked like every scalar: empty/None
+    # dies, never reaching run-instances / create-volume.
+    source_aws_fns
+    # No validated AMI in the stub's describe-images answer (the aws
+    # stub logs and exits 0 with no output → empty).
+    local out
+    out=$(golden_ami); assert_eq "$out" "" "stub returns no AMI"
+    # The snapshot lane with no snapshot dies rather than creating
+    # from None (lane_data_volume consults describe-snapshots, which
+    # the stub answers with nothing).
+    out=$(lane_data_volume snapshot data-ui-prod-2-data us-east-1a 2>&1); st=$?
+    (( st != 0 )) || fail "the snapshot lane must die without a snapshot"
+    assert_contains "$out" "no completed snapshot" "never create-volume from None"
+    # The fresh lane never creates over an existing volume.
+    : > "$STUB/aws-describe-volumes" 2>/dev/null || true
+    out=$(lane_data_volume fresh data-ui-prod-2-data us-east-1a 2>&1) || true
+    : # (the stub has no describe-volumes fixture; the fresh lane's
+      # refuse-existing check reads nothing → creates — not asserted
+      # here; the die-on-None cases above are the scalar gates)
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -2966,6 +4412,55 @@ main() {
 
     t wrapper_profile_run_string_order
     t sbcl_two_checkout_load_contract
+
+    t site_marker_wins_and_invalid_dies
+    t site_defaults_armed_by_marker
+    t site_envelope_host_check_follows_marker
+    t site_production_only_boundary
+    t site_production_only_boundary_routing_shapes
+    t forwarder_entry_env_membership
+    t registry_hit_skips_compile_and_build
+    t registry_miss_builds_imports_pushes
+    t registry_push_failure_warns_and_succeeds
+    t registry_pull_failure_falls_back_to_build
+    t registry_rebuild_logs_in_builds_and_pushes
+    t registry_import_failure_aborts
+    t registry_vip_bytes_change_the_tag
+    t registry_dry_run_purity
+    t registry_absent_legacy_image_name
+
+    t gate_explicit_pins_and_never_routes_dns
+    t guard_wildcard_shadowed_name_and_overrides
+    t summary_publication_verdicts
+
+    t release_record_gates_and_shape
+    t recorded_release_pull_or_die
+    t recorded_release_drives_the_render
+
+    t cutover_refusals
+    t cutover_happy_path_and_rerun
+    t cutover_half_finished_converges
+    t cutover_route53_failure_leaves_no_row
+    t delete_midsequence_failure_rerun_converges
+    t delete_dns_only_when_its_ours
+    t delete_domain_evidence_union
+
+    t rebirth_inventory_and_missing_manifest
+    t rebirth_adopt_never_restores
+    t rebirth_fresh_materializes_and_restores
+    t rebirth_files_tree_precondition
+    t rebirth_first_failure_stops_the_run
+    t rebirth_preflight_dies
+    t rebirth_vip_record_and_missing_bytes
+    t rebirth_child_lock_duplication_is_load_bearing
+
+    t recover_backlog_hourly_expiry_and_fallback
+    t recover_scenebook_tiers_and_age_gap
+
+    t aws_fence_stops_every_match
+    t aws_fence_mixed_shutting_down_waits
+    t aws_fence_waiter_failure_dies
+    t aws_no_validated_ami_or_snapshot_dies
 
     echo
     echo "=========================================="

@@ -39,12 +39,30 @@ RUN apt update && apt upgrade -y && apt install -y \
     vim \
     zlib1g-dev
 
-# Install Roswell
-RUN url="${ROSWELL_URL_PREFIX}/${ROSWELL_VERSION}/roswell_${ROSWELL_VERSION#v}-1_amd64.deb" \
-    && curl -fsSL "${url}" -o roswell.deb \
-       || { echo "Failed to download Roswell ${ROSWELL_VERSION}"; exit 1; } \
-    && dpkg -i roswell.deb \
-    && rm roswell.deb
+# Install Roswell. amd64 keeps the pinned .deb exactly; arm64 (no
+# .deb is published for this Roswell version) downloads the prebuilt
+# tarball and runs `make install` in roswell/ (prefix /usr/local;
+# bzip2 and build-essential are installed above). Any other
+# architecture fails the build — no emulation, no cross-arch fallback.
+RUN arch="$(dpkg --print-architecture)" \
+    && if [ "$arch" = "amd64" ]; then \
+           url="${ROSWELL_URL_PREFIX}/${ROSWELL_VERSION}/roswell_${ROSWELL_VERSION#v}-1_amd64.deb" \
+           && curl -fsSL "${url}" -o roswell.deb \
+           || { echo "Failed to download Roswell ${ROSWELL_VERSION} (${arch})"; exit 1; } \
+           && dpkg -i roswell.deb \
+           && rm roswell.deb; \
+       elif [ "$arch" = "arm64" ]; then \
+           url="${ROSWELL_URL_PREFIX}/${ROSWELL_VERSION}/roswell-${ROSWELL_VERSION#v}-linux-arm64-glibc2.31.tar.bz2" \
+           && curl -fsSL "${url}" -o roswell.tar.bz2 \
+           || { echo "Failed to download Roswell ${ROSWELL_VERSION} (${arch})"; exit 1; } \
+           && tar -xjf roswell.tar.bz2 \
+           && cd roswell \
+           && make install \
+           && cd .. \
+           && rm -rf roswell roswell.tar.bz2; \
+       else \
+           echo "Unsupported architecture ${arch} for the Roswell install"; exit 1; \
+       fi
 
 # Install SBCL
 # ulimit -n: BuildKit RUN processes inherit the docker daemon's

@@ -289,7 +289,7 @@ Constraints:
 - **A `prd:` restore takes downtime — by design.** Every check that can fail (model match, archive TOC, postgres reachable) runs *before* anything is scaled; a corrupt archive or a mismatch dies with prod still up. The restore then scales the app Deployment to 0, waits until the pod is gone (the files PVC is RWO), does the safety dump / schema drop / `--single-transaction` restore / files swap / admin re-stamp, scales back to 1, and requires HTTP 200 on `/health` before reporting success. Never a live-app restore — ratified: downtime beats it while there are no transactions.
 - **The EXIT trap bounds availability, not data validity.** Kill the process mid-restore and the trap puts back any mid-swap files tree, scales the app back to 1, and prints which state holds: drop-not-started (database untouched), drop-started (database NOT guaranteed valid — the message names the `prd-<name>-prerestore` slot as the manual undo), or restored (only the coda was cut short). `kill -9` is the one exception: nothing runs, the app stays at 0, and the manual revive is `kubectl -n dataui-<name> scale deploy/dataui-<name> --replicas=1`.
 - **The admin password is the Secret's.** Restore re-stamps from the cluster Secret's `admin-password` key, so after any restore the working login is the Secret's value (see [Admin passwords](#admin-passwords-precautions)).
-- **Slots.** `prd-<name>-prerestore` rotates exactly like the dev/stg slots. There is no `prd:` golden — no nightly reset — and the only `prd:` `-last` is the delete verb's farewell snapshot, saved to the shared pool before the instance's volumes are destroyed (rotating; `FORCE=1 delete` skips it). Nightly prd saves are a follow-up, not this machinery.
+- **Slots.** `prd-<name>-prerestore` rotates exactly like the dev/stg slots. There is no `prd:` golden — no nightly reset — and the only `prd:` `-last` is the delete verb's farewell snapshot, saved to the shared pool before the instance's volumes are destroyed (rotating; `FORCE=1 delete` skips it). Scheduled off-site prd saves exist as host-side per-app timers (`~/bin/scenebook-backup` every 30 minutes, `~/bin/backlog-backup` hourly) that upload fresh triples into tiered S3 prefixes — see `docs/deployment.md` → Production Backups; they are host machinery, not part of this verb.
 
 Typical flow — seed a fresh deploy from a saved snapshot:
 
@@ -298,3 +298,19 @@ scripts/data-ui snapshot save chores-initial stg:chores
 scripts/data-ui deploy chores
 scripts/data-ui snapshot restore chores-initial prd:chores
 ```
+
+## Cross-site restores (prod-2)
+
+`prd:` snapshot verbs are **site-local**: the resolver reads cluster truth and the snapshot pool on the deploy host, so a `prd:` verb on prod-2 addresses prod-2's cluster, and evo-x2's `prd:` verbs cannot reach prod-2 (and vice versa). A cross-site restore is therefore two steps on the destination site: the backup script stages the other site's objects into the local pool, then the normal `prd:` restore takes over.
+
+```sh
+# on prod-2: stage evo-x2's freshest set, then restore what it printed
+RESTORE_SITE=evo-x2 ~/bin/backlog-backup recover
+scripts/data-ui snapshot restore prd-backlog-<ts> prd:backlog
+```
+
+Two things change across sites, both stated here so they surprise nobody:
+
+- **The admin password after a cross-site restore is the destination site's Secret** (the restore re-stamps from the destination's cluster Secret), and **no cross-environment notice prints** — both sites' addresses read `prd:<name>`, so the dev→stg-style warning does not apply. Every user signs in again anyway (the JWT secret is the destination's, and the user table arrived with the dump).
+- **No `heal-model` after a `prd:` restore.** The restore scales the app to 0 and back, so it always ends in a fresh process — and docs/migration.md's rule is that a fresh process needs neither `heal-model` nor a restart. On a recorded-release rebirth the model is the one that wrote the snapshot anyway.
+

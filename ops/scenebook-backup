@@ -1,0 +1,839 @@
+#!/bin/bash
+#
+# scenebook-backup -- half-hourly production backups of Mel's SceneBook
+# (prd:scenebook) into S3 (bucket data-ui-backups-232168665831,
+# prefix evo-x2/scenebook/), tiered by lifecycle rules.
+#
+# Public verbs:
+#   start    install + enable the systemd user timers (base + daily);
+#            the first base backup fires immediately
+#   stop     disable both timers and remove the five unit files,
+#            waiting for any in-flight run first
+#   status   timer states, last-run results, newest object per tier,
+#            and the model file's sync date
+#   restore  [name] [tier]
+#            copy an S3 backup into the snapshot pool, where
+#            'snapshot list' sees it (newest of the tier if unnamed;
+#            tier = daily (default, full triple) or rpo (dump+meta
+#            only), or --tier <t>)
+#   location print the S3 backup prefix
+#   run      [daily]
+#            one backup cycle (the timer's body; safe to run by hand)
+#
+# Internal verb:
+#   fail-ping   OnFailure hook -- Mattermost ping naming the failed
+#               unit, with the journal tail
+#
+# One base cycle (every 30 min, the RPO tier): save the full snapshot
+# triple prd-scenebook-<YYYYMMDD-HHMM> (.dump/.files.tar.gz/.meta)
+# from prd:scenebook via the production clone's scripts/data-ui
+# (downtime-free), verify all three files, then upload ONLY .dump and
+# .meta (the RPO tier: no photos tar -- the daily-only tar kills the
+# tar-multiplication problem) to
+# s3://<bucket>/<site>/scenebook/rpo/, head-verify each object's
+# size, then rm all three pool files and prune the pool. Retention is
+# S3 lifecycle's job, never a script's: the rpo tier expires after
+# 1 day, the daily tier after 30 days.
+#
+# One daily cycle (03:20): a fresh FULL save (the rpo tier has no
+# tar, so there is nothing to promote) uploaded -- .meta, .files
+# .tar.gz, then .dump -- into <site>/scenebook/daily/, then sync the
+# model file (models/scenebook.lisp, or models/local/ if only that
+# exists in the production checkout -- set-model's shadow order)
+# into <site>/scenebook/model/. Snapshots do not carry the model; the
+# model rides the backup so a cold host never dies mid-crisis for
+# lack of it. A missing model file fails the run loudly.
+#
+# Site parameterization: the S3 prefix is
+# ${BACKUP_SITE:-<site marker, else evo-x2>}/scenebook — prod-2's
+# deploys write prod-2/, evo-x2's stay evo-x2/. RESTORE_SITE
+# (default BACKUP_SITE) retargets restore and recover reads: the
+# prod-2 move runbook restores evo-x2's objects onto prod-2 with
+# RESTORE_SITE=evo-x2.
+#
+# The aws CLI is stateless: no agent, no local S3 state, the script
+# is the sync. Credentials live in ~/.config/data-ui-backup.env
+# (mode 600, not synced): AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# (OPTIONAL — prod-2's instance role carries them; the env file
+# there holds only AWS_REGION and AWS_BUCKET), AWS_REGION, AWS_BUCKET
+# -- the dataui-backup-evo-x2 IAM user on evo-x2 is scoped to this
+# prefix with put/get/list only (no DeleteObject; lifecycle and the
+# root account own deletion).
+#
+# RESTORE_PRINT_TARGET (optional env) retargets only the *printed*
+# follow-up command of restore -- drills and gates point it at a
+# scratch profile. The restore itself always lands in the snapshot
+# pool; the var redirects nothing. Default: prd:scenebook.
+#
+# The prune matches only names whose suffix parses as YYYYMMDD-HHMM,
+# so word-named snapshots (prd-scenebook-final, keep-* copies) and
+# the machinery's slots (-last, -prerestore, bare prd-scenebook) are
+# immune in the pool.
+
+set -u -o pipefail
+shopt -s nullglob
+
+export PATH="${PATH}:/home/macnod/bin:/home/macnod/.roswell/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+
+# Keep the multipart cliff far away: past the threshold aws s3 cp
+# switches to the multipart API (fine -- the IAM policy allows it --
+# but plain puts are simpler; 64 MB leaves headroom over the daily
+# photos tar).
+export AWS_S3_MULTIPART_THRESHOLD=64MB
+
+PROD_CHECKOUT=/data/data-ui/repos/production
+PROD_SCRIPT=$PROD_CHECKOUT/scripts/data-ui
+POOL=${POOL:-/data/data-ui/snapshots}
+MODEL_NAME=scenebook
+APP_PROFILE=prd:scenebook
+PREFIX=prd-scenebook
+
+# Site parameterization: the marker decides the default site key
+# (evo-x2 without one); BACKUP_SITE overrides, RESTORE_SITE retargets
+# reads (default BACKUP_SITE).
+site_name() { # the site marker's single line, else evo-x2
+    local marker=/data/data-ui/site
+    if [[ -r $marker ]]; then head -n1 "$marker"; else echo evo-x2; fi
+}
+BACKUP_SITE=${BACKUP_SITE:-$(site_name)}
+RESTORE_SITE=${RESTORE_SITE:-$BACKUP_SITE}
+S3_APP_PREFIX="$BACKUP_SITE/scenebook"
+S3_TIERS="rpo daily"            # restore: daily is the default tier
+UNIT=scenebook-backup
+UNIT_DIR=$HOME/.config/systemd/user
+SELF=/home/macnod/bin/$UNIT
+LOCK_DIR=${XDG_RUNTIME_DIR:-/tmp}
+RETENTION_DAYS=7
+
+die() { echo "$UNIT: $*" >&2; exit 1; }
+
+print_usage() {
+    cat <<EOF
+Usage: $UNIT {start|stop|status|restore|recover|location|run|help}
+
+  start   install and enable the backup timers (30-min base + 03:20
+          daily); the first base backup fires immediately
+  stop    disable both timers and remove the five unit files; any
+          in-flight run is awaited first
+  status  timer states, last-run results, newest object per tier,
+          and the model file's sync date
+  restore [name] [tier]   (or: restore [name] --tier <t>)
+          copy that S3 backup into the snapshot pool, where
+          'snapshot list' sees it (newest of the tier when unnamed;
+          tier: daily (default, full triple) or rpo (dump+meta
+          only)). The tier is the second argument or a flag -- never
+          a bare snapshot-name slot. RESTORE_PRINT_TARGET=<address>
+          retargets the printed follow-up command (default
+          prd:scenebook); the restore itself always lands in the
+          pool.
+  recover [--check]
+          select the freshest COMPLETE recovery set -- the newest
+          complete daily triple, then the newest rpo dump+meta pair
+          applied on top when its timestamp is newer -- download it
+          into the pool, and print the restore order:
+              restore: <daily-name>
+              restore: <rpo-name>       (when newer)
+          prefixed by the daily-vs-rpo timestamp comparison (the
+          files/database age gap, stated). --check selects and
+          verifies completeness without downloading (the rebirth
+          preflight's call). RESTORE_SITE=<site> reads another
+          site's prefix.
+  location
+          print the S3 backup prefix
+  run     [daily] one backup cycle now (what the timers run)
+  help    show this text
+EOF
+}
+
+usage() { # unknown or missing verb: usage to stderr, exit 1
+    print_usage >&2
+    exit 1
+}
+
+# ---------------------------------------------------------------- aws
+
+AWS_ENV=${AWS_ENV:-$HOME/.config/data-ui-backup.env}
+
+aws_env() { # export AWS_* credentials/region/bucket; die loudly
+    # The key pair is OPTIONAL: prod-2's instance role carries the
+    # credentials (the env file there holds only region and bucket).
+    [[ -r $AWS_ENV ]] || die "no $AWS_ENV (install it: mode 600, AWS_REGION / AWS_BUCKET, plus AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY when the host has no instance role)"
+    set -a
+    # shellcheck disable=SC1090
+    source "$AWS_ENV"
+    set +a
+    [[ -n ${AWS_BUCKET:-} && -n ${AWS_REGION:-} ]] \
+        || die "incomplete $AWS_ENV (needs AWS_BUCKET, AWS_REGION)"
+    command -v aws >/dev/null 2>&1 \
+        || die "aws CLI not found in PATH (expected /snap/bin/aws)"
+}
+
+s3_uri() { # $1 = key; prints s3://$AWS_BUCKET/<key>
+    echo "s3://$AWS_BUCKET/$1"
+}
+
+s3_head_size() { # $1 = key; prints ContentLength (empty on 404)
+    aws s3api head-object --bucket "$AWS_BUCKET" --key "$1" \
+        --query ContentLength --output text 2>/dev/null \
+        || true
+}
+
+s3_has() { # $1 = key
+    [[ -n $(s3_head_size "$1") ]]
+}
+
+s3_newest_key() { # $1 = tier dir prefix, $2 = extension; newest key
+    # (suffix-filtered with grep: this host's jq build lacks
+    # ends_with; key sort is timestamp sort)
+    aws s3api list-objects-v2 --bucket "$AWS_BUCKET" \
+        --prefix "$1/" --output json 2>/dev/null \
+        | jq -r '.Contents[]?.Key' 2>/dev/null \
+        | grep "\.$2$" | sort | tail -1
+}
+
+# ---------------------------------------------------------------- ping
+# Mattermost credentials live in ~/.config/scenebook-backup.env (mode
+# 600, not synced): MM_TOKEN, MM_CHANNEL_ID, MM_URL -- the macnod-bot
+# user, Water Bottle channel, same triple mm-send-message uses in
+# Emacs. Missing file or credentials: the ping degrades to a stderr
+# line (never blocks a backup or a stop).
+
+MM_ENV=$HOME/.config/scenebook-backup.env
+
+mm_ping() { # $1 = message text
+    local msg=$1 out
+    if [[ ! -r $MM_ENV ]]; then
+        echo "$UNIT: Mattermost ping skipped (no $MM_ENV)" >&2
+        return 1
+    fi
+    # shellcheck disable=SC1090
+    source "$MM_ENV"
+    if [[ -z ${MM_TOKEN:-} || -z ${MM_CHANNEL_ID:-} || -z ${MM_URL:-} ]]; then
+        echo "$UNIT: Mattermost ping skipped (incomplete $MM_ENV)" >&2
+        return 1
+    fi
+    out=$(curl -s -m 10 -X POST \
+             -H "Authorization: Bearer $MM_TOKEN" \
+             -H "Content-Type: application/json" \
+             -d "$(jq -n --arg c "$MM_CHANNEL_ID" --arg m "$msg" \
+                     '{channel_id: $c, message: $m}')" \
+             "$MM_URL/api/v4/posts") || true
+    if ! grep -q '"id"' <<<"$out"; then
+        echo "$UNIT: Mattermost ping failed: ${out:-no response}" >&2
+        return 1
+    fi
+    echo "ping sent."
+}
+
+cmd_fail_ping() {
+    # Name the failed unit: the newest journal line across both
+    # services wins (OnFailure cannot pass the unit's name).
+    local units="$UNIT.service -u $UNIT-daily.service"
+    local failed_unit tail
+    failed_unit=$(journalctl --user -u $units -n 20 -o json --no-pager \
+                      2>/dev/null \
+                      | jq -sr 'sort_by(."__REALTIME_TIMESTAMP"|tonumber)
+                                | last | ."_SYSTEMD_USER_UNIT" // empty' 2>/dev/null)
+    tail=$(journalctl --user -u $units -n 3 -o cat --no-pager \
+               2>/dev/null | tail -1)
+    mm_ping "SceneBook backup FAILED [${failed_unit:-unknown unit}] \
+($(date '+%F %R')): ${tail:-no journal output} -- inspect: \
+journalctl --user -u $UNIT.service -u $UNIT-daily.service -n 30"
+}
+
+# -------------------------------------------------------------- helpers
+
+human_size() { # $1 = bytes
+    numfmt --to=iec --format='%.1f' "$1" 2>/dev/null || echo "${1}B"
+}
+
+human_age() { # $1 = event epoch; prints "N min ago" style
+    local d=$(( $(date +%s) - $1 ))
+    if   (( d <    60 )); then echo "${d}s ago"
+    elif (( d <  3600 )); then echo "$((d/60)) min ago"
+    elif (( d < 86400 )); then echo "$((d/3600))h $(((d%3600)/60))m ago"
+    else echo "$((d/86400))d $(((d%86400)/3600))h ago"
+    fi
+}
+
+iso_epoch() { # $1 = ISO8601 (aws LastModified); epoch, empty on bad
+    date -d "$1" +%s 2>/dev/null || true
+}
+
+# Delete timestamped $PREFIX-<YYYYMMDD-HHMM> triples older than
+# RETENTION_DAYS from the snapshot pool (name-parsed, never mtime:
+# the name is the save time). Only a complete-triple anchor (.dump
+# present) is pruned by name; the other two extensions follow. Also
+# sweeps day-old .tmp-* litter (a timeout-killed save leaves its
+# staged temps behind). The S3 side is NOT pruned here -- lifecycle
+# rules own remote retention; a script must not be able to destroy
+# history (the IAM user cannot delete at all).
+prune_old_snapshots() { # $1 = dir
+    local dir=$1 cutoff f base ts epoch removed=0
+    cutoff=$(( $(date +%s) - RETENTION_DAYS * 86400 ))
+    for f in "$dir/$PREFIX"-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9].dump; do
+        [[ -f $f ]] || continue
+        base=$(basename "$f" .dump)
+        ts=${base#"$PREFIX"-}
+        epoch=$(date -d "${ts:0:4}-${ts:4:2}-${ts:6:2} ${ts:9:2}:${ts:11:2}" +%s 2>/dev/null)
+        if [[ -z $epoch ]]; then
+            echo "prune: skipping $base (unparseable timestamp)" >&2
+            continue
+        fi
+        if (( epoch < cutoff )); then
+            rm -f "${f%.dump}.dump" "${f%.dump}.files.tar.gz" "${f%.dump}.meta"
+            removed=$(( removed + 1 ))
+        fi
+    done
+    (( removed > 0 )) \
+        && echo "pruned $removed triple(s) older than ${RETENTION_DAYS}d from $dir"
+    [[ $dir == "$POOL" ]] \
+        && find "$dir" -maxdepth 1 -name '.tmp-*' -mmin +1440 -delete 2>/dev/null
+    return 0
+}
+
+take_lock() { # serialize against the live timer cycles (shared lock)
+    exec 9>"$LOCK_DIR/$UNIT.lock" || die "cannot open lock file"
+    flock -n 9 || { echo "$UNIT: another run is active; nothing to do"; exit 0; }
+}
+
+# ------------------------------------------------------------- uploads
+
+upload_verified() { # $1 = local file, $2 = key; cp + size-verify
+    local file=$1 key=$2 local_size remote_size
+    local_size=$(stat -c %s "$file")
+    aws s3 cp "$file" "$(s3_uri "$key")" \
+        || die "uploading $key failed"
+    remote_size=$(s3_head_size "$key")
+    [[ $remote_size == "$local_size" ]] \
+        || die "upload of $key unverifiable (local $local_size, remote ${remote_size:-missing})"
+}
+
+sync_model() { # the model rides the backup (snapshots lack it)
+    local src=""
+    local key="$S3_APP_PREFIX/model/$MODEL_NAME.lisp"
+    if [[ -f $PROD_CHECKOUT/models/$MODEL_NAME.lisp ]]; then
+        src=$PROD_CHECKOUT/models/$MODEL_NAME.lisp
+    elif [[ -f $PROD_CHECKOUT/models/local/$MODEL_NAME.lisp ]]; then
+        src=$PROD_CHECKOUT/models/local/$MODEL_NAME.lisp
+    fi
+    [[ -n $src ]] \
+        || die "no model file for $MODEL_NAME in $PROD_CHECKOUT (models/ or models/local/) -- the rebirth kit stays incomplete without it"
+    upload_verified "$src" "$key"
+    echo "model synced: $key <- $src ($(stat -c %s "$src") bytes)"
+}
+
+# ----------------------------------------------------------------- run
+
+cmd_run() { # $1 = "" (base, 30-min rpo) or "daily"
+    local mode=${1:-}
+    case $mode in
+        "")    run_base ;;
+        daily) cmd_run_daily ;;
+        *)     usage ;;
+    esac
+}
+
+run_base() { # rpo tier: save full triple, upload dump+meta, rm pool
+    aws_env
+    take_lock
+    [[ -d $PROD_CHECKOUT ]] || die "no production checkout at $PROD_CHECKOUT"
+    [[ -x $PROD_SCRIPT ]] || die "no script at $PROD_SCRIPT"
+
+    local tier_dir=$S3_APP_PREFIX/rpo
+    local ts name ext complete
+    ts=$(date +%Y%m%d-%H%M)
+    name=$PREFIX-$ts
+
+    if [[ -e $POOL/$name.dump ]]; then
+        # Same-minute re-run. A complete pool triple with no S3 side
+        # means a previous run died between save and upload --
+        # finish that upload. Anything else is a real collision.
+        complete=1
+        for ext in dump files.tar.gz meta; do
+            [[ -s $POOL/$name.$ext ]] || complete=0
+        done
+        if (( complete )) && ! s3_has "$tier_dir/$name.dump"; then
+            echo "resuming interrupted upload of $name"
+        else
+            die "snapshot $name already exists (pool or S3); re-run after the minute turns"
+        fi
+    else
+        echo "saving $name from $APP_PROFILE"
+        timeout --kill-after=30 600 "$PROD_SCRIPT" snapshot save "$name" "$APP_PROFILE" \
+            || die "snapshot save failed (output above)"
+        for ext in dump files.tar.gz meta; do
+            [[ -s $POOL/$name.$ext ]] \
+                || die "save reported success but $POOL/$name.$ext is missing"
+        done
+    fi
+
+    # Land the RPO pair: meta first, then dump (the tar stays in the
+    # pool only long enough to be rm'd -- the daily owns photos).
+    upload_verified "$POOL/$name.meta" "$tier_dir/$name.meta"
+    upload_verified "$POOL/$name.dump" "$tier_dir/$name.dump"
+    echo "backup landed: $(s3_uri "$tier_dir/$name") (dump + meta)"
+
+    rm -f "$POOL/$name.dump" "$POOL/$name.files.tar.gz" "$POOL/$name.meta" \
+        || die "removing the pool triple of $name failed (S3 copy is safe; clean the pool by hand)"
+    prune_old_snapshots "$POOL"
+    echo "backup $name complete"
+}
+
+cmd_run_daily() { # daily tier: fresh full save + model sync
+    aws_env
+    take_lock
+    [[ -d $PROD_CHECKOUT ]] || die "no production checkout at $PROD_CHECKOUT"
+    [[ -x $PROD_SCRIPT ]] || die "no script at $PROD_SCRIPT"
+
+    local tier_dir=$S3_APP_PREFIX/daily
+    local ts name ext
+    ts=$(date +%Y%m%d-%H%M)
+    name=$PREFIX-daily-$ts
+
+    echo "saving $name from $APP_PROFILE"
+    timeout --kill-after=30 600 "$PROD_SCRIPT" snapshot save "$name" "$APP_PROFILE" \
+        || die "snapshot save failed (output above)"
+    for ext in dump files.tar.gz meta; do
+        [[ -s $POOL/$name.$ext ]] \
+            || die "save reported success but $POOL/$name.$ext is missing"
+    done
+
+    # Land the full triple: meta + files first, dump last (S3
+    # objects are atomic; dump-last is the landing convention).
+    upload_verified "$POOL/$name.meta"         "$tier_dir/$name.meta"
+    upload_verified "$POOL/$name.files.tar.gz" "$tier_dir/$name.files.tar.gz"
+    upload_verified "$POOL/$name.dump"         "$tier_dir/$name.dump"
+    echo "backup landed: $(s3_uri "$tier_dir/$name") (full triple incl. photos tar)"
+
+    rm -f "$POOL/$name.dump" "$POOL/$name.files.tar.gz" "$POOL/$name.meta" \
+        || die "removing the pool triple of $name failed (S3 copy is safe; clean the pool by hand)"
+
+    sync_model
+    echo "daily cycle complete"
+}
+
+# --------------------------------------------------------------- start
+
+cmd_start() {
+    mkdir -p "$UNIT_DIR" || die "cannot create $UNIT_DIR"
+    local was_active=0
+    systemctl --user is-active --quiet "$UNIT.timer" 2>/dev/null \
+        && was_active=1
+
+    cat > "$UNIT_DIR/$UNIT.service" <<UNITEOF
+[Unit]
+Description=SceneBook production backup - prd:scenebook snapshot
+OnFailure=$UNIT-fail.service
+
+[Service]
+Type=oneshot
+ExecStart=$SELF run
+UNITEOF
+
+    cat > "$UNIT_DIR/$UNIT.timer" <<UNITEOF
+[Unit]
+Description=SceneBook production backup - every 30 minutes
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNITEOF
+
+    cat > "$UNIT_DIR/$UNIT-daily.service" <<UNITEOF
+[Unit]
+Description=SceneBook production backup - daily full save + model sync
+OnFailure=$UNIT-fail.service
+
+[Service]
+Type=oneshot
+ExecStart=$SELF run daily
+UNITEOF
+
+    cat > "$UNIT_DIR/$UNIT-daily.timer" <<UNITEOF
+[Unit]
+Description=SceneBook production backup - daily at 03:20
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNITEOF
+
+    cat > "$UNIT_DIR/$UNIT-fail.service" <<UNITEOF
+[Unit]
+Description=SceneBook backup failure - Mattermost ping
+
+[Service]
+Type=oneshot
+ExecStart=$SELF fail-ping
+UNITEOF
+
+    # Write all five unit files unconditionally (a later start can
+    # heal a missing daily pair); enabling stays idempotent.
+    systemctl --user daemon-reload || die "systemctl daemon-reload failed"
+    systemctl --user enable --now "$UNIT.timer" "$UNIT-daily.timer" \
+        || die "enabling the timers failed"
+    if (( ! was_active )); then
+        systemctl --user start --no-block "$UNIT.service" \
+            || die "starting the first backup failed"
+    fi
+    echo "Backup started: every 30 minutes at :00/:30 (S3) + daily at 03:20."
+    echo "  Persistent: missed runs catch up after a reboot."
+    if (( was_active )); then
+        echo "  Already running -- unit files rewritten, no extra first run."
+    else
+        echo "  First backup is running now -- check: $UNIT status"
+    fi
+}
+
+# ---------------------------------------------------------------- stop
+
+wait_service_quiet() { # $1 = unit; wait for an in-flight run
+    local unit=$1 waited=0
+    if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+        return 0
+    fi
+    echo "a run of $unit is finishing; waiting for it to complete..."
+    while systemctl --user is-active --quiet "$unit" 2>/dev/null; do
+        sleep 3; waited=$(( waited + 3 ))
+        (( waited < 180 )) \
+            || die "$unit still running after 180s; units left in place -- re-run stop in a minute"
+    done
+}
+
+cmd_stop() {
+    if ! systemctl --user is-active --quiet "$UNIT.timer" 2>/dev/null \
+       && ! systemctl --user is-active --quiet "$UNIT-daily.timer" 2>/dev/null \
+       && [[ ! -f $UNIT_DIR/$UNIT.timer && ! -f $UNIT_DIR/$UNIT-daily.timer ]]; then
+        echo "$UNIT is not running."
+        return 0
+    fi
+    systemctl --user disable --now "$UNIT.timer" "$UNIT-daily.timer" \
+        2>/dev/null || true
+    # Never kill a save mid-flight; wait for both, then remove files.
+    wait_service_quiet "$UNIT.service"
+    wait_service_quiet "$UNIT-daily.service"
+    rm -f "$UNIT_DIR/$UNIT.service" "$UNIT_DIR/$UNIT.timer" \
+          "$UNIT_DIR/$UNIT-daily.service" "$UNIT_DIR/$UNIT-daily.timer" \
+          "$UNIT_DIR/$UNIT-fail.service"
+    systemctl --user daemon-reload
+    systemctl --user reset-failed "$UNIT.service" "$UNIT-daily.service" \
+        "$UNIT-fail.service" 2>/dev/null || true
+    echo "Backup stopped: both timers disabled, five units removed."
+    echo "S3 backups are kept (lifecycle owns their retention)."
+    echo "Final snapshot is manual, e.g.:"
+    echo "  $PROD_SCRIPT snapshot save prd-scenebook-final $APP_PROFILE"
+    echo "  $SELF run   # lands the current minute's RPO pair"
+}
+
+# -------------------------------------------------------------- status
+
+show_service_result() { # $1 = unit, $2 = label
+    local unit=$1 label=$2 exit_ts start_ts rc dur
+    if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+        start_ts=$(systemctl --user show "$unit" \
+                       -p ExecMainStartTimestamp --value)
+        echo "  $label: run in progress: started ${start_ts:-unknown}"
+    else
+        exit_ts=$(systemctl --user show "$unit" \
+                      -p ExecMainExitTimestamp --value)
+        if [[ -n $exit_ts && $exit_ts != 0 ]]; then
+            start_ts=$(systemctl --user show "$unit" \
+                           -p ExecMainStartTimestamp --value)
+            rc=$(systemctl --user show "$unit" \
+                     -p ExecMainStatus --value)
+            dur=$(( $(date -d "$exit_ts" +%s) - $(date -d "$start_ts" +%s) ))
+            if [[ $rc == 0 ]]; then
+                echo "  $label: last run $exit_ts -- ok (${dur}s)"
+            else
+                echo "  $label: last run $exit_ts -- FAILED (exit $rc)"
+                journalctl --user -u "$unit" -n 3 -o cat --no-pager \
+                    2>/dev/null | tail -1 | sed 's/^/    /'
+            fi
+        fi
+    fi
+}
+
+show_tier() { # $1 = tier dir prefix, $2 = label
+    local tier=$1 label=$2 json n bytes newest_key newest_size newest_iso epoch
+    json=$(aws s3api list-objects-v2 --bucket "$AWS_BUCKET" \
+               --prefix "$tier/" --output json 2>/dev/null) || json='{}'
+    n=$(jq '.Contents | length // 0' <<<"$json" 2>/dev/null)
+    bytes=$(jq '[.Contents[]?.Size] | add // 0' <<<"$json" 2>/dev/null)
+    newest_key=$(jq -r '[.Contents[]?.Key] | max // empty' <<<"$json" 2>/dev/null)
+    if [[ -z $newest_key ]]; then
+        echo "  $label: no objects yet under $(s3_uri "$tier")/"
+        return 0
+    fi
+    # anchor "newest" on the triple's .dump (the .meta of the same
+    # name sorts higher and would mislead)
+    newest_key=$(jq -r '[.Contents[]?.Key | select(test("\\.dump$"))] | max // empty' <<<"$json" 2>/dev/null)
+    newest_iso=$(jq -r --arg k "$newest_key" \
+                     '.Contents[]? | select(.Key == $k) | .LastModified' \
+                     <<<"$json" 2>/dev/null)
+    newest_size=$(jq -r --arg k "$newest_key" \
+                      '.Contents[]? | select(.Key == $k) | .Size' \
+                      <<<"$json" 2>/dev/null)
+    epoch=$(iso_epoch "$newest_iso")
+    printf '  %-7s %3s object(s) %9s -- newest %s (%s)\n' \
+           "$label" "$n" "$(human_size "$bytes")" \
+           "$(basename "$newest_key")" \
+           "$([[ -n $epoch ]] && human_age "$epoch" || echo "$newest_iso")"
+}
+
+cmd_status() {
+    aws_env
+    local next
+
+    if systemctl --user is-active --quiet "$UNIT.timer" 2>/dev/null; then
+        echo "scenebook backup: RUNNING (base timer active; every 30 min)"
+    elif [[ -f $UNIT_DIR/$UNIT.timer ]]; then
+        echo "scenebook backup: INSTALLED but base timer inactive"
+    else
+        echo "scenebook backup: STOPPED (no base timer installed)"
+    fi
+    for next in "$UNIT.timer" "$UNIT-daily.timer"; do
+        if systemctl --user is-active --quiet "$next" 2>/dev/null; then
+            printf '  %-22s next: %s\n' "$next" \
+                   "$(systemctl --user show "$next" \
+                          -p NextElapseUSecRealtime --value)"
+        fi
+    done
+
+    show_service_result "$UNIT.service" "base"
+    show_service_result "$UNIT-daily.service" "daily"
+
+    echo
+    echo "S3 tiers under $(s3_uri "$S3_APP_PREFIX"):"
+    show_tier "$S3_APP_PREFIX/rpo"   "rpo:"
+    show_tier "$S3_APP_PREFIX/daily" "daily:"
+    local model_key="$S3_APP_PREFIX/model/$MODEL_NAME.lisp"
+    local m_size m_iso
+    m_size=$(s3_head_size "$model_key")
+    if [[ -n $m_size ]]; then
+        m_iso=$(aws s3api head-object --bucket "$AWS_BUCKET" \
+                    --key "$model_key" --query LastModified \
+                    --output text 2>/dev/null)
+        local m_epoch
+        m_epoch=$(iso_epoch "$m_iso")
+        printf '  %-7s %9s -- synced %s\n' "model:" \
+               "$(human_size "$m_size")" \
+               "$([[ -n $m_epoch ]] && human_age "$m_epoch" || echo "$m_iso")"
+    else
+        echo "  model:  not synced yet (runs at 03:20 with the daily)"
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------- restore
+# Copies an S3 tier object set back into the snapshot pool ($POOL --
+# what 'snapshot list' reads), staging it for the real restore:
+#   $PROD_SCRIPT snapshot restore <name> <RESTORE_PRINT_TARGET:-prd:scenebook>
+# A copy, not a move: S3 keeps its backup. With no name, the newest
+# object of the tier (key sort == time sort) is staged. A bare
+# YYYYMMDD-HHMM timestamp also matches ($PREFIX-<ts>). The tier is
+# the second argument or --tier, never a bare snapshot-name slot.
+# Extensions are tier-shaped: daily holds the full triple, rpo holds
+# dump + meta only (no photos tar exists there). Reads honor
+# RESTORE_SITE (default BACKUP_SITE): the move runbook stages
+# evo-x2's objects onto prod-2 with RESTORE_SITE=evo-x2.
+
+cmd_restore() { # [name] [tier] | [name] --tier <t>
+    local name= tier=
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --tier)
+                [[ -n ${2:-} ]] || die "--tier needs a value (daily|rpo)"
+                tier=$2; shift 2 ;;
+            --*) die "unknown flag: $1" ;;
+            *)
+                if [[ -z $name ]]; then name=$1; shift
+                elif [[ -z $tier ]]; then tier=$1; shift
+                else die "unexpected argument: $1"
+                fi ;;
+        esac
+    done
+    tier=${tier:-daily}
+    [[ $tier == daily || $tier == rpo ]] \
+        || die "unknown tier '$tier' (this app has: daily, rpo)"
+    aws_env
+
+    local tier_dir=$RESTORE_SITE/scenebook/$tier
+    local key ext exts
+    if [[ -z $name ]]; then
+        key=$(s3_newest_key "$tier_dir" dump)
+        [[ -n $key ]] || die "no backups under s3://$AWS_BUCKET/$tier_dir yet"
+        name=$(basename "$key" .dump)
+        echo "no name given; staging newest of the $tier tier: $name"
+    fi
+    if ! s3_has "$tier_dir/$name.dump" \
+       && s3_has "$tier_dir/$PREFIX-daily-$name.dump"; then
+        name=$PREFIX-daily-$name
+    fi
+    if ! s3_has "$tier_dir/$name.dump" \
+       && s3_has "$tier_dir/$PREFIX-$name.dump"; then
+        name=$PREFIX-$name
+    fi
+    s3_has "$tier_dir/$name.dump" \
+        || die "no backup '$name' in the $tier tier under s3://$AWS_BUCKET/$tier_dir"
+    if [[ $tier == rpo ]]; then
+        exts="dump meta"        # no photos tar in the RPO tier
+    else
+        exts="dump files.tar.gz meta"
+    fi
+    for ext in $exts; do
+        s3_has "$tier_dir/$name.$ext" \
+            || die "incomplete backup: $tier/$name.$ext is missing"
+    done
+
+    # Land in the pool: meta (+ files) first, dump last (the pool's
+    # visibility convention), like the Drive restore did.
+    for ext in meta files.tar.gz dump; do
+        [[ $ext == files.tar.gz && $tier == rpo ]] && continue
+        aws s3 cp "s3://$AWS_BUCKET/$tier_dir/$name.$ext" "$POOL/" \
+            || die "downloading $name.$ext into the snapshot pool failed"
+    done
+    echo "staged $name (tier $tier) into $POOL (visible to snapshot list)"
+    echo "restore it with: $PROD_SCRIPT snapshot restore $name ${RESTORE_PRINT_TARGET:-$APP_PROFILE}"
+}
+
+# --------------------------------------------------------------- recover
+# The freshest full recovery set, restore-shaped: the newest COMPLETE
+# daily triple (dump + files.tar.gz + meta) as the base — candidates
+# group by exact basename per tier, sidecars complete a candidate
+# only from the same tier, and the trailing timestamp orders them —
+# then the newest rpo dump+meta pair applied ON TOP when its
+# extracted timestamp is strictly newer than the daily's (the rpo
+# tier has no files tar; a newer database rides the older files
+# tree). The daily-files / rpo-database age gap is STATED, never
+# silent: the restore order is prefixed by a line comparing the two
+# timestamps verbatim.
+
+tier_objects() { # $1 = tier; prints the tier's keys (unfiltered)
+    aws s3api list-objects-v2 --bucket "$AWS_BUCKET" \
+        --prefix "$RESTORE_SITE/scenebook/$1/" --output json 2>/dev/null \
+        | jq -r '.Contents[]?.Key' 2>/dev/null
+}
+
+tier_complete_daily() { # prints "<ts> <name>" ascending; ts-stripped names
+    local -a keys=()
+    local key base
+    while IFS= read -r key; do
+        [[ -n $key ]] && keys+=("$key")
+    done < <(tier_objects daily)
+    local -A dumps=() tars=() metas=()
+    for key in "${keys[@]+${keys[@]}}"; do
+        base=${key##*/}
+        case $base in
+            *.dump)         dumps[${base%.dump}]=1 ;;
+            *.files.tar.gz) tars[${base%.files.tar.gz}]=1 ;;
+            *.meta)         metas[${base%.meta}]=1 ;;
+        esac
+    done
+    local name
+    for name in "${!dumps[@]}"; do
+        [[ -n ${tars[$name]:-} && -n ${metas[$name]:-} ]] || continue
+        echo "${name##*$PREFIX-daily-} $name"
+    done | sort
+}
+
+tier_complete_rpo() { # prints "<ts> <name>" ascending (dump + meta pairs)
+    local -a keys=()
+    local key base
+    while IFS= read -r key; do
+        [[ -n $key ]] && keys+=("$key")
+    done < <(tier_objects rpo)
+    local -A dumps=() metas=()
+    for key in "${keys[@]+${keys[@]}}"; do
+        base=${key##*/}
+        case $base in
+            *.dump) dumps[${base%.dump}]=1 ;;
+            *.meta) metas[${base%.meta}]=1 ;;
+        esac
+    done
+    local name
+    for name in "${!dumps[@]}"; do
+        [[ -n ${metas[$name]:-} ]] || continue
+        echo "${name##*$PREFIX-} $name"
+    done | sort
+}
+
+ts_gap() { # $1 $2 = YYYYMMDD-HHMM; prints "N min" between them
+    local a b
+    a=$(date -d "${1:0:4}-${1:4:2}-${1:6:2} ${1:9:2}:${1:11:2}" +%s 2>/dev/null) || return 0
+    b=$(date -d "${2:0:4}-${2:4:2}-${2:6:2} ${2:9:2}:${2:11:2}" +%s 2>/dev/null) || return 0
+    echo "$(( (b - a) ))s"
+}
+
+cmd_recover() { # [--check] — freshest full recovery set; prints restore order
+    local check=0
+    [[ ${1:-} == --check ]] && { check=1; shift; }
+    [[ -z ${1:-} ]] || die "recover takes no arguments (or --check)"
+    aws_env
+    local daily_ts daily_name rpo_ts rpo_name
+    read -r daily_ts daily_name < <(tier_complete_daily | tail -1)
+    [[ -n ${daily_name:-} ]] \
+        || die "no complete daily recovery set for $MODEL_NAME under s3://$AWS_BUCKET/$RESTORE_SITE/scenebook (the daily triple is the base of every restore)"
+    rpo_name=""
+    read -r rpo_ts rpo_name < <(tier_complete_rpo | tail -1) || true
+    # The timestamp-comparison line, verbatim and first: which daily
+    # files tree accompanies which database, and how far apart.
+    if [[ -n ${rpo_name:-} && $rpo_ts > $daily_ts ]]; then
+        echo "age gap: daily files ${daily_ts} + rpo database ${rpo_ts} (the files tree is $(ts_gap "$daily_ts" "$rpo_ts") older than the database; the rpo tier carries no photos tar)"
+    elif [[ -n ${rpo_name:-} ]]; then
+        echo "age gap: daily files ${daily_ts} + rpo database ${rpo_ts} (not newer; the daily triple alone is restored)"
+        rpo_name=""
+    else
+        echo "age gap: daily files ${daily_ts}; no complete rpo pair (the daily triple alone is restored)"
+    fi
+    echo "recovery set: $daily_name (daily)${rpo_name:+ + $rpo_name (rpo, applied on top)} from s3://$AWS_BUCKET/$RESTORE_SITE/scenebook"
+    if (( check )); then
+        echo "check: the complete recovery set exists and is complete"
+        return 0
+    fi
+    local tier_dir ext
+    tier_dir=$RESTORE_SITE/scenebook/daily
+    for ext in meta files.tar.gz dump; do
+        aws s3 cp "s3://$AWS_BUCKET/$tier_dir/$daily_name.$ext" "$POOL/" \
+            || die "downloading $daily_name.$ext into the snapshot pool failed"
+    done
+    if [[ -n $rpo_name ]]; then
+        tier_dir=$RESTORE_SITE/scenebook/rpo
+        for ext in meta dump; do
+            aws s3 cp "s3://$AWS_BUCKET/$tier_dir/$rpo_name.$ext" "$POOL/" \
+                || die "downloading $rpo_name.$ext into the snapshot pool failed"
+        done
+    fi
+    echo "staged into $POOL (visible to snapshot list)"
+    echo "restore: $daily_name"
+    [[ -n $rpo_name ]] && echo "restore: $rpo_name"
+    echo "restore them in this order with: $PROD_SCRIPT snapshot restore <name> ${RESTORE_PRINT_TARGET:-$APP_PROFILE}"
+}
+
+# ------------------------------------------------------------- location
+
+cmd_location() {
+    aws_env
+    echo "$(s3_uri "$S3_APP_PREFIX")"
+}
+
+# ----------------------------------------------------------- dispatcher
+
+case "${1:-}" in
+    start)     cmd_start ;;
+    stop)      cmd_stop ;;
+    status)    cmd_status ;;
+    restore)   shift; cmd_restore "$@" ;;
+    recover)   shift; cmd_recover "$@" ;;
+    location)  cmd_location ;;
+    run)       shift; cmd_run "$@" ;;
+    fail-ping) cmd_fail_ping ;;
+    help)      print_usage; exit 0 ;;
+    *)         usage ;;
+esac

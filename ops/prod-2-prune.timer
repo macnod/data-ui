@@ -1,0 +1,9 @@
+[Unit]
+Description=Data UI prod-2 image-cache prune (daily 09:40 UTC)
+
+[Timer]
+OnCalendar=*-*-* 09:40:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

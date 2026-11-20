@@ -1,0 +1,6 @@
+[Unit]
+Description=Data UI prod-2 image-cache prune (builder cache, host and node deploy images)
+
+[Service]
+Type=oneshot
+ExecStart=%h/common-lisp/data-ui/ops/prod-2-prune.sh

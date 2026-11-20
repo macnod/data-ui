@@ -3,6 +3,16 @@
 SCRIPT_NAME=$(basename $0)
 ACTION=$1
 
+# Entry-environment snapshot: the exported variable names present at
+# script entry, space-padded for substring membership tests. Captured
+# BEFORE any default assignment below and before checkout.sh's
+# apply_site_defaults fills site defaults, so the remote forwarder can
+# forward an allowlisted variable only when the OPERATOR set it — a
+# value the script itself defaulted (site defaults, deploy-environment
+# exports) never crosses to the remote host, where it would override
+# the remote site's own defaults.
+DATA_UI_ENTRY_ENV=" $(compgen -e | tr '\n' ' ')"
+
 # Defaults only (profiles and export_* may override). Use := so pre-set
 # values survive; deploy-compile keeps unconditional assignments.
 : "${ADMIN_PASSWORD:=admin-password-1}"
@@ -262,6 +272,30 @@ delete <model-name>
     the explicit MODEL_FILE, else the canonical models/<name>.lisp,
     else the stable models/local/<name>.lisp. Requires sudo (for
     HAProxy). Docker images and git release tags are left in place.
+    On an explicit-DNS site (prod-2) it also removes the app's A
+    record (only when it holds this site's address) and its manifest
+    rows, using every domain the manifest and release record name.
+
+cutover <model-name>
+    Publishes an already-deployed app on an explicit-DNS site
+    (prod-2): pinned /health, the per-app A record UPSERT in the
+    site's Route 53 zone, INSYNC, a final pinned /health, and only
+    then the manifest row — the record asserts a verified
+    publication. Idempotent; safe to re-run after any failure. The
+    deploy verb never touches DNS on those sites.
+
+rebirth {--adopt-data|--fresh-data}
+    Site-local recovery verb (prod-2): redeploy every app from the
+    site manifest via its recorded release image (DEPLOY_RECORDED_
+    RELEASE; pull-or-die, no compile/build/tag; the record's model
+    hash is checked against the checkout first). --adopt-data keeps
+    the volume's data (no restore); --fresh-data materializes the S3
+    manifest, then restores each app's freshest complete backup set
+    (a populated destination files tree dies demanding
+    REBIRTH_ALLOW_POPULATED_FILES=1). Preflight verifies every app's
+    inputs before anything destructive. Never touches DNS or manifest
+    rows. REBIRTH_APPS="a b" overrides the inventory;
+    REBIRTH_ALLOW_BUILD=1 builds at HEAD instead.
 
 staging update [--from REMOTE/BRANCH]
 staging activate-modelbank [--leave-unexposed|--expose]
@@ -667,8 +701,11 @@ function profile_conf_path {
 }
 
 function require_haproxy_host {
-    [[ "$(hostname)" == "$DEPLOY_HOST" ]] \
-        || die "$1 must run on ${DEPLOY_HOST} (this is $(hostname))."
+    # The site marker decides locality (local_site); a stamped prod-2
+    # runs its own HAProxy, an unstamped host keeps the hostname
+    # behavior.
+    [[ "$(local_site)" == "$DEPLOY_HOST" ]] \
+        || die "$1 must run on ${DEPLOY_HOST} (this is $(local_site))."
 }
 
 function profile_domain {
@@ -2009,21 +2046,43 @@ function compile_model {
 }
 
 function gather_deploy_facts {
-    echo "Reading identity from the model..."
-    NAME=$(model_field name)
-    TITLE=$(model_field title)
-    VERSION=$(model_field version)
-    DOMAIN=$(model_field domain)
-    REPL=$(model_field repl)
-    # The model compile step already requires these; the checks here only
-    # guard against get_model_field plumbing failures.
-    [[ -n "$NAME" && "$NAME" != "NIL" ]] || die "Model has no :name."
-    [[ -n "$TITLE" && "$TITLE" != "NIL" ]] || die "Model has no :title."
-    [[ -n "$VERSION" && "$VERSION" != "NIL" ]] || die "Model has no :version."
-    [[ -n "$DOMAIN" && "$DOMAIN" != "NIL" ]] || die "Model has no :domain."
+    if [[ -n "${DEPLOY_RECORDED_RELEASE:-}" ]]; then
+        # The release record, not the checkout, drives the render:
+        # NAME from the CLI operand, VERSION/DOMAIN/REPL from the
+        # record (its model hash names the file these were read from)
+        # — never reread from a model file the checkout may have moved
+        # under since the record was written.
+        NAME="$MODEL_NAME"
+        VERSION="${DEPLOY_RECORDED_VERSION:?recorded_release_prepare sets VERSION}"
+        DOMAIN="${DEPLOY_RECORDED_DOMAIN:?recorded_release_prepare sets DOMAIN}"
+        REPL="${DEPLOY_RECORDED_REPL:-NIL}"
+        TITLE="$NAME"
+    else
+        echo "Reading identity from the model..."
+        NAME=$(model_field name)
+        TITLE=$(model_field title)
+        VERSION=$(model_field version)
+        DOMAIN=$(model_field domain)
+        REPL=$(model_field repl)
+        # The model compile step already requires these; the checks here only
+        # guard against get_model_field plumbing failures.
+        [[ -n "$NAME" && "$NAME" != "NIL" ]] || die "Model has no :name."
+        [[ -n "$TITLE" && "$TITLE" != "NIL" ]] || die "Model has no :title."
+        [[ -n "$VERSION" && "$VERSION" != "NIL" ]] || die "Model has no :version."
+        [[ -n "$DOMAIN" && "$DOMAIN" != "NIL" ]] || die "Model has no :domain."
+    fi
     SHORT_HASH="${DEPLOY_FULL_SHA:0:7}"
     TAG="${NAME}-${VERSION}-${SHORT_HASH}"
-    IMAGE="${IMAGE_REPO}:${TAG}"
+    if [[ -n "${DEPLOY_RECORDED_IMAGE:-}" ]]; then
+        # The record's image is authoritative under a recorded release
+        # (the ref formula would name a different image when the
+        # checkout has moved past the record's full_sha).
+        IMAGE="$DEPLOY_RECORDED_IMAGE"
+    elif [[ -n "${IMAGE_REGISTRY:-}" ]]; then
+        IMAGE=$(registry_image_ref)
+    else
+        IMAGE="${IMAGE_REPO}:${TAG}"
+    fi
     RELEASE_NAME="${TITLE} ${TAG}"
     NAMESPACE="dataui-${NAME}"
     OUT_DIR="${DEPLOY_STATE_DIR}/${NAME}/releases/${VERSION}-${SHORT_HASH}"
@@ -2063,6 +2122,107 @@ function create_deploy_tag {
     fi
 }
 
+function deploy_arch {
+    # The deploy image's architecture: uname -m normalized to Docker's
+    # platform spellings. Anything else dies (no emulation, no
+    # cross-arch builds).
+    case "$(uname -m)" in
+        x86_64)  echo amd64 ;;
+        aarch64) echo arm64 ;;
+        *) die "Unsupported build architecture $(uname -m) (wanted x86_64 or aarch64)." ;;
+    esac
+}
+
+function deploy_model_sha {
+    # The model's SHA-256 — the content half of the registry tag (a
+    # VIP model at the same git SHA is a different image). Under a
+    # handoff the envelope's handoff SHA IS the model's hash; a
+    # canonical deploy hashes the model blob at the selected SHA
+    # through a temp file (a command substitution would strip the
+    # trailing newline and hash a different byte string).
+    local tmp out
+    if [[ -n "${DEPLOY_HANDOFF_KIND:-}" && "${DEPLOY_HANDOFF_KIND}" != "none" ]]; then
+        echo "$ENVELOPE_HANDOFF_SHA"
+        return 0
+    fi
+    tmp=$(mktemp "${TMPDIR:-/tmp}/model-sha.XXXXXX")
+    if ! checkout_git "$DEPLOY_CHECKOUT" show "${DEPLOY_FULL_SHA}:models/${MODEL_NAME}.lisp" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        die "cannot read models/${MODEL_NAME}.lisp at ${DEPLOY_FULL_SHA} for the model hash."
+    fi
+    out=$(sha256sum "$tmp" | cut -d' ' -f1)
+    rm -f "$tmp"
+    [[ "$out" =~ ^[0-9a-f]{64}$ ]] \
+        || die "unexpected model hash '${out}' for models/${MODEL_NAME}.lisp at ${DEPLOY_FULL_SHA}."
+    echo "$out"
+}
+
+function registry_image_ref {
+    # Content-addressed deploy tag: the full git SHA pins the code, the
+    # model's SHA-256 pins the model. deploy-<arch>-<sha40>-<sha256> is
+    # 118 characters against ECR's 128-char tag limit.
+    echo "${IMAGE_REGISTRY}/data-ui/${MODEL_NAME}:deploy-$(deploy_arch)-${DEPLOY_FULL_SHA}-$(deploy_model_sha)"
+}
+
+function registry_login {
+    # ECR authentication for every push path (a fresh host has no
+    # cached docker login). Never dies — callers decide (a probe miss
+    # warns; a push failure warns; the recorded-release pull dies on
+    # the pull itself).
+    aws ecr get-login-password --region "${AWS_REGION:-us-east-1}" 2>/dev/null \
+        | docker login --username AWS --password-stdin "$IMAGE_REGISTRY" >/dev/null 2>&1
+}
+
+function registry_probe {
+    # Pull-or-build decision, before compile_model. A hit (login +
+    # platform-pinned pull + architecture check) sets
+    # DEPLOY_REGISTRY_HIT=1: the compile and build are skipped, the
+    # k3d import still runs. Any failure is one warning line and
+    # today's build path — the registry is a cache, never a deploy
+    # gate. Never called under DRY_RUN, REBUILD, or
+    # DEPLOY_RECORDED_RELEASE.
+    local ref arch got_arch
+    arch=$(deploy_arch)
+    if ! registry_login; then
+        echo "WARNING: ECR login to ${IMAGE_REGISTRY} failed; building ${MODEL_NAME} locally (the next rebirth of ${MODEL_NAME} may have to build)."
+        return 1
+    fi
+    ref=$(registry_image_ref)
+    if ! docker pull --platform "linux/${arch}" "$ref" >/dev/null 2>&1; then
+        echo "WARNING: registry miss for ${MODEL_NAME} (${ref}); building at ${DEPLOY_FULL_SHA} and pushing best-effort."
+        return 1
+    fi
+    got_arch=$(docker image inspect -f '{{.Architecture}}' "$ref" 2>/dev/null) || true
+    if [[ "$got_arch" != "$arch" ]]; then
+        echo "WARNING: registry image ${ref} is ${got_arch:-unknown}, wanted ${arch}; building locally."
+        return 1
+    fi
+    DEPLOY_REGISTRY_HIT=1
+    echo "Registry hit: ${ref} (no compile, no build; the k3d import still runs)."
+    return 0
+}
+
+function registry_push_best_effort {
+    # After a miss-built image is imported into k3d: fill the registry
+    # cache. The push is never a deploy gate — a failure (including a
+    # missing repository; repositories are administrator-created)
+    # warns that a future rebirth may have to build, and the deploy
+    # continues. Ordinary deploys only push after a miss (the tag is
+    # absent), so they never overwrite a tag; REBUILD=1 pushes over
+    # the same content tag deliberately (the repositories are MUTABLE
+    # for exactly this).
+    [[ -n "${IMAGE_REGISTRY:-}" ]] || return 0
+    if ! registry_login; then
+        echo "WARNING: ECR login failed; NOT pushing ${IMAGE} (the next rebirth of ${NAME} may have to build; REBUILD=1 repairs it)."
+        return 0
+    fi
+    if docker push "$IMAGE" >/dev/null 2>&1; then
+        echo "Pushed ${IMAGE} (the registry cache for the next deploy and any rebirth)."
+    else
+        echo "WARNING: pushing ${IMAGE} failed; the next rebirth of ${NAME} may have to build (REBUILD=1 repairs it)."
+    fi
+}
+
 function build_image {
     # The Docker context is a fresh restrictive temporary directory
     # populated by `git archive FULL_SHA` — never the raw checkout
@@ -2076,6 +2236,17 @@ function build_image {
     # asserts no models/local/ path exists in the context. The context
     # is cleaned by the inner arm's trap. The tracked root .dockerignore
     # rides in the archive (harmless; it never excluded models/local/).
+    if [[ -n "${DEPLOY_REGISTRY_HIT:-}" ]]; then
+        # Registry hit / recorded release: the image is already local
+        # (pulled with the platform pinned); ONLY the k3d import runs —
+        # no context, no archive, no build. A failed import still
+        # aborts — there is never a registry fallback at this point.
+        echo
+        echo "Importing image into k3d cluster ${K3D_CLUSTER}"
+        k3d image import "$IMAGE" -c "$K3D_CLUSTER" \
+            || die "k3d image import failed."
+        return 0
+    fi
     local context listing archive
     context=$(mktemp -d "${TMPDIR:-/tmp}/data-ui-build-context.XXXXXX") \
         || die "cannot create a build context directory"
@@ -2124,6 +2295,7 @@ function build_image {
     echo "Importing image into k3d cluster ${K3D_CLUSTER}"
     k3d image import "$IMAGE" -c "$K3D_CLUSTER" \
         || die "k3d image import failed."
+    registry_push_best_effort
 }
 
 function assign_node_port {
@@ -2536,11 +2708,15 @@ function deploy_check_identity {
 }
 
 function wait_for_health_200 {
-    # $1 url, $2 label, $3 deadline seconds (default 300). Poll every
-    # 5 seconds with a 5-second request timeout.
+    # $1 url, $2 label, $3 deadline seconds (default 300), then any
+    # extra curl arguments (e.g. --resolve name:443:ip, which pins a
+    # health gate to a site's own address on explicit-DNS sites).
+    # Poll every 5 seconds with a 5-second request timeout.
     local url="$1" label="$2" deadline="${3:-300}" waited=0 code
+    local -a extra=("${@:4}")
     while :; do
-        code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$url" 2>/dev/null) || code=000
+        code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+                    "${extra[@]+"${extra[@]}"}" "$url" 2>/dev/null) || code=000
         [[ "$code" == "200" ]] && return 0
         if (( waited >= deadline )); then
             echo "ERROR: ${label}: no HTTP 200 from ${url} within ${deadline}s (last: ${code:-none})." >&2
@@ -2565,13 +2741,18 @@ function wait_for_health_200 {
 
 function remote_forward_env_string {
     # The environment allowlist: DRY_RUN, checkout/state/source
-    # overrides, cluster configuration, and delete's FORCE. Never
-    # secrets. Emitted as shell-quoted VAR=... words for the remote
+    # overrides, cluster configuration, delete's FORCE, and the deploy
+    # modifiers. Never secrets. A variable crosses only when BOTH: it
+    # is allowlisted, non-empty, AND its name was present in the
+    # operator's entry environment (DATA_UI_ENTRY_ENV) — values the
+    # script defaulted itself (site defaults, deploy-environment
+    # exports) stay local, so the remote site's own defaults win on
+    # its side. Emitted as shell-quoted VAR=... words for the remote
     # bash; the whole remote script travels as ONE argument that
     # survives exactly one reparse.
     local -a fwd=()
     local v
-    for v in DRY_RUN FORCE \
+    for v in DRY_RUN FORCE REBUILD MOVE \
              DEPLOY_CHECKOUT STAGING_CHECKOUT CHECKOUT_LOCK_ROOT \
              DEPLOY_HOST STAGING_HOST DEPLOY_BOOTSTRAP_CHECKOUT \
              DEPLOY_STATE_DIR DATA_UI_STATE \
@@ -2579,7 +2760,9 @@ function remote_forward_env_string {
              K3D_CLUSTER OPS_LIB_DIR SYSTEMD_UNIT_DIR \
              HAPROXY_CFG HAPROXY_CONF_D HAPROXY_MAP HAPROXY_DEFAULTS \
              STAGING_HEALTH_TIMEOUT; do
-        [[ -n "${!v:-}" ]] && fwd+=("$v=$(printf '%q' "${!v}")")
+        [[ -n "${!v:-}" ]] || continue
+        [[ "${DATA_UI_ENTRY_ENV:-}" == *" $v "* ]] || continue
+        fwd+=("$v=$(printf '%q' "${!v}")")
     done
     local IFS=' '
     printf '%s' "${fwd[*]}"
@@ -2731,7 +2914,7 @@ function deploy_outer {
     # with the envelope. No production build ever uses the caller's
     # HEAD, branch, working tree, or remotes.
     export_deploy_environment
-    if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
+    if [[ "$(local_site)" != "$DEPLOY_HOST" ]]; then
         remote_deploy "$DEPLOY_MODEL_NAME"
         return
     fi
@@ -2861,6 +3044,410 @@ function report_recovery_records {
     done
 }
 
+#
+# Site state: public address, the wrong-site guard, DNS publication,
+# the release record, and the per-site manifest. Active only where the
+# site defaults arm them (prod-2); evo-x2 and unstamped hosts keep
+# today's behavior — every helper's first line returns on the unset
+# key.
+#
+
+function site_public_ip {
+    # This site's public address: SITE_PUBLIC_IP when set (tests, and
+    # pinning past a hairpin failure), else this EC2 instance's IMDSv2
+    # public-ipv4. Only meaningful on explicit-DNS sites.
+    if [[ -n "${SITE_PUBLIC_IP:-}" ]]; then
+        echo "$SITE_PUBLIC_IP"
+        return 0
+    fi
+    local token ip
+    token=$(curl -s -m 2 -X PUT \
+                -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+                http://169.254.169.254/latest/api/token 2>/dev/null) || true
+    [[ -n "$token" ]] \
+        || die "cannot get an IMDSv2 token for this site's public address (set SITE_PUBLIC_IP to pin it)."
+    ip=$(curl -s -m 2 -H "X-aws-ec2-metadata-token: ${token}" \
+             http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null) || true
+    [[ -n "$ip" ]] \
+        || die "no public-ipv4 from IMDSv2 (set SITE_PUBLIC_IP to pin it)."
+    echo "$ip"
+}
+
+function imds_instance_id {
+    # This EC2 instance's own id, via IMDSv2 (the Elastic-IP identity
+    # check in cutover compares against it — command success alone
+    # proves nothing).
+    local token id
+    token=$(curl -s -m 2 -X PUT \
+                -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+                http://169.254.169.254/latest/api/token 2>/dev/null) || true
+    [[ -n "$token" ]] || die "cannot get an IMDSv2 token (not an EC2 instance?)."
+    id=$(curl -s -m 2 -H "X-aws-ec2-metadata-token: ${token}" \
+             http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null) || true
+    [[ -n "$id" ]] || die "no instance-id from IMDSv2."
+    echo "$id"
+}
+
+function site_wrong_host_guard {
+    # Wildcard-site wrong-host guard (SITE_WILDCARD_ZONE set — evo-x2
+    # stamped; an unstamped or dev host has no zone and no guard).
+    # When the deploy's domain would be answered PUBLICLY by another
+    # site (its public A answer differs from the wildcard's own), the
+    # deploy stops: after the moves, the habitual bare
+    # `scripts/data-ui deploy backlog` on evo-x2 would otherwise build
+    # a zombie there and report success. A public resolver on purpose
+    # (the home router answers every name in the zone with evo-x2's
+    # LAN address). MOVE=1 overrides (a deliberate move back). Any
+    # resolver failure — or no dig — is a note line, never a block.
+    [[ -n "${SITE_WILDCARD_ZONE:-}" ]] || return 0
+    [[ -z "${MOVE:-}" ]] || return 0
+    local domain="$DOMAIN" resolver a b
+    [[ "$domain" == *".${SITE_WILDCARD_ZONE}" ]] || return 0
+    command -v dig >/dev/null 2>&1 \
+        || { echo "note: no dig on PATH; skipping the wrong-site guard for ${domain}."; return 0; }
+    resolver="${SITE_GUARD_RESOLVER:-1.1.1.1}"
+    a=$(dig +short +time=3 +tries=1 A "$domain" "@${resolver}" 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1) || true
+    b=$(dig +short +time=3 +tries=1 A "site-guard-probe.${SITE_WILDCARD_ZONE}" "@${resolver}" 2>/dev/null \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1) || true
+    if [[ -z "$a" || -z "$b" ]]; then
+        echo "note: wrong-site guard could not resolve via ${resolver} (domain ${a:-unresolved}, wildcard probe ${b:-unresolved}); continuing."
+        return 0
+    fi
+    if [[ "$a" != "$b" ]]; then
+        die "${domain} is served by another site (resolves to ${a} via ${resolver}; this site's wildcard is ${b}). Deploy it there: DEPLOY_HOST=<site> scripts/data-ui deploy ${MODEL_NAME}. MOVE=1 overrides."
+    fi
+    echo "Wrong-site guard passed: ${domain} answers ${a} (this site's wildcard) via ${resolver}."
+}
+
+function site_dns_lookup_exact_a {
+    # Exact type-A lookup for <domain> in SITE_DNS_ZONE_ID. Prints the
+    # record's first A value when an exact record exists; prints
+    # nothing and returns 1 when no exact A record exists (a same-name
+    # non-A record or a following-name hit is NOT a match); returns 2
+    # on a query or CLI failure — a distinct "publication unknown",
+    # never "unpublished". The --start-record-* pins are only the seek
+    # (start-at-or-after semantics); the returned Name and Type decide.
+    local domain="$1" out name type value
+    if ! out=$(aws route53 list-resource-record-sets \
+                   --hosted-zone-id "$SITE_DNS_ZONE_ID" \
+                   --start-record-name "${domain}." \
+                   --start-record-type A \
+                   --max-items 1 --output json 2>/dev/null); then
+        return 2
+    fi
+    name=$(jq -r '.ResourceRecordSets[0].Name // empty' <<<"$out" 2>/dev/null)
+    type=$(jq -r '.ResourceRecordSets[0].Type // empty' <<<"$out" 2>/dev/null)
+    # DNS names are case-insensitive; Route 53 echoes the stored
+    # spelling, so normalize both sides before the equality.
+    if [[ "${name,,}" != "${domain,,}." ]]; then
+        return 1
+    fi
+    [[ "$type" == "A" ]] || return 1
+    value=$(jq -r '.ResourceRecordSets[0].ResourceRecords[0].Value // empty' <<<"$out" 2>/dev/null)
+    [[ -n "$value" ]] || return 2
+    echo "$value"
+}
+
+function manifest_local_path {
+    echo "${DATA_UI_STATE}/ops/prod-manifest.jsonl"
+}
+
+function site_state_uri {
+    # SITE_STATE_URI without the trailing slash.
+    echo "${SITE_STATE_URI%/}"
+}
+
+function manifest_fetch_s3 {
+    # The S3 manifest copy's rows on stdout. Returns 0 with empty
+    # output when the object is absent or empty; returns 1 on a lookup
+    # failure (a warning for readers — reads never die on S3).
+    local tmp
+    [[ -n "${SITE_STATE_URI:-}" ]] || return 1
+    tmp=$(mktemp "${TMPDIR:-/tmp}/manifest-s3.XXXXXX")
+    if ! aws s3 cp "$(site_state_uri)/prod-manifest.jsonl" "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if [[ -s "$tmp" ]]; then
+        cat "$tmp"
+    fi
+    rm -f "$tmp"
+    return 0
+}
+
+function manifest_rows {
+    # This site's manifest rows, local file first. When the local file
+    # is missing but the S3 copy is reachable, the copy is ALSO
+    # installed as the local file (the re-materialization path: a
+    # fresh-data rebirth's site keeps a local manifest for every later
+    # read — publication verdicts, cutover re-runs, delete's
+    # deployed-domain lookup — and a later lost local file converges
+    # on the same path). An unreachable S3 is a warning, not a death.
+    local path tmp
+    path=$(manifest_local_path)
+    if [[ -f "$path" ]]; then
+        cat "$path"
+        return 0
+    fi
+    [[ -n "${SITE_STATE_URI:-}" ]] || return 0
+    tmp=$(mktemp "${TMPDIR:-/tmp}/manifest-mat.XXXXXX")
+    if aws s3 cp "$(site_state_uri)/prod-manifest.jsonl" "$tmp" >/dev/null 2>&1; then
+        if [[ -s "$tmp" ]]; then
+            mkdir -p "${DATA_UI_STATE}/ops"
+            mv "$tmp" "$path"
+            cat "$path"
+            return 0
+        fi
+        rm -f "$tmp"
+        return 0
+    fi
+    rm -f "$tmp"
+    echo "WARNING: no local manifest at ${path} and the S3 copy is unreachable; reading no rows." >&2
+    return 0
+}
+
+function manifest_rows_matching {
+    # Every row (local file ∪ S3 copy, duplicates harmless to readers)
+    # matching model=$1 and site=$2, one JSON object per line.
+    # Unparsable lines are skipped here; the rebirth inventory is the
+    # strict reader that dies on them.
+    local model="$1" site="$2" s3rows
+    {
+        manifest_rows
+        if s3rows=$(manifest_fetch_s3); then
+            printf '%s\n' "$s3rows"
+        fi
+    } | jq -c --arg m "$model" --arg s "$site" \
+          'select(type == "object" and .model == $m and .site == $s)' 2>/dev/null || true
+}
+
+function manifest_upsert {
+    # $1 model, $2 domain, $3 address — upsert the row keyed by
+    # model+site+domain (never model alone: a deployed D1 row survives
+    # a successful D2 deploy, which writes no row, and a half-finished
+    # D2 cutover stays distinct evidence). Caller holds the production
+    # lock (cutover does). temp+mv, then the S3 copy is REQUIRED —
+    # a row that exists only locally is a lie a fresh host would read.
+    local model="$1" domain="$2" address="$3"
+    local path tmp site
+    site=$(local_site)
+    path=$(manifest_local_path)
+    mkdir -p "${DATA_UI_STATE}/ops"
+    tmp=$(mktemp "${TMPDIR:-/tmp}/manifest-up.XXXXXX")
+    {
+        if [[ -f "$path" ]]; then
+            jq -c --arg m "$model" --arg s "$site" --arg d "$domain" \
+               'select(type == "object" and (.model != $m or .site != $s or .domain != $d))' \
+               "$path" 2>/dev/null || true
+        fi
+        jq -nc --arg m "$model" --arg s "$site" --arg d "$domain" --arg a "$address" \
+           '{model:$m, site:$s, domain:$d, address:$a}'
+    } > "$tmp"
+    mv "$tmp" "$path"
+    aws s3 cp "$path" "$(site_state_uri)/prod-manifest.jsonl" >/dev/null \
+        || die "copying the manifest to $(site_state_uri)/prod-manifest.jsonl failed; the row is local-only (${path}) — fix S3 by hand (aws s3 cp ${path} $(site_state_uri)/prod-manifest.jsonl) or re-run the verb."
+    echo "Manifest row upserted: ${model} @ ${domain} -> ${address}."
+}
+
+function manifest_remove {
+    # $1 model — remove every row for model+this site, then the
+    # required S3 copy of what remains. A host with no local manifest
+    # materializes the S3 copy first (a reborn host removes rows it
+    # never wrote locally); when no manifest exists anywhere there is
+    # nothing to remove and nothing to copy.
+    local model="$1"
+    local path tmp site
+    site=$(local_site)
+    path=$(manifest_local_path)
+    if [[ ! -f "$path" && -n "${SITE_STATE_URI:-}" ]]; then
+        manifest_rows >/dev/null 2>&1 || true
+    fi
+    if [[ -f "$path" ]]; then
+        tmp=$(mktemp "${TMPDIR:-/tmp}/manifest-rm.XXXXXX")
+        jq -c --arg m "$model" --arg s "$site" \
+           'select(type == "object" and (.model != $m or .site != $s))' \
+           "$path" 2>/dev/null || true > "$tmp"
+        mv "$tmp" "$path"
+    fi
+    if [[ -n "${SITE_STATE_URI:-}" && -f "$path" ]]; then
+        aws s3 cp "$path" "$(site_state_uri)/prod-manifest.jsonl" >/dev/null \
+            || die "copying the manifest to S3 failed after row removal for ${model}; fix by hand: aws s3 cp ${path} $(site_state_uri)/prod-manifest.jsonl."
+    fi
+    echo "Manifest rows removed for ${model} (site ${site})."
+}
+
+function site_publication_verdict {
+    # published | pending | unpublished | unknown — from the LIVE A
+    # record (an exact type-A lookup), never from the manifest row
+    # alone. "pending" names a half-finished cutover (DNS changed, the
+    # manifest row not yet written); "unknown" a failed lookup. The
+    # caller holds DOMAIN / MODEL_NAME / this site's address inputs.
+    local domain="$1" value addr rows
+    value=$(site_dns_lookup_exact_a "$domain")
+    local st=$?
+    if (( st == 2 )); then
+        echo unknown
+        return 0
+    fi
+    if (( st != 0 )) || [[ -z "$value" ]]; then
+        echo unpublished
+        return 0
+    fi
+    addr=$(site_public_ip)
+    if [[ "$value" != "$addr" ]]; then
+        echo unpublished
+        return 0
+    fi
+    rows=$(manifest_rows_matching "$MODEL_NAME" "$(local_site)" \
+               | jq -c --arg d "$domain" 'select(.domain == $d)' 2>/dev/null || true)
+    if [[ -n "$rows" ]]; then
+        echo published
+    else
+        echo pending
+    fi
+}
+
+function site_report_publication {
+    # The closing summary's publication verdict on explicit-DNS sites:
+    # deploy never touches DNS there, so "deployed" must not read as
+    # "published". After a half-finished cutover (UPSERT and INSYNC
+    # landed, the final pinned health or the manifest row did not) an
+    # ordinary deploy therefore reports the pending state, never a
+    # bare "unpublished" about a name DNS already serves.
+    [[ "${SITE_DNS_MODE:-wildcard}" == "explicit" ]] || return 0
+    local verdict
+    verdict=$(site_publication_verdict "$DOMAIN")
+    case "$verdict" in
+        published)
+            echo "Published: ${DOMAIN} -> $(site_public_ip) (live A record verified; manifest row present)."
+            ;;
+        pending)
+            echo "Published but unrecorded — the last cutover stopped after the DNS change; run 'scripts/data-ui cutover ${MODEL_NAME}' to verify health and record it."
+            ;;
+        unpublished)
+            echo "Unpublished — run 'scripts/data-ui cutover ${MODEL_NAME}' to publish ${DOMAIN}."
+            ;;
+        unknown)
+            echo "Publication unknown — the Route 53 lookup for ${DOMAIN} failed; check manually."
+            ;;
+    esac
+}
+
+function release_record_local_path {
+    # $1 = app name
+    echo "${DEPLOY_STATE_DIR}/${1}/release.json"
+}
+
+function release_record_try {
+    # $1 = app. Prints the record's JSON; returns 1 when neither the
+    # deploy-state copy nor the S3 copy exists (or S3 is unreachable
+    # and there is no local copy). Never dies — callers decide.
+    local app="$1" local_path out
+    local_path=$(release_record_local_path "$app")
+    if [[ -f "$local_path" ]]; then
+        cat "$local_path"
+        return 0
+    fi
+    [[ -n "${SITE_STATE_URI:-}" ]] || return 1
+    out=$(mktemp "${TMPDIR:-/tmp}/release-rec.XXXXXX")
+    if aws s3 cp "$(site_state_uri)/releases/${app}.json" "$out" >/dev/null 2>&1; then
+        cat "$out"
+        rm -f "$out"
+        return 0
+    fi
+    rm -f "$out"
+    return 1
+}
+
+function release_record_read {
+    # $1 = app. The dying form: a rebirth preflight and a recorded
+    # release without a record are hard errors naming the alternative.
+    local out
+    if ! out=$(release_record_try "$1"); then
+        die "no release record for '${1}' ($(release_record_local_path "$1") or $(site_state_uri 2>/dev/null || echo S3)/releases/${1}.json). Redeploy the app to write one, or use REBIRTH_ALLOW_BUILD=1 to build at HEAD."
+    fi
+    printf '%s\n' "$out"
+}
+
+function write_release_record {
+    # After promote_deploy_candidate on sites with SITE_STATE_URI: the
+    # recorded release a rebirth redeploys (image reference, full SHA,
+    # model hash, source, and the render facts — version/domain/repl —
+    # a recorded-release deploy reuses instead of rereading a model
+    # file the checkout may move under). Local write is atomic; the
+    # S3 copy is what a fresh-data rebirth reads, but its failure is a
+    # prominent warning, never a failed deploy.
+    local local_path tmp
+    local_path=$(release_record_local_path "$NAME")
+    mkdir -p "$(dirname "$local_path")"
+    tmp="${local_path}.tmp.$$"
+    if ! jq -n \
+        --arg model "$NAME" --arg site "$(local_site)" \
+        --arg image "$IMAGE" --arg full_sha "$DEPLOY_FULL_SHA" \
+        --arg model_sha256 "$(deploy_model_sha)" \
+        --arg source "$DEPLOY_RECORD_SOURCE" \
+        --arg version "$VERSION" --arg domain "$DOMAIN" \
+        --arg repl "$REPL" --arg deployed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{model:$model, site:$site, image:$image, full_sha:$full_sha,
+          model_sha256:$model_sha256, source:$source, version:$version,
+          domain:$domain, repl:$repl, deployed_at:$deployed_at}' \
+        > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        die "cannot write the release record for ${NAME}."
+    fi
+    mv "$tmp" "$local_path" || { rm -f "$tmp"; die "cannot install ${local_path}."; }
+    echo "Release record: ${local_path}"
+    if [[ -n "${SITE_STATE_URI:-}" ]]; then
+        if aws s3 cp "$local_path" "$(site_state_uri)/releases/${NAME}.json" >/dev/null 2>&1; then
+            echo "Release record copied to $(site_state_uri)/releases/${NAME}.json."
+        else
+            echo "WARNING: copying the release record to $(site_state_uri)/releases/${NAME}.json failed; a fresh-data rebirth of ${NAME} will not find it (recover it by hand, or redeploy)."
+        fi
+    fi
+}
+
+function recorded_release_prepare {
+    # DEPLOY_RECORDED_RELEASE=1 (the rebirth path): the release
+    # record, not the checkout, drives the render. Pull the recorded
+    # image or die — no compile, no build, no tag; the facts come from
+    # the record; the record itself is left exactly as it is. Before
+    # any mutation the record's hashes are compared with the checkout:
+    # a model-hash mismatch dies (the record's hash names the file its
+    # facts were read from); a full_sha mismatch means the template
+    # set moved and proceeds with a warning (the image does not run
+    # templates; the final pinned health gate catches incompatility).
+    local record image arch rec_sha rec_git got_model_sha
+    record=$(release_record_read "$MODEL_NAME")
+    image=$(jq -r '.image // empty' <<<"$record")
+    arch=$(deploy_arch)
+    [[ "$image" =~ ^${IMAGE_REGISTRY}/data-ui/${MODEL_NAME}:deploy-${arch}-[0-9a-f]{40}-[0-9a-f]{64}$ ]] \
+        || die "the recorded image for ${MODEL_NAME} is malformed: ${image:-none} (wanted ${IMAGE_REGISTRY}/data-ui/${MODEL_NAME}:deploy-${arch}-<sha40>-<sha256>)."
+    if [[ "${DEPLOY_HANDOFF_KIND:-none}" != "none" ]]; then
+        got_model_sha="$ENVELOPE_HANDOFF_SHA"
+    else
+        got_model_sha=$(deploy_model_sha)
+    fi
+    rec_sha=$(jq -r '.model_sha256 // empty' <<<"$record")
+    [[ "$got_model_sha" == "$rec_sha" ]] \
+        || die "the release record's model hash (${rec_sha:-none}) does not match this checkout's model (${got_model_sha}); the checkout moved under the record. Redeploy normally, or use REBIRTH_ALLOW_BUILD=1 to build at HEAD."
+    rec_git=$(jq -r '.full_sha // empty' <<<"$record")
+    [[ "$rec_git" == "$DEPLOY_FULL_SHA" ]] \
+        || echo "WARNING: the release record was made at ${rec_git:0:12}; the checkout is at ${DEPLOY_FULL_SHA:0:12}. The recorded image does not run templates; proceeding (the final pinned health gate catches incompatibility)."
+    if ! docker pull --platform "linux/${arch}" "$image"; then
+        die "pulling the recorded image ${image} failed (DEPLOY_RECORDED_RELEASE has no build fallback; REBIRTH_ALLOW_BUILD=1 is the explicit build path)."
+    fi
+    DEPLOY_REGISTRY_HIT=1
+    DEPLOY_RECORDED_IMAGE="$image"
+    DEPLOY_RECORDED_VERSION=$(jq -r '.version // empty' <<<"$record")
+    DEPLOY_RECORDED_DOMAIN=$(jq -r '.domain // empty' <<<"$record")
+    DEPLOY_RECORDED_REPL=$(jq -r '.repl // empty' <<<"$record")
+    [[ -n "$DEPLOY_RECORDED_VERSION" && -n "$DEPLOY_RECORDED_DOMAIN" ]] \
+        || die "the release record for ${MODEL_NAME} lacks version/domain."
+    echo "Recorded release: ${image} (deployed_at $(jq -r '.deployed_at // "?"' <<<"$record"))."
+}
+
+
 function deploy_selected {
     # The deploy body, run by the production script under a verified
     # envelope: compile, facts, tag, node port, backend-target
@@ -2890,9 +3477,27 @@ function deploy_selected {
     fi
     echo
     echo "Deploying ${MODEL_NAME} from the production checkout (source ${ENVELOPE_REMOTE}/${ENVELOPE_BRANCH}, SHA ${DEPLOY_FULL_SHA})."
-    compile_model
+    DEPLOY_RECORD_SOURCE="canonical"
+    if [[ "${DEPLOY_HANDOFF_KIND:-none}" != "none" ]]; then
+        DEPLOY_RECORD_SOURCE="vip"
+    fi
+    if [[ -n "${DEPLOY_RECORDED_RELEASE:-}" ]]; then
+        # The release record drives the render; pull its image or die.
+        recorded_release_prepare
+    elif [[ -z "${DRY_RUN:-}" && -z "${REBUILD:-}" && -n "${IMAGE_REGISTRY:-}" ]]; then
+        # The registry probe sits immediately before compile_model: a
+        # hit skips the compile (and later the build); a miss warns and
+        # today's path runs unchanged.
+        registry_probe || true
+    fi
+    if [[ -n "${DEPLOY_REGISTRY_HIT:-}" ]]; then
+        echo "Skipping the model compile (the deploy image is already built)."
+    else
+        compile_model
+    fi
     gather_deploy_facts
-    [[ -n "${DRY_RUN:-}" ]] || create_deploy_tag
+    site_wrong_host_guard
+    [[ -n "${DRY_RUN:-}" || -n "${DEPLOY_RECORDED_RELEASE:-}" ]] || create_deploy_tag
     NODE_IP=$(kubectl get nodes -o \
         jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
     [[ -n "$NODE_IP" ]] || die "Could not determine the k3d node IP."
@@ -2919,16 +3524,46 @@ function deploy_selected {
     update_haproxy
     # Production health gate 2: the public domain routes and answers.
     # It must follow update_haproxy (a new name or :domain is not
-    # routed until then). The failure message names the domain and says
-    # it did not resolve or route — *.demo.data-ui.com wildcard DNS and
+    # routed until then). On an explicit-DNS site the gate is pinned to
+    # this site's own address (during a move DNS still points at the
+    # old site; in steady state; during a rebirth on a temporary IP —
+    # the pin proves THIS host, its certificate, and its security
+    # group). MOVE=1 on a wildcard site pins to loopback instead
+    # (public DNS points elsewhere during a move back). Otherwise the
+    # wildcard gate is unchanged: *.demo.data-ui.com wildcard DNS and
     # certificate cover only that zone.
-    if ! wait_for_health_200 "https://${DOMAIN}/health" \
-            "public-domain /health gate" "${DEPLOY_HEALTH_TIMEOUT:-300}"; then
-        die "Domain ${DOMAIN} did not resolve or route within ${DEPLOY_HEALTH_TIMEOUT:-300}s (the wildcard DNS/certificate covers *.demo.data-ui.com only). Taking the recovery path; the trap prints the delete command for any route this created."
+    if [[ "${SITE_DNS_MODE:-wildcard}" == "explicit" ]]; then
+        local gate_pin="${SITE_HEALTH_IP:-$(site_public_ip)}"
+        if ! wait_for_health_200 "https://${DOMAIN}/health" \
+                "public-domain /health gate (pinned to ${gate_pin})" \
+                "${DEPLOY_HEALTH_TIMEOUT:-300}" \
+                --resolve "${DOMAIN}:443:${gate_pin}"; then
+            die "Pinned /health for ${DOMAIN} at ${gate_pin} failed within ${DEPLOY_HEALTH_TIMEOUT:-300}s. Taking the recovery path; the trap prints the delete command for any route this created."
+        fi
+        echo "Public-domain /health gate passed (https://${DOMAIN}/health pinned to ${gate_pin})."
+    elif [[ -n "${MOVE:-}" && -n "${SITE_WILDCARD_ZONE:-}" ]]; then
+        if ! wait_for_health_200 "https://${DOMAIN}/health" \
+                "public-domain /health gate (MOVE=1: pinned to 127.0.0.1)" \
+                "${DEPLOY_HEALTH_TIMEOUT:-300}" \
+                --resolve "${DOMAIN}:443:127.0.0.1"; then
+            die "Loopback-pinned /health for ${DOMAIN} failed within ${DEPLOY_HEALTH_TIMEOUT:-300}s (public DNS points elsewhere during a move back). Taking the recovery path; the trap prints the delete command for any route this created."
+        fi
+        echo "Public-domain /health gate passed (https://${DOMAIN}/health pinned to 127.0.0.1 under MOVE=1)."
+    else
+        if ! wait_for_health_200 "https://${DOMAIN}/health" \
+                "public-domain /health gate" "${DEPLOY_HEALTH_TIMEOUT:-300}"; then
+            die "Domain ${DOMAIN} did not resolve or route within ${DEPLOY_HEALTH_TIMEOUT:-300}s (the wildcard DNS/certificate covers *.demo.data-ui.com only). Taking the recovery path; the trap prints the delete command for any route this created."
+        fi
+        echo "Public-domain /health gate passed (https://${DOMAIN}/health)."
     fi
-    echo "Public-domain /health gate passed (https://${DOMAIN}/health)."
     promote_deploy_candidate
+    if [[ -n "${SITE_STATE_URI:-}" && -z "${DEPLOY_RECORDED_RELEASE:-}" ]]; then
+        # The recorded release a rebirth redeploys. Under a recorded
+        # release the record is left exactly as it is.
+        write_release_record
+    fi
     report_recovery_records
+    site_report_publication
     echo
     echo "Deployed ${RELEASE_NAME}."
     echo "  Source:    ${ENVELOPE_REMOTE}/${ENVELOPE_BRANCH} @ ${DEPLOY_FULL_SHA}"
@@ -3023,8 +3658,8 @@ function deploy_bootstrap_only {
     # compiling, building, or touching the cluster. This, not a dry
     # run, is the first production action.
     export_deploy_environment
-    [[ "$(hostname)" == "$DEPLOY_HOST" ]] \
-        || die "deploy-bootstrap must run on ${DEPLOY_HOST} (this is $(hostname))."
+    [[ "$(local_site)" == "$DEPLOY_HOST" ]] \
+        || die "deploy-bootstrap must run on ${DEPLOY_HOST} (this is $(local_site))."
     with_checkout_lock production
     ensure_checkout "$DEPLOY_CHECKOUT" "$DATA_UI_PUBLIC_URL" "$DATA_UI_PRIVATE_URL"
     migrate_legacy_vip_identities
@@ -3099,7 +3734,7 @@ function delete_outer {
     # delete envelope. Delete never advances source to find a model.
     local model="$1"
     export_deploy_environment
-    if [[ "$(hostname)" != "$DEPLOY_HOST" ]]; then
+    if [[ "$(local_site)" != "$DEPLOY_HOST" ]]; then
         remote_delete "$model"
         return
     fi
@@ -3220,6 +3855,16 @@ function delete_selected {
         echo "Namespace ${NAMESPACE} not found; no farewell snapshot to"
         echo "save (partial-delete re-run)."
     fi
+    # Explicit-DNS sites: remove the app's A record(s) and manifest
+    # rows BEFORE the namespace goes (a re-run after a partial delete
+    # tolerates every step). The domain evidence never trusts the
+    # checkout's current model alone: every manifest row for
+    # model+site plus the release record's domain, together — a
+    # failed domain-change cutover can leave D1 in the manifest and
+    # D2 in release.json + DNS, and both must be cleaned.
+    if [[ "${SITE_DNS_MODE:-wildcard}" == "explicit" ]]; then
+        delete_dns_records_and_manifest
+    fi
     # Every step tolerates already-deleted resources, so a delete that
     # fails partway can simply be re-run.
     echo
@@ -3242,12 +3887,18 @@ function delete_selected {
     sudo rm -f "${HAPROXY_CONF_D}/dataui-${NAME}.cfg"
     # Delete the map line only if it points at our deploy backend; a
     # host-profile exposure (dataui-profile-*) owns the domain now.
-    # Do not call haproxy_bootstrap: delete must not enable conf.d.
-    if [[ -f "$HAPROXY_MAP" ]] \
-       && awk -v d="$DOMAIN" -v b="dataui-${NAME}" \
-              '$1 == d && $2 == b { found = 1 } END { exit !found }' \
-              "$HAPROXY_MAP"; then
-        sudo sed -i "\\|^${DOMAIN} |d" "$HAPROXY_MAP"
+    # On explicit-DNS sites every candidate domain from the evidence
+    # set gets the same treatment (a failed domain-change deploy can
+    # leave the old domain's line in place). Do not call
+    # haproxy_bootstrap: delete must not enable conf.d.
+    if [[ "${SITE_DNS_MODE:-wildcard}" == "explicit" ]]; then
+        local cand_domain
+        while IFS= read -r cand_domain; do
+            [[ -n "$cand_domain" ]] || continue
+            delete_map_line_if_ours "$cand_domain"
+        done < <(delete_domain_evidence)
+    else
+        delete_map_line_if_ours "$DOMAIN"
     fi
     haproxy_validate_and_reload ""
     echo "Removing deploy state in ${state_dir}..."
@@ -3268,6 +3919,509 @@ function delete_selected {
     echo "  - Git release tags ${NAME}-*"
     echo "  - Farewell snapshot ${farewell} in the snapshot pool (drop"
     echo "    with: $SCRIPT_NAME snapshot drop ${farewell})"
+}
+
+function delete_map_line_if_ours {
+    # Remove the map line for $1 only when it points at this app's
+    # deploy backend (exact second-field match — never a substring).
+    local domain="$1"
+    [[ -f "$HAPROXY_MAP" ]] || return 0
+    awk -v d="$domain" -v b="dataui-${NAME}" \
+        '$1 == d && $2 == b { found = 1 } END { exit !found }' \
+        "$HAPROXY_MAP" || return 0
+    sudo sed -i "\\|^${domain} |d" "$HAPROXY_MAP"
+}
+
+function delete_domain_evidence {
+    # Every distinct domain this app might have published on this
+    # site: every manifest row matching model+site (local file ∪ S3
+    # copy), plus the release record's domain (deploy state, else S3) —
+    # ALWAYS together, not only when no row exists: DOMAIN is re-read
+    # from the checkout's current model at every delete, and a failed
+    # domain-change cutover can leave D1 in the manifest and D2 in
+    # release.json + DNS. Prints one domain per line (deduplicated).
+    local row d record
+    local -a domains=()
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        d=$(jq -r '.domain // empty' <<<"$row" 2>/dev/null)
+        [[ -n "$d" ]] && domains+=("$d")
+    done < <(manifest_rows_matching "$NAME" "$(local_site)")
+    if record=$(release_record_try "$NAME"); then
+        d=$(jq -r '.domain // empty' <<<"$record" 2>/dev/null)
+        [[ -n "$d" ]] && domains+=("$d")
+    fi
+    local -A seen=()
+    local domain
+    for domain in "${domains[@]+"${domains[@]}"}"; do
+        [[ -n "${seen[$domain]:-}" ]] && continue
+        seen[$domain]=1
+        printf '%s\n' "$domain"
+    done
+}
+
+function delete_dns_records_and_manifest {
+    # Explicit-DNS delete path: ops/prod-2-dns.sh delete-if-value once
+    # per distinct candidate domain (each with its own exact-record
+    # read and this site's address — another site's record is never
+    # touched), then manifest_remove of every row for the model. The
+    # local release.json goes with the state directory the verb
+    # removes; the S3 copy stays (the role cannot delete objects) and
+    # is inert for rebirth inventory (rows, never prefixes) — though
+    # this evidence read here deliberately consults it.
+    local addr d
+    addr=$(site_public_ip 2>/dev/null) || addr=""
+    local -a domains=()
+    mapfile -t domains < <(delete_domain_evidence)
+    if (( ${#domains[@]} == 0 )); then
+        echo "No DNS evidence for ${NAME} (no manifest rows, no release record); no records to remove."
+    else
+        for d in "${domains[@]}"; do
+            echo "Removing ${NAME}'s A record for ${d} (only when it holds this site's address ${addr})..."
+            if ! "$(canonical_checkout_root)/ops/prod-2-dns.sh" delete-if-value "$d" "$addr"; then
+                echo "WARNING: delete-if-value for ${d} failed; if the record points at ${addr}, remove it by hand." >&2
+            fi
+        done
+    fi
+    manifest_remove "$NAME"
+}
+
+#
+# cutover <model>: publish an already-deployed app on an explicit-DNS
+# site. Deploys there never touch DNS; this verb does — health, A
+# record UPSERT, INSYNC, health again, manifest row LAST. Idempotent:
+# every step is safe to repeat, and a half-finished run is detectable
+# (the closing summary's live-record check names the pending state).
+#
+
+function cutover_outer {
+    # Site-local routing + guards, then the body (no envelope: cutover
+    # takes the production lock itself; it mutates no checkout state).
+    local model="$1"
+    export_deploy_environment
+    [[ "${SITE_DNS_MODE:-wildcard}" == "explicit" ]] \
+        || die "cutover runs on explicit-DNS sites only (SITE_DNS_MODE is ${SITE_DNS_MODE:-wildcard})."
+    [[ "$(local_site)" == "$DEPLOY_HOST" ]] \
+        || die "cutover must run on ${DEPLOY_HOST} (this is $(local_site))."
+    [[ -x "${DEPLOY_CHECKOUT}/scripts/data-ui" ]] \
+        || die "No production checkout at ${DEPLOY_CHECKOUT}; run 'scripts/data-ui deploy ${model}' first."
+    if [[ "$(canonical_checkout_root)" != "$(readlink -m "$DEPLOY_CHECKOUT")" ]]; then
+        exec "${DEPLOY_CHECKOUT}/scripts/data-ui" cutover "$model"
+    fi
+    cutover_body "$model"
+}
+
+function cutover_body {
+    local model="$1" source_path name domain
+    with_checkout_lock production
+    cd "$DEPLOY_CHECKOUT" || die "cannot cd to the production checkout ${DEPLOY_CHECKOUT}."
+    export MODEL_NAME="$model"
+    if [[ -f "models/${model}.lisp" ]]; then
+        source_path="models/${model}.lisp"
+    elif [[ -f "models/local/${model}.lisp" ]]; then
+        source_path="models/local/${model}.lisp"
+        echo "No models/${model}.lisp; reading identity from ${source_path} (stable VIP copy)."
+    else
+        die "No identity for '${model}': neither models/${model}.lisp nor models/local/${model}.lisp exists in ${DEPLOY_CHECKOUT}."
+    fi
+    export DATA_UI_MODEL_PATH="$source_path"
+    NAME=$(model_field name)
+    DOMAIN=$(model_field domain)
+    [[ -n "$NAME" && "$NAME" != "NIL" ]] || die "Model has no :name."
+    [[ -n "$DOMAIN" && "$DOMAIN" != "NIL" ]] || die "Model has no :domain."
+    [[ "$NAME" == "$model" ]] \
+        || die "Model :name is '${NAME}' but the cutover operand is '${model}'; they must match."
+    NAMESPACE="dataui-${NAME}"
+    echo "Publishing ${NAME} at ${DOMAIN}."
+    # 1. The app exists and is available.
+    kubectl get ns "$NAMESPACE" &>/dev/null \
+        || die "No deployed instance '${NAME}' (namespace ${NAMESPACE} not found); deploy first."
+    kubectl -n "$NAMESPACE" rollout status "deploy/dataui-${NAME}" --timeout=60s \
+        || die "deploy/dataui-${NAME} is not available in ${NAMESPACE}; fix the deployment before publishing."
+    # 2. This instance's public IP is an Elastic IP bound to THIS
+    #    instance — the scratch-host refusal. Command success alone
+    #    proves nothing; exactly one row, matching PublicIp, and an
+    #    InstanceId equal to this instance's IMDSv2 id.
+    local addr eip_rows n_rows pubip row_inst instid
+    addr=$(site_public_ip)
+    eip_rows=$(aws ec2 describe-addresses --public-ips "$addr" --output json 2>/dev/null) \
+        || die "aws ec2 describe-addresses failed for ${addr}."
+    n_rows=$(jq '.Addresses | length' <<<"$eip_rows" 2>/dev/null)
+    [[ "$n_rows" == "1" ]] \
+        || die "wanted exactly one Elastic IP row for ${addr}, got ${n_rows:-none}; refusing to publish."
+    pubip=$(jq -r '.Addresses[0].PublicIp // empty' <<<"$eip_rows")
+    [[ "$pubip" == "$addr" ]] \
+        || die "the address row's PublicIp is ${pubip:-none}, wanted ${addr}."
+    row_inst=$(jq -r '.Addresses[0].InstanceId // empty' <<<"$eip_rows")
+    instid=$(imds_instance_id)
+    [[ "$row_inst" == "$instid" ]] \
+        || die "the Elastic IP ${addr} is associated with instance ${row_inst:-none}, not this instance (${instid}). A scratch host must never publish."
+    # Idempotence report: the pre-check reads the live record.
+    local pre
+    pre=$(site_publication_verdict "$DOMAIN")
+    echo "Current publication state: ${pre}."
+    # 3. Pinned health BEFORE any DNS change.
+    local pin="${SITE_HEALTH_IP:-$addr}"
+    if ! wait_for_health_200 "https://${DOMAIN}/health" \
+            "cutover pre-DNS pinned /health (${DOMAIN} at ${pin})" \
+            "${DEPLOY_HEALTH_TIMEOUT:-300}" --resolve "${DOMAIN}:443:${pin}"; then
+        die "pre-DNS pinned /health failed for ${DOMAIN} at ${pin}; DNS not touched."
+    fi
+    # 4+5. UPSERT the exact A record; the dns script waits for INSYNC.
+    "$(canonical_checkout_root)/ops/prod-2-dns.sh" upsert "$DOMAIN" "$addr" \
+        || die "the DNS upsert for ${DOMAIN} failed; nothing else was touched — re-run cutover."
+    # 6. Final pinned health: DNS points here; prove it serves.
+    if ! wait_for_health_200 "https://${DOMAIN}/health" \
+            "cutover post-DNS pinned /health (${DOMAIN} at ${pin})" \
+            "${DEPLOY_HEALTH_TIMEOUT:-300}" --resolve "${DOMAIN}:443:${pin}"; then
+        die "post-DNS pinned /health failed for ${DOMAIN} at ${pin}; the record points here but publication is NOT verified and NOT recorded — re-run cutover (idempotent) once the app answers."
+    fi
+    # 7. The manifest row lands only after DNS INSYNC and a verified
+    #    final health: the record only ever asserts a verified
+    #    publication.
+    manifest_upsert "$NAME" "$DOMAIN" "$addr"
+    echo
+    echo "Cutover complete: ${DOMAIN} -> ${addr} (verified, recorded)."
+}
+
+#
+# rebirth --adopt-data | --fresh-data: the site-local recovery verb.
+# Never touches DNS (a rebirth reuses the Elastic IP) and never
+# upserts or removes manifest rows. A supervisor holds the production
+# lock ONCE and survives every child; each per-app step runs as a
+# rebirth-child envelope carrying the inherited (and, for the second
+# slot, duplicated) lock descriptor — the staging-update pattern. A
+# same-shell deploy_outer call would exec away the supervisor, and a
+# plain child CLI invocation would second-flock and deadlock.
+#
+
+function rebirth_outer {
+    # Argument parsing, site guards, and routing to the production
+    # checkout's script (the supervisor must run the same script the
+    # children will).
+    local mode=""
+    case "${1:-}" in
+        --adopt-data) mode=adopt ;;
+        --fresh-data) mode=fresh ;;
+        *)
+            die "Usage: $SCRIPT_NAME rebirth {--adopt-data|--fresh-data} (exactly one is required)."
+            ;;
+    esac
+    [[ -z "${2:-}" ]] || die "rebirth takes exactly one option (--adopt-data or --fresh-data)."
+    export_deploy_environment
+    [[ "${SITE_DNS_MODE:-wildcard}" == "explicit" ]] \
+        || die "rebirth runs on explicit-DNS sites only (SITE_DNS_MODE is ${SITE_DNS_MODE:-wildcard})."
+    [[ -n "${SITE_PRODUCTION_ONLY:-}" ]] \
+        || die "rebirth runs on production-only sites (SITE_PRODUCTION_ONLY is unset here)."
+    [[ "$(local_site)" == "$DEPLOY_HOST" ]] \
+        || die "rebirth must run on ${DEPLOY_HOST} (this is $(local_site))."
+    [[ -x "${DEPLOY_CHECKOUT}/scripts/data-ui" ]] \
+        || die "No production checkout at ${DEPLOY_CHECKOUT}; a rebirth needs one."
+    if [[ "$(canonical_checkout_root)" != "$(readlink -m "$DEPLOY_CHECKOUT")" ]]; then
+        exec "${DEPLOY_CHECKOUT}/scripts/data-ui" rebirth "--${mode}-data"
+    fi
+    rebirth_supervisor "$mode"
+}
+
+function rebirth_print_prefix_candidates {
+    # The operator hint when no manifest exists: the app prefixes
+    # found under s3://<bucket>/<site>/ (backup prefixes are
+    # <site>/<app>/).
+    local site
+    site=$(local_site)
+    if [[ -n "${SITE_STATE_URI:-}" ]]; then
+        local bucket="${SITE_STATE_URI#s3://}"
+        bucket="${bucket%%/*}"
+        echo "App prefixes found under s3://${bucket}/${site}/ (for Donnie's explicit approval):"
+        aws s3 ls "s3://${bucket}/${site}/" 2>/dev/null || true
+    fi
+}
+
+function rebirth_inventory {
+    # The app set comes from manifest rows ONLY — S3 backup prefixes
+    # never resurrect an app. Rows are validated (every line is a JSON
+    # object with model+site+domain and a sane model name); missing or
+    # unparsable stops the run with the prefix-derived candidates and
+    # names REBIRTH_APPS as the explicit override.
+    local rows path line app
+    local -a apps=()
+    path=$(manifest_local_path)
+    rows=$(manifest_rows)
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        app=$(jq -r 'if (type == "object" and .model and .site and .domain) then .model else empty end' \
+                 <<<"$line" 2>/dev/null)
+        if [[ -z "$app" ]]; then
+            rebirth_print_prefix_candidates
+            die "unparsable manifest row (refusing to guess the app set): ${line}"
+        fi
+        [[ "$app" =~ ^[a-z][-a-z0-9]*$ ]] \
+            || { rebirth_print_prefix_candidates; die "invalid model name '${app}' in the manifest (${path})."; }
+        apps+=("$app")
+    done <<<"$rows"
+    if (( ${#apps[@]} == 0 )); then
+        rebirth_print_prefix_candidates
+        die "no manifest rows (local ${path} or $(site_state_uri 2>/dev/null || echo "S3")/prod-manifest.jsonl); refusing to guess the app set. REBIRTH_APPS=\"a b\" is the explicit override."
+    fi
+    local -a uniq=()
+    local -A seen=()
+    for app in "${apps[@]}"; do
+        [[ -n "${seen[$app]:-}" ]] && continue
+        seen[$app]=1
+        uniq+=("$app")
+    done
+    printf '%s\n' "${uniq[@]}"
+}
+
+function backup_bin_dir {
+    # Where the per-app backup scripts live (~/bin symlinks into the
+    # site's production clone; REBIRTH_BACKUP_BIN_DIR redirects for
+    # tests).
+    echo "${REBIRTH_BACKUP_BIN_DIR:-${HOME}/bin}"
+}
+
+function rebirth_vip_model_fetch {
+    # $1 = app. Fetch the VIP model file from the app's backup prefix
+    # (<prefix>/model/<app>.lisp — the daily cycle syncs it there) and
+    # print the local path. The preflight verified its existence; this
+    # fetch also verifies readability.
+    local app="$1" prefix tmp
+    prefix=$("$(backup_bin_dir)/${app}-backup" location 2>/dev/null) \
+        || die "cannot read the backup prefix for ${app} ($(backup_bin_dir)/${app}-backup location)."
+    tmp=$(mktemp "${TMPDIR:-/tmp}/rebirth-model-${app}.XXXXXX.lisp")
+    if ! aws s3 cp "${prefix%/}/model/${app}.lisp" "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        die "cannot fetch the VIP model for ${app} from ${prefix%/}/model/${app}.lisp."
+    fi
+    echo "$tmp"
+}
+
+function rebirth_preflight {
+    # $1 = mode, then the apps. Nothing destructive in rebirth runs
+    # before the recovery inputs for EVERY app are verified: the
+    # release record exists and its recorded image pulls from ECR (the
+    # pull itself is the check — best-effort-push gaps surface here,
+    # not mid-recovery), the VIP model bytes exist (when the record
+    # says vip), and under --fresh-data every backup selection is
+    # complete (the backup script's recover --check performs the
+    # restore-shaped completeness selection without downloading).
+    local mode="$1"; shift
+    local app record img src
+    for app in "$@"; do
+        echo "Preflight: ${app}"
+        record=$(release_record_read "$app")
+        img=$(jq -r '.image // empty' <<<"$record")
+        [[ "$img" =~ ^[0-9a-zA-Z][0-9a-zA-Z./:_-]+$ ]] \
+            || die "the release record for ${app} has no usable image reference (${img:-none})."
+        if ! docker pull --platform "linux/$(deploy_arch)" "$img" >/dev/null 2>&1; then
+            die "preflight: the recorded image for ${app} (${img}) is not pullable from the registry. REBUILD=1 on a redeploy repairs the cache; REBIRTH_ALLOW_BUILD=1 builds at HEAD instead."
+        fi
+        src=$(jq -r '.source // empty' <<<"$record")
+        if [[ "$src" == "vip" ]]; then
+            rebirth_vip_model_fetch "$app" >/dev/null
+            echo "  VIP model bytes verified at the backup prefix."
+        fi
+        if [[ "$mode" == "fresh" ]]; then
+            if ! "$(backup_bin_dir)/${app}-backup" recover --check >/dev/null 2>&1; then
+                die "preflight: no complete backup set for ${app} on S3 ($(backup_bin_dir)/${app}-backup recover --check failed); the fresh-data lane has nothing to restore."
+            fi
+            echo "  Backup selection complete."
+        fi
+        echo "  OK."
+    done
+}
+
+function rebirth_supervisor {
+    # $1 = mode (adopt|fresh). Holds the production lock for the whole
+    # run, prepares the checkout exactly as deploy_outer does, then
+    # invokes one rebirth-child per app — a CHILD, never exec, so the
+    # supervisor survives to run the next app and owns the lock until
+    # the end.
+    local mode="$1"
+    echo "Rebirth (${mode}-data) starting."
+    with_checkout_lock production
+    local lockfd fd2
+    lockfd=$(checkout_lock_fd production)
+    # The second lock slot is a DUPLICATED descriptor: a second open()
+    # of the lock path would create an independent flock the child's
+    # ownership probe would reject (flock is per open file
+    # description); dup(2) shares this one, and the parser's rule is
+    # numeric inequality only.
+    exec {fd2}>&"$lockfd" || die "cannot duplicate the production lock descriptor for the child envelope."
+    ensure_checkout "$DEPLOY_CHECKOUT" "$DATA_UI_PUBLIC_URL" "$DATA_UI_PRIVATE_URL"
+    parse_source_spec "${DEPLOY_FROM_SPEC:-public/master}"
+    local remote="$CHECKOUT_REMOTE" branch="$CHECKOUT_BRANCH"
+    require_checkout_clean "$DEPLOY_CHECKOUT"
+    checkout_fetch_source "$DEPLOY_CHECKOUT" "$remote" "$branch"
+    checkout_move_to_source "$DEPLOY_CHECKOUT" "$remote" "$branch" "$SELECTED_FULL_SHA"
+    print_checkout_identity production "$DEPLOY_CHECKOUT" "$remote" "$branch" "$SELECTED_LOCAL_BRANCH" "$SELECTED_FULL_SHA"
+    # --fresh-data: the S3 manifest copy is materialized as the local
+    # file before the first inner deploy (manifest_rows'
+    # re-materialization path), so the post-recovery site holds a
+    # local manifest for every later read.
+    if [[ "$mode" == "fresh" && ! -f "$(manifest_local_path)" ]]; then
+        manifest_rows >/dev/null
+        [[ -f "$(manifest_local_path)" ]] \
+            || echo "note: no S3 manifest to materialize; the inventory below decides." >&2
+    fi
+    local -a apps=()
+    if [[ -n "${REBIRTH_APPS:-}" ]]; then
+        read -ra apps <<<"$REBIRTH_APPS"
+        echo "App list from REBIRTH_APPS (explicit override): ${apps[*]}"
+    else
+        mapfile -t apps < <(rebirth_inventory)
+        echo "App list from the manifest (${#apps[@]}): ${apps[*]}"
+    fi
+    # Nothing destructive before every app's inputs verify.
+    rebirth_preflight "$mode" "${apps[@]}"
+    local marker app status=0
+    marker=$(checkout_envelope_marker)
+    # The default rebirth redeploys each app's RECORDED release
+    # (pull-or-die, no compile/build); REBIRTH_ALLOW_BUILD is the
+    # explicit build-at-HEAD alternative. Set at the supervisor level
+    # so every child (and the deploy-envelope grandchildren) inherit
+    # it; defensively unset under the allow-build escape so a stray
+    # inherited value cannot corrupt the mode.
+    if [[ -n "${REBIRTH_ALLOW_BUILD:-}" ]]; then
+        unset DEPLOY_RECORDED_RELEASE
+    else
+        DEPLOY_RECORDED_RELEASE=1
+        export DEPLOY_RECORDED_RELEASE
+    fi
+    for app in "${apps[@]}"; do
+        echo
+        echo "=== rebirth: ${app} (${mode}-data) ==="
+        REBIRTH_APP="$app" REBIRTH_MODE="$mode" \
+            "${DEPLOY_CHECKOUT}/scripts/data-ui" \
+            "$marker" production "$remote" "$branch" "$SELECTED_FULL_SHA" \
+            "$lockfd" "$fd2" none - - rebirth-child || status=$?
+        if (( status != 0 )); then
+            die "rebirth: the ${app} step failed (status ${status}); stopping here (earlier apps stay up). Retry, idempotently: scripts/data-ui rebirth --${mode}-data. The build-at-HEAD alternative is REBIRTH_ALLOW_BUILD=1."
+        fi
+        echo "=== rebirth: ${app} complete ==="
+    done
+    echo
+    echo "Rebirth (${mode}-data) complete for: ${apps[*]}"
+    echo "Verify each app on the public view, then (replacement only) publish the Elastic IP and start backups."
+}
+
+function rebirth_child {
+    # The per-app sequence, under the inherited production lock(s):
+    # the recorded-release deploy — invoked as a deploy-envelope CHILD
+    # so the lock travels by inheritance (never a second flock) — then
+    # the --fresh-data restores IN THIS PROCESS (a prd: restore's
+    # EXIT-trap churn stays here, out of the supervisor), then the
+    # pinned health. REBIRTH_APP and REBIRTH_MODE ride the
+    # supervisor's environment; DEPLOY_RECORDED_RELEASE is unset only
+    # under REBIRTH_ALLOW_BUILD=1.
+    local app="${REBIRTH_APP:?the supervisor sets REBIRTH_APP}"
+    local mode="${REBIRTH_MODE:?the supervisor sets REBIRTH_MODE}"
+    local marker remote branch sha lockfd kind=none cand="-" hsha="-"
+    marker=$(checkout_envelope_marker)
+    remote="$ENVELOPE_REMOTE"; branch="$ENVELOPE_BRANCH"; sha="$ENVELOPE_FULL_SHA"
+    lockfd="$ENVELOPE_LOCK_FD"
+    cd "$DEPLOY_CHECKOUT" || die "cannot cd to ${DEPLOY_CHECKOUT}."
+    export MODEL_NAME="$app"
+    local record="" record_src="" domain=""
+    if record=$(release_record_try "$app"); then
+        record_src=$(jq -r '.source // empty' <<<"$record")
+        domain=$(jq -r '.domain // empty' <<<"$record")
+    fi
+    if [[ -z "${DEPLOY_RECORDED_RELEASE:-}" ]]; then
+        # REBIRTH_ALLOW_BUILD: the ordinary path at HEAD, with the
+        # record's model hash as a drift warning.
+        if [[ -n "$record" ]]; then
+            local rec_sha got_sha
+            rec_sha=$(jq -r '.model_sha256 // empty' <<<"$record")
+            got_sha=$(MODEL_NAME="$app" deploy_model_sha 2>/dev/null) || got_sha=""
+            [[ -z "$rec_sha" || -z "$got_sha" || "$got_sha" == "$rec_sha" ]] \
+                || echo "WARNING: building ${app} at HEAD whose model hash (${got_sha:0:12}) differs from the record's (${rec_sha:0:12}); this is an upgrade, not a recovery of the running release."
+        fi
+    fi
+    # A VIP app hands the deploy its model file as a handoff
+    # candidate (the model rides the backup; the fetched file is the
+    # identity the record's hash names).
+    local vip_model=""
+    if [[ "$record_src" == "vip" ]]; then
+        vip_model=$(rebirth_vip_model_fetch "$app")
+        MODEL_FILE="$vip_model" take_model_snapshot "$(pwd)"
+        local snapshot="$MODEL_SNAPSHOT_PATH"
+        install_deploy_candidate "$snapshot"
+        rm -f "$snapshot"
+        kind="local"; cand="$DEPLOY_CANDIDATE"; hsha="$DEPLOY_HANDOFF_SHA"
+        export MODEL_FILE="${DEPLOY_CHECKOUT}/${DEPLOY_CANDIDATE}"
+    fi
+    # The deploy-envelope child: the inherited LOCK_FD carries the
+    # supervisor's flock; no re-acquisition, no deadlock.
+    "${DEPLOY_CHECKOUT}/scripts/data-ui" \
+        "$marker" production "$remote" "$branch" "$sha" \
+        "$lockfd" - "$kind" "$cand" "$hsha" deploy "$app" \
+        || die "the ${DEPLOY_RECORDED_RELEASE:+recorded-release }deploy of ${app} failed."
+    [[ -n "$vip_model" ]] && rm -f "$vip_model"
+    # --fresh-data: materialize the freshest recovery set and restore,
+    # in the printed order, in THIS process.
+    if [[ "$mode" == "fresh" ]]; then
+        rebirth_restore_app "$app"
+    fi
+    # Pinned health (the domain from the record when it has one — the
+    # checkout's model file may have moved under the record).
+    if [[ -z "$domain" ]]; then
+        local resolved
+        resolved=$(resolve_model_file "$app")
+        [[ -n "$resolved" ]] \
+            || die "no release-record domain and no model file for ${app}; cannot run the pinned health gate."
+        domain=$(MODEL_NAME="$app" DATA_UI_MODEL_PATH="$resolved" model_field domain)
+        [[ -n "$domain" && "$domain" != "NIL" ]] || die "Model for ${app} has no :domain."
+    fi
+    local pin="${SITE_HEALTH_IP:-$(site_public_ip)}"
+    if ! wait_for_health_200 "https://${domain}/health" \
+            "rebirth pinned /health (${app} at ${domain}, pinned to ${pin})" \
+            "${DEPLOY_HEALTH_TIMEOUT:-300}" --resolve "${domain}:443:${pin}"; then
+        die "the pinned /health for ${app} (${domain} at ${pin}) failed."
+    fi
+    echo "rebirth child: ${app} healthy at https://${domain}/health (pinned to ${pin})."
+}
+
+function rebirth_restore_app {
+    # $1 = app. --fresh-data only. The files-tree precondition runs
+    # BEFORE the first restore: snapshot_restore_files leaves an
+    # existing tree untouched when the selected snapshot has no files
+    # side (rpo dumps never have one), so a populated tree from a
+    # partial or adopt-then-fresh recovery would silently coexist with
+    # the new database. Empty or absent proceeds; populated dies
+    # demanding REBIRTH_ALLOW_POPULATED_FILES=1 (an explicit operator
+    # override, never a silent merge). Then the backup script's
+    # recover materializes the pool copies, and each printed snapshot
+    # is restored into prd:<app> in order, in this process.
+    local app="$1" out docroot name
+    resolve_snapshot_address "prd:${app}" "destination"
+    docroot="${DOCUMENT_ROOT:-}"
+    if [[ -n "$docroot" && -d "$docroot" ]] \
+       && find "$docroot" -mindepth 1 -print -quit 2>/dev/null | grep -q .; then
+        if [[ -n "${REBIRTH_ALLOW_POPULATED_FILES:-}" ]]; then
+            echo "WARNING: the files tree at ${docroot} is already populated; REBIRTH_ALLOW_POPULATED_FILES=1 set — the restore may layer a new database over those files."
+        else
+            die "the files tree at ${docroot} is already populated; a fresh-data restore would layer a new database over it. Empty the tree, or set REBIRTH_ALLOW_POPULATED_FILES=1 to override deliberately."
+        fi
+    fi
+    echo "Selecting and materializing the freshest recovery set for ${app}..."
+    out=$("$(backup_bin_dir)/${app}-backup" recover) \
+        || die "recover for ${app} failed (no complete recovery set?)."
+    printf '%s\n' "$out"
+    local -a names=()
+    local line
+    while IFS= read -r line; do
+        [[ "$line" =~ ^restore:[[:space:]]+([^[:space:]]+)$ ]] \
+            && names+=("${BASH_REMATCH[1]}")
+    done <<<"$out"
+    if (( ${#names[@]} == 0 )); then
+        die "recover for ${app} printed no restoreable snapshot names; nothing restored."
+    fi
+    for name in "${names[@]}"; do
+        echo "Restoring ${name} into prd:${app}..."
+        snapshot_restore "$name" "prd:${app}" \
+            || die "restoring ${name} into prd:${app} failed."
+    done
 }
 
 #
@@ -5323,6 +6477,43 @@ function staging_modelbank_orphans {
     exit 1
 }
 
+function production_only_refuses {
+    # True (returns 0) for exactly the argv shapes a SITE_PRODUCTION_ONLY
+    # host must refuse at the public boundary — the staging-routable
+    # shapes route_for_staging would exec into another checkout, plus
+    # staging update (staging-local, but a staging verb all the same:
+    # it must die AT THE BOUNDARY, not by routing or by the one-host
+    # check). profile install-model is exempt (it never routes; its
+    # source lives in the invoking checkout — and on prod-2 nothing
+    # installs into a staging clone that does not exist).
+    local action="${1:-}"
+    case "$action" in
+        profile)
+            [[ "${2:-}" != "install-model" ]] && return 0
+            return 1
+            ;;
+        demo|e-demo)
+            return 0
+            ;;
+        repl|db|psql)
+            [[ -n "${2:-}" ]] && return 0
+            return 1
+            ;;
+        staging)
+            return 0
+            ;;
+        snapshot)
+            case "${2:-}" in
+                save|restore)
+                    [[ "${4:-}" == stg:* ]] && return 0
+                    ;;
+            esac
+            return 1
+            ;;
+    esac
+    return 1
+}
+
 #
 # Routing without fetching: routine staging commands run the staging
 # checkout's script from any non-staging cwd. Routing compares
@@ -5420,6 +6611,12 @@ function run_envelope_action {
             verify_internal_envelope
             staging_update_child
             ;;
+        rebirth-child)
+            [[ "$ENVELOPE_ROLE" == "production" ]] \
+                || die "internal envelope: rebirth-child must be ROLE=production."
+            verify_internal_envelope
+            rebirth_child
+            ;;
         *)
             die "internal envelope: unhandled ACTION '${ENVELOPE_ACTION}'."
             ;;
@@ -5439,6 +6636,14 @@ if envelope_marker_shaped "${1:-}"; then
     parse_internal_envelope "$@"
     run_envelope_action
     exit $?
+fi
+
+# Production-only boundary: on a SITE_PRODUCTION_ONLY host (prod-2),
+# the staging/demo/profile shapes die HERE — before route_for_staging
+# is ever consulted — with no mutation and no routing, so no
+# staging-routable shape can exec another checkout past the boundary.
+if [[ -n "${SITE_PRODUCTION_ONLY:-}" ]] && production_only_refuses "$@"; then
+    die "This site is production-only; '${ACTION}' is an evo-x2 verb (staging, demos, Model Bank, and profiles live there). Run it on evo-x2."
 fi
 
 # Routing without fetching (see route_for_staging): execs into the
@@ -5598,6 +6803,15 @@ case "$ACTION" in
         [[ -z "${3:-}" ]] || die "delete takes exactly one model operand."
         valid_model_operand "$2" "delete operand"
         delete_outer "$2"
+        ;;
+    cutover)
+        [[ -n "${2:-}" ]] || die "Usage: $SCRIPT_NAME cutover <model-name>"
+        [[ -z "${3:-}" ]] || die "cutover takes exactly one model operand."
+        valid_model_operand "$2" "cutover operand"
+        cutover_outer "$2"
+        ;;
+    rebirth)
+        rebirth_outer "${@:2}"
         ;;
     staging)
         sub="${2:-}"

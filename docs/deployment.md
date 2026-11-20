@@ -17,11 +17,13 @@ This document explains everything about how Data UI deployment works: the big pi
 - [Environments](#environments)
 - [Deployment State: Where Things Live](#deployment-state-where-things-live)
 - [Secrets, and How to Get the Admin Password](#secrets-and-how-to-get-the-admin-password)
+- [Production Backups: Off-Site on S3](#production-backups-off-site-on-s3)
 - [The Kubernetes Manifests](#the-kubernetes-manifests)
 - [How HAProxy Routing Works](#how-haproxy-routing-works)
 - [TLS: Certificates That Renew Themselves](#tls-certificates-that-renew-themselves)
 - [Docker Credentials: Headless Deploys](#docker-credentials-headless-deploys)
 - [Deploying From Another Machine](#deploying-from-another-machine)
+- [Two Production Sites](#two-production-sites)
 - [Dry Runs](#dry-runs)
 - [Connecting a REPL to the Live App](#connecting-a-repl-to-the-live-app)
 - [Troubleshooting](#troubleshooting)
@@ -42,7 +44,7 @@ Your model already declares the application's identity:
 
 The deploy pipeline reads those five keys and derives *everything* from them: the Docker image tag, the Kubernetes namespace, the release directory, the HAProxy backend, the public URL. There is no separate deployment config to drift out of sync with the application, because there is no separate deployment config.
 
-The target environment is deliberately modest: a single machine (the "deploy host") running a [k3d](https://k3d.io) cluster (k3s in Docker), with HAProxy in front terminating TLS. No cloud bill, no managed Kubernetes, no Helm charts. One box, one command.
+The target environment is deliberately modest: a single machine (the "deploy host") running a [k3d](https://k3d.io) cluster (k3s in Docker), with HAProxy in front terminating TLS. No cloud bill, no managed Kubernetes, no Helm charts. One box, one command. There are now **two production sites** on that shape — evo-x2 at home and prod-2 on EC2 (see [Two Production Sites](#two-production-sites)) — but each site is still one box, and staging, demos, and Model Bank live only on evo-x2.
 
 ## Source Environments: Three Checkouts
 
@@ -200,7 +202,7 @@ A multi-stage Docker build:
 - **Stage 1 (node:22-slim):** `npm ci && npm run build`, the React frontend, typechecked and bundled by Vite into static files.
 - **Stage 2 (ubuntu):** Roswell + SBCL + all Lisp dependencies, then the data-ui source. The system is **pre-compiled at build time** so container startup loads fasls instead of compiling from scratch (this matters: slow startups once fought the liveness probe, and the probe won). The entrypoint runs with `--disable-debugger` so any unhandled error prints a backtrace and exits instead of waiting politely at a debugger prompt inside a container nobody is attached to.
 
-The image is then imported into the k3d cluster with `k3d image import`, so no registry is involved and nothing leaves the machine.
+The image is then imported into the k3d cluster with `k3d image import`, so nothing leaves the machine. On evo-x2 (no `IMAGE_REGISTRY`) that is the whole story and no registry is involved. On prod-2 the registry path wraps the same steps: before the compile, a probe pulls the content-addressed image from ECR (`data-ui/<app>:deploy-<arch>-<git sha>-<model sha256>`) — a hit skips the compile and the build (only the k3d import runs); a miss builds exactly as above and pushes the image back as a best-effort cache fill (a push failure warns, never fails the deploy; `REBUILD=1` force-builds and re-pushes over the same tag).
 
 ### 8. Apply the manifests
 
@@ -331,6 +333,63 @@ The snapshot machinery (dev + staging profiles, and production via `prd:` addres
 ### Rotation
 
 There is no rotation tooling yet. If you must rotate manually: update the Kubernetes Secret, update `secrets.env`, restart the deployment, and for `DB_PASSWORD` also `ALTER USER dataui PASSWORD ...` inside postgres (in that order of caution). For a demo instance, the clean-slate procedure below is honestly less error-prone.
+
+## Production Backups: Off-Site on S3
+
+The snapshot pool lives on the same SSD as the databases it protects, which makes it a convenience, not a disaster recovery plan. Two production instances have data that must survive the machine: SceneBook (the first paying customer's continuity data) and the Backlog app (the project's own memory). For those, host-side timers upload fresh snapshots off the machine entirely — into a private, versioned S3 bucket. The pool can burn with the house; the S3 copy cannot. (Until November 2026 this role was filled by a Google-Drive folder synced by Insync — but the folder lived on the same host's `/data`, so a dead host took its only off-site copy with it, the 2026-11-18 outage class. The Drive folders remain as a read-only legacy archive; nothing new depends on them.)
+
+The target is one bucket, `data-ui-backups-232168665831` (us-east-1, private, public-access-blocked, SSE-S3, versioned). Retention is **lifecycle rules, never scripts** — deletion is S3's job, and the backup credentials cannot delete at all. The key prefix carries the host and the tier:
+
+| Key prefix (`s3://<bucket>/…`) | Contents | Expires |
+|---|---|---|
+| `evo-x2/backlog/hourly/` | full triple per hour | 1 day |
+| `evo-x2/backlog/daily/` | server-side copy of one hourly triple | 30 days |
+| `evo-x2/scenebook/rpo/` | `.dump` + `.meta` per 30 min | 1 day |
+| `evo-x2/scenebook/daily/` | full triple incl. photos tar | 30 days |
+| `evo-x2/backlog/model/`, `evo-x2/scenebook/model/` | the model file | never (noncurrent after 90 d) |
+| `prod-2/<app>/…` | the same tiers, written by prod-2's timers | same (the lifecycle rules are cloned onto `prod-2/`) |
+| `prod-2/site/…` | release records + the per-site manifest | 90 d noncurrent |
+
+The site prefix is parameterized (`BACKUP_SITE`, default the site marker, else `evo-x2`): prod-2's timers write `prod-2/`, evo-x2's stay `evo-x2/`. `RESTORE_SITE` (default `BACKUP_SITE`) retargets `restore`/`recover` reads — the move runbook stages evo-x2's set onto prod-2 with `RESTORE_SITE=evo-x2`. On prod-2 the instance role carries the credentials (the env file holds only `AWS_REGION` and `AWS_BUCKET`); on evo-x2 the `dataui-backup-evo-x2` IAM user remains.
+
+Lifecycle filters are **full key prefixes** (`evo-x2/` first) — a filter like `backlog/hourly/` matches nothing under `evo-x2/backlog/hourly/…` and the rule never fires. Versioning is the backstop for the no-delete posture: every rule carries a `NoncurrentVersionExpiration` too (1 day for the data tiers, 90 days for the model prefixes), or the bucket would grow forever behind delete markers.
+
+The machinery is *not* part of `scripts/data-ui` — it is host machinery, one script per app shipped in the repo under `ops/` (`ops/backlog-backup`, `ops/scenebook-backup`) and run from `~/bin/<unit>` as a symlink into the production clone's copy, driven by **user-level** systemd timers (lingering is enabled for the user, so they run at boot with no login session). Each app installs **five units**: the base `.service`/`.timer` pair, a `-daily.service`/`-daily.timer` pair (`OnCalendar=*-*-* 03:20:00`, `Persistent=true`), and one shared `-fail.service`:
+
+- `scenebook-backup` — every 30 minutes (`OnCalendar=*:0/30`, persistent), saves `prd-scenebook-<YYYYMMDD-HHMM>` from `prd:scenebook` and uploads `.dump` + `.meta` only to `scenebook/rpo/` (the RPO tier — the daily-only photos tar kills the tar-multiplication problem). The 03:20 daily saves a **fresh full triple** to `scenebook/daily/` (there is no tar in the RPO tier to promote).
+- `backlog-backup` — hourly, saves `prd-backlog-<YYYYMMDD-HHMM>` from `prd:backlog` and uploads the full triple to `backlog/hourly/`. The 03:20 daily **promotes** the newest hourly triple to `backlog/daily/` with a server-side copy (S3-to-S3, no download, no egress).
+
+Each app's daily cycle also syncs the **model file** into `<prefix>/model/` (resolved in the production checkout with set-model's shadow order: `models/<name>.lisp` first, else `models/local/<name>.lisp`). Snapshots do not carry the model, and VIP models live in gitignored `models/local/` — the model rides the backup so a cold host never dies mid-crisis for lack of it. A missing model file fails the daily run loudly.
+
+The scripts live in git under `ops/` and reach the host through a symlink: `~/bin/<unit>` → `/data/data-ui/repos/production/ops/<unit>`. The repo home gives them history, review, and a cold-host rebirth path (clone the repo, re-link, `start`); the stable `~/bin` name keeps the public verbs, the `PATH`, and the units' `ExecStart` unchanged. A symlink into a local clone carries none of the old Drive-symlink hazard — that risk was the Insync daemon behind the link, not symlink-ness. The coupling to accept: backup-machinery changes ride the normal deploy train, so a routine deploy pull updates the running scripts (each change lands reviewed and versioned, where untracked real files in `~/bin` had neither).
+
+One base cycle: `snapshot save` the timestamped triple via the production clone's `scripts/data-ui` (downtime-free), verify all three files, upload `.meta` (+ `.files.tar.gz` where the tier holds it) then `.dump` **last**, head-verify each object's size, then `rm` the pool triple and prune the pool. S3 objects are atomic — there is no half-written-file hazard. The prune matches only names whose suffix parses as `YYYYMMDD-HHMM` (the name is the save time; mtimes are never consulted), so word-named snapshots (`-final`, `keep-*` copies) and the machinery's own slots (`-last`, `-prerestore`, the bare `prd-<name>`) are immune; the S3 side is never pruned by a script — lifecycle owns remote retention.
+
+The aws CLI is **stateless** (no agent, no local sync state; the script is the sync) and lives in `/snap/bin` — the scripts put a `PATH` that includes it after the inherited one, because systemd user units would not find it otherwise. Credentials live in `~/.config/data-ui-backup.env` (mode 600, not synced): on evo-x2 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_BUCKET` — the `dataui-backup-evo-x2` IAM user, scoped to the `evo-x2/` prefix of this bucket only, with `PutObject`/`GetObject` (+ the five multipart actions) and `ListBucket` conditioned to the prefix. **No `DeleteObject`, no lifecycle or bucket admin** — a buggy script cannot destroy history. On prod-2 the key pair is optional: the instance role carries the credentials (the env file there holds only region and bucket), scoped to `prod-2/*` with read on `evo-x2/*` for the moves.
+
+If a cycle fails, the shared `OnFailure` fail unit pings Mattermost (the macnod-bot user, Water Bottle channel) naming the failed service, with the journal tail. Its credentials live in `~/.config/<unit>.env` (mode 600, not synced); a missing or incomplete file degrades the ping to a stderr line — it never blocks a backup or a stop.
+
+### Verbs
+
+    scenebook-backup status      # timer states, last-run results, newest object per tier, model sync date
+    scenebook-backup run         # one base cycle now (what the timer runs)
+    scenebook-backup run daily   # the daily cycle (full save / promotion + model sync)
+    scenebook-backup restore     # newest daily-tier backup -> snapshot pool
+    scenebook-backup restore prd-scenebook-daily-20261119-1000
+    scenebook-backup restore prd-scenebook-20261119-1000 rpo   # a specific RPO-tier backup
+    scenebook-backup location    # print the S3 backup prefix
+    scenebook-backup stop        # disable both timers, remove the five units (S3 objects stay)
+
+(`backlog-backup` takes the same verbs; its tiers are `daily` and `hourly`.) Restoring downloads the tier's objects back into the snapshot pool, where `snapshot list` sees it; from there the normal `snapshot restore` machinery takes over. The pool is the interface — S3 is just another place triples live. The tier is the second argument or a `--tier` flag, never a bare snapshot-name slot. The printed follow-up command targets `prd:<app>` by default; `RESTORE_PRINT_TARGET=<address>` retargets it (drills and gates point it at a scratch profile) — it changes only the printed text, never where anything lands.
+
+    <unit>-backup recover          # select the freshest COMPLETE set, download it, print the restore order
+    <unit>-backup recover --check  # select + verify completeness without downloading (rebirth preflight)
+
+`recover` never relies on key order across tiers: candidates group by exact basename per tier, sidecars complete a candidate only from the same tier, and the newest **complete** candidate wins — a newest candidate missing `files.tar.gz` falls back to the older complete triple. Backlog prefers the hourly tier when its newest complete triple is newer than the daily's. SceneBook picks the newest complete daily triple, then applies the newest rpo dump+meta pair on top **only when its timestamp is newer**; the daily-files / rpo-database age gap is printed verbatim first (which files tree accompanies which database, and how far apart). The printed `restore: <name>` lines are the restore order — `scripts/data-ui rebirth --fresh-data` runs them itself.
+
+### The gap to know about
+
+Coverage is per app and explicit. A newly deployed production instance has **no off-site backup** until someone installs a timer for it (copy the script from `ops/`, change its per-app constants — `PREFIX`, `APP_PROFILE`, `S3_APP_PREFIX`, `MODEL_NAME` — and the unit name, symlink it into `~/bin`, add the app's tier prefixes and lifecycle rules, and run `start`); nothing in `deploy` creates one. If an app's data matters, its backup timer is part of its definition of done.
 
 ## The Kubernetes Manifests
 
@@ -515,6 +574,54 @@ The whole remote command travels as one `bash -c <quoted>` argument through exac
 
 Staging and production must name the same host (`STAGING_HOST` == `DEPLOY_HOST`; a differing pair is rejected before any lockfile, Git, npm, SSH, or systemd mutation). This is load-bearing, not a simplification: `get-deployed-admin-password` is a plain local read of `$DATA_UI_STATE/deploy/<name>/secrets.env` written by the deploy on the deploy host, so Model Bank's `deploy-model-record-secret` works only on one machine; profile HAProxy operations are host-local too. Splitting the hosts (including remote secret retrieval) is a separate item.
 
+The second production site does not split them: prod-2 is production-only (`staging`, `demo`, `e-demo`, and `profile` verbs are refused there outright), so `STAGING_HOST == DEPLOY_HOST == evo-x2` continues to hold for everything staging-shaped. See [Two Production Sites](#two-production-sites).
+
+## Two Production Sites
+
+Production runs on two sites, partitioned by app sensitivity. **evo-x2** (the home machine) keeps staging, demos, Model Bank, the Deploy button, and the less-sensitive production apps. **prod-2** (a single EC2 instance, `t4g.xlarge`, Ubuntu 26.04 arm64, us-east-1) hosts the sensitive apps — Backlog first, then SceneBook — so a power outage at home can no longer take the paying customer's app dark. Every app instance is owned by exactly one site; there is no active/active (no transactions today). Moving an app is a one-way migration: snapshot-replicate → restore → swing DNS.
+
+- **The site marker** `/data/data-ui/site` (one line, `^[a-z][a-z0-9-]*$`) is a host's identity. With it, `local_site` decides deploy/delete/cutover locality and `apply_site_defaults` arms the site's settings; without it the hostname decides and the behavior is exactly the old single-site one. The marker is never written by a verb: `ops/prod-2-host.sh post-image` writes prod-2's, evo-x2's is stamped by hand.
+- **Site settings** (all `:=` defaults — the environment wins): prod-2 sets `DEPLOY_HOST=prod-2`, `K3D_CLUSTER=prod-2`, `DATA_UI_PUBLIC_URL=https://github.com/macnod/data-ui.git` (anonymous HTTPS — no GitHub credential on prod-2), `IMAGE_REGISTRY=232168665831.dkr.ecr.us-east-1.amazonaws.com`, `SITE_DNS_MODE=explicit`, `SITE_DNS_ZONE_ID=Z0152779JVWMFEK6RAKU`, `SITE_STATE_URI=s3://data-ui-backups-232168665831/prod-2/site`, `SITE_PRODUCTION_ONLY=1`. evo-x2 (stamped) sets `SITE_WILDCARD_ZONE=demo.data-ui.com`. Deploys run over SSH from anywhere via the existing thin forwarder: `DEPLOY_HOST=prod-2 scripts/data-ui deploy <app>`.
+- **The forwarder forwards only what the operator set.** An allowlisted variable crosses the SSH boundary only when its name was present in the entry environment — values the script defaulted itself (site defaults, deploy-environment exports) stay local, so the remote site's own defaults win there. `REBUILD` and `MOVE` are forwarded.
+- **prod-2 is production-only.** `staging`, `demo`, `e-demo`, and `profile` verbs (and every staging-routable shape: `stg:` snapshot addresses, named `repl`/`db`/`psql`) die at the public boundary with "this site is production-only" — before any routing, mutation, or stub call. `profile install-model` is exempt (it never routes).
+- **Registry semantics on prod-2** are in step 7 above: hit → no compile, no build, import only; miss → build + best-effort push; `REBUILD=1` → login, build, push over the same content tag. The registry is a cache for deploys and the fast path for a rebirth — never a deploy gate.
+- **DNS is explicit on prod-2.** App names keep `<app>.demo.data-ui.com`; per-app A records (TTL 300) shadow the wildcard, and the wildcard itself is never touched. `deploy` never touches DNS there — **`scripts/data-ui cutover <model>`** publishes: pinned health → A record UPSERT (`ops/prod-2-dns.sh`) → INSYNC → pinned health again → the manifest row last, so the record only ever asserts a verified publication. Idempotent; a half-finished cutover is detectable (deploy's closing summary reads the live A record via an exact type-A lookup and prints *published* / *published but unrecorded — run cutover to converge* / *unpublished* / *publication unknown*). `delete` removes the A record only when it holds this site's address, using every domain the manifest rows and `release.json` name together.
+- **The wrong-site guard** (evo-x2, wildcard sites): a bare `deploy backlog` on evo-x2 after the moves would build a zombie there and report success — the home router answers every name in the zone with evo-x2's LAN address, so the public-domain gate always tests evo-x2 itself. The guard asks a public resolver (`dig @1.1.1.1`) whether the domain's public answer differs from the wildcard's; when it does, the deploy dies with the corrected command (`DEPLOY_HOST=<site> scripts/data-ui deploy <name>`). `MOVE=1` overrides and pins gate 2 to loopback.
+- **Health gate 2 is pinned** on prod-2 to the site's own address (`--resolve <domain>:443:<public ip>`), proving this host, its certificate, and its security group during a move, in steady state, and on a temporary IP during a rebirth. `SITE_HEALTH_IP=127.0.0.1` pins past a hairpin failure.
+- **TLS on prod-2** is its own lineage of the wildcard certificate (`TLS_AWS_AUTH=instance-role deploy/setup-tls.sh` — no IAM user, no credentials file; the instance role may change only `_acme-challenge.demo.data-ui.com` TXT). The lineage lives on `/data` (`/etc/letsencrypt` → `/data/letsencrypt`), so an adopted volume needs no issuance. Do not loop fresh-lane drills: Let's Encrypt allows five certificates per exact name set per week, shared with evo-x2's renewals.
+- **Host state on S3.** Every successful prod-2 deploy writes `release.json` (image reference, full SHA, model hash, source, and the render facts) to deploy state and `${SITE_STATE_URI}/releases/<app>.json`; `cutover` upserts and `delete` removes rows in the per-site manifest (`$DATA_UI_STATE/ops/prod-manifest.jsonl`, mirrored to `${SITE_STATE_URI}/prod-manifest.jsonl`; rows keyed by model + site + domain). The manifest is the rebirth's inventory — S3 backup prefixes never resurrect an app. A missing local manifest is re-materialized from S3 on read.
+- **The failure ladder** (a dead or untrusted prod-2): 0. reboot/stop-start (volumes and Elastic IP survive); 1. **adopt** the data volume (RPO 0): `ops/prod-2-aws.sh replace --adopt-data` → `post-image adopt` → `scripts/data-ui rebirth --adopt-data` → verify → `publish-eip`; 2. **snapshot** (RPO ≤ 1 h): `replace --from-snapshot`; 3. **S3** (database ≤ 30 min / 1 h; SceneBook photos ≤ 24 h): `replace --fresh-data` → `rebirth --fresh-data`. In every lane the old instance is fenced (stopped and retagged; a `shutting-down` straggler is waited out; more than one live match fails explicitly), the Elastic IP moves last, DNS never changes, and the retired resources are kept until Donnie approves `retire`.
+- **`scripts/data-ui rebirth --adopt-data|--fresh-data`** redeploys every manifest app from its **recorded release image** (`DEPLOY_RECORDED_RELEASE=1`: pull-or-die, no compile/build/tag; the record's model hash is checked against the checkout first — a mismatch dies; a full-SHA mismatch proceeds with a warning). `--fresh-data` also materializes the S3 manifest locally and restores each app's freshest complete backup set (`~/bin/<app>-backup recover` prints the order; the restore runs inside a per-app child envelope so the supervisor survives failures). A populated destination files tree dies demanding `REBIRTH_ALLOW_POPULATED_FILES=1`. `REBIRTH_APPS="a b"` overrides the inventory; `REBIRTH_ALLOW_BUILD=1` builds at HEAD instead. Rebirth never touches DNS or manifest rows.
+- **The golden AMI** is baked from a clean builder (`ops/prod-2-aws.sh bake`; `ops/prod-2-host.sh base`): OS packages, Docker, k3d (checksum-verified), kubectl, HAProxy baseline (`ops/prod-2-haproxy.cfg`), certbot, Roswell + the SBCL/Quicklisp world parsed from the Dockerfile, the macnod user (fixed UID 1500), the sudoers rule, the fstab label line, pre-pulled base images, and the Docker drop-ins (`LimitNOFILE`, and `RequiresMountsFor=/data` — the cluster never starts on an unmounted `/data`). No cluster, no credentials, no data. Re-bake on host-setup changes and at least every 90 days; a re-baked AMI earns `Validated=true` only by passing the scratch restore drill.
+- **Hourly EBS snapshots** of the data volume (DLM, retain 48) cover database, photos, deploy state, and the TLS lineage together. **S3 lifecycle** rules are cloned from the `evo-x2/` prefixes onto `prod-2/` (`ops/prod-2-aws.sh lifecycle` — a merge, never a replace), plus a 90-day noncurrent expiry under `prod-2/site/`. **Backups** run from prod-2 under the `prod-2/` prefix with the same scripts and timers (`~/bin/<app>-backup start`); `RESTORE_SITE=evo-x2` reads the source site during a move.
+- **The prune timer** (`ops/prod-2-prune.timer`, daily 09:40 UTC) clears BuildKit cache and every unused deploy image on the host and in the k3d node, under the deploy lock.
+- **The budget** is a tag-filtered $200/month cost budget (`Project=data-ui-prod-2`), e-mail at $150 and $200 actual (`ops/prod-2-aws.sh budget`; never an automatic stop).
+- **Appendix A** — the complete AWS creation sequence (VPC through budget) is `ops/prod-2-aws.sh`: `foundation`, `bake`, `launch [--fresh-data|--adopt-data|--from-snapshot] [--az AZ] [--scratch]`, `publish-eip`, `snapshots-policy`, `lifecycle`, `budget`, `replace`, `ssh-allow`, `add-app <name> <domain>`, `retire <instance-id>`. It requires an administrator `AWS_PROFILE` on the control host; every lookup is by tag, every returned scalar is checked, and nothing depends on evo-x2 surviving. **Adding an app to prod-2** is `add-app` (an administrator widens the role's A-record condition and creates the ECR repository) followed by the smoke lifecycle.
+- **SSH from the home /32 only**; when the home IP changes, `ops/prod-2-aws.sh ssh-allow` from any machine with the administrator profile re-points the rule (the forwarder's ssh timing out is the symptom).
+
+### The move runbook (per app; E = evo-x2, P = prod-2)
+
+1. **Deploy, unpublished:** `DEPLOY_HOST=prod-2 scripts/data-ui deploy <app>` (from evo-x2; DNS still answers from evo-x2).
+2. **Trial restore, no downtime:** on prod-2 `RESTORE_SITE=evo-x2 ~/bin/<app>-backup recover`, then `snapshot restore <name> prd:<app>` per printed name; verify row counts, the files tree, an admin login, and pinned health.
+3. **Stop the source timers** (E): `~/bin/<app>-backup stop`.
+4. **Fence — downtime starts** (E): scale the app to 0 and wait for the pod to go (`kubectl -n dataui-<app> scale deploy/dataui-<app> --replicas=0; kubectl -n dataui-<app> wait --for=delete pod -l app=dataui-<app> --timeout=120s`). PostgreSQL stays up; `snapshot save` works against a scaled-down app.
+5. **Final backup** (E): `~/bin/<app>-backup run` (SceneBook: `run daily`); confirm the triple in S3.
+6. **Final restore** (P): as step 2; row counts must now equal the fenced source.
+7. **Cutover — downtime ends as resolvers converge (≤ 300 s)** (P): `scripts/data-ui cutover <app>`.
+8. **Verify the public view** (E): `dig +short A <domain> @1.1.1.1` shows the Elastic IP; `curl -fsS --resolve <domain>:443:<EIP> https://<domain>/health`; a login from outside the home network.
+9. **Teach the home LAN**: a per-name router override (`<domain>` → the Elastic IP) and, immediately, the same line in evo-x2's `/etc/hosts` — the home LAN's split-horizon DNS otherwise keeps resolving the name to evo-x2 (the agents' `backlog` wrapper depends on this step).
+10. **Backups on the new site** (P): `~/bin/<app>-backup start` plus one `run`; verify fresh objects under `prod-2/<app>/`.
+11. **Retire the source** (E): `scripts/data-ui delete <app>` (the farewell snapshot `prd-<app>-last` stays in evo-x2's pool).
+
+Before step 7 nothing is public and everything can be put back; after step 7 never un-fence evo-x2 — fix forward on prod-2, or reverse deliberately.
+
+### Troubleshooting (two-site)
+
+- **The forwarder's ssh times out** — the home IP changed; `ops/prod-2-aws.sh ssh-allow`.
+- **An app is unreachable publicly but healthy pinned** — check the closing summary's publication verdict; `cutover` (or its re-run) is usually the missing step.
+- **A deploy on prod-2 ends "registry miss"** — the build will run and push; if the push also failed, the next rebirth of that app may have to build (`REBUILD=1` repairs the cache).
+- **A bare deploy on evo-x2 dies "served by another site"** — that is the wrong-site guard working; deploy with `DEPLOY_HOST=prod-2` (or `MOVE=1` for a deliberate move back).
+
 ### Legacy VIP identity migration
 
 `deploy-bootstrap` (beyond creating/validating the production clone) also migrates legacy VIP identities: it inventories `models/local/*.lisp` in every checkout production historically deployed from (the bootstrap/development checkout, plus any existing production clone), cross-checks them against live `dataui-*` namespaces, and copies each file bytes-intact (SHA-256 verified) to the production clone's `models/local/<declared-name>.lisp` under the production lock. It refuses to overwrite a different destination file, rejects malformed names, declared-name mismatches, conflicting duplicates, and symlink sources for operator resolution, and never modifies the legacy checkout. An empty inventory is printed and is fine. An instance whose identity cannot be inventoried requires `MODEL_FILE=<archived model file> scripts/data-ui delete NAME`.
@@ -523,17 +630,28 @@ Configuration knobs (environment variables, all with defaults):
 
 | Variable          | Default                          | Meaning                       |
 |-------------------|----------------------------------|-------------------------------|
-| `DEPLOY_HOST`     | `evo-x2`                         | ssh destination & hostname (production) |
+| `DEPLOY_HOST`     | `evo-x2` (the site marker on a stamped host defaults it to that site) | ssh destination & site identity (production) |
 | `STAGING_HOST`    | `evo-x2`                         | staging host (must equal `DEPLOY_HOST`) |
 | `DEPLOY_CHECKOUT` | `/data/data-ui/repos/production` | production clone              |
 | `STAGING_CHECKOUT`| `/data/data-ui/repos/staging`    | staging clone                 |
 | `DEPLOY_BOOTSTRAP_CHECKOUT` | `~/common-lisp/data-ui`  | last-resort launcher on a host with no production clone |
 | `CHECKOUT_LOCK_ROOT` | `/data/data-ui/repos`         | deploy/staging lock directory |
-| `DATA_UI_PUBLIC_URL` / `DATA_UI_PRIVATE_URL` | canonical GitHub URLs | clone URLs (overridable for tests) |
+| `DATA_UI_PUBLIC_URL` / `DATA_UI_PRIVATE_URL` | canonical GitHub URLs | clone URLs (prod-2's site default is the anonymous HTTPS URL) |
 | `DEPLOY_STATE_DIR`| `/data/data-ui/deploy`           | state directory               |
-| `DATA_UI_STATE`   | `/data/data-ui`                  | root for deploy state         |
+| `DATA_UI_STATE`   | `/data/data-ui`                  | root for deploy state (and the site marker, `<root>/site`) |
 | `MODEL_FILE`      | (unset)                          | explicit model file (VIP deploys and delete identity) |
-| `K3D_CLUSTER`     | `evo-x2`                         | k3d cluster name              |
+| `K3D_CLUSTER`     | `evo-x2` (site default on prod-2: `prod-2`) | k3d cluster name |
+| `IMAGE_REGISTRY`  | (unset; site default on prod-2: the ECR registry) | registry cache for deploy images |
+| `REBUILD`         | (unset)                          | `1` skips the registry probe, builds, and pushes over the same content tag |
+| `MOVE`            | (unset)                          | `1` overrides the wrong-site guard and pins gate 2 to loopback |
+| `SITE_DNS_MODE`   | `wildcard` (site default on prod-2: `explicit`) | how publication works on this site |
+| `SITE_DNS_ZONE_ID`| (unset; prod-2: `Z0152779JVWMFEK6RAKU`) | Route 53 hosted zone for per-app records |
+| `SITE_WILDCARD_ZONE` | (unset; stamped evo-x2: `demo.data-ui.com`) | arms the wrong-site guard |
+| `SITE_STATE_URI`  | (unset; prod-2: `s3://data-ui-backups-232168665831/prod-2/site`) | S3 prefix for release records and the manifest |
+| `SITE_PRODUCTION_ONLY` | (unset; prod-2: `1`)          | refuse staging/demo/profile verbs outright |
+| `SITE_PUBLIC_IP` / `SITE_HEALTH_IP` | (unset; IMDSv2 on prod-2) | pin the site's address / the health gates |
+| `DEPLOY_RECORDED_RELEASE` | (unset)                | `1` = redeploy the recorded image (the rebirth path) |
+| `REBIRTH_APPS` / `REBIRTH_ALLOW_BUILD` / `REBIRTH_ALLOW_POPULATED_FILES` | (unset) | rebirth overrides (see Two Production Sites) |
 | `DRY_RUN`         | (unset)                          | see Dry Runs                  |
 | `STAGING_HEALTH_TIMEOUT` | `300`                     | per-profile restart gate deadline (seconds) |
 | `MODELBANK_DRAIN_TIMEOUT` | `600`                    | Model Bank drain deadline (seconds) |

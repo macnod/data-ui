@@ -21,8 +21,15 @@ HOOK_DST="/etc/letsencrypt/renewal-hooks/deploy/haproxy-pem.sh"
 HAPROXY_CFG="/etc/haproxy/haproxy.cfg"
 IAM_USER="certbot-evo-x2"
 
-# 1. Root AWS credentials for certbot-dns-route53.
-if sudo test -f /root/.aws/credentials; then
+# 1. Root AWS credentials for certbot-dns-route53. TLS_AWS_AUTH=
+# instance-role (prod-2) skips this step entirely — no IAM call, no
+# credentials file; certbot's Route 53 plugin then authenticates with
+# the instance role (whose policy allows changing only the ACME TXT
+# record). Without the variable the script behaves byte-identically
+# on evo-x2.
+if [[ "${TLS_AWS_AUTH:-}" == "instance-role" ]]; then
+    echo "TLS_AWS_AUTH=instance-role: certbot uses the instance role; skipping IAM and credentials."
+elif sudo test -f /root/.aws/credentials; then
     echo "Root AWS credentials already present; leaving them alone."
 else
     key=$(aws iam create-access-key --user-name "$IAM_USER" \
@@ -41,6 +48,21 @@ fi
 # 2. Renewal hook (before certonly, so first issuance triggers it too).
 sudo install -D -m 755 "$HOOK_SRC" "$HOOK_DST"
 echo "Installed renewal hook at $HOOK_DST."
+
+# 2b. ACME account: a fresh host has none, and `certbot certonly -n`
+# refuses to agree to the ToS on first use. CERTBOT_EMAIL when set,
+# else --register-unsafely-without-email (the lineage lives on /data,
+# so this runs at most once per fresh-lane launch; the Let's Encrypt
+# five-per-week limit for the shared name set is the reason the adopt
+# lane reuses the on-volume lineage instead).
+if ! sudo test -d /etc/letsencrypt/accounts; then
+    echo "No ACME account; registering one..."
+    if [[ -n "${CERTBOT_EMAIL:-}" ]]; then
+        sudo certbot register -n --agree-tos -m "$CERTBOT_EMAIL"
+    else
+        sudo certbot register -n --agree-tos --register-unsafely-without-email
+    fi
+fi
 
 # 3. Certificate. The wildcard does not cover the bare domain, so
 # request both. Idempotent: certbot keeps the existing lineage if it is

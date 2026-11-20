@@ -207,7 +207,9 @@ A Model Bank worker instead sets `MODEL_FILE` (a unique file under `models/local
 Requirements:
 - `sudo` access (for HAProxy configuration)
 - A clean production clone (created by `deploy-bootstrap` on a fresh host)
-- When run on a machine other than `DEPLOY_HOST`, the script forwards over ssh (`-t`) to a host-side launcher; the caller's repo is never inspected, cleaned, or pushed
+- When run on a machine other than `DEPLOY_HOST`, the script forwards over ssh (`-t`) to a host-side launcher; the caller's repo is never inspected, cleaned, or pushed. The forwarder crosses only allowlisted variables **that the operator set** — script-defaulted values (site defaults, deploy-environment exports) stay local so the remote site's own defaults win; `REBUILD` and `MOVE` are forwarded, secrets never are.
+
+On an explicit-DNS site (prod-2) the deploy's closing summary prints a publication verdict read from the live A record: **published** (row and record agree), **published but unrecorded** (the last cutover stopped after the DNS change — re-run `cutover`), **unpublished** (run `cutover`), or **publication unknown** (the Route 53 lookup failed). A registry configured on the site adds the pull-or-build cache in front of the compile (see docs/deployment.md → Two Production Sites).
 
 Deployment state (rendered manifests, `ports.lock`, per-instance secrets, orphaned candidates, recovery records) lives outside every repo in `/data/data-ui/deploy/`.
 
@@ -227,6 +229,19 @@ A failed farewell save aborts the delete with the data still intact — re-run w
 
     scripts/data-ui delete todos
     FORCE=1 scripts/data-ui delete todos
+
+#### `cutover`
+
+    scripts/data-ui cutover <model-name>
+
+Explicit-DNS sites (prod-2) only, and site-local (run on the site itself). Publishes an already-deployed app: a `deploy` on those sites never touches DNS — this verb does. In order: the namespace exists and the Deployment is available; this instance's public IP is an Elastic IP bound to **this** instance (the scratch-host refusal — `describe-addresses` must return exactly one matching row whose `InstanceId` equals this instance's IMDSv2 id); a pinned `/health` (resolved to the site's own address); the per-app A record UPSERT in the site's Route 53 zone via `ops/prod-2-dns.sh` (TTL 300, waited to INSYNC); a final pinned `/health`; and only then the manifest row — the record only ever asserts a verified publication. Idempotent: every step is safe to repeat, and a re-run after a half-finished cutover converges (the closing summary of an ordinary deploy names the pending state as "published but unrecorded").
+
+#### `rebirth`
+
+    scripts/data-ui rebirth --adopt-data
+    scripts/data-ui rebirth --fresh-data
+
+The site-local recovery verb for prod-2 (exactly one mode required). Never touches DNS and never upserts or removes manifest rows — a rebirth reuses the Elastic IP. A supervisor holds the production lock for the whole run, prepares the production checkout exactly as a deploy does, verifies every app's recovery inputs first (preflight: the manifest parses, every release record exists and its recorded image pulls from ECR, VIP model bytes exist, and under `--fresh-data` every backup selection is complete), then redeploys each manifest app through a per-app child envelope from its **recorded release image** (`DEPLOY_RECORDED_RELEASE=1`: pull-or-die, no compile/build/tag; the record's model hash is checked against the checkout first — a mismatch dies, a full-SHA mismatch proceeds with a warning). Under `--fresh-data` the S3 manifest is materialized locally and each app's freshest complete backup set is restored in the printed order (`~/bin/<app>-backup recover`); a populated destination files tree dies demanding `REBIRTH_ALLOW_POPULATED_FILES=1`. The first failure stops the run with the retry command. `REBIRTH_APPS="a b"` overrides the inventory (the default comes from manifest rows only — S3 backup prefixes never resurrect an app); `REBIRTH_ALLOW_BUILD=1` builds at HEAD instead of the recorded image.
 
 #### `staging`
 
@@ -410,11 +425,17 @@ The script reads several environment variables with hardcoded defaults. Override
 
 **Deployment (override with environment variables):**
 
-- `DEPLOY_HOST` (default: `evo-x2`)
-- `DEPLOY_CHECKOUT` (default: `$HOME/deploy/data-ui`)
+- `DEPLOY_HOST` (default: `evo-x2`; on a host whose site marker — `$DATA_UI_STATE/site` — names a site, the site default applies, e.g. `prod-2`)
+- `DEPLOY_CHECKOUT` (default: `/data/data-ui/repos/production`)
 - `DEPLOY_STATE_DIR` (default: `/data/data-ui/deploy/`)
-- `DATA_UI_STATE` (default: `/data/data-ui`; the root for profiles, snapshots, and deploy state)
-- `K3D_CLUSTER` (default: `evo-x2`)
+- `DATA_UI_STATE` (default: `/data/data-ui`; the root for profiles, snapshots, deploy state, and the site marker)
+- `K3D_CLUSTER` (default: `evo-x2`; site default on prod-2: `prod-2`)
+- `IMAGE_REGISTRY` (unset on evo-x2; prod-2's site default is the ECR registry — arms the registry cache path)
+- `REBUILD` (set to `1` to skip the registry probe, build, and push over the same content tag)
+- `MOVE` (set to `1` to override the wrong-site guard and pin the public health gate to loopback)
+- `DEPLOY_RECORDED_RELEASE` (set to `1` to redeploy the app's recorded image — the rebirth path; pull-or-die, no compile/build/tag, facts from the record)
+- `SITE_DNS_MODE` (`wildcard` | `explicit`; prod-2's site default is `explicit`), `SITE_DNS_ZONE_ID`, `SITE_WILDCARD_ZONE`, `SITE_STATE_URI`, `SITE_PRODUCTION_ONLY`, `SITE_PUBLIC_IP`, `SITE_HEALTH_IP` (the per-site settings; see docs/deployment.md → Two Production Sites)
+- `REBIRTH_APPS`, `REBIRTH_ALLOW_BUILD`, `REBIRTH_ALLOW_POPULATED_FILES` (rebirth overrides)
 - `DRY_RUN` (set to `1` for dry-run deploys)
 - `FORCE` (set to `1` to skip the delete / profile-delete confirmations, to let `snapshot copy` overwrite an existing destination, to skip the delete verb's farewell snapshot (`prd-<name>-last`), and as the one escape when `snapshot save` hits an unreachable `dev:` `/api/info`. It NEVER overrides a snapshot model mismatch, and the restore-unreachable skip needs no FORCE.)
 

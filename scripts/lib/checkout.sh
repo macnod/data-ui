@@ -12,7 +12,9 @@
 # cleanliness implementation, fetch + ff-only selection on per-upstream
 # deploy branches, flock role locks with the inherited-descriptor
 # ownership probe, and the internal re-exec envelope shared by deploy,
-# delete, and the staging update child.
+# delete, the staging update child, and the rebirth child. It also owns
+# the site identity (local_site, apply_site_defaults): the marker at
+# ${DATA_UI_STATE:-/data/data-ui}/site decides per-site defaults.
 
 # The re-exec envelope protocol version. The marker an outer arm passes
 # is __DATA_UI_REEXEC_V${DATA_UI_REEXEC_PROTOCOL}__; an inner arm
@@ -25,10 +27,70 @@ if ! declare -F die >/dev/null 2>&1; then
     die() { echo "ERROR: $*" >&2; exit 1; }
 fi
 
+# Site identity. The marker at ${DATA_UI_STATE:-/data/data-ui}/site is
+# the host's identity; without it the hostname decides (today's
+# single-site behavior, and the test harness). The marker is never
+# written by a verb: ops/prod-2-host.sh post-image writes prod-2's,
+# and evo-x2's is stamped by hand at Phase B.
+
+local_site() {
+    # The site name: the marker's single line when the file exists,
+    # else the hostname. Validation happens ONCE, at source time, in
+    # apply_site_defaults (a die here could not stop the caller:
+    # local_site is consumed through $( ) and a subshell's exit only
+    # ends the subshell).
+    local marker="${DATA_UI_STATE:-/data/data-ui}/site"
+    if [[ -e "$marker" ]]; then
+        head -n1 "$marker" 2>/dev/null
+    else
+        hostname
+    fi
+}
+
+apply_site_defaults() {
+    # Site-conditional defaults, run before the := block below so the
+    # environment (and the harness) always wins: everything set here is
+    # re-consulted by a := there. The marker is validated HERE, in the
+    # sourcing shell — an invalid marker must stop every site decision
+    # of the whole script, never degrade to a guessed default. An
+    # unstamped host keeps today's single-site behavior exactly; a
+    # stamped prod-2 stops forwarding its own deploys to evo-x2, clones
+    # over anonymous HTTPS, gains the ECR registry path, explicit
+    # per-app DNS, host state on S3, and the production-only boundary.
+    local marker="${DATA_UI_STATE:-/data/data-ui}/site" site=""
+    if [[ -e "$marker" ]]; then
+        site=$(head -n1 "$marker" 2>/dev/null)
+        [[ "$site" =~ ^[a-z][a-z0-9-]*$ ]] \
+            || die "Invalid site marker in ${marker}: '${site}' (must match ^[a-z][a-z0-9-]*\$). Fix the file; refusing to guess this host's site."
+    fi
+    case "$site" in
+        prod-2)
+            : "${DEPLOY_HOST:=prod-2}"
+            : "${K3D_CLUSTER:=prod-2}"
+            : "${DATA_UI_PUBLIC_URL:=https://github.com/macnod/data-ui.git}"
+            : "${IMAGE_REGISTRY:=232168665831.dkr.ecr.us-east-1.amazonaws.com}"
+            : "${SITE_DNS_MODE:=explicit}"
+            : "${SITE_DNS_ZONE_ID:=Z0152779JVWMFEK6RAKU}"
+            : "${SITE_STATE_URI:=s3://data-ui-backups-232168665831/prod-2/site}"
+            : "${SITE_PRODUCTION_ONLY:=1}"
+            export DEPLOY_HOST K3D_CLUSTER DATA_UI_PUBLIC_URL IMAGE_REGISTRY \
+                   SITE_DNS_MODE SITE_DNS_ZONE_ID SITE_STATE_URI SITE_PRODUCTION_ONLY
+            ;;
+        evo-x2)
+            : "${SITE_DNS_MODE:=wildcard}"
+            : "${SITE_WILDCARD_ZONE:=demo.data-ui.com}"
+            export SITE_DNS_MODE SITE_WILDCARD_ZONE
+            ;;
+    esac
+}
+
+apply_site_defaults
+
 # Environment defaults. `:=` so pre-set values (tests, operators)
 # survive; the export keeps children on the same page. These are guard
 # inputs, not conveniences: STAGING_HOST exists so a split-host
 # configuration is a visible error instead of a silent divergence.
+: "${SITE_DNS_MODE:=wildcard}"
 : "${DEPLOY_CHECKOUT:=/data/data-ui/repos/production}"
 : "${STAGING_CHECKOUT:=/data/data-ui/repos/staging}"
 : "${DEPLOY_HOST:=evo-x2}"
@@ -39,7 +101,7 @@ fi
 : "${DATA_UI_PRIVATE_URL:=git@github.com:macnod/data-ui-private.git}"
 export DEPLOY_CHECKOUT STAGING_CHECKOUT DEPLOY_HOST STAGING_HOST \
        CHECKOUT_LOCK_ROOT DEPLOY_BOOTSTRAP_CHECKOUT \
-       DATA_UI_PUBLIC_URL DATA_UI_PRIVATE_URL
+       DATA_UI_PUBLIC_URL DATA_UI_PRIVATE_URL SITE_DNS_MODE
 
 canonical_checkout_root() {
     # Canonical root of the invoking script: readlink -f of the script,
@@ -581,6 +643,16 @@ parse_internal_envelope() {
             [[ "$ENVELOPE_LOCK_FD" != "-" && "$ENVELOPE_PROD_LOCK_FD" != "-" ]] \
                 || die "Malformed internal envelope: staging-update-child carries both lock slots."
             ;;
+        rebirth-child)
+            (( ${#ENVELOPE_ARGS[@]} == 0 )) \
+                || die "Malformed internal envelope: rebirth-child takes no ARGS."
+            [[ "$ENVELOPE_REMOTE" != "-" && "$ENVELOPE_FULL_SHA" != "-" ]] \
+                || die "Malformed internal envelope: rebirth-child carries a real REMOTE and FULL_SHA."
+            [[ "$ENVELOPE_LOCK_FD" != "-" && "$ENVELOPE_PROD_LOCK_FD" != "-" ]] \
+                || die "Malformed internal envelope: rebirth-child carries both lock slots."
+            [[ "$ENVELOPE_HANDOFF_KIND" == "none" ]] \
+                || die "Malformed internal envelope: rebirth-child carries HANDOFF_KIND none."
+            ;;
         *)
             die "Malformed internal envelope: unknown ACTION '${ENVELOPE_ACTION}'."
             ;;
@@ -603,8 +675,13 @@ verify_internal_envelope() {
         || die "Internal envelope root mismatch: this script is ${root}, the ${role} checkout is ${checkout}."
     case "$role" in
         production)
-            [[ "$(hostname)" == "$DEPLOY_HOST" ]] \
-                || die "Production envelope on the wrong host (this is $(hostname), DEPLOY_HOST is ${DEPLOY_HOST})."
+            # The site marker decides production locality (a stamped
+            # prod-2 must accept its own production envelopes even
+            # though prod-2's DEPLOY_HOST differs from its hostname
+            # spelling only by the marker; an unstamped host keeps the
+            # hostname behavior). Staging stays hostname-keyed.
+            [[ "$(local_site)" == "$DEPLOY_HOST" ]] \
+                || die "Production envelope on the wrong host (this is $(local_site), DEPLOY_HOST is ${DEPLOY_HOST})."
             ;;
         staging)
             [[ "$(hostname)" == "$STAGING_HOST" ]] \
