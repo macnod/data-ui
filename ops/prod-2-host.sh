@@ -52,6 +52,27 @@ host_arch() {
     esac
 }
 
+dockerfile_ros_targets() {
+    # host_base's Quicklisp replay, one source of truth with the
+    # image build: every "RUN ulimit -n N && ros install <rest>" line
+    # in the Dockerfile, reduced to what a host-side
+    # "ros install <target>" can actually take. The reduction is the
+    # point — the rest of the RUN line is Docker's, not ours: a shell
+    # chain after && is not replayable as arguments, Docker quoting
+    # is not shell quoting (text from an expansion is never re-quoted
+    # or re-expanded), and a target still holding ${...} references a
+    # Docker ARG (sbcl-bin — host_base installs it separately from
+    # the parsed ARG), not a Quicklisp project.
+    local line
+    while IFS= read -r line; do
+        line="${line%%&&*}"
+        line="${line//\"/}"
+        line="${line%${line##*[![:space:]]}}"   # the && cut leaves the space before it
+        [[ -n "$line" && "$line" != *'${'* ]] || continue
+        printf '%s\n' "$line"
+    done < <(sed -n 's/^RUN ulimit -n [0-9]* && ros install //p' "$1" | sort -u)
+}
+
 # ---------------------------------------------------------------------------
 # base — the AMI's contents
 # ---------------------------------------------------------------------------
@@ -137,11 +158,9 @@ SUDOERS
     sudo -u "$MACNOD_USER" ros install "sbcl-bin/${sbcl_version}"
     sudo -u "$MACNOD_USER" ros use "sbcl-bin/${sbcl_version}"
     while IFS= read -r line; do
-        # "RUN ulimit -n 1048576 && ros install <project>" — one
-        # source of truth with the image build.
         echo "  ros install ${line}"
         sudo -u "$MACNOD_USER" ros install ${line}
-    done < <(sed -n 's/^RUN ulimit -n [0-9]* && ros install //p' "$dockerfile" | sort -u)
+    done < <(dockerfile_ros_targets "$dockerfile")
 
     echo "== HAProxy baseline =="
     # This script arrives on stdin from the clone's ops/, so the
