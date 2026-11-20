@@ -557,6 +557,7 @@ EOF
 #   route53 change-resource-record-sets / wait ... / get-change
 #                                     log + INSYNC
 #   ec2 describe-addresses            $STUB/ec2-addresses.json
+#   ec2 describe-images               $STUB/aws-describe-images
 #   ec2 (everything else)             log; exit 0 (failure knobs:
 #                                     $STUB/aws-fails-<verb>)
 echo "aws $*" >> "$STUB/aws.log"
@@ -692,6 +693,9 @@ case "$1" in
                 exit 0 ;;
             describe-instances)
                 cat "$STUB/aws-describe-instances" 2>/dev/null || true
+                exit 0 ;;
+            describe-images)
+                cat "$STUB/aws-describe-images" 2>/dev/null || true
                 exit 0 ;;
             stop-instances)
                 [[ -f "$STUB/aws-stop-fails" ]] && { echo "aws stub: stop failure knob" >&2; exit 1; }
@@ -2154,10 +2158,18 @@ test_drain_query_real_postgres() {
         -e POSTGRES_PASSWORD=drainpw postgres:16 >/dev/null || {
         skip_test "could not start throwaway postgres"; return 0; }
     local i
+    # Readiness must probe TCP, not the default socket: the postgres
+    # image's initdb runs a TEMPORARY server (socket-only) that answers
+    # socket probes and then shuts down — a socket-ready loop breaks
+    # early and the setup queries land in the shutdown window (failed
+    # twice on 2026-11-20). The real server is the TCP listener.
     for i in $(seq 1 30); do
-        /usr/bin/docker exec "$cname" pg_isready -U postgres >/dev/null 2>&1 && break
+        /usr/bin/docker exec "$cname" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
         sleep 1
     done
+    /usr/bin/docker exec "$cname" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 \
+        || { /usr/bin/docker rm -f "$cname" >/dev/null 2>&1 || true
+             fail "postgres never reached TCP readiness in 30s"; return 0; }
     /usr/bin/docker exec "$cname" psql -U postgres -c \
         "create table rt_models (model_name text, model_deploy_status text, model_generate_status text)" >/dev/null
     /usr/bin/docker exec "$cname" psql -U postgres -c \
@@ -4189,6 +4201,7 @@ source_aws_fns() { # extract testable functions from ops/prod-2-aws.sh
     # The functions call `aws` directly, so the stub bin leads PATH.
     export PATH="$H/bin:$PATH"
     eval "$(sed -n '/^aws_scalar()/,/^}/p; /^golden_ami()/,/^}/p;
+                    /^resolve_golden_ami()/,/^}/p;
                     /^lane_data_volume()/,/^}/p; /^fence_old_instances()/,/^}/p' \
                    "$REPO_ROOT/ops/prod-2-aws.sh")"
     die() { echo "prod-2-aws.sh: $*" >&2; exit 1; }
@@ -4259,6 +4272,32 @@ test_aws_no_validated_ami_or_snapshot_dies() {
     : # (the stub has no describe-volumes fixture; the fresh lane's
       # refuse-existing check reads nothing → creates — not asserted
       # here; the die-on-None cases above are the scalar gates)
+}
+
+test_aws_launch_names_its_ami() {
+    # The first launch (Validated comes only after Phase C) and the
+    # scratch drill (which EARNS Validated=true) must be able to name
+    # the just-baked AMI: the validated-only lookup would die — or, on
+    # a re-bake, silently return the older validated image instead of
+    # the one under test.
+    source_aws_fns
+    # An explicit AMI that describes as available+arm64: used verbatim.
+    printf 'ami-new\n' > "$STUB/aws-describe-images"
+    resolve_golden_ami ami-new
+    assert_eq "$GOLDEN_AMI" "ami-new" "the explicit AMI is used, validated or not"
+    assert_contains "$(cat "$STUB/aws.log")" "Name=architecture,Values=arm64" \
+        "the explicit AMI is availability/arch checked, not trusted"
+    # An explicit AMI the filters reject (nothing described): dies.
+    local out
+    : > "$STUB/aws-describe-images"
+    out=$(resolve_golden_ami ami-bogus 2>&1); st=$?
+    (( st != 0 )) || fail "an undescribable explicit AMI must die"
+    assert_contains "$out" "explicit AMI ami-bogus" "the die names the AMI"
+    # Neither explicit nor validated: dies with the --ami hint.
+    out=$(resolve_golden_ami 2>&1); st=$?
+    (( st != 0 )) || fail "no explicit AMI and no validated AMI must die"
+    assert_contains "$out" "no validated golden AMI" "with the bake/validate hint"
+    assert_contains "$out" "--ami" "and the escape hatch"
 }
 
 source_host_fns() { # extract testable functions from ops/prod-2-host.sh
@@ -4505,6 +4544,7 @@ main() {
     t aws_fence_mixed_shutting_down_waits
     t aws_fence_waiter_failure_dies
     t aws_no_validated_ami_or_snapshot_dies
+    t aws_launch_names_its_ami
     t host_ros_replay_is_clean
 
     echo

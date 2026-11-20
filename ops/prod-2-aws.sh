@@ -12,7 +12,7 @@
 #   bake                           A5: builder instance -> golden AMI
 #                                  -> builder terminated (secret-free)
 #   launch [--fresh-data|--adopt-data|--from-snapshot] [--az AZ]
-#          [--scratch]             A6: production (or scratch)
+#          [--scratch] [--ami ID]  A6: production (or scratch)
 #                                  instance + data volume + post-image
 #   publish-eip                    A7: associate the Elastic IP; add
 #                                  the ~/.ssh/config alias
@@ -400,12 +400,19 @@ cmd_bake() {
                      "ResourceType=image,Tags=[{Key=Name,Value=$AMI_NAME},{Key=Role,Value=prod-2-golden},{Key=SetupSHA,Value=$SETUP_SHA},{Key=SourceAMI,Value=$BASE_AMI},$T]" \
                      "ResourceType=snapshot,Tags=[{Key=Name,Value=$AMI_NAME},{Key=Role,Value=prod-2-golden},$T]" \
                      --query ImageId --output text)
+    # The waiter's default budget (40x15s = 10 min) is shorter than a
+    # 50 GiB encrypted snapshot: the 2026-11-20 bake's AMI landed ~12
+    # min in, after the waiter had already given up. 120x15s = 30 min.
     aws ec2 wait image-available --image-ids "$GOLDEN_AMI" \
+        --max-attempts 120 \
         || die "AMI never became available."
+    # Count only EBS mappings: the base AMI carries non-EBS ephemeral
+    # entries (sdb, sdc — no Ebs object) that propagate into the
+    # golden AMI and would trip a count of every mapping.
     LINES=$(aws ec2 describe-images --image-ids "$GOLDEN_AMI" --output text \
-                --query 'Images[0].BlockDeviceMappings[].[DeviceName,Ebs.VolumeSize]' | wc -l)
+                --query 'Images[0].BlockDeviceMappings[?Ebs].[DeviceName,Ebs.VolumeSize]' | wc -l)
     [ "$LINES" -eq 1 ] \
-        || die "wanted exactly one block-device line (the 50 GiB root), got ${LINES}."
+        || die "wanted exactly one EBS block-device line (the 50 GiB root), got ${LINES}."
     aws ec2 terminate-instances --instance-ids "$BUILDER_ID" >/dev/null
     echo "golden AMI ${GOLDEN_AMI} (${AMI_NAME}, SetupSHA ${SETUP_SHA})."
     echo "Validated=true is added only after Phase C (first bake) or the scratch drill (re-bakes)."
@@ -449,13 +456,32 @@ attach_data() { # $1 = volume id, $2 = instance id
         || die "volume ${1} never reached in-use."
 }
 
-resolve_common() { # sets VPC_ID/SG_ID/EIP_ALLOC/EIP/GOLDEN_AMI
+resolve_common() { # sets VPC_ID/SG_ID/EIP_ALLOC/EIP
     VPC_ID=$(find_vpc);  [ -n "$VPC_ID" ]  || die "no VPC; run foundation first."
     SG_ID=$(find_sg);    [ -n "$SG_ID" ]   || die "no security group; run foundation first."
     EIP_ALLOC=$(find_eip); [ -n "$EIP_ALLOC" ] || die "no Elastic IP; run foundation first."
     EIP=$(find_eip_ip);  [ -n "$EIP" ]     || die "no Elastic IP address; run foundation first."
-    GOLDEN_AMI=$(golden_ami)
-    [ -n "$GOLDEN_AMI" ] || die "no validated golden AMI for ${ARCH}; bake and validate one first (the scratch drill earns Validated=true)."
+}
+
+# The AMI is resolved only where it is used: launch and replace
+# (publish-eip needs none — demanding one there would strand Phase B.3
+# after an unvalidated first bake). An explicit id may be unvalidated:
+# the first launch needs it (Validated comes only after Phase C), and
+# the scratch drill must name the just-baked AMI or golden_ami() would
+# silently return the older validated image instead of the one under
+# test. replace stays validated-only — the failure ladder launches
+# proven images.
+resolve_golden_ami() { # $1 (optional) = explicit AMI id; sets GOLDEN_AMI
+    if [ -n "${1:-}" ]; then
+        GOLDEN_AMI=$(aws_scalar "explicit AMI ${1} (wanted: available ${ARCH})" \
+                         ec2 describe-images --image-ids "$1" \
+                         --filters "Name=state,Values=available" \
+                                   "Name=architecture,Values=$ARCH" \
+                         --query 'Images[0].ImageId' --output text)
+    else
+        GOLDEN_AMI=$(golden_ami)
+        [ -n "$GOLDEN_AMI" ] || die "no validated golden AMI for ${ARCH}; bake and validate one first (the scratch drill earns Validated=true), or launch with --ami <id>."
+    fi
 }
 
 lane_data_volume() { # $1 = lane (fresh|adopt|snapshot), $2 = volume Name tag, $3 = AZ
@@ -489,13 +515,14 @@ lane_data_volume() { # $1 = lane (fresh|adopt|snapshot), $2 = volume Name tag, $
 }
 
 cmd_launch() {
-    local lane=adopt az="" scratch=0
+    local lane=adopt az="" ami="" scratch=0
     while (( $# > 0 )); do
         case "$1" in
             --fresh-data)    lane=fresh ;;
             --adopt-data)    lane=adopt ;;
             --from-snapshot) lane=snapshot ;;
             --az) [ -n "${2:-}" ] || die "--az needs a value."; az="$2"; shift ;;
+            --ami) [ -n "${2:-}" ] || die "--ami needs a value."; ami="$2"; shift ;;
             --scratch) scratch=1 ;;
             *) die "unknown launch option '$1'." ;;
         esac
@@ -503,6 +530,7 @@ cmd_launch() {
     done
     clone_repo
     resolve_common
+    resolve_golden_ami "$ami"
     az_pair
     AZ="${az:-$AZ1}"
 
@@ -707,6 +735,7 @@ cmd_replace() {
     [ -n "$lane" ] || die "replace needs exactly one lane: --adopt-data | --from-snapshot | --fresh-data."
     clone_repo
     resolve_common
+    resolve_golden_ami
     az_pair
     AZ="${az:-}"
 
