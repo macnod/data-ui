@@ -1023,7 +1023,7 @@ echo "psql $*" >> "$STUB/psql.log"
 if [[ -f "$STUB/psql-pass-through" ]]; then
     exec /usr/bin/psql "$@"
 fi
-[[ -f "$STUB/psql-fails" ]] && exit 2
+[[ -f "$STUB/psql-fails" ]] && { echo "psql: stub failure (psql-fails)" >&2; exit 2; }
 if [[ "$*" == *"-Atc"* && -f "$STUB/psql-rows" ]]; then
     cat "$STUB/psql-rows"
 fi
@@ -3443,6 +3443,28 @@ test_registry_vip_bytes_change_the_tag() {
         || fail "changed VIP bytes at the same SHA must produce a different tag (${tag1:-none} vs ${tag2:-none})"
 }
 
+test_init_sql_failure_is_loud() {
+    # The compile gate loads tests/init.sql into its throwaway database
+    # with HOST psql. A host with no psql (the first prod-2 AMI) once
+    # sailed past this step printing "Initializing database... Done."
+    # and died much later inside init-database's admin-user-present
+    # query. The initializer must fail loudly with the captured output
+    # and stop the deploy before the compile runs.
+    default_fields >/dev/null
+    : > "$STUB/ros.log"
+    touch "$STUB/psql-fails"
+    local out
+    out=$(run_cli deploy todos 2>&1) \
+        && fail "deploy succeeded despite the init SQL load failure"
+    assert_contains "$out" "Initializing database... FAILED" \
+        "the init failure is reported, not swallowed"
+    assert_contains "$out" "psql: stub failure (psql-fails)" \
+        "the captured psql output is surfaced"
+    assert_eq "$(compile_calls)" "0" \
+        "the deploy stops before the compile"
+    rm -f "$STUB/psql-fails"
+}
+
 test_registry_dry_run_purity() {
     write_site_marker prod-2
     default_fields >/dev/null
@@ -4542,6 +4564,7 @@ main() {
     t site_production_only_boundary
     t site_production_only_boundary_routing_shapes
     t forwarder_entry_env_membership
+    t init_sql_failure_is_loud
     t registry_hit_skips_compile_and_build
     t registry_miss_builds_imports_pushes
     t registry_push_failure_warns_and_succeeds

@@ -1682,8 +1682,19 @@ function start_postgres {
 function initialize_database_quietly {
     echo
     echo -n "Initializing database... "
-    psql -h $DB_HOST -p $DB_PORT -d $DB_NAME -U $DB_USER \
-         -f "$DB_INIT_SQL" >&/dev/null
+    # Host psql is load-bearing (the AMI must ship postgresql-client):
+    # init-database's admin-user-present query ERRORS on a missing
+    # 'users' table instead of returning nil, so a swallowed failure
+    # here surfaces much later as an unhandled SB-CL error. Fail loudly
+    # with the captured output instead — a missing binary, a refused
+    # connection, or SQL errors all name themselves.
+    local out
+    if ! out=$(psql -h $DB_HOST -p $DB_PORT -d $DB_NAME -U $DB_USER \
+         -f "$DB_INIT_SQL" 2>&1); then
+        echo "FAILED"
+        echo "$out" >&2
+        return 1
+    fi
     echo "Done."
 }
 
@@ -2024,8 +2035,8 @@ function compile_model {
     render_init_sql
     # Gitignored runtime directories; absent in a fresh deploy clone.
     mkdir -p "$DOCUMENT_ROOT" "$FS_TEMP_DIRECTORY"
-    start_postgres_quietly
-    initialize_database_quietly
+    start_postgres_quietly || { stop_database_quietly; die "Could not start the compile database; aborting deployment."; }
+    initialize_database_quietly || { stop_database_quietly; die "Database initialization failed; aborting deployment."; }
     local status=0
     build_load_contract_evals
     DATA_UI_MODEL_PATH="$model_path" \
@@ -6655,8 +6666,8 @@ case "$ACTION" in
     repl)
         cd "$(canonical_checkout_root)" 2>/dev/null || true
         setup_repl_env "$2"
-        start_postgres_quietly
-        initialize_database_quietly
+        start_postgres_quietly || { stop_database_quietly; die "Could not start the database."; }
+        initialize_database_quietly || { stop_database_quietly; die "Database initialization failed."; }
         start_repl
         stop_database_quietly
         ;;
@@ -6727,8 +6738,8 @@ case "$ACTION" in
         cd "$(canonical_checkout_root)" 2>/dev/null || true
         export_test_environment
         render_init_sql
-        start_postgres_quietly
-        initialize_database_quietly
+        start_postgres_quietly || { stop_database_quietly; die "Could not start the test database."; }
+        initialize_database_quietly || { stop_database_quietly; die "Test database initialization failed."; }
         run_tests
         stop_database_quietly
         echo $REPORT

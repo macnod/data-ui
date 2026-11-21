@@ -97,10 +97,14 @@ host_base() {
     echo "== packages =="
     apt update
     apt upgrade -y
+    # postgresql-client: the deploy compile gate loads tests/init.sql
+    # into its throwaway database with HOST psql (initialize_database_
+    # quietly in scripts/data-ui). The first prod-2 deploy died inside
+    # init-database because the AMI shipped without it.
     apt install -y \
         docker.io docker-buildx docker-compose-v2 \
         haproxy certbot python3-certbot-dns-route53 \
-        jq git curl bzip2 make dnsutils openssl
+        jq git curl bzip2 make dnsutils openssl postgresql-client
     snap install aws-cli --classic
     snap install kubectl --classic
 
