@@ -632,8 +632,10 @@ cmd_snapshots_policy() {
    "RetainRule": {"Count": 48}}]}
 JSON
     local DLM_ROLE="arn:aws:iam::$ACCOUNT_ID:role/service-role/AWSDataLifecycleManagerDefaultRole"
+    # DLM descriptions reject '/' (spaces are fine) — bisected live
+    # against the API; don't restore the /data spelling.
     aws dlm create-lifecycle-policy --state ENABLED \
-        --description 'data-ui prod-2 /data hourly' \
+        --description 'data-ui prod-2 data hourly' \
         --execution-role-arn "$DLM_ROLE" \
         --policy-details "file://$WORK/dlm.json" --tags Project="$PROJECT" \
         || die "create-lifecycle-policy failed."
