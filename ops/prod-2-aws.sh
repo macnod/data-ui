@@ -429,10 +429,20 @@ cmd_bake() {
                      --query ImageId --output text)
     # The waiter's default budget (40x15s = 10 min) is shorter than a
     # 50 GiB encrypted snapshot: the 2026-11-20 bake's AMI landed ~12
-    # min in, after the waiter had already given up. 120x15s = 30 min.
-    aws ec2 wait image-available --image-ids "$GOLDEN_AMI" \
-        --max-attempts 120 \
-        || die "AMI never became available."
+    # min in, after the waiter had already given up. The CLI has no
+    # per-call waiter budget — --max-attempts is a retry-system option
+    # the wait subcommand rejects outright (the 2026-11-21 bake died on
+    # exactly that, after create-image had already succeeded) — so poll
+    # describe-images ourselves: every 15s, up to 40 minutes.
+    local tries=0 state
+    while :; do
+        state=$(aws ec2 describe-images --image-ids "$GOLDEN_AMI" \
+                    --query 'Images[0].State' --output text)
+        [ "$state" = available ] && break
+        [ "$state" = failed ] && die "AMI creation failed."
+        (( tries++ >= 160 )) && die "AMI never became available (40 min)."
+        sleep 15
+    done
     # Count only EBS mappings: the base AMI carries non-EBS ephemeral
     # entries (sdb, sdc — no Ebs object) that propagate into the
     # golden AMI and would trip a count of every mapping.
