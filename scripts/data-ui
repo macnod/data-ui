@@ -4283,6 +4283,14 @@ function rebirth_supervisor {
         mapfile -t apps < <(rebirth_inventory)
         echo "App list from the manifest (${#apps[@]}): ${apps[*]}"
     fi
+    # The preflight pull (and every recorded-release pull) needs
+    # docker's ECR credentials; a fresh host has none, and a warm
+    # host's token dies at 12h — login here, once, before any pull.
+    # registry_login never dies (the pull itself dies with the same
+    # message as before); a no-registry site skips the call.
+    if [[ -n "${IMAGE_REGISTRY:-}" ]] && ! registry_login; then
+        echo "WARNING: ECR login to ${IMAGE_REGISTRY} failed; the preflight pull will report any image that is not pullable." >&2
+    fi
     # Nothing destructive before every app's inputs verify.
     rebirth_preflight "$mode" "${apps[@]}"
     local marker app status=0

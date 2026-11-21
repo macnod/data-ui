@@ -620,6 +620,9 @@ cmd_publish_eip() {
               --query 'Addresses[0].InstanceId')
     [ "$GOT" = "$INSTANCE_ID" ] || die "EIP association verification failed (${GOT})."
     ssh-keygen -R "$EIP" >/dev/null 2>&1 || true
+    # the stale key may be filed under the alias name as well as the
+    # IP (ssh keys known_hosts by the name as typed); clear both.
+    ssh-keygen -R prod-2 >/dev/null 2>&1 || true
     cat >> ~/.ssh/config <<EOF
 
 Host prod-2
@@ -830,6 +833,10 @@ cmd_replace() {
     attach_data "$DATA_VOL" "$INSTANCE_ID"
     HOST_MODE=adopt
     [ "$lane" = "--fresh-data" ] && HOST_MODE=fresh
+    # post-image can die before anything prints the address; the
+    # operator needs the temp IP to finish by hand (cmd_launch's
+    # echo, mirrored here).
+    echo "== post-image on ${TEMP_IP} (mode ${HOST_MODE}) =="
     $SSH "ubuntu@$TEMP_IP" "sudo bash -s -- post-image ${HOST_MODE} ${DATA_VOL}" \
         < "$REPO/ops/prod-2-host.sh" || die "post-image failed."
     local REBIRTH_FLAG="--$(echo "$lane" | tr - _ | sed 's/^--//; s/_data$/-data/')"
