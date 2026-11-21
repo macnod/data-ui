@@ -46,36 +46,24 @@ The split is automatic — no ask, no parameter (an explicit in-session instruct
 
 ### 3. Compute the queue slot
 
-Queue discipline: `:queue-slot` integer, smaller = earlier, gaps of 100 from 1000.
-
-**No positioning argument → ask.** Never silently append: ask Donnie where the item should land (before which item, or append at the end) and only then apply the matching rule below. The append rule runs only on an explicit "append" / "at the end".
-
-**Append (only on Donnie's explicit say-so):** new slot = highest non-null slot + 100.
-
-**Argument names an existing item X (by title or queue-slot number) → land immediately before X:** new slot = `floor((pred_slot + X_slot) / 2)`. If X is the first item (no predecessor): `X_slot - 100`. A prose request for "after X" means position-before X's successor (successor via `queue-slot gt X_slot`, `sort=queue-slot:asc`, `limit=1`).
+Queue discipline: `:queue-slot` integer, smaller = earlier, gaps of 100 from 1000. Slot math is **not** hand-rolled: the `backlog-slot` script computes every positioning word against the live queue — one server-side query per question (the server caps `limit` at 200, so "pull everything and sort locally" silently truncates; pagination bugs live here, and the script is the cure).
 
 ```bash
-B=~/r/elisp/ai/agents/backlog
+S=~/r/elisp/ai/agents/backlog-slot
 
-# X by title (also doubles as the duplicate-title check for your draft)
-F=$(jq -nc --arg t "$XTITLE" '[["items","title","in",[$t]]]')
-$B --name rose list type=items filters="$F" limit=1 \
-  | jq '.result.records[0]'
-
-# predecessor of X (largest slot below X's)
-F=$(jq -nc --argjson s "$XSLOT" '[["items","queue-slot","lt",$s]]')
-$B --name rose list type=items filters="$F" sort=queue-slot:desc limit=1 \
-  | jq '.result.records[0]'
-
-# highest slot (append case)
-F='[["items","queue-slot","gte",0]]'
-$B --name rose list type=items filters="$F" sort=queue-slot:desc limit=1 \
-  | jq '.result.records[0]'
+$S --name rose bottom                 # append: highest slot + 100
+$S --name rose top                    # before the first non-done item
+$S --name rose before "<item title>"  # before that item (title or slot number)
+$S --name rose after "<item title>"   # after that item
 ```
 
-Edge cases: no match for X's title → tell Donnie, ask (never silently append). X's slot is null → same. Predecessor gap of 1 (midpoint floors to a tie) → proceed but flag the tie in your report.
+Line 1 of stdout is the bare slot; the `prev` / `next` lines are the would-be neighbors (quote them in the report). Identity flags (`--name` / `--provider` / `--model`) pass through; exit 1 with a stderr message means the anchor was not found — tell Donnie, never guess.
 
-**The `:eq` filter bug**: never filter by a same-type `:eq` row on a reference field (e.g. `["items","status","eq","10 Open"]`) — it 500s or silently matches zero. Use only the shapes above (own-column `lt`/`gte`, title `in`) or target-keyed `:in` rows — backlog-api has the detail.
+**No positioning argument → ask.** Never silently append: ask Donnie where the item should land (top / bottom / before-or-after which item) and only then run the matching script call. `bottom` runs only on an explicit "append" / "at the end" / "last".
+
+Edge cases the script owns: tie (no room between neighbors — the anchor's slot is reused and a warning prints; **flag the tie in your report**), anchor with a null slot, empty queue (the seed slot 1000), and the "not done" filter shape (the target-keyed states `:in` row — see the `:eq` filter bug note below).
+
+**The `:eq` filter bug**: never filter by a same-type `:eq` row on a reference field (e.g. `["items","status","eq","10 Open"]`) — it 500s or silently matches zero. Use only own-column `lt`/`gte`/`gt`, title `in`, or target-keyed `:in` rows — backlog-api has the detail, and `backlog-slot top` already works around it internally.
 
 ### 4. Insert the item
 
@@ -142,7 +130,7 @@ Report to Donnie: the title, the slot with its neighbors (the items before and a
 
 - **Item content** (required) — from session context: the ask, its context, tags, deadline if any.
 - **Oversized description** — no parameter: the step 2b split fires automatically whenever the drafted description exceeds ~300 words. Donnie never has to ask for it, and an explicit in-session instruction to keep everything in the description overrides it (note the size in the report).
-- **Positioning argument** (optional) — an existing item's title or queue-slot number; the new item lands immediately before it. When omitted, ask Donnie where the item should land before filing — never default to appending.
+- **Positioning argument** (optional) — an existing item's title or queue-slot number; the new item lands immediately before it (`backlog-slot before <X>`). A prose "after X" runs `backlog-slot after <X>`; "top" and "bottom" / "at the end" run their verbs. When omitted, ask Donnie where the item should land before filing — never default to appending.
 - **mvp parameter** (optional) — the literal word `mvp`, independent of the positioning argument. When present, the item carries the `mvp` tag. When absent, ask Donnie whether it should carry `mvp` before inserting (a forgotten mvp tag means a later update, not a guess). If the positioning question is also pending, ask both in one message.
 
 ## Notes

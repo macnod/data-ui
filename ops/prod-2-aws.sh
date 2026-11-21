@@ -98,6 +98,18 @@ aws_scalar() { # aws_scalar LABEL ARGS... — dies on failure/None/empty
     echo "$out"
 }
 
+fn_scalar() { # fn_scalar LABEL FN ARGS... — runs a script FUNCTION
+    # (lane_data_volume, launch_instance, instance_ip) with the same
+    # checked-scalar discipline; aws_scalar would try `aws <fn> ...`
+    # and die on ParamValidation.
+    local label="$1"; shift
+    local out
+    out=$("$@") || die "${label}: call failed."
+    [ -n "$out" ] && [ "$out" != "None" ] \
+        || die "${label}: empty/None result."
+    echo "$out"
+}
+
 aws_tag_one() { # aws_tag_one LABEL ARGS... — dies on a multi match
     local label="$1"; shift
     local out n
@@ -539,7 +551,7 @@ cmd_launch() {
 
     echo "== data volume (lane ${lane}) =="
     local DATA_VOL
-    DATA_VOL=$(aws_scalar "data volume" lane_data_volume "$lane" "$VNAME" "$AZ")
+    DATA_VOL=$(fn_scalar "data volume" lane_data_volume "$lane" "$VNAME" "$AZ")
 
     echo "== instance =="
     local SUBNET INSTANCE_ID TEMP_IP DOD HOST_MODE
@@ -547,14 +559,14 @@ cmd_launch() {
                  "Name=availability-zone,Values=$AZ" \
                  --query 'Subnets[0].SubnetId' --output text)
     [ -n "$SUBNET" ] && [ "$SUBNET" != "None" ] || die "no subnet in AZ ${AZ}."
-    INSTANCE_ID=$(aws_scalar "run instance" launch_instance "$SUBNET" "$INAME")
+    INSTANCE_ID=$(fn_scalar "run instance" launch_instance "$SUBNET" "$INAME")
     aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID" \
         || die "instance never reached status-ok."
     if (( ! scratch )); then
         aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" \
             --disable-api-termination || die "disable-api-termination failed."
     fi
-    TEMP_IP=$(aws_scalar "instance ip" instance_ip "$INSTANCE_ID")
+    TEMP_IP=$(fn_scalar "instance ip" instance_ip "$INSTANCE_ID")
     attach_data "$DATA_VOL" "$INSTANCE_ID"
     DOD=$(aws ec2 describe-volumes --volume-ids "$DATA_VOL" --output text \
               --query 'Volumes[0].Attachments[0].DeleteOnTermination')
@@ -790,12 +802,12 @@ cmd_replace() {
                  "Name=availability-zone,Values=$AZ" \
                  --query 'Subnets[0].SubnetId' --output text)
     [ -n "$SUBNET" ] && [ "$SUBNET" != "None" ] || die "no subnet in AZ ${AZ}."
-    INSTANCE_ID=$(aws_scalar "run instance" launch_instance "$SUBNET" "$NAME")
+    INSTANCE_ID=$(fn_scalar "run instance" launch_instance "$SUBNET" "$NAME")
     aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID" \
         || die "instance never reached status-ok."
     aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" \
         --disable-api-termination || die "disable-api-termination failed."
-    TEMP_IP=$(aws_scalar "instance ip" instance_ip "$INSTANCE_ID")
+    TEMP_IP=$(fn_scalar "instance ip" instance_ip "$INSTANCE_ID")
     attach_data "$DATA_VOL" "$INSTANCE_ID"
     HOST_MODE=adopt
     [ "$lane" = "--fresh-data" ] && HOST_MODE=fresh

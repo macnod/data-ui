@@ -148,11 +148,12 @@ host_base() {
     chmod 600 "/home/${MACNOD_USER}/.ssh/authorized_keys"
 
     echo "== sudoers (evo-x2's rule plus mkdir and chown, which"
-    echo "   apply_manifests calls through sudo; with tee, install, and"
-    echo "   sed in it the list is a documented surface, not a"
-    echo "   privilege boundary) =="
+    echo "   apply_manifests calls through sudo; plus test, certbot, and"
+    echo "   the renewal hook, which setup-tls.sh calls through sudo as"
+    echo "   macnod — its probes and certbot calls join the documented"
+    echo "   surface) =="
     cat > /etc/sudoers.d/data-ui-deploy <<SUDOERS
-${MACNOD_USER} ALL=(root) NOPASSWD: /usr/bin/install, /usr/bin/touch, /usr/bin/tee, /usr/bin/sed, /usr/bin/rm, /usr/bin/mkdir, /usr/bin/chown, /usr/sbin/haproxy, /usr/bin/systemctl restart haproxy, /usr/bin/systemctl reload haproxy, /usr/bin/socat
+${MACNOD_USER} ALL=(root) NOPASSWD: /usr/bin/install, /usr/bin/touch, /usr/bin/tee, /usr/bin/sed, /usr/bin/rm, /usr/bin/mkdir, /usr/bin/chown, /usr/sbin/haproxy, /usr/bin/systemctl restart haproxy, /usr/bin/systemctl reload haproxy, /usr/bin/socat, /usr/bin/test, /usr/bin/certbot, /etc/letsencrypt/renewal-hooks/deploy/haproxy-pem.sh
 SUDOERS
     chmod 440 /etc/sudoers.d/data-ui-deploy
     visudo -cf /etc/sudoers.d/data-ui-deploy
@@ -254,6 +255,15 @@ UNIT
 # post-image — a launched instance's first boot work
 # ---------------------------------------------------------------------------
 
+nvme_by_id() { # volume id -> by-id path. udev KEEPS the vol prefix and
+    # strips the dash: vol-0df2... -> nvme-Amazon_Elastic_Block_Store_vol0df2...
+    # (verified on a live graviton instance 2026-11-20; stripping the
+    # prefix entirely made the first launch's post-image die.)
+    local v="${1#vol-}"
+    v="vol${v//-/}" # serial = id minus every dash (hex ids never carry one; belt and braces)
+    echo "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${v}"
+}
+
 post_image() {
     local mode="$1" volume_id="$2"
     [[ "$(id -u)" == 0 ]] || die "post-image must run as root."
@@ -261,10 +271,17 @@ post_image() {
         || die "post-image wants fresh|adopt <volume-id>."
 
     echo "== data volume ${volume_id} (${mode}) =="
-    local nvme_id=${volume_id#vol-}
-    local by_id="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${nvme_id}"
+    local by_id
+    by_id=$(nvme_by_id "$volume_id")
+    # in-use at the API does not mean the guest udev link exists yet:
+    # give a settling attachment a bounded wait before dying.
+    local i
+    for i in $(seq 1 30); do
+        [[ -e "$by_id" ]] && break
+        sleep 1
+    done
     [[ -e "$by_id" ]] \
-        || die "no NVMe device for ${volume_id} at ${by_id} (attachment not settled? wait and re-run)."
+        || die "no NVMe device for ${volume_id} at ${by_id} (no settle in 30s; is the volume attached?)."
     local fs label
     fs=$(blkid -o value -s TYPE "$by_id" 2>/dev/null || true)
     label=$(blkid -o value -s LABEL "$by_id" 2>/dev/null || true)
@@ -362,8 +379,14 @@ ENVEOF
         "/home/${MACNOD_USER}/.config/systemd/user/prod-2-prune.service" 2>/dev/null || true
     sudo -u "$MACNOD_USER" cp "${ops_src}/prod-2-prune.timer" \
         "/home/${MACNOD_USER}/.config/systemd/user/prod-2-prune.timer" 2>/dev/null || true
-    sudo -u "$MACNOD_USER" systemctl --user daemon-reload
-    sudo -u "$MACNOD_USER" systemctl --user enable --now prod-2-prune.timer
+    # sudo's env_reset strips XDG_RUNTIME_DIR, so a root-driven
+    # `sudo -u systemctl --user` cannot reach the user bus (verified
+    # on the first launch: BUS-FAIL without, BUS-OK with the env
+    # pass-through; lingering alone is not enough).
+    sudo -u "$MACNOD_USER" env XDG_RUNTIME_DIR="/run/user/${MACNOD_UID}" \
+        systemctl --user daemon-reload
+    sudo -u "$MACNOD_USER" env XDG_RUNTIME_DIR="/run/user/${MACNOD_UID}" \
+        systemctl --user enable --now prod-2-prune.timer
 
     echo "== post-image (${mode}) complete =="
 }

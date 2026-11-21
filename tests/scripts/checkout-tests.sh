@@ -4200,8 +4200,8 @@ source_aws_fns() { # extract testable functions from ops/prod-2-aws.sh
     # top-level block would run the AWS_PROFILE guard and the flock.
     # The functions call `aws` directly, so the stub bin leads PATH.
     export PATH="$H/bin:$PATH"
-    eval "$(sed -n '/^aws_scalar()/,/^}/p; /^golden_ami()/,/^}/p;
-                    /^resolve_golden_ami()/,/^}/p;
+    eval "$(sed -n '/^aws_scalar()/,/^}/p; /^fn_scalar()/,/^}/p;
+                    /^golden_ami()/,/^}/p; /^resolve_golden_ami()/,/^}/p;
                     /^lane_data_volume()/,/^}/p; /^fence_old_instances()/,/^}/p' \
                    "$REPO_ROOT/ops/prod-2-aws.sh")"
     die() { echo "prod-2-aws.sh: $*" >&2; exit 1; }
@@ -4300,10 +4300,30 @@ test_aws_launch_names_its_ami() {
     assert_contains "$out" "--ami" "and the escape hatch"
 }
 
+test_aws_fn_scalar_runs_script_functions() {
+    # cmd_launch/replace wrap SCRIPT FUNCTIONS (lane_data_volume,
+    # launch_instance, instance_ip). Wrapped in aws_scalar those ran
+    # `aws lane_data_volume ...` — ParamValidation on a real CLI (the
+    # first live launch died on it); the stub hides it by exiting 0
+    # empty, which is why the suite stayed green. fn_scalar runs the
+    # function and checks the output like every scalar.
+    source_aws_fns
+    probe_fn() { echo "$1"; }
+    assert_eq "$(fn_scalar probe probe_fn ok)" "ok" "a succeeding function's output passes through"
+    probe_fn() { return 1; }
+    local out; out=$(fn_scalar probe probe_fn 2>&1); st=$?
+    (( st != 0 )) || fail "a failing function must die"
+    assert_contains "$out" "probe: call failed" "labeled die"
+    probe_fn() { :; }
+    out=$(fn_scalar probe probe_fn 2>&1); st=$?
+    (( st != 0 )) || fail "empty output must die"
+    assert_contains "$out" "empty/None" "empty dies"
+}
+
 source_host_fns() { # extract testable functions from ops/prod-2-host.sh
     # Same extraction idiom as source_aws_fns: only the named
     # top-level functions, never the bottom-case dispatch.
-    eval "$(sed -n '/^dockerfile_ros_targets()/,/^}/p' \
+    eval "$(sed -n '/^dockerfile_ros_targets()/,/^}/p; /^nvme_by_id()/,/^}/p' \
                     "$REPO_ROOT/ops/prod-2-host.sh")"
     die() { echo "prod-2-host.sh: $*" >&2; exit 1; }
 }
@@ -4342,6 +4362,26 @@ hunchentoot" "the plain targets in FILE order — dc-eclectic stays after dc-tim
     assert_not_contains "$out" '${' "no unexpanded Docker ARG text"
     assert_not_contains "$out" '"' "no Docker quoting carried into host argv"
     assert_not_contains "$out" '&&' "no shell chain carried into host argv"
+}
+
+test_host_nvme_by_id_keeps_the_vol_prefix() {
+    # The first live launch's post-image died looking for
+    # nvme-Amazon_Elastic_Block_Store_0df2... — the volume-id strip
+    # removed the vol prefix too, but udev KEEPS it (verified on a
+    # graviton instance: nvme-Amazon_Elastic_Block_Store_vol0df2...).
+    # The constructed path never existed, so the settle hint in the
+    # old die message was a red herring.
+    source_host_fns
+    assert_eq "$(nvme_by_id vol-0df23047dcf024830)" \
+              "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0df23047dcf024830" \
+              "vol- id maps to the udev name (vol kept, dash stripped)"
+    assert_eq "$(nvme_by_id 0df23047dcf024830)" \
+              "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0df23047dcf024830" \
+              "an id already lacking the prefix maps to the same path"
+    # no dash survives inside the udev serial (the part after the last _)
+    local serial; serial=$(nvme_by_id vol-0d-f2 | xargs basename); serial="${serial##*_}"
+    [[ "$serial" == vol* && "$serial" != *-* ]] \
+        || fail "udev serial malformed: $serial (wanted vol-prefixed, dash-free)"
 }
 
 # ---------------------------------------------------------------------------
@@ -4545,7 +4585,9 @@ main() {
     t aws_fence_waiter_failure_dies
     t aws_no_validated_ami_or_snapshot_dies
     t aws_launch_names_its_ami
+    t aws_fn_scalar_runs_script_functions
     t host_ros_replay_is_clean
+    t host_nvme_by_id_keeps_the_vol_prefix
 
     echo
     echo "=========================================="
