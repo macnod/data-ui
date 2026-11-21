@@ -651,8 +651,10 @@ cmd_lifecycle() {
     else
         die "prod-2 lifecycle rules already merged; refusing to merge twice."
     fi
-    jq '{Rules: (.Rules
-        + [.Rules[] | select((.Filter.Prefix // "") | startswith("evo-x2/"))
+    # $c * {Rules: ...} keeps sibling keys (e.g. TransitionDefault-
+    # MinimumObjectSize); a bare {Rules: ...} rebuild drops them.
+    jq '. as $c | $c * {Rules: ($c.Rules
+        + [$c.Rules[] | select((.Filter.Prefix // "") | startswith("evo-x2/"))
            | .ID = "prod-2-" + .ID
            | .Filter.Prefix |= sub("^evo-x2/"; "prod-2/")]
         + [{ID: "prod-2-site-noncurrent", Status: "Enabled",
@@ -682,7 +684,7 @@ JSON
       Notification: {NotificationType: "ACTUAL",
         ComparisonOperator: "GREATER_THAN", Threshold: .,
         ThresholdType: "ABSOLUTE_VALUE"},
-      Subscribers: [{SubscriptionType: "EMAIL", Address: \$e}]})' \
+      Subscribers: [{SubscriptionType: "EMAIL", Address: $e}]})' \
         > "$WORK/budget-notifications.json"
     aws budgets create-budget --account-id "$ACCOUNT_ID" \
         --budget "file://$WORK/budget.json" \
