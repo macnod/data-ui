@@ -149,11 +149,12 @@ host_base() {
 
     echo "== sudoers (evo-x2's rule plus mkdir and chown, which"
     echo "   apply_manifests calls through sudo; plus test, certbot, and"
-    echo "   the renewal hook, which setup-tls.sh calls through sudo as"
+    echo "   the renewal hook (SETENV — setup-tls feeds it"
+    echo "   RENEWED_LINEAGE), which setup-tls.sh calls through sudo as"
     echo "   macnod — its probes and certbot calls join the documented"
     echo "   surface) =="
     cat > /etc/sudoers.d/data-ui-deploy <<SUDOERS
-${MACNOD_USER} ALL=(root) NOPASSWD: /usr/bin/install, /usr/bin/touch, /usr/bin/tee, /usr/bin/sed, /usr/bin/rm, /usr/bin/mkdir, /usr/bin/chown, /usr/sbin/haproxy, /usr/bin/systemctl restart haproxy, /usr/bin/systemctl reload haproxy, /usr/bin/socat, /usr/bin/test, /usr/bin/certbot, /etc/letsencrypt/renewal-hooks/deploy/haproxy-pem.sh
+${MACNOD_USER} ALL=(root) NOPASSWD: /usr/bin/install, /usr/bin/touch, /usr/bin/tee, /usr/bin/sed, /usr/bin/rm, /usr/bin/mkdir, /usr/bin/chown, /usr/sbin/haproxy, /usr/bin/systemctl restart haproxy, /usr/bin/systemctl reload haproxy, /usr/bin/socat, /usr/bin/test, /usr/bin/certbot, SETENV: /etc/letsencrypt/renewal-hooks/deploy/haproxy-pem.sh
 SUDOERS
     chmod 440 /etc/sudoers.d/data-ui-deploy
     visudo -cf /etc/sudoers.d/data-ui-deploy
