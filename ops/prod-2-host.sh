@@ -151,6 +151,13 @@ host_base() {
     chmod 700 "/home/${MACNOD_USER}/.ssh"
     chmod 600 "/home/${MACNOD_USER}/.ssh/authorized_keys"
 
+    echo "== git identity for ${MACNOD_USER} =="
+    # create_deploy_tag runs `git tag -a` in the production checkout; an
+    # annotated tag needs a committer identity or the deploy dies at
+    # "empty ident name". Local-only trace (tags are never pushed).
+    sudo -u "$MACNOD_USER" git config --global user.name "prod-2 deploy"
+    sudo -u "$MACNOD_USER" git config --global user.email "deploy@prod-2.demo.data-ui.com"
+
     echo "== sudoers (evo-x2's rule plus mkdir and chown, which"
     echo "   apply_manifests calls through sudo; plus test, certbot, and"
     echo "   the renewal hook (SETENV — setup-tls feeds it"

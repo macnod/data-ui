@@ -64,10 +64,16 @@ change_batch() { # $1 = UPSERT|DELETE, $2 = fqdn, $3 = ip (empty for DELETE)
                          ResourceRecordSet: {Name: $n, Type: "A", TTL: $ttl,
                                              ResourceRecords: [{Value: $v}]}}]}'
     else
-        jq -n --arg n "$2" \
-            '{Comment: "data-ui prod-2 per-app A record removal",
-              Changes: [{Action: "DELETE",
-                         ResourceRecordSet: {Name: $n, Type: "A", TTL: 300}}]}'
+        # Route 53 requires a DELETE to repeat the record's current
+        # values exactly — a value-less DELETE is InvalidInput. $3 is
+        # the value the exact-record read returned; $4 the observed
+        # TTL (drift-proof; multi-value records are outside this
+        # script's writes — deleting one would need every value).
+        jq -n --arg a "$1" --arg n "$2" --arg v "$3" --argjson ttl "${4:-$TTL}" \
+            '{Comment: "data-ui prod-2 per-app A record",
+              Changes: [{Action: $a,
+                         ResourceRecordSet: {Name: $n, Type: "A", TTL: $ttl,
+                                              ResourceRecords: [{Value: $v}]}}]}'
     fi
 }
 
@@ -82,7 +88,7 @@ apply_change() { # $1 = batch JSON; waits the change to INSYNC
         || die "waiting for INSYNC of change ${change_id} failed."
 }
 
-exact_a_value() { # $1 = fqdn; prints the record's value, empty if none
+exact_a_record() { # $1 = fqdn; prints "<value>\t<ttl>" for the exact A record, empty if none
     local out name type
     out=$(aws route53 list-resource-record-sets \
               --hosted-zone-id "$ZONE_ID" \
@@ -91,7 +97,8 @@ exact_a_value() { # $1 = fqdn; prints the record's value, empty if none
     name=$(jq -r '.ResourceRecordSets[0].Name // empty' <<<"$out")
     type=$(jq -r '.ResourceRecordSets[0].Type // empty' <<<"$out")
     [ "$name" = "$1" ] && [ "$type" = "A" ] || return 0
-    jq -r '.ResourceRecordSets[0].ResourceRecords[0].Value // empty' <<<"$out"
+    jq -r '(.ResourceRecordSets[0].ResourceRecords[0].Value // empty)
+           + "\t" + ((.ResourceRecordSets[0].TTL // 300) | tostring)' <<<"$out"
 }
 
 cmd="${1:-}"; shift || true
@@ -114,7 +121,10 @@ case "$cmd" in
         ip="$2"
         [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
             || die "'$ip' is not an IPv4 address."
-        value=$(exact_a_value "$fqdn")
+        value=
+        rttl=
+        while IFS=$'\t' read -r v t; do value="$v"; rttl="$t"; done \
+            <<<"$(exact_a_record "$fqdn")"
         if [ -z "$value" ]; then
             echo "No exact A record for ${fqdn}; nothing to remove."
             exit 0
@@ -124,7 +134,7 @@ case "$cmd" in
             exit 0
         fi
         echo "Deleting ${fqdn} A ${ip} (it holds this site's address)..."
-        apply_change "$(change_batch DELETE "$fqdn" "")"
+        apply_change "$(change_batch DELETE "$fqdn" "$value" "${rttl:-$TTL}")"
         echo "Deleted: ${fqdn} A ${ip}."
         ;;
     *)

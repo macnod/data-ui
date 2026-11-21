@@ -3762,7 +3762,9 @@ test_cutover_half_finished_converges() {
     # removed only when it holds this site's value.
     : > "$STUB/r53-changes.log"
     FORCE=1 run_prod2 delete todos >/dev/null 2>&1 || fail "delete failed"
-    assert_contains "$(cat "$STUB/r53-changes.log")" "DELETE" "record removed by delete"
+    assert_contains "$(cat "$STUB/r53-changes.log")" '"Action": "DELETE"' "record removed by delete"
+    assert_contains "$(cat "$STUB/r53-changes.log")" '"Value": "203.0.113.10"' \
+        "the DELETE batch repeats the record's value — a value-less DELETE is InvalidInput at the real API"
     assert_eq "$(grep -c '"model":"todos"' "$H/state/ops/prod-manifest.jsonl" 2>/dev/null)" "0" \
         "manifest rows for the model removed"
 }
@@ -4224,7 +4226,9 @@ source_aws_fns() { # extract testable functions from ops/prod-2-aws.sh
     export PATH="$H/bin:$PATH"
     eval "$(sed -n '/^aws_scalar()/,/^}/p; /^fn_scalar()/,/^}/p;
                     /^golden_ami()/,/^}/p; /^resolve_golden_ami()/,/^}/p;
-                    /^lane_data_volume()/,/^}/p; /^fence_old_instances()/,/^}/p' \
+                    /^lane_data_volume()/,/^}/p; /^fence_old_instances()/,/^}/p;
+                    /^clone_repo()/,/^}/p; /^model_domain_of()/,/^}/p;
+                    /^app_record_names_json()/,/^}/p' \
                    "$REPO_ROOT/ops/prod-2-aws.sh")"
     die() { echo "prod-2-aws.sh: $*" >&2; exit 1; }
     NAME=data-ui-prod-2
@@ -4320,6 +4324,31 @@ test_aws_launch_names_its_ami() {
     (( st != 0 )) || fail "no explicit AMI and no validated AMI must die"
     assert_contains "$out" "no validated golden AMI" "with the bake/validate hint"
     assert_contains "$out" "--ami" "and the escape hatch"
+}
+
+test_aws_record_names_come_from_models() {
+    # app_record_names_json must read each app's :domain from the
+    # cloned models. The old glued form (${APP}.demo.data-ui.com) put
+    # todos.demo.data-ui.com into the role policy while the app lives
+    # at todo.demo.data-ui.com — the first cutover died at AccessDenied.
+    source_aws_fns
+    local REPO="$H/fake-repo" APPS="backlog scenebook todos"
+    export REPO
+    mkdir -p "$REPO/.git" "$REPO/models"   # .git so clone_repo no-ops
+    printf '(:name "backlog" :domain "backlog.demo.data-ui.com" :domain-stg "backlog-stg.demo.data-ui.com")\n' > "$REPO/models/backlog.lisp"
+    printf '(:domain-stg "scenebook-stg.demo.data-ui.com" :domain "scenebook.demo.data-ui.com")\n' > "$REPO/models/scenebook.lisp"
+    printf '(:name "todos" :domain "todo.demo.data-ui.com")\n' > "$REPO/models/todos.lisp"
+    assert_eq "$(app_record_names_json)" \
+        '"backlog.demo.data-ui.com","scenebook.demo.data-ui.com","todo.demo.data-ui.com"' \
+        "record names come from each model's :domain (todos -> todo)"
+    # A :domain-stg line is never taken for the :domain (scenebook's
+    # sits first in its file); a model with no :domain dies instead of
+    # gluing the app name on.
+    printf '(:name "broken")\n' > "$REPO/models/todos.lisp"
+    local out
+    out=$(app_record_names_json 2>&1) && fail "a model without :domain must die"
+    assert_contains "$out" "models/todos.lisp has no :domain" \
+        "the dying message names the model"
 }
 
 test_aws_fn_scalar_runs_script_functions() {
@@ -4608,6 +4637,7 @@ main() {
     t aws_fence_waiter_failure_dies
     t aws_no_validated_ami_or_snapshot_dies
     t aws_launch_names_its_ami
+    t aws_record_names_come_from_models
     t aws_fn_scalar_runs_script_functions
     t host_ros_replay_is_clean
     t host_nvme_by_id_keeps_the_vol_prefix

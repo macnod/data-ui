@@ -132,10 +132,25 @@ az_pair() {
     [ -n "${AZ1:-}" ] && [ -n "${AZ2:-}" ] || die "cannot find two AZs offering ${INSTANCE_TYPE}."
 }
 
+model_domain_of() { # $1 = app name; prints its model's :domain ("" if unreadable)
+    # -m1 finds the first match; a preceding :domain-stg line cannot
+    # match (the regex demands whitespace-quote right after `domain`).
+    grep -m1 -oP ':\s*domain\s+"\K[^"]+' "$REPO/models/${1}.lisp" 2>/dev/null || true
+}
+
 app_record_names_json() { # the role policy's A-record condition list
-    local names="" APP
+    # Each app's record name is its model's :domain — NOT the app name
+    # with a zone glued on. todos is the live counterexample (model
+    # todos, domain todo.demo.data-ui.com): the glued form put an
+    # unusable todos.demo.data-ui.com into the role policy and the
+    # first cutover died at AccessDenied. The model is the same
+    # authority the deploy reads (gather_deploy_facts).
+    clone_repo >/dev/null
+    local names="" APP DOM
     for APP in $APPS; do
-        names+="\"${APP}.demo.data-ui.com\","
+        DOM=$(model_domain_of "$APP")
+        [ -n "$DOM" ] || die "models/${APP}.lisp has no :domain — is ${APP} canonical in public/master?"
+        names+="\"${DOM}\","
     done
     echo "${names%,}"
 }
@@ -853,6 +868,15 @@ cmd_ssh_allow() {
 cmd_add_app() {
     local app="$1" domain="$2"
     [ -n "$app" ] && [ -n "$domain" ] || die "usage: add-app <name> <domain>."
+    clone_repo >/dev/null
+    # The <domain> argument is a cross-check, never the source: the
+    # model's :domain is authoritative (the argument catches typos).
+    local model_domain
+    model_domain=$(model_domain_of "$app")
+    [ -n "$model_domain" ] \
+        || die "models/${app}.lisp has no :domain — is ${app} canonical in public/master?"
+    [ "$model_domain" = "$domain" ] \
+        || die "models/${app}.lisp says :domain ${model_domain}, not ${domain}."
     APPS="$(echo "$APPS $app" | tr ' ' '\n' | awk 'NF' | sort -u | tr '\n' ' ')"
     write_role_policy
     aws iam put-role-policy --role-name "$NAME" --policy-name site \
