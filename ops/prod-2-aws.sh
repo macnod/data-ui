@@ -849,7 +849,13 @@ cmd_replace() {
     echo "== post-image on ${TEMP_IP} (mode ${HOST_MODE}) =="
     $SSH "ubuntu@$TEMP_IP" "sudo bash -s -- post-image ${HOST_MODE} ${DATA_VOL}" \
         < "$REPO/ops/prod-2-host.sh" || die "post-image failed."
-    local REBIRTH_FLAG="--$(echo "$lane" | tr - _ | sed 's/^--//; s/_data$/-data/')"
+    # lane IS the rebirth flag (--adopt-data / --fresh-data), verbatim.
+    # The old tr+sed normalization mangled it: tr turned every dash
+    # into an underscore first, so the sed stripping the leading "--"
+    # never matched, rebirth got "--__adopt-data", and died with
+    # "exactly one is required" (2026-11-21 re-run — first time any
+    # replace post-image survived to reach this line).
+    local REBIRTH_FLAG="$lane"
     $SSH "macnod@$TEMP_IP" \
         "/data/data-ui/repos/production/scripts/data-ui rebirth ${REBIRTH_FLAG}" \
         || die "rebirth failed on the replacement — the host is up at ${TEMP_IP}; run it by hand."

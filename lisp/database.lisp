@@ -67,7 +67,40 @@ variable DB_PASSWORD. Default to 'dataui-password'.")
           (a:rbac-query (list sql))))
       t)))
 
+(defun delete-row-resources (compiled-model)
+  "Delete the resources owned by the rows of the row tables that
+reset-tables is about to drop, in one statement executed before any
+drop. The doomed set is derived from the compiled model — the drop
+predicate plus an :id field targeting :resources — so base tables
+and internal joiners fall out. The ids are frozen by one UNION ALL
+over every doomed table: resources of rows that die by cross-table
+ON DELETE CASCADE are removed too, where a sequential per-table
+removal would leak them. The delete is id membership, never a name
+sweep: type resources, base-table rows, and resources matching no
+row are untouched. Returns the doomed table names."
+  (loop with m = compiled-model
+    for type-key in m by #'cddr
+    for table-name = (u:tree-get m type-key :table-name)
+    for is-table = (u:tree-get m type-key :table)
+    for is-base = (u:tree-get m type-key :base)
+    for is-settings = (equal type-key :settings)
+    for id-target = (u:tree-get m type-key :fields :id :target)
+    when (and is-table (or (not is-base) is-settings)
+              (equal id-target :resources)
+              (table-exists table-name))
+    collect table-name into tables
+    finally
+    (when tables
+      (let ((sql (format nil
+                  "delete from resources where id in ~
+                   (~{select id from ~a~^ union all ~})"
+                  tables)))
+        (a:with-rbac (*rbac*)
+          (a:rbac-query (list sql)))
+        (return tables)))))
+
 (defun reset-tables (compiled-model)
+  (delete-row-resources compiled-model)
   (loop with m = compiled-model
     for type-key in m by #'cddr
     for type-def in (cdr m) by #'cddr

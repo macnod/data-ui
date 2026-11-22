@@ -1371,6 +1371,27 @@ load it first)."
     (explain! results)
     (when collect results)))
 
+(defun run-render-cost-tests (&optional collect)
+  "Render-cost suite (item \"Optimize rendering\"): palette
+characterization + fast-path tests on the render-cost-test fixture
+(seeded by rc-seed-fixture, defined in
+tests/render-cost-tests.lisp — load it first), and the batch
+public-decoration tests on the public-pages-test fixture (same
+preamble as run-public-pages-tests: the fixture's buttons resolve
+hooks at compile time and pp-seed / *pp-origin* live in that
+file)."
+  (load (u:join-paths *package-root* "tests" "render-cost-tests.lisp"))
+  (load (u:join-paths *package-root* "tests" "action-tests.lisp"))
+  (load (u:join-paths *package-root* "tests" "public-pages-tests.lisp"))
+  (let ((results
+          (append
+            (with-model "render-cost-test" #'rc-seed-fixture
+              (run 'render-cost-palette-suite))
+            (with-model "public-pages-test" #'pp-seed
+              (run 'render-cost-public-suite)))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-rest-tests (&optional collect)
   "REST endpoint tests: the POST /api/login malformed-credential
 matrix, its usage-row pins, and the tokenless-refresh control
@@ -1383,6 +1404,20 @@ time, so action-tests.lisp must be loaded before set-model
   (let ((results
           (with-model "test-model" nil
             (run 'rest-suite))))
+    (explain! results)
+    (when collect results)))
+
+(defun run-reset-tables-tests (&optional collect)
+  "reset-tables row-resource removal tests on the fk-eq-test
+fixture. Each test seeds rows and drives its own second set-model
+inside the with-model body (the new-roles-idempotent-second-set-
+model precedent), so nothing truncates the evidence between seed
+and reset. reset-tables-tests.lisp is loaded first (harmless when
+already loaded) so in-image runs see the suite."
+  (load (u:join-paths *package-root* "tests" "reset-tables-tests.lisp"))
+  (let ((results
+          (with-model "fk-eq-test" nil
+            (run 'reset-tables-suite))))
     (explain! results)
     (when collect results)))
 
@@ -1460,7 +1495,9 @@ groups."
                    ("target-sort"   . run-target-sort-tests)
                    ("fk-dedup"      . run-fk-dedup-tests)
                    ("wire-null"     . run-wire-null-tests)
-                   ("rest"          . run-rest-tests))
+                   ("render-cost"   . run-render-cost-tests)
+                   ("rest"          . run-rest-tests)
+                   ("reset-tables"  . run-reset-tables-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

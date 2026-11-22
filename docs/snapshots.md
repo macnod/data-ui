@@ -301,13 +301,23 @@ scripts/data-ui snapshot restore chores-initial prd:chores
 
 ## Cross-site restores (prod-2)
 
-`prd:` snapshot verbs are **site-local**: the resolver reads cluster truth and the snapshot pool on the deploy host, so a `prd:` verb on prod-2 addresses prod-2's cluster, and evo-x2's `prd:` verbs cannot reach prod-2 (and vice versa). A cross-site restore is therefore two steps on the destination site: the backup script stages the other site's objects into the local pool, then the normal `prd:` restore takes over.
+`prd:` snapshot verbs are **site-local**: the resolver reads cluster truth and the snapshot pool on the deploy host, so a `prd:` verb on prod-2 addresses prod-2's cluster, and evo-x2's `prd:` verbs cannot reach prod-2 (and vice versa). A cross-site restore is therefore two steps on the destination site: the backup script stages the other site's objects into the local pool, then the normal restore machinery takes over — the examples below land it in `prd:` (back into a cluster) and in `dev:` (an audit on the destination site's own environment).
 
 ```sh
 # on prod-2: stage evo-x2's freshest set, then restore what it printed
 RESTORE_SITE=evo-x2 ~/bin/backlog-backup recover
 scripts/data-ui snapshot restore prd-backlog-<ts> prd:backlog
 ```
+
+The mirror — stage prod-2's set on evo-x2 to audit the moved app's data, no cluster involved:
+
+```sh
+# on evo-x2: stage prod-2's freshest set, then restore it into development
+RESTORE_SITE=prod-2 ~/bin/backlog-backup recover
+scripts/data-ui snapshot restore prd-backlog-<ts> dev:backlog
+```
+
+`dev:` is the natural destination once the app has moved: `prd:backlog` on evo-x2 would need the namespace back (a `MOVE=1` deploy — the wrong-site guard refuses a bare one — or a `snapshot copy` retargeted at a scratch profile for a drill), while `dev:backlog` needs only the usual dev shape (Postgres up, REPL down; restart the REPL and `(set-model "backlog")` after). This one *is* a cross-environment restore like any other dev one: the notice prints, the admin password re-stamps to dev's static `admin-password-1`, and the undo slot is `dev-backlog-prerestore`. The evo-x2 side needs the backup user's read-only grant on `prod-2/*` (see [deployment.md](deployment.md) → Production Backups); `recover` prints its follow-up command against `prd:<app>` by default — `RESTORE_PRINT_TARGET=dev:backlog` retargets the printed line, the text only, never where anything lands.
 
 Two things change across sites, both stated here so they surprise nobody:
 

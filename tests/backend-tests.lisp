@@ -2859,3 +2859,165 @@ settings-only sees just the five built-ins)."
       (ignore-errors
         (be-delete :users
           `((:users :name :eq ,user)) "admin")))))
+
+;;
+;; insert-normal resource-leak regression tests
+;;
+
+(defun th-bt-call-with-stubs (bindings thunk)
+  "Install symbol-function stubs from BINDINGS — a list of
+(function-name lambda) entries — for the duration of THUNK,
+restoring the real definitions on every exit including a signal
+(the th-al-call-with-stubs shape, kept local because
+backend-tests.lisp loads before action-log-tests.lisp)."
+  (let ((saved nil))
+    (unwind-protect
+        (progn
+          (dolist (binding bindings)
+            (let ((fn (first binding))
+                  (lambda (second binding)))
+              (push (cons fn (symbol-function fn)) saved)
+              (setf (symbol-function fn) lambda)))
+          (funcall thunk))
+      (dolist (pair saved)
+        (setf (symbol-function (car pair)) (cdr pair))))))
+
+(defmacro th-bt-with-stubs (bindings &body body)
+  "Run BODY with symbol-function stubs installed. BINDINGS is a
+literal list of (function-name lambda) pairs."
+  `(th-bt-call-with-stubs ,bindings (lambda () ,@body)))
+
+(defun th-bt-resource-role-count (uuid)
+  "Count of resource_roles rows linked to the resource with UUID."
+  (car (query "select count(*) from resource_roles where resource_id = $1"
+          :params (list uuid)
+          :result-type :column)))
+
+(defun th-bt-row-count (table column uuid)
+  "Count of TABLE rows whose COLUMN equals UUID."
+  (car (query (format nil "select count(*) from ~a where ~a = $1"
+                 table column)
+          :params (list uuid)
+          :result-type :column)))
+
+(defun th-bt-remove-resource-if-present (resource-name)
+  "Remove RESOURCE-NAME only when it still resolves: a failed
+regression run against broken code leaves the resource behind,
+and a:remove-resource signals on a missing resource."
+  (when (and resource-name (a:get-id *rbac* "resources" resource-name))
+    (a:remove-resource *rbac* resource-name)))
+
+(test insert-normal-early-failure-cleans-resource
+  "A failure after a:add-resource but before the main row insert
+(stubbed insert-main-query — the pdebug argument construction
+fires it first) must remove the just-created resource before
+re-signaling, leaving no resources row, no resource_roles links,
+and no rt_todos row."
+  (let ((todo-name "in-early-fail")
+        (sentinel (make-condition 'simple-error
+                    :format-control
+                    "insert-normal early-failure sentinel"))
+        (captured-uuid nil)
+        (captured-name nil))
+    ;; Cleanup from any previous partial test run
+    (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+    (unwind-protect
+        (th-bt-with-stubs
+            (list (list 'insert-main-query
+                    (lambda (type-key insert uuid data user)
+                      (declare (ignore type-key insert data user))
+                      (setf captured-uuid uuid)
+                      (setf captured-name (id-to-resource-name uuid))
+                      (error sentinel))))
+          (let ((caught
+                  (handler-case
+                      (insert-normal :todos `(:name ,todo-name) nil
+                        "admin")
+                    (error (e) e))))
+            (is (eq caught sentinel)
+              "the original condition escapes insert-normal")
+            (is-true (uuid-p captured-uuid)
+              "real resource creation occurred (uuid captured)")
+            (is-true (and captured-name (stringp captured-name)
+                       (search "todos:name:in-early-fail:" captured-name))
+              "real resource creation occurred (name captured)")
+            (is-false (id-to-resource-name captured-uuid)
+              "the resource UUID no longer resolves")
+            (is-false (a:get-id *rbac* "resources" captured-name)
+              "the resource name no longer resolves")
+            (is (= 0 (th-bt-resource-role-count captured-uuid))
+              "no resource_roles rows remain")
+            (is (= 0 (th-bt-row-count "rt_todos" "id" captured-uuid))
+              "no rt_todos row remains")))
+      ;; Broken code leaks the resource; failed runs must not
+      ;; contaminate later tests.
+      (th-bt-remove-resource-if-present captured-name))))
+
+(test insert-normal-late-failure-cleans-resource
+  "A failure after the main row and join-table rows were written
+(stubbed update-roles signals on entry) must remove the resource
+— cascading the resource_roles links, the rt_todos row, and the
+rt_todo_tags rows — before re-signaling. An implementation
+protecting only the main insert cannot pass."
+  (let ((todo-name "in-late-fail")
+        (tag-name "in-late-tag")
+        (sentinel (make-condition 'simple-error
+                    :format-control
+                    "insert-normal late-failure sentinel"))
+        (captured-uuid nil)
+        (captured-name nil)
+        (todo-rows-before nil)
+        (join-rows-before nil))
+    ;; Cleanup from any previous partial test run
+    (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+    (be-delete :tags `((:tags :name :eq ,tag-name)) "admin")
+    (let ((tag-id (be-insert :tags `(:name ,tag-name) "admin")))
+      (declare (ignore tag-id))
+      (unwind-protect
+          (th-bt-with-stubs
+              (list (list 'update-roles
+                      (lambda (type-key filters user roles)
+                        (declare (ignore type-key user roles))
+                        (setf captured-uuid filters)
+                        (setf captured-name (id-to-resource-name filters))
+                        (setf todo-rows-before
+                              (th-bt-row-count "rt_todos" "id" filters))
+                        (setf join-rows-before
+                              (th-bt-row-count "rt_todo_tags" "todo_id"
+                                filters))
+                        (error sentinel))))
+            (let ((caught
+                    (handler-case
+                        (insert-normal :todos
+                          `(:name ,todo-name :tags (,tag-name))
+                          nil "admin")
+                      (error (e) e))))
+              (is (eq caught sentinel)
+                "the original condition escapes insert-normal")
+              (is-true (uuid-p captured-uuid)
+                "real resource creation occurred (uuid captured)")
+              (is-true (and captured-name (stringp captured-name)
+                         (search "todos:name:in-late-fail:"
+                           captured-name))
+                "real resource creation occurred (name captured)")
+              (is (= 1 todo-rows-before)
+                "the main row existed before the failure")
+              (is (= 1 join-rows-before)
+                "the join-table row existed before the failure")
+              (is-false (id-to-resource-name captured-uuid)
+                "the resource UUID no longer resolves")
+              (is-false (a:get-id *rbac* "resources" captured-name)
+                "the resource name no longer resolves")
+              (is (= 0 (th-bt-resource-role-count captured-uuid))
+                "no resource_roles rows remain")
+              (is (= 0 (th-bt-row-count "rt_todos" "id" captured-uuid))
+                "the rt_todos row is gone")
+              (is (= 0 (th-bt-row-count "rt_todo_tags" "todo_id"
+                          captured-uuid))
+                "the rt_todo_tags rows are gone")))
+        ;; Broken code leaks the resource plus its rows: the todo
+        ;; resource goes first (its removal cascades the row and the
+        ;; join rows), then the seeded tag.
+        (th-bt-remove-resource-if-present captured-name)
+        (ignore-errors
+          (be-delete :tags `((:tags :name :eq ,tag-name)) "admin"))))))

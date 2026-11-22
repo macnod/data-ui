@@ -2153,7 +2153,17 @@ image content type from the route's own answer."
 ;; BEGIN :public-url on the wire records
 ;;
 
-(defun decorate-public-url (record type-key &optional readable-ids)
+(defun warn-public-origin-once ()
+  ":private: The invalid-PUBLIC_ORIGIN warn-once shared by the
+singular and batch :public-url decorators: logs one pwarn per
+process, never per record."
+  (unless *public-origin-warned*
+    (setf *public-origin-warned* t)
+    (pl:pwarn :in "decorate-public-url"
+      :reason "invalid PUBLIC_ORIGIN; key omitted"
+      :value *public-origin*)))
+
+(defun decorate-public-url (record type-key)
   ":private: Append :public-url \"<origin>/p/<type>/<uuid>\" to RECORD
 when the type is public-type-p and the guest can read the row (a
 fresh check — there is no lag window; a revoked role drops the key on
@@ -2161,27 +2171,48 @@ the next read). The key is omitted, never nil (plist-to-json renders
 nil as [], truthy in JS), and never emitted under an invalid
 PUBLIC_ORIGIN: the authenticated API keeps working without the key
 while the public routes report the bad origin as a 500. Called from
-list-result and be-rec only — never from rec, whose :record feeds
-valid-data on update and would reject the unknown key."
+be-rec only — never from rec, whose :record feeds valid-data on
+update and would reject the unknown key. List reads go through
+decorate-public-urls, the batch decorator."
   (let ((origin (ignore-errors (valid-public-origin))))
     (cond
       ((not origin)
-        (unless *public-origin-warned*
-          (setf *public-origin-warned* t)
-          (pl:pwarn :in "decorate-public-url"
-            :reason "invalid PUBLIC_ORIGIN; key omitted"
-            :value *public-origin*))
+        (warn-public-origin-once)
         record)
       ((not (public-type-p type-key)) record)
       (t
         (let ((id (getf record :id)))
-          (if (if readable-ids
-                (member id readable-ids :test #'equal)
-                (user-allowed-resource *guest-user* id "read"))
+          (if (user-allowed-resource *guest-user* id "read")
             (append record
               (list :public-url
                 (public-record-url origin type-key id)))
             record))))))
+
+(defun decorate-public-urls (records type-key)
+  ":private: The batch form of decorate-public-url for list reads:
+validates the origin once, asks public-type-p once, harvests the
+guest-readable ids once (permitted-row-ids), then decorates every
+record whose id is a member — the same wire output as the singular
+decorator mapped over RECORDS (key omitted, never nil), at one
+RBAC round trip per list instead of one per record. be-rec keeps
+the singular decorator and its fresh single-row check."
+  (let ((origin (ignore-errors (valid-public-origin))))
+    (cond
+      ((not origin)
+        (warn-public-origin-once)
+        records)
+      ((not (public-type-p type-key)) records)
+      (t
+        (let ((ids (permitted-row-ids type-key *guest-user* "read")))
+          (mapcar
+            (lambda (record)
+              (let ((id (getf record :id)))
+                (if (member id ids :test #'equal)
+                  (append record
+                    (list :public-url
+                      (public-record-url origin type-key id)))
+                  record)))
+            records))))))
 
 ;;
 ;; END :public-url on the wire records

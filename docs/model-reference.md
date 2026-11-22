@@ -533,7 +533,7 @@ Every successful `be-list` / `/api/list` response carries:
 
 ### `:sort` default and the echo
 
-A type may declare `:default-sort` (see the type-key table above). When a request sends no sort, that declaration applies on both base and rollup types; an explicit request sort always wins. The `:sort` echo always reports the **effective** sort (request, declaration, or rollup policy), never the tiebreaker, so the frontend paints the applied order without asking. The declaration also orders every `allowed-values` FK option list targeting the type, since `be-list` drives those.
+A type may declare `:default-sort` (see the type-key table above). When a request sends no sort, that declaration applies on both base and rollup types; an explicit request sort always wins. The `:sort` echo always reports the **effective** sort (request, declaration, or rollup policy), never the tiebreaker, so the frontend paints the applied order without asking. The declaration also orders every `allowed-values` FK option list targeting the type: the palette reader applies the same ORDER BY a `be-list` read of the target would.
 
 ### Ordering of operations
 
@@ -661,7 +661,7 @@ Same shape as `:source`. Feeds `allowed-values` for dropdowns and checkbox lists
 :source-all (:view :tags :table :tags :column :name :agg :list)
 ```
 
-`allowed-values-for-field` reads `:table` and `:column` from that plist and loads options via `be-list-column` on the related type. It does not use `:view`. Authors should still set both as in todos/modelbank: `:source` for row display, `:source-all` for the options contract. Preferring `:source-all` alone does not break bidirectional M2M (recursion is handled by the `:skip-allowed-values` flag in the backend).
+`allowed-values-for-field` reads `:table` and `:column` from that plist and loads the options from the related type. Simple targets (no view-level `:scope`, `:default-sort` not on a `:target` field, display column a stored local text/integer/real field in the target's `:list-form`) are read with one ordered column query restricted to the readable ids — the same rows in the same order a `be-list` read of the target would show, minus everything but the display column. Scoped, join-sorted, rollup, and computed-display targets fall back to `be-list-column` on the related type. The plist's `:view` is not used either way. Authors should still set both as in todos/modelbank: `:source` for row display, `:source-all` for the options contract. Preferring `:source-all` alone does not break bidirectional M2M (recursion is handled by the `:skip-allowed-values` flag in the backend, which the fallback path uses).
 
 For M2M list fields, the column used for options and join lookup must be the **single identity field** of the related type (see [Identity fields](#identity-fields)).
 
@@ -981,7 +981,7 @@ Related trap, **not** fixed by `:distinct`: numeric aggs (`:avg` / `:sum` / `:co
 
 ### Bidirectional M2M (list fields on both ends)
 
-Both ends of a joiner may have `:type :list` fields. The backend breaks the `allowed-values` ↔ `be-list` recursion by skipping nested allowed-values computation when fetching column values in service of building options (`:skip-allowed-values t` on the inner `be-list-column` call).
+Both ends of a joiner may have `:type :list` fields. The backend breaks the `allowed-values` ↔ `be-list` recursion by skipping nested allowed-values computation when fetching column values in service of building options (`:skip-allowed-values t` on the inner `be-list-column` call — the fallback palette path; the simple-target fast path never enters `be-list` at all, so the flag describes the fallback only).
 
 **Pattern** (both sides share one joiner):
 

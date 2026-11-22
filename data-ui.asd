@@ -96,4 +96,6 @@
                 (:file "deploy-incoming-tests")
                 (:file "target-sort-tests")
                 (:file "fk-dedup-tests")
-                (:file "wire-null-tests")))))
+                (:file "wire-null-tests")
+                (:file "render-cost-tests")
+                (:file "reset-tables-tests")))))

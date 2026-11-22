@@ -1005,16 +1005,15 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
   ;; Record-permalink siblings ride list records too (same
   ;; decoration, same data on both public read surfaces; list
   ;; cells ignore the key). Public pages: :public-url rides the
-  ;; records of a public type (decorate-public-url, public-pages.lisp
-  ;; — a forward call, the start-web-server precedent), computed from
-  ;; one permitted-row-ids pass for the whole page.
+  ;; records of a public type (decorate-public-urls, public-pages.lisp
+  ;; — a forward call, the start-web-server precedent) — one batch
+  ;; call around the record pipeline that validates the origin,
+  ;; checks public-type-p, and harvests the guest-readable ids once
+  ;; for the whole page instead of once per record.
   (let* ((decorated-records
            (or records
              (view-result-values type-key field-keys view-result
                :user user)))
-         (public-ids
-           (when (public-type-p type-key)
-             (permitted-row-ids type-key *guest-user* "read")))
          (id-alias
            (when (and view-result field-keys)
              (u:tree-get *compiled-model* type-key :fields :id
@@ -1053,9 +1052,7 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
         :create (user-capability user type-key :create)
         :update (user-capability user type-key :update)
         :delete (user-capability user type-key :delete)
-        :records (mapcar
-                   (lambda (r)
-                     (decorate-public-url r type-key public-ids))
+        :records (decorate-public-urls
                    (decorate-records-with-caps type-key
                      (add-roles-to-view type-key form user
                        (mapcar
@@ -1092,7 +1089,8 @@ plist-to-json as {\"field\": ..., \"dir\": ...} / JSON null."
                          ;; field-key plists from the GROUP BY
                          ;; query. No Phase B collapse.
                          decorated-records))
-                     user))
+                     user)
+                   type-key)
         :allowed-values (if skip-allowed-values
                           nil
                           (allowed-values type-key user))
@@ -1548,10 +1546,10 @@ ID-DEDUP-FILTER), the same comparison the INSERT itself writes."
 (defun user-read-type-ids (user type-key)
   ":private: Returns a list of resource IDs for resources of type TYPE-KEY that
 USER has 'read' permissions for. Public pages (Donnie, 2026-11-06): delegates
-to permitted-row-ids, which pages through the RBAC join to the user's resource
-count — this function's former single a:list-user-resources call saw one page
-of a:*default-page-size* role×resource rows and silently truncated at 10,000,
-dropping readable rows from every be-list (SPA and /p/ alike). Same return
+to permitted-row-ids, which pages the narrow distinct-id query
+(a:list-user-resource-ids-of-type) by a:*default-page-size* until a short
+page — the former count-and-wide-page mechanics (a:user-resource-count +
+a:list-user-resources with Lisp-side pushnew dedup) are gone. Same return
 shape: resource-id strings."
   (permitted-row-ids type-key user "read"))
 
@@ -1573,34 +1571,24 @@ otherwise."
 (defun permitted-row-ids (type-key user permission)
   ":private: Resource ids of TYPE-KEY rows USER holds PERMISSION on —
 the set question behind user-allowed-resource's per-id ask, answered
-through the same library join the per-row gate uses (a:list-user-resources
-filtered to the type's resource-name prefix, the user-read-type-ids
-precedent; the library's filter grammar has no id-set operator, so the
-prefix filter is the page-batched form). Consumed past the library's
-pagination: pages repeat (role x resource) rows, so the stop condition
-is distinct ids reaching a:user-resource-count's count with the same
-filters (count is the robust stop; a short page only means no more).
-An empty page is the belt: roles changing mid-loop must not spin
-forever. Returns NIL when the user holds the permission on none."
-  (let* ((search (format nil "~(~a~):%" type-key))
-         (filters `(("resource_name" "like" ,search)))
-         (count (a:user-resource-count *rbac* user permission
-                   :filters filters)))
-    (when (plusp count)
-      (loop
-        with ids = nil
-        and page = 1
-        and page-size = (max a:*default-page-size* count)
-        while (< (length ids) count)
-        do
-        (let ((rows (a:list-user-resources *rbac* user permission
-                      :page page :page-size page-size
-                      :filters filters)))
-          (unless rows (return ids))
-          (dolist (row rows)
-            (pushnew (getf row :resource-id) ids :test #'equal))
-          (incf page))
-        finally (return ids)))))
+with one narrow distinct-id query per page
+(a:list-user-resource-ids-of-type — the id-selecting sibling of
+list-user-resource-names-of-type; the library's filter grammar has
+no id-set operator, so the prefix filter is the page-batched form).
+Pages by a:*default-page-size* until a short page: no count query,
+no Lisp deduplication (distinct is the database's). The ids arrive
+in id order; every consumer treats them as a set (the :in filter,
+member). Returns NIL when the user holds the permission on none."
+  (loop
+    with resource-type = (format nil "~(~a~)" type-key)
+    with page-size = a:*default-page-size*
+    for page from 1
+    for ids = (a:list-user-resource-ids-of-type *rbac* user
+                resource-type
+                :permissions (list permission)
+                :page page :page-size page-size)
+    append ids
+    while (= (length ids) page-size)))
 
 (defun row-capabilities (type-key records user)
   ":private: Per-record update/delete capability flags for every
@@ -1926,21 +1914,30 @@ compiled model metadata — no naming convention assumptions."
 (defun insert-normal (type-key data roles user)
   ;; Insert resources row
   (let* ((resource-name (make-resource-name type-key data))
-          (uuid (a:add-resource *rbac* resource-name :roles roles))
-          (insert (u:tree-get *compiled-model* type-key :insert-sql))
-          (all-roles (cons (a:exclusive-role-for user) roles)))
-    (pl:pdebug :in "insert-normal"
-      :type-key type-key :uuid uuid :data data
-      :sql (car (insert-main-query type-key insert uuid data user))
-      :params (cdr (insert-main-query type-key insert uuid data user)))
-    ;; Insert TYPE-KEY row
-    (a:with-rbac (*rbac*)
-      (a:rbac-query (insert-main-query type-key insert uuid data user)))
-    ;; Insert rows in join tables
-    (insert-join-table-rows type-key uuid data)
-    ;; Update roles
-    (update-roles type-key uuid user all-roles)
-    (values uuid t)))
+          (uuid (a:add-resource *rbac* resource-name :roles roles)))
+    ;; Compensated region: everything after the resource exists is
+    ;; guarded so a failed insert does not leak a resources row — the
+    ;; compensation removes the resource (its role links, row, and
+    ;; join-table rows cascade) before re-signaling the original
+    ;; condition (usage-insert pattern).
+    (handler-case
+        (let* ((insert (u:tree-get *compiled-model* type-key :insert-sql))
+                (all-roles (cons (a:exclusive-role-for user) roles)))
+          (pl:pdebug :in "insert-normal"
+            :type-key type-key :uuid uuid :data data
+            :sql (car (insert-main-query type-key insert uuid data user))
+            :params (cdr (insert-main-query type-key insert uuid data user)))
+          ;; Insert TYPE-KEY row
+          (a:with-rbac (*rbac*)
+            (a:rbac-query (insert-main-query type-key insert uuid data user)))
+          ;; Insert rows in join tables
+          (insert-join-table-rows type-key uuid data)
+          ;; Update roles
+          (update-roles type-key uuid user all-roles)
+          (values uuid t))
+      (error (e)
+        (a:remove-resource *rbac* resource-name)
+        (error e)))))
 
 (defun insert-base (type-key data user)
   (pl:pdebug :in "insert-base")
@@ -1969,7 +1966,131 @@ palette must not fail the parent list."
     :type-key type-key :field-key field-key
     :target-type-key target-type-key :user user :error e))
 
-(defun allowed-values-for-field (type-key field-key user)
+(defun palette-fast-path-p (x-type-key x-field-key)
+  ":private: Pure model predicate: T when the palette for
+X-FIELD-KEY (a :target / :join-table field on its owning type)
+can be read from X-TYPE-KEY's base table in one ordered column
+query — the guarded fast path — NIL when the legacy
+be-list-column path must run. True only when every clause holds:
+
+  - the target is not :internal and its Phase A shape is neither
+    :measure nor :page (those list through their own engines);
+
+  - the target's :views :main :scope is nil (a scoped type's
+    palette must apply the scope predicate, which the base-table
+    read does not carry);
+
+  - (default-list-sort x-type-key) is nil or names a field
+    without :target — with the previous line, exactly when a
+    filterless Phase A stays on :phase-a-base-sql, so the
+    base-table read and Phase A agree on what ORDER BY means;
+
+  - the display field is a stored local column: :column set, no
+    :target, no :join-table, :source :table nil or the target
+    itself, :source :agg :first, no :source :scope-kind, :source
+    :column-name present — and, the cross-source guard, when
+    :source :column names a field other than the display field
+    itself, that source field is a stored local column of the
+    target whose :type is on the whitelist (legacy view-result
+    converts by the source alias's field type, so a text field
+    sourcing a boolean or timestamp column must stay legacy or
+    the two paths would disagree on the converted value);
+
+  - the display field's :type is :text, :integer, or :real (a
+    :password, :timestamp, or :boolean column can never be read
+    by the fast path — blank-password-fields and the view-result
+    conversions stay on the legacy path);
+
+  - the display field is among (form-field-keys x-type-key
+    :list-form) (the legacy path reads the value off a
+    :list-form record)."
+  (let* ((m *compiled-model*)
+         (x-type-def (u:tree-get m x-type-key))
+         (x-field-def (u:tree-get m x-type-key :fields x-field-key))
+         (sort (default-list-sort x-type-key)))
+    (and x-type-def x-field-def
+      (not (getf x-type-def :internal))
+      (not (member (getf x-type-def :phase-a-shape) '(:measure :page)))
+      (not (u:tree-get x-type-def :views :main :scope))
+      (not (phase-a-target-sort-p x-type-key sort))
+      (let* ((source (getf x-field-def :source))
+             (source-column (getf source :column))
+             (column-name (getf source :column-name))
+             (display-type (getf x-field-def :type))
+             (cross-source-p (and source-column
+                                (not (eq source-column x-field-key))))
+             (source-field-def (when cross-source-p
+                                 (u:tree-get m x-type-key :fields
+                                   source-column))))
+        (and (getf x-field-def :column)
+          (not (getf x-field-def :target))
+          (not (getf x-field-def :join-table))
+          (or (null (getf source :table))
+            (equal (getf source :table) x-type-key))
+          (eq (getf source :agg) :first)
+          (null (getf source :scope-kind))
+          column-name
+          (or (not cross-source-p)
+            (and source-field-def
+              (getf source-field-def :column)
+              (not (getf source-field-def :target))
+              (not (getf source-field-def :join-table))
+              (member (getf source-field-def :type)
+                '(:text :integer :real))))
+          (member display-type '(:text :integer :real))
+          (member x-field-key
+            (form-field-keys x-type-key :list-form)))))))
+
+(defun fast-palette-values (x-type-key x-field-key user)
+  ":private: The palette fast path: one ordered column query
+against X-TYPE-KEY's base table, restricted to the readable ids —
+Phase A's base query with the display column in the select list.
+The gate (valid-list-read-access) and the readable-id selection
+(readable-row-ids) are the same functions be-list calls, so a
+palette can never show values the acting user cannot read. An
+empty id set returns NIL without querying (an empty in () list
+is not valid SQL). No count query, no hydrate, no capability or
+public-url decoration, no form construction on this path; a
+signaled error propagates (the caller's validation-error
+handler logs the denial — the choice between paths was made from
+model metadata before any query, never retried)."
+  (valid-list-read-access x-type-key user)
+  (let ((ids (readable-row-ids x-type-key user)))
+    (when ids
+      (let* ((m *compiled-model*)
+             (column (u:tree-get m x-type-key :fields x-field-key
+                       :source :column-name))
+             (table (u:tree-get m x-type-key :table-name))
+             (where (add-where-clause
+                      (format nil "select ~a from ~a" column table)
+                      (filters-for-be-list x-type-key ids nil user)
+                      user))
+             (order-by (phase-a-build-order-by x-type-key
+                         (default-list-sort x-type-key)))
+             (query (cons (format nil "~a~a" (car where) order-by)
+                        (cdr where))))
+        (mapcar #'value-or-nil
+          (a:with-rbac (*rbac*)
+            (a:rbac-query query :column)))))))
+
+(defun legacy-palette-values (x-type-key x-field-key user)
+  ":private: The palette read as it has always run: be-list-column
+with :skip-allowed-values — the full be-list (Phase A + Phase B
+hydrate + capability decoration + public-url decoration). The
+parity sweep compares this against fast-palette-values."
+  (getf (be-list-column x-type-key x-field-key user
+           :skip-allowed-values t)
+    :values))
+
+(defun palette-values (x-type-key x-field-key user)
+  ":private: One palette read, dispatched on palette-fast-path-p.
+The choice is made from model metadata before any query; a
+fast-path error is never caught and retried on the legacy path."
+  (if (palette-fast-path-p x-type-key x-field-key)
+    (fast-palette-values x-type-key x-field-key user)
+    (legacy-palette-values x-type-key x-field-key user)))
+
+(defun allowed-values-for-field (type-key field-key user &optional memo)
   (let* ((m *compiled-model*)
           (options (u:tree-get m type-key :fields field-key
                      :ui :options)))
@@ -1981,11 +2102,34 @@ palette must not fail the parent list."
                          :source)))
               (x-type-key (getf source :table))
               (x-field-key (getf source :column))
-              (values (getf
-                        (handler-case
-                          (be-list-column x-type-key x-field-key user
-                            :skip-allowed-values t)
-                          (validation-error (e)
+              (values (handler-case
+                        ;; The palette reader: fast path for simple
+                        ;; targets, be-list-column for scoped,
+                        ;; join-sorted, rollup, and computed-display
+                        ;; shapes (palette-values). MEMO, when
+                        ;; supplied, shares one read among the
+                        ;; fields of one allowed-values call that
+                        ;; target the same type and column —
+                        ;; successful reads only (an empty palette
+                        ;; included); a denial is never memoized, so
+                        ;; each denied field logs its own palette
+                        ;; suppressed. A signaled error propagates
+                        ;; before anything is stored.
+                        (if memo
+                          (multiple-value-bind (cached found)
+                              (gethash (list x-type-key x-field-key)
+                                memo)
+                            (if found
+                              cached
+                              (let ((fresh (palette-values x-type-key
+                                             x-field-key user)))
+                                (setf (gethash
+                                        (list x-type-key x-field-key)
+                                      memo)
+                                  fresh)
+                                fresh)))
+                          (palette-values x-type-key x-field-key user))
+                        (validation-error (e)
                             ;; A palette is best-effort: the palette
                             ;; query raised a validation error — most
                             ;; often valid-user-permissions on the
@@ -1997,8 +2141,7 @@ palette must not fail the parent list."
                             ;; and log why.
                             (log-palette-denied type-key field-key
                               x-type-key user e)
-                            nil))
-                        :values)))
+                            nil))))
         (if (and (equal type-key :users)
               (equal field-key :roles))
           ;; Users can never be assigned an exclusive role directly,
@@ -2048,6 +2191,13 @@ users, returns the user's own roles plus \"public\" plus the type's
 (defun allowed-values (type-key user)
   (loop with fields = (u:tree-get *compiled-model* type-key :fields)
     and base = (u:tree-get *compiled-model* type-key :base)
+    ;; The palette memo: local to this one call, keyed
+    ;; (target-type display-field), so N fields targeting the same
+    ;; type and column share one read. Its lifetime is one
+    ;; envelope, so there is no staleness question; only
+    ;; successful reads are stored (allowed-values-for-field's
+    ;; rules).
+    with memo = (make-hash-table :test #'equal)
     for field-key in fields by #'cddr
     for field-def in (cdr fields) by #'cddr
     for join-table = (getf field-def :join-table)
@@ -2057,7 +2207,8 @@ users, returns the user's own roles plus \"public\" plus the type's
            (or join-table target ui-options)
            (not (equal field-key :id)))
     appending
-    (list field-key (allowed-values-for-field type-key field-key user))
+    (list field-key (allowed-values-for-field type-key field-key user
+                          memo))
     into allowed
     finally
     (return
@@ -3139,6 +3290,50 @@ PostgreSQL."
       (reorder-to-match (getf result :records) ids))
     result))
 
+(defun valid-list-read-access (type-key user)
+  ":private: The be-list read gate, extracted so be-list and the
+palette fast path (fast-palette-values) authorize identically:
+rollups (no per-row resources), built-in types (their system
+contracts), and the Page projection shape keep the type-resource
+read gate. An ordinary author-defined resource-backed type needs
+only an authenticated existing user — base-be-list's
+user-read-type-ids filtering then decides which rows are visible,
+so a row-level grant is reachable without holding any of the
+type's roles."
+  (let ((shape (u:tree-get *compiled-model* type-key :phase-a-shape)))
+    (if (or (eq shape :measure) (built-in-p type-key)
+          (eq shape :page))
+      (valid-user-permissions user type-key "read")
+      (valid-existing-user user))))
+
+(defun readable-row-ids (type-key user)
+  ":private: The readable-id selection at the head of base-be-list,
+extracted so be-list and the palette fast path
+(fast-palette-values) read the same row set: the table's ids
+when the user holds one of a base-resource type's roles (their
+rows have no RBAC resources), the permitted row ids otherwise.
+Side effect of the extraction: a:list-user-role-names is no
+longer fetched on ordinary reads, where it was unused."
+  (let* ((m *compiled-model*)
+         (user-roles (a:list-user-role-names *rbac* user))
+         (type-roles (u:tree-get m type-key :type-roles)))
+    (if (base-resource-type-key-p type-key)
+      (when (u:has-some user-roles type-roles)
+        (let ((table (table-name type-key)))
+          (a:with-rbac (*rbac*)
+            (db:query (format nil "select id from ~a" table)
+              :column))))
+      (user-read-type-ids user type-key))))
+
+(defun default-list-sort (type-key)
+  ":private: The effective default sort for a list read of
+TYPE-KEY: the type's :default-sort, else a :list-form
+:default-sort (the blog tab spelling), else nil. Extracted so
+be-list and the palette fast path order identically."
+  (or (u:tree-get *compiled-model* type-key :default-sort)
+    (u:tree-get *compiled-model* type-key :list-form
+      :default-sort)))
+
 (defun be-list (type-key user
                  &key (form :list-form) filters
                  (limit 20) (offset 0) sort
@@ -3161,17 +3356,9 @@ The following example returns a list of all the :todos records that have the tag
   (valid-be-type-key type-key)
   (let* ((shape (u:tree-get *compiled-model* type-key :phase-a-shape))
          (measure-p (eq shape :measure)))
-    ;; Authorization (the API type-roles access fix): rollups (no
-    ;; per-row resources), built-in types (their system contracts),
-    ;; and the Page projection shape keep the type-resource read
-    ;; gate. An ordinary author-defined resource-backed type needs
-    ;; only an authenticated existing user — base-be-list's
-    ;; user-read-type-ids filtering then decides which rows are
-    ;; visible, so a row-level grant is reachable without holding
-    ;; any of the type's roles.
-    (if (or measure-p (built-in-p type-key) (eq shape :page))
-      (valid-user-permissions user type-key "read")
-      (valid-existing-user user))
+    ;; Authorization: valid-list-read-access (the extracted gate —
+    ;; see its docstring for the reasoning).
+    (valid-list-read-access type-key user)
     ;; Validate search early so empty-rbac short-circuit still 400s on
     ;; non-empty search against a type with zero searchable fields.
     ;; Rollups compile to zero searchable fields, so this is the 07d
@@ -3181,9 +3368,7 @@ The following example returns a list of all the :todos records that have the tag
                     ;; A :list-form :default-sort (the blog tab spelling)
                     ;; is the effective default too; type-level wins when
                     ;; both exist (the compiled def carries it).
-                    (or (u:tree-get *compiled-model* type-key :default-sort)
-                        (u:tree-get *compiled-model* type-key :list-form
-                          :default-sort)))))
+                    (default-list-sort type-key))))
       (if measure-p
         ;; 08b measure Phase A: GROUP BY grain, no Phase B, no
         ;; user-read-type-ids / filters-for-be-list (the rollup has no
@@ -3221,17 +3406,8 @@ The following example returns a list of all the :todos records that have the tag
                       skip-allowed-values)
   ":private: Base-shape be-list body (Phase A id select + Phase B hydrate).
 Validations have already run in BE-LIST."
-  (let* ((m *compiled-model*)
-          (user-roles (a:list-user-role-names *rbac* user))
-          (type-roles (u:tree-get m type-key :type-roles))
-          (page-limit (clamp-limit limit))
-          (rbac-ids (if (base-resource-type-key-p type-key)
-                      (when (u:has-some user-roles type-roles)
-                        (let ((table (table-name type-key)))
-                          (a:with-rbac (*rbac*)
-                            (db:query (format nil "select id from ~a" table)
-                              :column))))
-                      (user-read-type-ids user type-key))))
+  (let* ((page-limit (clamp-limit limit))
+          (rbac-ids (readable-row-ids type-key user)))
     (pl:pdebug :in "be-list" :filters filters :limit page-limit :offset offset)
     (if rbac-ids
       (let* ((all-filters (filters-for-be-list type-key rbac-ids filters user))
