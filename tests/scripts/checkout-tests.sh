@@ -240,6 +240,13 @@ export PATH="$H/bin:$ORIG_PATH"
 # (exported around run_cli) must survive into the subject — the
 # unwritable-lock-root test depends on overriding this one.
 export CHECKOUT_LOCK_ROOT="${CHECKOUT_LOCK_ROOT:-$H/repos}"
+# The local-projects clone root update_local_projects refreshes on
+# every compile-taking deploy. Default-assignment for the same reason
+# (the update_local cases point it at their git fixtures); the harness
+# default keeps every OTHER deploy test's refresh off the operator's
+# real ~/.roswell clones — the missing-clone self-heal answers from
+# the ros stub instead.
+export UPDATE_LOCAL_PROJECTS_ROOT="${UPDATE_LOCAL_PROJECTS_ROOT:-$H/local-projects}"
 export DEPLOY_CHECKOUT="$H/repos/production"
 export STAGING_CHECKOUT="$H/repos/staging"
 export DATA_UI_PUBLIC_URL="$H/public.git"
@@ -783,9 +790,15 @@ fi
 # PATH/HOME/TERM/TMPDIR plus the stub plumbing only. The caller's
 # environment (secrets included) must not leak across — the forwarded
 # allowlist inside the command string is the only channel.
+# UPDATE_LOCAL_PROJECTS_ROOT rides the stub plumbing, not the
+# forwarded allowlist (production never forwards it; the remote host
+# has its own local-projects): the simulated remote host's root IS the
+# harness root, so a remote-side deploy's update_local_projects can
+# never reach the operator's real ~/.roswell clones.
 export ROS_LOG="${ROS_LOG:-$STUB/ros-remote.log}"
 exec env -i PATH="$PATH" HOME="$HOME" TERM="${TERM:-xterm}" \
      TMPDIR="${TMPDIR:-/tmp}" STUB="$STUB" ROS_LOG="$ROS_LOG" \
+     UPDATE_LOCAL_PROJECTS_ROOT="${UPDATE_LOCAL_PROJECTS_ROOT:-${STUB%/stub}/local-projects}" \
      bash -c "$cmd"
 EOF
 
@@ -3493,6 +3506,226 @@ test_registry_absent_legacy_image_name() {
 }
 
 # ---------------------------------------------------------------------------
+# update_local_projects (the library stratum refresh before the compile)
+# ---------------------------------------------------------------------------
+
+make_local_projects_fixture() {
+    # make_local_projects_fixture REPO SHAPE [LATER]
+    # A real git fixture pair — a seeded bare origin under
+    # $H/origins/<repo>.git plus a clone at
+    # $H/local-projects/macnod/<repo> (the harness
+    # UPDATE_LOCAL_PROJECTS_ROOT) — in one of the shapes
+    # update_local_projects must handle:
+    #   detached   cloned at tag v1.0 — the Roswell versioned-install
+    #              signature: detached HEAD, no local branches
+    #   master     cloned attached on master at the origin tip
+    #   feature    cloned, then switched to a feature branch
+    #   dirty      cloned attached on master, plus an untracked file
+    # LATER (any word) advances the origin's master one commit AFTER
+    # the clone, leaving the clone behind. The clone is named for the
+    # BARE repo name — the double-prefix guard: a parse keeping the
+    # macnod/ prefix would look for macnod/macnod/<repo> fixtures that
+    # do not exist and never touch these.
+    local repo="$1" shape="$2" later="${3:-}"
+    local seed="$H/lp-seed/$repo" origin="$H/origins/$repo.git"
+    local dir="$H/local-projects/macnod/$repo"
+    mkdir -p "$seed" "$H/origins" "$(dirname "$dir")"
+    git -C "$seed" init -q -b master
+    git -C "$seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "${repo}-one"
+    git -C "$seed" tag v1.0
+    git -C "$seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "${repo}-two"
+    git -C "$seed" clone -q --bare . "$origin"
+    case "$shape" in
+        detached) git clone -q -b v1.0 "$origin" "$dir" ;;
+        *)        git clone -q "$origin" "$dir" ;;
+    esac
+    [[ "$shape" != feature ]] || git -C "$dir" switch -q -c feature
+    [[ "$shape" != dirty ]] || touch "$dir/untracked-file"
+    if [[ -n "$later" ]]; then
+        git -C "$seed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "${repo}-three"
+        git -C "$seed" push -q "$origin" HEAD:master
+    fi
+}
+
+add_dockerfile_lines() {
+    # add_dockerfile_lines LINE... — append ros-install fixture lines to
+    # the harness production clone's Dockerfile and publish them
+    # (commit + push to public), so the deploy's selection can
+    # fast-forward onto them: selection refuses a dirty production
+    # clone, so the lines must ride a commit.
+    [[ -d "$H/repos/production/.git" ]] \
+        || git -C "$H" clone -q -o public "$H/public.git" repos/production
+    printf '%s\n' "$@" >> "$H/repos/production/Dockerfile"
+    git -C "$H/repos/production" add Dockerfile
+    git -C "$H/repos/production" -c user.email=t@t -c user.name=t commit -qm "test: local-projects fixture lines"
+    git -C "$H/repos/production" push -q public HEAD:master
+}
+
+lp_fixture_head() { git -C "$H/local-projects/macnod/$1" rev-parse HEAD; }
+
+lp_origin_head() { git -C "$H/origins/$1.git" rev-parse "${2:-master}"; }
+
+test_update_local_refreshes_all_shapes() {
+    default_fields
+    # The three clone shapes plus a behind-on-master one and a missing
+    # one; the Dockerfile lines that name them include an &&-tail
+    # (the trim reduction) — the harness production clone's REAL
+    # Dockerfile already contributes the six production macnod repos,
+    # all missing under the harness root, so the self-heal argv is
+    # asserted against real names too.
+    make_local_projects_fixture uldetached detached
+    make_local_projects_fixture ulcurrent master
+    make_local_projects_fixture ulbehind master later
+    make_local_projects_fixture ulwrong feature later
+    add_dockerfile_lines \
+        'RUN ulimit -n 1048576 && ros install macnod/uldetached' \
+        'RUN ulimit -n 1048576 && ros install macnod/ulcurrent' \
+        'RUN ulimit -n 1048576 && ros install macnod/ulbehind && ros use "sbcl-bin/2.5.10"' \
+        'RUN ulimit -n 1048576 && ros install macnod/ulwrong' \
+        'RUN ulimit -n 1048576 && ros install macnod/ulmissing && ros use "sbcl-bin/2.5.10"'
+    : > "$STUB/ros.log"
+    local out
+    out=$(DRY_RUN=1 run_cli deploy todos 2>&1) || fail "fixture deploy failed: ${out:0:400}"
+    assert_eq "$(compile_calls)" "1" "the refresh preceded a green compile"
+    # Missing clones: exactly the six real Dockerfile repos plus the
+    # fixture one, each an org-qualified argv with the BARE name — the
+    # exact-line match is the trim and double-prefix guard (a parse
+    # keeping the prefix or a trailing space produces a different line
+    # and fails the membership).
+    local -a installs=()
+    mapfile -t installs < <(grep '^ros-call:install ' "$STUB/ros.log" || true)
+    assert_eq "${#installs[@]}" "7" "six real repos + the fixture missing one self-heal (got: ${installs[*]})"
+    local want
+    for want in dc-dlist dc-ds dc-time p-log dc-eclectic rbac ulmissing; do
+        printf '%s\n' "${installs[@]}" | grep -qx "ros-call:install macnod/$want" \
+            || fail "missing ros install argv 'ros-call:install macnod/$want'"
+    done
+    printf '%s\n' "${installs[@]}" | grep -q 'macnod/macnod/' \
+        && fail "a double macnod/ prefix reached a ros argv"
+    printf '%s\n' "${installs[@]}" | grep -qE ' $' \
+        && fail "a trailing space reached a ros argv (the &&-tail trim is broken)"
+    # The detached clone: attached and moved onto origin's master.
+    assert_contains "$out" "macnod/uldetached: attaching to master ($(git -C "$H/origins/uldetached.git" rev-parse --short=8 v1.0))"
+    assert_contains "$out" "macnod/uldetached: $(git -C "$H/origins/uldetached.git" rev-parse --short=8 v1.0) -> $(git -C "$H/origins/uldetached.git" rev-parse --short=8 master)"
+    assert_eq "$(git -C "$H/local-projects/macnod/uldetached" symbolic-ref -q HEAD)" "refs/heads/master" \
+        "the detached clone is attached"
+    assert_eq "$(lp_fixture_head uldetached)" "$(lp_origin_head uldetached)" \
+        "the detached clone sits at origin's master"
+    # The current clone: silence — no line names it, nothing moved.
+    assert_not_contains "$out" "macnod/ulcurrent" "the current clone printed nothing"
+    assert_eq "$(lp_fixture_head ulcurrent)" "$(lp_origin_head ulcurrent)" "the current clone stayed at origin's tip"
+    # The behind clone: fast-forwarded (movement line, no attach), and
+    # the fetch + ff-only merge leave their names in the reflogs — the
+    # real-git evidence behind the movement line.
+    assert_contains "$out" "macnod/ulbehind: $(git -C "$H/origins/ulbehind.git" rev-parse --short=8 master~1) -> $(git -C "$H/origins/ulbehind.git" rev-parse --short=8 master)"
+    assert_eq "$(lp_fixture_head ulbehind)" "$(lp_origin_head ulbehind)" "the behind clone fast-forwarded"
+    git -C "$H/local-projects/macnod/ulbehind" reflog show refs/heads/master \
+        | grep -q 'merge refs/remotes/origin/master: Fast-forward' \
+        || fail "the ff-only merge never ran on ulbehind"
+    git -C "$H/local-projects/macnod/ulbehind" reflog show refs/remotes/origin/master \
+        | grep -q 'fetch -q origin +refs/heads/master:refs/remotes/origin/master' \
+        || fail "the explicit-refspec fetch never ran on ulbehind"
+    # The wrong-branch clone: attached, fast-forwarded, and its feature
+    # branch survives untouched.
+    assert_contains "$out" "macnod/ulwrong: attaching to master ($(git -C "$H/origins/ulwrong.git" rev-parse --short=8 master~1))"
+    assert_contains "$out" "macnod/ulwrong: $(git -C "$H/origins/ulwrong.git" rev-parse --short=8 master~1) -> $(git -C "$H/origins/ulwrong.git" rev-parse --short=8 master)"
+    assert_eq "$(git -C "$H/local-projects/macnod/ulwrong" symbolic-ref -q HEAD)" "refs/heads/master" \
+        "the wrong-branch clone is on master"
+    assert_eq "$(lp_fixture_head ulwrong)" "$(lp_origin_head ulwrong)" "the wrong-branch clone fast-forwarded"
+    assert_eq "$(git -C "$H/local-projects/macnod/ulwrong" rev-parse refs/heads/feature)" \
+              "$(git -C "$H/origins/ulwrong.git" rev-parse master~1)" \
+        "the feature branch and its commits survived the attach"
+    # Second run: the git fixtures are current — no attach and no
+    # movement line (the six real repos still "install" through the
+    # stub, which cannot actually clone — the silence contract covers
+    # the git-shaped clones).
+    out=$(DRY_RUN=1 run_cli deploy todos 2>&1) || fail "second fixture deploy failed: ${out:0:400}"
+    local re
+    for re in uldetached ulcurrent ulbehind ulwrong; do
+        assert_not_contains "$out" "macnod/${re}: " "idempotent: no second-run line for ${re}"
+    done
+}
+
+test_update_local_dirty_clone_dies_before_compile() {
+    default_fields
+    make_local_projects_fixture uldirty dirty
+    add_dockerfile_lines 'RUN ulimit -n 1048576 && ros install macnod/uldirty'
+    : > "$STUB/ros.log"
+    expect_die "uldirty clone is not clean" env DRY_RUN=1 run_cli deploy todos
+    assert_eq "$(compile_calls)" "0" "the deploy stops before the compile"
+    assert_eq "$(grep -c '^ros-call:install macnod/uldirty$' "$STUB/ros.log" 2>/dev/null || true)" "0" \
+        "no self-heal install for a dirty clone (the status check fires first)"
+}
+
+test_update_local_registry_hit_skips_refresh() {
+    # The ecr-stub hit path already asserts no compile; this adds the
+    # no-refresh attribution on top: a behind clone's remote-tracking
+    # ref does not move (a fetch would have advanced it) and none of
+    # the six real missing repos self-heal.
+    write_site_marker prod-2
+    default_fields >/dev/null
+    make_local_projects_fixture ulskip master later
+    add_dockerfile_lines 'RUN ulimit -n 1048576 && ros install macnod/ulskip'
+    seed_ecr_image "$(expected_ref todos)"
+    : > "$STUB/ros.log"
+    local old_ref old_head
+    old_ref=$(git -C "$H/local-projects/macnod/ulskip" rev-parse refs/remotes/origin/master)
+    old_head=$(lp_fixture_head ulskip)
+    local out
+    out=$(run_prod2 deploy todos 2>&1) || fail "registry-hit deploy failed: $out"
+    assert_contains "$out" "Registry hit"
+    assert_eq "$(stub_count 'init-database' "$STUB/ros.log")" "0" "no compile on a hit"
+    assert_eq "$(grep -c '^ros-call:install ' "$STUB/ros.log" 2>/dev/null || true)" "0" \
+        "no ros install — the refresh never ran"
+    assert_eq "$(git -C "$H/local-projects/macnod/ulskip" rev-parse refs/remotes/origin/master)" "$old_ref" \
+        "no fetch on a registry hit"
+    assert_eq "$(lp_fixture_head ulskip)" "$old_head" "no merge on a registry hit"
+}
+
+test_update_local_recorded_release_skips_refresh() {
+    # Reuses the recorded-release probe shape: the record drives the
+    # render and the pull-or-die path never consults the library
+    # stratum.
+    write_site_marker prod-2
+    default_fields >/dev/null
+    make_local_projects_fixture ulskip master later
+    add_dockerfile_lines 'RUN ulimit -n 1048576 && ros install macnod/ulskip'
+    seed_ecr_image "$(expected_ref todos)"
+    run_prod2 deploy todos >/dev/null 2>&1 || fail "seed deploy failed"
+    : > "$STUB/ros.log"
+    local old_ref old_head
+    old_ref=$(git -C "$H/local-projects/macnod/ulskip" rev-parse refs/remotes/origin/master)
+    old_head=$(lp_fixture_head ulskip)
+    local out
+    out=$(DEPLOY_RECORDED_RELEASE=1 run_prod2 deploy todos 2>&1) \
+        || fail "recorded-release deploy failed: $out"
+    assert_contains "$out" "Recorded release"
+    assert_eq "$(stub_count 'init-database' "$STUB/ros.log")" "0" "no compile"
+    assert_eq "$(grep -c '^ros-call:install ' "$STUB/ros.log" 2>/dev/null || true)" "0" \
+        "no ros install — the refresh never ran"
+    assert_eq "$(git -C "$H/local-projects/macnod/ulskip" rev-parse refs/remotes/origin/master)" "$old_ref" \
+        "no fetch under a recorded release"
+    assert_eq "$(lp_fixture_head ulskip)" "$old_head" "no merge under a recorded release"
+}
+
+test_update_local_git_env_poison() {
+    # A caller's exported GIT_* environment cannot redirect the
+    # refresh: every git call goes through checkout_git's scrub, so
+    # the poisoned variables never reach the clone (same shape as
+    # test_selection_git_env_contamination, against the library
+    # stratum).
+    default_fields
+    make_local_projects_fixture ulpoison detached
+    add_dockerfile_lines 'RUN ulimit -n 1048576 && ros install macnod/ulpoison'
+    expect_ok env GIT_DIR=/nonexistent GIT_WORK_TREE=/nonexistent \
+        GIT_INDEX_FILE=/nonexistent DRY_RUN=1 run_cli deploy todos
+    assert_eq "$(git -C "$H/local-projects/macnod/ulpoison" symbolic-ref -q HEAD)" "refs/heads/master" \
+        "the poisoned environment did not stop the attach"
+    assert_eq "$(lp_fixture_head ulpoison)" "$(lp_origin_head ulpoison)" \
+        "the poisoned environment did not stop the fast-forward"
+}
+
+# ---------------------------------------------------------------------------
 # Gates, the wrong-site guard, publication verdicts
 # ---------------------------------------------------------------------------
 
@@ -4603,6 +4836,12 @@ main() {
     t registry_vip_bytes_change_the_tag
     t registry_dry_run_purity
     t registry_absent_legacy_image_name
+
+    t update_local_refreshes_all_shapes
+    t update_local_dirty_clone_dies_before_compile
+    t update_local_registry_hit_skips_refresh
+    t update_local_recorded_release_skips_refresh
+    t update_local_git_env_poison
 
     t gate_explicit_pins_and_never_routes_dns
     t guard_wildcard_shadowed_name_and_overrides

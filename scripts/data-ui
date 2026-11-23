@@ -2016,6 +2016,108 @@ function build_load_contract_evals {
     LOAD_CONTRACT_CHECKOUT="$checkout"
 }
 
+function update_local_projects {
+    # The second source stratum, refreshed immediately before the
+    # compile gate: the Roswell local-projects clones under
+    # ~/.roswell/local-projects/macnod/. Nothing in the pipeline owned
+    # them — the 2026-11-22 prod-2 Backlog deploy died at compile_model
+    # with LIST-USER-RESOURCE-IDS-OF-TYPE missing from the RBAC package
+    # because prod-2's rbac clone was frozen at 5c30a70 while the fix
+    # (786bcbd) was already on GitHub (evo-x2 never noticed: its
+    # ~/common-lisp dev tree answers ASDF's library resolution, so only
+    # a host without a dev tree — prod-2 — compiles what these clones
+    # hold). The repo list is parsed from the checkout Dockerfile's
+    # "RUN ulimit -n N && ros install ..." lines — the same
+    # one-source-of-truth as the bake replay (dockerfile_ros_targets in
+    # ops/prod-2-host.sh; shared format, not shared code, per the
+    # deploy clone's self-containment constraint) — in FILE ORDER (the
+    # macnod/* systems resolve each other through local-projects, not
+    # the quicklisp dist, so file order is the dependency order). Per
+    # repo, under an overridable root (tests point
+    # UPDATE_LOCAL_PROJECTS_ROOT at their fixtures; the default is the
+    # real local-projects): a missing clone self-heals with
+    # `ros install macnod/<repo>` (Roswell clones the named repo only,
+    # in file order); a dirty clone, a failed fetch, a failed switch,
+    # or a local master that is not a fast-forward of origin/master
+    # dies loudly, naming the repo — the same clean-means-clean
+    # contract as checkout selection (require_checkout_clean), never
+    # reset --hard; a detached or wrong-branch clone (Roswell's
+    # versioned installs leave clones detached at tags) is attached to
+    # master with `git switch --guess` — a plain switch when local
+    # master exists, a creation from the just-fetched origin/master
+    # when it does not, even under checkout.guess=false. Every git call
+    # goes through checkout_git (the GIT_* scrub), every git subcommand
+    # runs quiet, and the function's own echo lines are the whole audit
+    # trail: an up-to-date clone prints nothing, a moved one prints
+    # exactly one movement line. Origins are anonymous HTTPS — no
+    # credential is involved. Skipped on registry hits and recorded
+    # releases (those paths never compile; the call site mirrors
+    # compile_model's if).
+    [[ -f "$DEPLOY_CHECKOUT/Dockerfile" ]] \
+        || die "no Dockerfile in the production checkout (${DEPLOY_CHECKOUT})."
+    local line repo dir old new status branch
+    local -a repos=()
+    local -A seen=()
+    while IFS= read -r line; do
+        # The dockerfile_ros_targets reduction, in its order: cut the
+        # && tail, strip Docker quoting, trim the whitespace the cut
+        # leaves behind, drop lines still holding ${ARG} text.
+        line="${line%%&&*}"
+        line="${line//\"/}"
+        line="${line%${line##*[![:space:]]}}"
+        [[ -n "$line" && "$line" != *'${'* ]] || continue
+        [[ "$line" == macnod/* ]] || continue
+        # The bare name: the parse strips the prefix, the use sites
+        # re-prefix it — clones live at <root>/macnod/<repo>/ and the
+        # ros argv wants the org-qualified spelling, one convention per
+        # consumer, so a double prefix cannot arise.
+        repo="${line#macnod/}"
+        [[ -z "${seen[$repo]+x}" ]] || continue
+        seen[$repo]=1
+        repos+=("$repo")
+    done < <(sed -n 's/^RUN ulimit -n [0-9]* && ros install //p' "$DEPLOY_CHECKOUT/Dockerfile")
+    [[ ${#repos[@]} -gt 0 ]] \
+        || die "no macnod/* targets parsed from Dockerfile."
+    for repo in "${repos[@]}"; do
+        dir="${UPDATE_LOCAL_PROJECTS_ROOT:-$HOME/.roswell/local-projects}/macnod/$repo"
+        if [[ ! -d "$dir/.git" ]]; then
+            echo "installing macnod/${repo} (missing local-projects clone)"
+            ros install "macnod/${repo}" \
+                || die "ros install of macnod/${repo} failed (network?)."
+            continue
+        fi
+        # old before any branch work: the movement comparison needs it
+        # on the attached path too (unset would print " -> <sha>").
+        old=$(checkout_git "$dir" rev-parse --short=8 HEAD)
+        if ! status=$(checkout_git "$dir" status --porcelain --untracked-files=all); then
+            die "git status failed in macnod/${repo}; treating the clone as not clean."
+        fi
+        if [[ -n "$status" ]]; then
+            die "macnod/${repo} clone is not clean (untracked files count); refusing to touch it — commit, stash, or remove the changes there."
+        fi
+        # The fetch first: it works on a detached HEAD and refreshes
+        # refs/remotes/origin/master for the attach below. An explicit
+        # refspec, never a bare fetch whose origin/master spelling is
+        # an assumption.
+        checkout_git "$dir" fetch -q origin "+refs/heads/master:refs/remotes/origin/master" \
+            || die "fetch of master failed for macnod/${repo} (renamed default branch? network?)."
+        # Empty output = detached (or a failed read): symbolic-ref -q
+        # prints nothing on failure, so the string check covers both
+        # the detached and the wrong-branch shapes.
+        branch=$(checkout_git "$dir" symbolic-ref -q HEAD)
+        if [[ "$branch" != refs/heads/master ]]; then
+            echo "macnod/${repo}: attaching to master (${old})"
+            checkout_git "$dir" switch --guess -q master \
+                || die "macnod/${repo}: git switch --guess master failed (detached or wrong branch)."
+        fi
+        checkout_git "$dir" merge -q --ff-only refs/remotes/origin/master \
+            || die "macnod/${repo} is not a fast-forward of origin/master (diverged?); refusing to touch it."
+        new=$(checkout_git "$dir" rev-parse --short=8 HEAD)
+        [[ "$old" != "$new" ]] && echo "macnod/${repo}: ${old} -> ${new}"
+    done
+    return 0
+}
+
 function compile_model {
     # MODEL identity crosses as data: DATA_UI_MODEL_PATH (canonical
     # models/<name>.lisp or the handoff candidate) is read by constant
@@ -3504,6 +3606,11 @@ function deploy_selected {
     if [[ -n "${DEPLOY_REGISTRY_HIT:-}" ]]; then
         echo "Skipping the model compile (the deploy image is already built)."
     else
+        # update_local_projects (the library stratum) immediately before
+        # compile_model (its sole consumer) — the compile-taking paths
+        # only; registry hits and recorded releases never compile and
+        # never consult the library clones.
+        update_local_projects
         compile_model
     fi
     gather_deploy_facts

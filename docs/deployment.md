@@ -142,6 +142,13 @@ Same verbs with `demo` in place of `e-demo`, same machinery — the only differe
 
 `scripts/data-ui deploy` runs the following phases, in order. Each phase is a shell function in `scripts/data-ui`, so the script is the authoritative reference; this is the guided tour. (Phase 0, before all of these: the outer arm selects the production checkout and re-executes its script — see [Source Environments](#source-environments-three-checkouts); what follows is the inner, production-side body.)
 
+Immediately before the compile gate (and only when the compile runs — a registry hit or a recorded release skips this along with the compile), the deploy fast-forwards the Roswell local-projects clones under `~/.roswell/local-projects/macnod/` — the second source stratum, which the host-side compile resolves `:rbac`, `:p-log`, and the other macnod libraries through on a host without a `~/common-lisp` dev tree (prod-2; on evo-x2 the dev tree masks the clones, and the refresh is hygiene). The repo list is parsed from the checkout Dockerfile's `ros install` lines, in file order. Per repo:
+
+- quiet fetch of `refs/heads/master` into the explicit remote-tracking ref, then `merge --ff-only` onto `master` — one `macnod/<repo>: <old> -> <new>` movement line when HEAD moves, silence when the clone is current
+- detached or wrong-branch clones (Roswell's versioned installs leave clones detached at tags) are attached to `master` first, via `git switch --guess`
+- a missing clone (golden-AMI drift, a bake gap) self-heals with `ros install macnod/<repo>` in file order
+- a dirty, diverged, or un-fetchable clone dies loudly, naming the repo — the same clean-means-clean contract as checkout selection; the automation never resets or force-updates anything
+
 ### 1. Compile the model (the gate)
 
     compile_model
@@ -386,6 +393,27 @@ If a cycle fails, the shared `OnFailure` fail unit pings Mattermost (the macnod-
     <unit>-backup recover --check  # select + verify completeness without downloading (rebirth preflight)
 
 `recover` never relies on key order across tiers: candidates group by exact basename per tier, sidecars complete a candidate only from the same tier, and the newest **complete** candidate wins — a newest candidate missing `files.tar.gz` falls back to the older complete triple. Backlog prefers the hourly tier when its newest complete triple is newer than the daily's. SceneBook picks the newest complete daily triple, then applies the newest rpo dump+meta pair on top **only when its timestamp is newer**; the daily-files / rpo-database age gap is printed verbatim first (which files tree accompanies which database, and how far apart). The printed `restore: <name>` lines are the restore order — `scripts/data-ui rebirth --fresh-data` runs them itself.
+
+### Example: pull the latest production backlog backup onto evo-x2
+
+Backlog runs on prod-2, so its freshest triple is in the `prod-2/` prefix, not on evo-x2. `recover` stages into the snapshot pool of the host it runs on; it does not touch the live app, and S3 keeps its copy. Log into prod-2 and run:
+
+    ~/bin/backlog-backup status
+    ~/bin/backlog-backup recover
+
+`status` is the look; `recover` is the pull. It prints the name it staged (a run on 2026-11-22 picked `prd-backlog-20261122-2300`, newer than that day's daily). Back on evo-x2, copy that triple into the local pool — substitute the printed name:
+
+    scp prod-2:/data/data-ui/snapshots/prd-backlog-20261122-2300.dump \
+        prod-2:/data/data-ui/snapshots/prd-backlog-20261122-2300.files.tar.gz \
+        prod-2:/data/data-ui/snapshots/prd-backlog-20261122-2300.meta \
+        /data/data-ui/snapshots/
+
+Confirm it landed, then restore it into the local dev instance. Postgres has to be up first (`scripts/data-ui db` or `repl`):
+
+    scripts/data-ui snapshot list
+    scripts/data-ui snapshot restore prd-backlog-20261122-2300 dev:backlog
+
+Do not restore to `prd:backlog` from evo-x2. That instance lives on prod-2, and a `prd:` restore scales the app to 0. A model mismatch is a hard refuse, not a warning.
 
 ### The gap to know about
 
