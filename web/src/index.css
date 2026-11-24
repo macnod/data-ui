@@ -390,6 +390,91 @@ td input[type='checkbox'].row-select {
   overflow-x: auto;
 }
 
+/* --- View-form / page-body markdown TOC ("View-form TOC") --- */
+
+/* Sub-1280px default: no TOC column at all. The arithmetic
+   (44rem measure + 180px label column + 1rem row gap +
+   1.5rem form margin + 16rem TOC + 2rem row gap + 2x2rem
+   body padding ~= 1276px) says 1100px would squeeze the
+   prose to ~33rem and defeat the width item's whole point;
+   1280px preserves the full measure on both surfaces and
+   both label states. The row stays a block, the markdown
+   reads exactly as before. */
+.markdown-toc-row nav.toc {
+  display: none;
+}
+
+/* The widened page-body envelope when a page's view-form has
+   a markdown field (its row renders the TOC). Prose still
+   stops at var(--markdown-measure) via .markdown-body — only
+   the row's envelope widens. The gutter variant (a labelled
+   page: FieldRow emits the label cell even for :hide-label t)
+   is later in the sheet and more specific, so it wins when
+   both apply. */
+.page-body-toc {
+  max-width: calc(var(--markdown-measure) + 16rem + 2rem);
+}
+
+.page-body-toc-gutter {
+  max-width: calc(var(--markdown-measure) + 16rem + 2rem
+    + 180px + 1rem);
+}
+
+@media (min-width: 1280px) {
+  .markdown-toc-row {
+    display: flex;
+    gap: 2rem;
+    align-items: flex-start;
+  }
+
+  /* Flex hygiene: the markdown column may shrink without
+     wrapping its own internals; the cap still comes from
+     .markdown-body. */
+  .markdown-toc-row > .markdown-body {
+    min-width: 0;
+  }
+
+  /* Sticky column, not scroll-synced: long documents keep the
+     TOC in view without scrollspy or active-heading tracking.
+     The top clears the app header (~3.5rem) and the max-height
+     bounds it to the viewport so its own scroll can engage. */
+  .markdown-toc-row nav.toc {
+    display: block;
+    flex: none;
+    width: 16rem;
+    position: sticky;
+    top: 3.5rem;
+    max-height: 80vh;
+    overflow-y: auto;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+
+  /* Button reset: bare text rows, link color, block layout —
+     TOC entries are navigators, not controls. */
+  .markdown-toc-row nav.toc button {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 0.15rem 0;
+    margin: 0;
+    text-align: left;
+    cursor: pointer;
+    color: var(--link);
+    font: inherit;
+  }
+
+  /* Indent by level: h2 flush, h3 one step, h4 two. */
+  .markdown-toc-row nav.toc .toc-l3 {
+    padding-left: 1rem;
+  }
+
+  .markdown-toc-row nav.toc .toc-l4 {
+    padding-left: 2rem;
+  }
+}
+
 /* Narrow screens: stack label above value, left-aligned, so the
    value column is not squeezed to unusable width. */
 @media (max-width: 640px) {

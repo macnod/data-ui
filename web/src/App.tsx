@@ -23,6 +23,7 @@ import type { RecordMode, ScopeState } from './urlState'
 import { hashPermalink, bestLinkUrl } from './publicLink'
 import { slotFromInfo, headingStyleFromInfo } from './stylingHtml'
 import { Markdown } from './Markdown'
+import { MarkdownWithToc } from './MarkdownWithToc'
 import { PageDescription } from './PageDescription'
 import { FieldHelp } from './FieldHelp'
 import { composeReply, normalizeRoles, lastOffset,
@@ -1997,6 +1998,15 @@ function renderReadOnlyField(
   // markdown read-only: rendered, full length (View mode is the
   // reading surface; the list cell is the clamped preview). Empty
   // renders the em dash, mirroring the code / textarea branch.
+  // On the view-form / page-body surfaces (ctx.isViewForm true —
+  // exactly those two call sites), the Markdown rides inside
+  // MarkdownWithToc: extracted h2/h3/h4 headings render as a TOC
+  // column beside the capped prose (companion to the markdown
+  // width item). Every other surface (region rows, region
+  // read-only fields, Edit/Add read-only fields, the offline
+  // renderer) keeps plain Markdown — short content, cramped
+  // quarters, and the shared component never learns about the
+  // TOC.
   if (widget === 'markdown') {
     const text = Array.isArray(value) ? value.join(', ')
       : formatNumber(value, field)
@@ -2005,7 +2015,9 @@ function renderReadOnlyField(
     }
     return (
       <div style={{ padding: '0.3rem 0', minHeight: '1.2em' }}>
-        <Markdown text={String(text)} />
+        {ctx?.isViewForm === true
+          ? <MarkdownWithToc text={String(text)} />
+          : <Markdown text={String(text)} />}
       </div>
     )
   }
@@ -5595,9 +5607,27 @@ function App() {
           const anyLabelShown = formFieldKeys(viewForm).some(f =>
             viewForm[f]['hide-label'] !== true
             && viewForm[f]['widget'] !== 'heading')
+          // A markdown field on this page gets the view-form TOC
+          // treatment (isViewForm above), so its row needs room
+          // for the TOC column: the envelope widens by the TOC
+          // width while the prose still stops at the measure
+          // (.markdown-body on Markdown.tsx's wrapper). Gutter-
+          // aware: FieldRow emits the label cell even for
+          // :hide-label t (it only blanks the text — the
+          // :other-page shape is exactly this), so a labelled
+          // page widens by the 180px + 1rem gutter too.
+          const anyTocField = formFieldKeys(viewForm).some(f =>
+            viewForm[f]['widget'] === 'markdown')
+          const pageBodyClass = [
+            'page-body',
+            anyTocField ? 'page-body-toc' : '',
+            anyTocField && anyLabelShown
+              ? 'page-body-toc-gutter' : ''
+          ].filter(Boolean).join(' ')
           return (
             <div className={anyLabelShown
-              ? 'page-body' : 'page-body form-no-labels'}>
+              ? pageBodyClass
+              : pageBodyClass + ' form-no-labels'}>
               {formFieldKeys(viewForm).map(f => {
                 const fieldMeta = viewForm[f]
                 // The heading renders bare — no FieldRow: FieldRow
