@@ -313,23 +313,31 @@ for the placeholders."
       for null-eq-p = (and (member op-key '(:eq :ne))
                         (or (null value) (equal value :null)))
       for fk-eq-p = (eq op-key :fk-eq)
-      ;; A null :eq / :ne on a singular-target field compares the
-      ;; storage column too, not the display :source :column-name:
-      ;; two FKs to one table share the join (the suppressed
-      ;; sibling's display names the other leg's rows), and the
-      ;; display column is null-exactly-when-the-FK-is-null only as
-      ;; a LEFT JOIN accident. The same column :fk-eq pins.
-      for null-target-p = (and null-eq-p
-                            (singular-target-field-p
-                              (u:tree-get *compiled-model*
-                                table-key :fields field-key)))
-      for storage-p = (or fk-eq-p null-target-p)
+      ;; A null or value-bearing :eq / :ne on a singular-target
+      ;; field compares the storage column too, not the display
+      ;; :source :column-name. Null: two FKs to one table share the
+      ;; join (the suppressed sibling's display names the other
+      ;; leg's rows), and the display column is null-exactly-when-
+      ;; the-FK-is-null only as a LEFT JOIN accident. Value-bearing
+      ;; (the same-type :eq repair): the base SQL carries no join,
+      ;; so a display-column reference 500s (42P01) alone; beside a
+      ;; join-forcing row it silently matches zero (db-value
+      ;; resolves the bind to the target row's uuid, which the
+      ;; display column never holds). The same column :fk-eq pins;
+      ;; db-value / resolve-reference-id keep accepting both wire
+      ;; spellings (display name and uuid).
+      for eq-target-p = (and (member op-key '(:eq :ne))
+                          (singular-target-field-p
+                            (u:tree-get *compiled-model*
+                              table-key :fields field-key)))
+      for storage-p = (or fk-eq-p eq-target-p)
       for fk-eq-column = (when storage-p
                            (or (fk-eq-condition-column table-key
                                  field-key)
                              (report-ve "add-where-clause"
-                               "No storage column for :fk-eq / null ~
-                                target field ~s on ~s." ~field-key
+                               "No storage column for :fk-eq / ~
+                                target ~s field ~s on ~s." ~op-key
+                               ~field-key
                                ~table-key)))
       for alias = (if storage-p
                     fk-eq-column
@@ -390,8 +398,9 @@ for the placeholders."
       ;; The null-eq-p translation is "alias is [not] null" with
       ;; no placeholder — a singular-target field's null rides its
       ;; qualified storage column (the same column :fk-eq pins).
-      ;; :fk-eq emits the plain "= $N" shape
-      ;; against its qualified physical column.
+      ;; :fk-eq emits the plain "= $N" shape, and a value-bearing
+      ;; :eq / :ne the "op $N" shape, both against their qualified
+      ;; physical storage column.
       collect (cond
                 (has-all-p placeholders)
                 (null-eq-p
@@ -1482,16 +1491,18 @@ exist, or points to a base or internal table."
 
 (defun id-dedup-filter (type-key field-key value)
   ":private: The dedup filter tuple for FIELD-KEY of TYPE-KEY carrying
-wire VALUE. A singular-target field compares on its physical storage
-column: :fk-eq with the reference resolved to the target row's uuid
-(resolve-reference-id takes both wire spellings — uuid and display
-name). An :eq filter on a :target field never matches: its alias is
-the field's joined display column while db-value resolves the bind to
-a uuid, a text-versus-uuid compare — the skip-existing lookup misses,
-and the real INSERT dies on the identity unique index (23505). Null
-FK values keep the :eq spelling (valid-filter rejects a null :fk-eq;
-add-where-clause renders the null :eq as the display column IS NULL,
-which a null storage column satisfies under the LEFT JOIN)."
+wire VALUE. A singular-target field with a non-null value compares on
+its physical storage column: :fk-eq with the reference resolved to
+the target row's uuid (resolve-reference-id takes both wire
+spellings — uuid and display name) — the write path's explicit
+resolved-uuid spelling; an ordinary :eq / :ne on the same field now
+compares the storage column too (add-where-clause's storage-p), so
+the two spellings select the same rows, but the :fk-eq emission
+stays: valid-filter rejects a non-uuid :fk-eq value before
+resolution, pinning this lookup to a row uuid even when the wire
+value was a display name. Null FK values keep the :eq spelling
+(valid-filter rejects a null :fk-eq; add-where-clause renders the
+null :eq as the storage column IS NULL / IS NOT NULL)."
   (if (and (singular-target-field-p
              (u:tree-get *compiled-model* type-key :fields field-key))
            (not (null value))

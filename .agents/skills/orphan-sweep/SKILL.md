@@ -11,7 +11,7 @@ Detect — and, only after reporting and asking, clear — orphaned `resources` 
 
 - Donnie asks whether a deployment, demo, or the dev image has orphan resources, or wants them dated/quantified.
 - Donnie asks to clean, clear, or sweep orphans from an instance — after the report and his explicit go-ahead, only.
-- Post-restore verification (the recurrence recipe's step 1), or any suspicion of by-name resolution failures.
+- Suspicion of by-name resolution failures. (Post-restore verification is no longer this skill's job — `snapshot restore` verifies and sweeps automatically now; the report below stays useful for live instances and snapshot triage.)
 - **Not** for changing models, healing schema drift (`heal-model`), or anything but pure SQL on `resources` / `resource_roles`.
 
 ## The script
@@ -41,6 +41,7 @@ Targets: `dev` (REPL, docker `pg-data-ui-repl`), `demo:<app>` (docker `pg-data-u
 ## Notes
 
 - To check a **snapshot** (is this dump contaminated?): `pg_restore` it into a throwaway postgres (docker `postgres:16`, throwaway port), then `--runner "docker exec -i <scratch> psql -U postgres -d <db>" report <label>`; remove the container after. Validated against `prd-scenebook-1118` (1,097 orphans, swept clean in the scratch).
+- **Drift contract:** the sweep predicate now lives in two places — this skill's script and `scripts/data-ui` (the post-restore orphan sweep + `snapshot sweep-orphans`). Changing one requires changing the other; they must stay identical.
 - Both postgres servers on evo-x2 (REPL and k8s) store `created_at` in UTC while the host runs PST — subtract 8 hours for local wall-clock when reporting birth windows.
 - The report is the evidence layer for the two backlog items: "Fix reset-tables to remove row resources" (the factory — engine fix) and "Post-restore orphan resource sweep" (restore-side defense-in-depth). After any sweep, a short note on the relevant item (create-note) recording target, counts, and TSV path keeps the journal truthful.
 - Known-clean instances (2026-11-22): prod-2's backlog (hand-swept), the dev image's scenebook state (`dev-scenebook-prerestore`). Known-contaminated: k3s SceneBook production 1,097, dev REPL backlog 1,750, todos 11, books 21, chores 9, modelbank 10 — and every snapshot taken after a birth event.

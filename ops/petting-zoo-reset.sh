@@ -136,13 +136,33 @@ reset_profile() {
              -- env HOME="$UNIT_RUN_HOME" \
              "$DATA_UI_CHECKOUT/scripts/data-ui" snapshot restore \
                  "stg-${profile}-golden" "stg:${profile}"; then
-        # The restore rolls back from its staged safety pair, so the
-        # database is unchanged; the unit is left stopped (the 503s
-        # through the domain are the alarm — do not re-enable).
-        # Rotating pre-restore slot (D16), refreshed by the attempt.
+        # Two distinct failures exit nonzero here, and they demand
+        # OPPOSITE operator reactions — read the restore's own tail
+        # output before touching anything:
+        #  - a pg_restore failure: the restore rolled back from its
+        #    staged safety pair before the tail, the database is
+        #    unchanged, and the rotating pre-restore slot (D16) holds
+        #    the state this attempt found (runbook item 6 territory).
+        #  - a sweep refusal (NOT SAFE verdict, printed after the
+        #    "Restored snapshot" line): the golden IS loaded and the
+        #    database is the dump — restoring the prerestore slot
+        #    would UNDO the reset. The healing pointer is the sweep's
+        #    own report (re-stamp or mint by id, then re-run
+        #    'snapshot sweep-orphans stg:${profile}'); a NOT-SAFE
+        #    golden must be healed and re-taken, or every nightly
+        #    stops here.
+        # Either way the unit is left stopped (the 503s through the
+        # domain are the alarm — do not re-enable).
         die "restore of stg-${profile}-golden failed — unit left" \
-            "stopped. Pre-restore state: ${SNAPSHOT_DIR}/stg-${profile}-prerestore" \
-            "(rotating slot). Repair per runbook item 6, then re-run."
+            "stopped. If the failure was BEFORE the 'Restored" \
+            "snapshot' line: the database is unchanged; pre-restore" \
+            "state: ${SNAPSHOT_DIR}/stg-${profile}-prerestore" \
+            "(rotating slot); repair per runbook item 6. If it was" \
+            "the post-restore orphan sweep (after 'Restored" \
+            "snapshot'): the golden is loaded — do NOT restore the" \
+            "prerestore slot; heal per the sweep's report, then" \
+            "re-run 'snapshot sweep-orphans stg:${profile}' and" \
+            "re-take the golden once healed."
     fi
     systemctl start "$unit"
 

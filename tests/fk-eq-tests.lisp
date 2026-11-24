@@ -212,6 +212,309 @@ suppresses permalink siblings, never storage columns."
     (is (equal "c3"
             (getf (car (getf by-cross-b :records)) :title)))))
 
+;;; --- Ordinary :eq / :ne on singular-target fields (the
+;;; same-type :eq repair: storage-column compare, display/uuid
+;;; resolution, both the lone 500 and the joined silent zero) ---
+
+(test eq-storage-sql-text-base
+  "A lone same-type (:comments :post :eq uuid) row: the condition
+aliases the physical storage column (rt_comments.comment_post = $1),
+binds the uuid, and needs no join (filters-require-join-p nil) —
+the old code emitted the display column rt_posts.post_title here
+and Postgres 500'd with 42P01 (missing FROM-clause entry)."
+  (let* ((sql (u:tree-get *compiled-model* :comments
+                :views :main :phase-a-base-sql))
+         (a-id (getf *fixture* :post-a))
+         (result (add-where-clause sql
+                    `((:comments :post :eq ,a-id)) "admin")))
+    (is (search "rt_comments.comment_post = $1" (car result)
+          :test #'char-equal))
+    (is (equal (list a-id) (cdr result)))
+    (is-false (filters-require-join-p :comments
+                `((:comments :post :eq ,a-id))))
+    (is (search "rt_comments" (car result) :test #'char-equal))
+    (is-false (search "rt_posts" (car result) :test #'char-equal))))
+
+(test eq-storage-be-list-matches
+  "be-list with (:comments :post :eq a-uuid) returns all three
+comments (c1/c2/c3) with :total 3 — the lone-row 500 is gone."
+  (let ((a-id (getf *fixture* :post-a)))
+    (let ((r (be-list :comments "admin"
+                :filters `((:comments :post :eq ,a-id)))))
+      (is (= 3 (getf r :total)))
+      (is (equal '("c1" "c2" "c3")
+              (sort (mapcar (lambda (x) (getf x :title))
+                       (getf r :records))
+                #'string<))))))
+
+(test eq-storage-crosspost-display-and-uuid
+  "(:comments :crosspost :eq \"Post B\") and (:comments :crosspost
+:eq b-uuid) both select the crosspost storage column, resolve to
+B's uuid, and return only c3 — display name and uuid are
+equivalent spellings, and the field-specific storage column is
+selected (:post never matches, :crosspost does)."
+  (let ((b-id (getf *fixture* :post-b)))
+    (dolist (value (list "Post B" b-id))
+      (let ((r (be-list :comments "admin"
+                  :filters `((:comments :crosspost :eq ,value)))))
+        (is (= 1 (getf r :total)))
+        (is (equal '("c3")
+                (mapcar (lambda (x) (getf x :title))
+                  (getf r :records))))))
+    (let* ((sql (u:tree-get *compiled-model* :comments
+                   :views :main :phase-a-base-sql))
+           (result (add-where-clause sql
+                      `((:comments :crosspost :eq "Post B")) "admin")))
+      (is (search "rt_comments.comment_crosspost = $1" (car result)
+            :test #'char-equal))
+      (is (equal (list b-id) (cdr result))
+        "the display name resolves to the uuid before the bind"))))
+
+(test eq-ne-storage-be-list
+  ":ne with both spellings on :post: the != storage-column
+condition, resolved uuid parameter, and all three comments back
+(none of them has post = B)."
+  (let ((b-id (getf *fixture* :post-b)))
+    (dolist (value (list "Post B" b-id))
+      (let* ((sql (u:tree-get *compiled-model* :comments
+                     :views :main :phase-a-base-sql))
+             (result (add-where-clause sql
+                        `((:comments :post :ne ,value)) "admin"))
+             (r (be-list :comments "admin"
+                   :filters `((:comments :post :ne ,value)))))
+        (is (search "rt_comments.comment_post != $1" (car result)
+              :test #'char-equal))
+        (is (equal (list b-id) (cdr result)))
+        (is (= 3 (getf r :total)))
+        (is (equal '("c1" "c2" "c3")
+                (sort (mapcar (lambda (x) (getf x :title))
+                         (getf r :records))
+                  #'string<)))))))
+
+(test eq-uuid-display-collision
+  "The collision pin: (:comments :post :eq b-uuid) returns zero
+even though post A's title IS that uuid — the compare is the
+storage column (uuid), never the display column (a display-column
+compare would match all of A's comments; the old joined path did
+exactly that in reverse and silently matched zero)."
+  (let ((b-id (getf *fixture* :post-b)))
+    (let ((r (be-list :comments "admin"
+                :filters `((:comments :post :eq ,b-id)))))
+      (is (zerop (getf r :total)))
+      (is-false (getf r :records)))))
+
+(test eq-joined-beside-sibling
+  "The joined cases: a join-forcing sibling (:posts :title :eq)
+beside the same-type row — the old silent zero. The :posts join
+rides :post's own FK (rt_posts joined on comment_post), so a
+title sibling selects comments whose :post IS that post: A's
+title (literally B's uuid, bound as a-title) selects all three,
+\"Post B\" selects none. Joined :post :eq a-id beside A's title
+row returns all three; joined :post :ne \"Post B\" beside A's
+title row returns all three; joined :crosspost :eq \"Post B\"
+beside A's title row returns only c3 (the crosspost leg never
+rides the B-title row — no comment's :post is B); joined
+:crosspost :ne b-id beside A's title row returns c1/c2. Each
+reference condition names its qualified rt_comments FK column;
+parameters remain in filter order."
+  (let* ((a-id (getf *fixture* :post-a))
+         (b-id (getf *fixture* :post-b))
+         (a-title b-id) ; A's display title is literally B's uuid
+         (sql (u:tree-get *compiled-model* :comments
+                :views :main :phase-a-join-sql)))
+    ;; joined :post :eq a-id beside A's title row
+    (let ((result (add-where-clause sql
+                    `((:posts :title :eq ,a-title)
+                      (:comments :post :eq ,a-id))
+                    "admin"))
+          (r (be-list :comments "admin"
+               :filters `((:posts :title :eq ,a-title)
+                          (:comments :post :eq ,a-id)))))
+      (is (search "rt_comments.comment_post = $2" (car result)
+            :test #'char-equal))
+      (is (equal (list a-title a-id) (cdr result)))
+      (is (= 3 (getf r :total)))
+      (is (equal '("c1" "c2" "c3")
+              (sort (mapcar (lambda (x) (getf x :title))
+                       (getf r :records))
+                #'string<))))
+    ;; joined :post :ne "Post B" beside A's title row
+    (let ((result (add-where-clause sql
+                    `((:posts :title :eq ,a-title)
+                      (:comments :post :ne "Post B"))
+                    "admin"))
+          (r (be-list :comments "admin"
+               :filters `((:posts :title :eq ,a-title)
+                          (:comments :post :ne "Post B")))))
+      (is (search "rt_comments.comment_post != $2" (car result)
+            :test #'char-equal))
+      (is (equal (list a-title b-id) (cdr result))
+        "the display name resolves to B's uuid before the bind")
+      (is (= 3 (getf r :total)))
+      (is (equal '("c1" "c2" "c3")
+              (sort (mapcar (lambda (x) (getf x :title))
+                       (getf r :records))
+                #'string<))))
+    ;; joined :crosspost :eq "Post B" beside A's title row
+    (let ((result (add-where-clause sql
+                    `((:posts :title :eq ,a-title)
+                      (:comments :crosspost :eq "Post B"))
+                    "admin"))
+          (r (be-list :comments "admin"
+               :filters `((:posts :title :eq ,a-title)
+                          (:comments :crosspost :eq "Post B")))))
+      (is (search "rt_comments.comment_crosspost = $2" (car result)
+            :test #'char-equal))
+      (is (equal (list a-title b-id) (cdr result)))
+      (is (= 1 (getf r :total)))
+      (is (equal '("c3")
+              (mapcar (lambda (x) (getf x :title))
+                (getf r :records)))))
+    ;; joined :crosspost :ne b-id beside A's title row: c1/c2 have
+    ;; NULL crossposts, and NULL != B is UNKNOWN (three-valued
+    ;; logic), not TRUE — they drop. Only c3 has a non-null
+    ;; crosspost, and it equals B, so zero rows. The positive
+    ;; spelling :crosspost :ne a-id keeps c3 (B ≠ A, TRUE).
+    (let ((result (add-where-clause sql
+                    `((:posts :title :eq ,a-title)
+                      (:comments :crosspost :ne ,b-id))
+                    "admin"))
+          (r (be-list :comments "admin"
+               :filters `((:posts :title :eq ,a-title)
+                          (:comments :crosspost :ne ,b-id))))
+          (r-a (be-list :comments "admin"
+                 :filters `((:posts :title :eq ,a-title)
+                            (:comments :crosspost :ne ,a-id)))))
+      (is (search "rt_comments.comment_crosspost != $2" (car result)
+            :test #'char-equal))
+      (is (zerop (getf r :total))
+        "NULL != B is UNKNOWN: the NULL-crosspost rows drop")
+      (is (= 1 (getf r-a :total)))
+      (is (equal '("c3")
+              (mapcar (lambda (x) (getf x :title))
+                (getf r-a :records)))))))
+
+(test eq-joined-two-fk-fields-one-query
+  ":post :eq a-id AND :crosspost :eq \"Post B\" in one query: both
+distinct FK conditions present, both resolved parameters, and only
+c3 (the one row matching both)."
+  (let* ((a-id (getf *fixture* :post-a))
+         (b-id (getf *fixture* :post-b))
+         (sql (u:tree-get *compiled-model* :comments
+                :views :main :phase-a-base-sql))
+         (result (add-where-clause sql
+                    `((:comments :post :eq ,a-id)
+                      (:comments :crosspost :eq "Post B"))
+                    "admin"))
+         (r (be-list :comments "admin"
+              :filters `((:comments :post :eq ,a-id)
+                         (:comments :crosspost :eq "Post B")))))
+    (is (search "rt_comments.comment_post = $1" (car result)
+          :test #'char-equal))
+    (is (search "rt_comments.comment_crosspost = $2" (car result)
+          :test #'char-equal))
+    (is (equal (list a-id b-id) (cdr result)))
+    (is (= 1 (getf r :total)))
+    (is (equal '("c3")
+            (mapcar (lambda (x) (getf x :title))
+              (getf r :records))))))
+
+(test eq-null-storage-preserved
+  "Null arms ride the same storage predicate: :crosspost :eq nil
+emits IS NULL with no value parameter and returns c1/c2;
+:crosspost :ne :null emits IS NOT NULL and returns c3. A
+joined-sibling null assertion keeps the two-FK/null guarantee
+exercised beside the broadened storage predicate."
+  (let* ((sql (u:tree-get *compiled-model* :comments
+                 :views :main :phase-a-base-sql))
+         (eq-result (add-where-clause sql
+                      `((:comments :crosspost :eq nil)) "admin"))
+         (ne-result (add-where-clause sql
+                      `((:comments :crosspost :ne :null)) "admin"))
+         (eq-r (be-list :comments "admin"
+                  :filters `((:comments :crosspost :eq nil))))
+         (ne-r (be-list :comments "admin"
+                  :filters `((:comments :crosspost :ne :null))))
+         (join-sql (u:tree-get *compiled-model* :comments
+                      :views :main :phase-a-join-sql))
+         (join-result (add-where-clause join-sql
+                        `((:posts :title :eq "Post B")
+                          (:comments :crosspost :eq nil))
+                        "admin"))
+         (join-r (be-list :comments "admin"
+                    :filters `((:posts :title :eq "Post B")
+                               (:comments :crosspost :eq nil)))))
+    (is (search "rt_comments.comment_crosspost is null" (car eq-result)
+          :test #'char-equal))
+    (is (null (cdr eq-result)))
+    (is (= 2 (getf eq-r :total)))
+    (is (equal '("c1" "c2")
+            (sort (mapcar (lambda (x) (getf x :title))
+                     (getf eq-r :records))
+              #'string<)))
+    (is (search "rt_comments.comment_crosspost is not null"
+          (car ne-result) :test #'char-equal))
+    (is (null (cdr ne-result)))
+    (is (= 1 (getf ne-r :total)))
+    (is (equal '("c3")
+            (mapcar (lambda (x) (getf x :title))
+              (getf ne-r :records))))
+    (is (search "rt_comments.comment_crosspost is null" (car join-result)
+          :test #'char-equal))
+    (is (equal '("Post B") (cdr join-result)))
+    (is (= 0 (getf join-r :total))
+      "beside the B-title join row: no comment has both crosspost
+B and crosspost null")))
+
+(test eq-unknown-display-name-rejected
+  "Unknown non-UUID display names for both :eq and :ne signal
+validation-error through be-list (resolve-reference-id's unknown-
+value report; rest-list maps it to the 400)."
+  (signals validation-error
+    (be-list :comments "admin"
+      :filters '((:comments :post :eq "No Such Post"))))
+  (signals validation-error
+    (be-list :comments "admin"
+      :filters '((:comments :crosspost :ne "No Such Post")))))
+
+(test eq-unknown-uuid-matches-zero
+  "An unknown well-formed uuid under :eq returns zero, no signal —
+no existence lookup was added (mirrors fk-eq-unknown-uuid-empty)."
+  (let ((r (be-list :comments "admin"
+              :filters
+              '((:comments :post :eq
+                 "00000000-0000-0000-0000-000000000000")))))
+    (is (zerop (getf r :total)))
+    (is-false (getf r :records))))
+
+(test eq-guest-rbac-composition
+  "RBAC composition: guest (seeded with the public role) sees only
+c1 and c3 (their resources temporarily carry public) under :post
+:eq a-uuid, with :total 2, while the admin control still returns
+all three — the corrected storage predicate composes with
+base-be-list's readable-ID filter, not just admin-visible rows.
+No fixture or seed-data change; unwind-protect restores."
+  (let* ((a-id (getf *fixture* :post-a))
+         (c1 (getf *fixture* :c1))
+         (c3 (getf *fixture* :c3)))
+    (a:add-resource-role *rbac* (id-to-resource-name c1) "public")
+    (a:add-resource-role *rbac* (id-to-resource-name c3) "public")
+    (unwind-protect
+        (progn
+          (let ((r (be-list :comments "guest"
+                      :filters `((:comments :post :eq ,a-id)))))
+            (is (= 2 (getf r :total)))
+            (is (equal '("c1" "c3")
+                    (sort (mapcar (lambda (x) (getf x :title))
+                             (getf r :records))
+                      #'string<))))
+          (is (= 3 (getf (be-list :comments "admin"
+                           :filters `((:comments :post :eq ,a-id)))
+                    :total))))
+      (a:remove-resource-role *rbac* (id-to-resource-name c1) "public")
+      (a:remove-resource-role *rbac* (id-to-resource-name c3)
+        "public"))))
+
 ;;; --- Guards and rejections ---
 
 (test fk-eq-cross-type-rejected

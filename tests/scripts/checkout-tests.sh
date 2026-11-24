@@ -467,7 +467,24 @@ case "$mode" in
     rollout)
         [[ -f "$STUB/kubectl-rollout-fails" ]] && exit 1
         exit 0 ;;
-    scale|exec) exit 0 ;;
+    scale|exec)
+        # exec knob: $STUB/psql-answers (a file of lines) is cat'd to
+        # stdout for every exec that invokes psql (the post-restore
+        # sweep's derivation runs through kubectl exec exactly so);
+        # $STUB/psql-exit-fails makes those execs exit 1 (a failed
+        # db_exec = a failed sweep). Everything else stays exit 0
+        # empty (the sweep's sentinel-absent success arm).
+        if [[ "$mode" == "exec" && -f "$STUB/psql-answers" ]]; then
+            for a in "$@"; do
+                [[ "$a" == "psql" ]] && { cat "$STUB/psql-answers"; exit 0; }
+            done
+        fi
+        if [[ "$mode" == "exec" && -f "$STUB/psql-exit-fails" ]]; then
+            for a in "$@"; do
+                [[ "$a" == "psql" ]] && exit 1
+            done
+        fi
+        exit 0 ;;
 esac
 exit 0
 EOF
@@ -3265,7 +3282,9 @@ test_site_production_only_boundary() {
     # production-only message, no routing line, no stub mutation.
     local shape
     for shape in "staging update" "snapshot save name1 stg:books" \
-                 "snapshot restore name1 stg:books" "repl books" \
+                 "snapshot restore name1 stg:books" \
+                 "snapshot sweep-orphans stg:books" \
+                 "repl books" \
                  "db books" "psql books" "demo start x" "e-demo start x" \
                  "profile list" "profile expose books"; do
         : > "$STUB/kubectl.log"; : > "$STUB/sudo.log"; : > "$STUB/npm.log"
@@ -4222,6 +4241,71 @@ test_rebirth_fresh_materializes_and_restores() {
     # The restore ran in the printed order (kubectl saw the namespace
     # resolution of the restore's prd: address).
     assert_contains "$(cat "$STUB/kubectl.log")" "dataui-todos" "the restore resolved prd:todos"
+    # The post-restore sweep ran through the same stubbed execs (the
+    # empty-stdout success arm) and the rebirth stayed green.
+    assert_contains "$out" "rebirth child: todos healthy" "the sweep never failed the rebirth"
+}
+
+test_rebirth_sweep_verdict_switch() {
+    # SWEEP_VERDICT_FATAL wiring: a two-snapshot recovery set with a
+    # stubbed NONZERO sweep verdict — the first (non-final) restore
+    # warns and the sequence continues; the last one's verdict is
+    # fatal and the rebirth dies there. The exec stub's
+    # SWEEP_FAIL_FIRST knob makes the FIRST psql exec of each restore
+    # fail (the sweep's derivation; everything after — the pg_dump
+    # safety, reset_public_schema, container_pg_restore — happens
+    # before it and stays exit-0 empty, so the restore itself
+    # completes into the sweep refusal).
+    write_site_marker prod-2
+    rebirth_ready todos
+    seed_manifest_s3 todos
+    rm -f "$H/state/ops/prod-manifest.jsonl"
+    touch "$STUB/backup-second-snapshot"   # two printed restore names
+    mkdir -p "$STUB/hooks"
+    cat > "$STUB/hooks/kubectl-fail-first" <<'HOOK'
+#!/bin/bash
+# Fail the sweep's DERIVATION only: a kubectl exec whose psql command
+# carries pg_constraint (the derivation statement names it; nothing
+# else in the restore path does — stamp_admin_password's psql -c and
+# the dump/restore calls never mention it). A failed derivation is a
+# failed sweep (rc 1) — the verdict the switch test wants, without
+# breaking the restore itself.
+echo "kubectl $*" >> "$STUB/kubectl.log"
+for a in "$@"; do
+    if [[ "$a" == *pg_constraint* ]]; then
+        exit 1
+    fi
+done
+exit 0
+HOOK
+    chmod +x "$STUB/hooks/kubectl-fail-first"
+    # Wrap the kubectl stub so the hook runs before it (restore it
+    # after; the dispatcher needs the ABSOLUTE real-stub path baked
+    # in — $H is not exported into run_prod2's subshell).
+    mv "$H/bin/kubectl" "$H/bin/kubectl.real"
+    {
+        echo '#!/bin/bash'
+        echo "STUB=\"$STUB\""
+        echo "export STUB"
+        cat <<'DISP'
+bash "$STUB/hooks/kubectl-fail-first" "$@" || exit $?
+REAL="${0}.real"
+exec "$REAL" "$@"
+DISP
+    } > "$H/bin/kubectl"
+    chmod +x "$H/bin/kubectl"
+    local out
+    out=$(REBIRTH_BACKUP_BIN_DIR="$H/bin" run_prod2 rebirth --fresh-data 2>&1) || true
+    assert_contains "$out" "Restoring prd-todos-daily-20261119-0320 into prd:todos" \
+        "the first restore ran"
+    assert_contains "$out" "WARNING: the post-restore orphan sweep refused" \
+        "the non-final verdict warned"
+    assert_contains "$out" "Restoring prd-todos-20261119-1140 into prd:todos" \
+        "the sequence continued to the last name"
+    assert_contains "$out" "the todos step failed" "the final verdict was fatal"
+    rm -f "$H/bin/kubectl"; mv "$H/bin/kubectl.real" "$H/bin/kubectl"
+    rm -f "$STUB/hooks/kubectl-fail-first" "$STUB/backup-second-snapshot" \
+          "$STUB/sweep-fail-countdown"
 }
 
 test_rebirth_files_tree_precondition() {
@@ -4862,6 +4946,7 @@ main() {
     t rebirth_inventory_and_missing_manifest
     t rebirth_adopt_never_restores
     t rebirth_fresh_materializes_and_restores
+    t rebirth_sweep_verdict_switch
     t rebirth_files_tree_precondition
     t rebirth_first_failure_stops_the_run
     t rebirth_preflight_dies

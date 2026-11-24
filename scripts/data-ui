@@ -325,6 +325,7 @@ traffic
 
 snapshot save <name> <src-address>
          restore <name> <dst-address>
+         sweep-orphans <dst-address>
          list
          copy <src-name> <dst-name> [<model>]
          drop <name>
@@ -355,6 +356,16 @@ snapshot save <name> <src-address>
     files/ top-level entry, so tars are portable across environments
     and old tars restore retroactively. Restore swaps it back in
     after the database.
+    Every restore then runs an automatic post-restore orphan sweep
+    (after its success line; on prd: after the revive, the app
+    serving): report, safety gate, one DELETE, post-verify. Exit 1
+    on a refused verdict (NOT SAFE — the by-id resource set is
+    broken) or a failed sweep query; the restore itself completed,
+    nothing was deleted on a refusal, and the report above says how
+    to heal, then re-run 'snapshot sweep-orphans <dst-address>'
+    (the standalone arm — same sweep, no restore, never quiesces).
+    Only a rebirth --fresh-data recovery sequence warns instead of
+    exiting 1 on its non-final restores.
     copy duplicates a snapshot triple under a new name (the source is
     untouched; an existing destination needs FORCE=1). With <model>,
     the copy's .meta gets model=<model> (plus copied-from and
@@ -367,7 +378,8 @@ snapshot save <name> <src-address>
     FORCE=1 skips confirmations, lets 'copy' overwrite an existing
     destination, and is the only escape for
     'save' + unreachable dev: /api/info; it never overrides a
-    model mismatch, and restore-unreachable skips need no FORCE.
+    model mismatch, an unsafe sweep verdict, or anything about
+    'sweep-orphans'; and restore-unreachable skips need no FORCE.
 
 help
     Displays this help text.
@@ -4535,7 +4547,7 @@ function rebirth_restore_app {
         || die "recover for ${app} failed (no complete recovery set?)."
     printf '%s\n' "$out"
     local -a names=()
-    local line
+    local line name
     while IFS= read -r line; do
         [[ "$line" =~ ^restore:[[:space:]]+([^[:space:]]+)$ ]] \
             && names+=("${BASH_REMATCH[1]}")
@@ -4543,7 +4555,24 @@ function rebirth_restore_app {
     if (( ${#names[@]} == 0 )); then
         die "recover for ${app} printed no restoreable snapshot names; nothing restored."
     fi
-    for name in "${names[@]}"; do
+    # Fatality switch per printed name, in this shell (the callee
+    # captures it under a different local name; never localized
+    # there — a bare `local SWEEP_VERDICT_FATAL` would blank it).
+    # Every restore but the LAST warns on a refused sweep verdict: a
+    # recovery set can hold several snapshots (SceneBook's daily
+    # triple plus the rpo pair), and a verdict on an earlier restore
+    # must not stop the sequence before the fresher data lands. The
+    # last one's verdict is fatal exactly as a standalone restore's
+    # is. This is the ONLY caller that sets the switch — hand-run
+    # runbook sequences stay fatal.
+    local i
+    for (( i=0; i < ${#names[@]}; i++ )); do
+        if (( i == ${#names[@]} - 1 )); then
+            SWEEP_VERDICT_FATAL=1
+        else
+            SWEEP_VERDICT_FATAL=0
+        fi
+        name="${names[$i]}"
         echo "Restoring ${name} into prd:${app}..."
         snapshot_restore "$name" "prd:${app}" \
             || die "restoring ${name} into prd:${app} failed."
@@ -4964,6 +4993,34 @@ function snapshot_restore {
     else
         echo "Restored snapshot '${name}' ← ${path} (${DB_HOST}:${DB_PORT}/${DB_NAME})"
     fi
+    # Post-restore orphan sweep — LAST, after the success line (on
+    # prd: after the revive, the app serving). Never between the
+    # quiesce and the disarm: inside that window prd_restore_trap is
+    # live and nothing in the sweep may exit (snapshot_restore is
+    # called in-process by rebirth_restore_app and verb_start; an
+    # exit here would tear down the caller). A failing revive stays a
+    # revive failure (exit 1 above — the database is the dump, the
+    # next restore sweeps it); a sweep verdict never changes the
+    # restore's outcome or the app's availability — it rides the
+    # exit status only.
+    local sweep_rc=0
+    post_restore_sweep || sweep_rc=$?
+    if (( sweep_rc != 0 )); then
+        # The fatality switch is captured under a different local
+        # name, NEVER localized itself: a bare `local
+        # SWEEP_VERDICT_FATAL` blanks the caller's value (bash local
+        # without an assignment declares the name unset in this
+        # scope) and the warning path could never fire. Only
+        # rebirth_restore_app sets it — in-process, same shell, a
+        # plain assignment; every other caller (dispatch, verb_start,
+        # the nightly) gets the fatal default.
+        local fatal="${SWEEP_VERDICT_FATAL:-1}"
+        if [[ "$fatal" == "1" ]]; then
+            echo "ERROR: the post-restore orphan sweep refused (see the report above); the restore itself completed — the database is the dump, the app is up. NOTHING was deleted. Healing per the report, then re-run: $SCRIPT_NAME snapshot sweep-orphans <dst-address>." >&2
+            exit 1
+        fi
+        echo "WARNING: the post-restore orphan sweep refused (see the report above); SWEEP_VERDICT_FATAL=0 (a rebirth recovery set) — continuing. The next restore of this snapshot replaces the database wholesale; nothing was deleted." >&2
+    fi
 }
 
 function stamp_admin_password {
@@ -5018,6 +5075,299 @@ function snapshot_password_notice {
         echo "  Snapshot '${name}' has no .meta — provenance unknown; the admin password was still re-stamped from the destination's env."
     fi
     echo "  The auth rows traveled with the dump (only 'admin' was re-stamped); log in again. The destination's JWT_SECRET is unchanged (it lives in the env, never in the dump); old sessions break because the user table was swapped, not because the secret was."
+}
+
+# ----- post-restore orphan sweep ------------------------------------------
+#
+# The restore-side defense-in-depth for the orphan-resources problem
+# (backlog "Post-restore orphan resource sweep"): a contaminated
+# snapshot re-imports name-keyed orphan resources rows with the dump
+# (pg_restore is id-faithful), and one roleless duplicate is enough to
+# make be-id's by-name match non-unique and block every item update
+# (the prod-2 perf-tag incident). The factory itself is fixed
+# (delete-row-resources in reset-tables); this is the destination-side
+# guard — every restore sweeps, no operator memory involved.
+#
+# Contract: returns 0 or 1 and NEVER exits — snapshot_restore and the
+# sweep-orphans verb read the verdict; fatality is the caller's call
+# (the SWEEP_VERDICT_FATAL capture idiom below).
+#
+# Round-trip budget: four db_exec round trips whatever the table count
+# — derive, report, DELETE, post-verify. On prd every db_exec is a
+# fresh kubectl exec; one exec per count would be dozens of them.
+# Short statements go by -c (the stamp_admin_password precedent); the
+# generated per-table text goes to psql on stdin (the
+# reset_public_schema channel — a full-read consumer, safe under
+# kubectl exec -i; the lesson-2 truncation hazard is a hand-typed
+# heredoc, and nothing large is typed by hand here).
+
+sweep_derive_row_tables() {
+    # Prints the row-resourced tables (one per line, sorted), derived
+    # from the FK graph filtered to id-column FKs — never hardcoded:
+    # every model derives its own set. Prints nothing (exit 1) when
+    # the database has no resources table (not a Data UI database —
+    # nothing to sweep). A failed db_exec is a failed sweep (caller
+    # checks $?). Sentinel row first, ord 0 vs ord 1, all-text UNION
+    # ALL — the capture contract: empty stdout = the kubectl stub =
+    # success; 'NO-RESOURCES' = no resources table = success; any
+    # token with zero ord-1 rows = a live database whose derivation
+    # found nothing = a failed sweep (fail-open is unacceptable on a
+    # real database). The two compare forms are type-pinned and were
+    # verified running on a live Data UI database (PostgreSQL 16):
+    # confrelid is oid — an untyped literal ('resources') errors at
+    # exit 1 even when the table exists; to_regclass() returns null
+    # (no rows) on a missing table instead, which the sentinel arm
+    # uses too. conkey is int2[] — a scalar or integer[] compare
+    # errors "operator does not exist"; the attnum subselect cast to
+    # int2[] matches the array type and stays keyed on the actual id
+    # column (never a hardcoded '{1}').
+    #
+    # The conkey filter is load-bearing: resource_roles also FKs to
+    # resources — on resource_id, conkey {4} — and a bare FK-graph
+    # derivation would count every role link as a "row without
+    # resource", making the verdict NOT SAFE forever. Signature of
+    # that bug: rows-without-resource equal to the resource_roles row
+    # count.
+    local rows rc
+    rows=$(db_exec psql -v ON_ERROR_STOP=1 -tA -F' ' -c "
+select sentinel, ord, rel from (
+  select coalesce(to_regclass('public.resources')::text, 'NO-RESOURCES') as sentinel,
+         0 as ord, ''::text as rel
+  union all
+  select 'resources', 1,
+         regexp_replace(conrelid::regclass::text, '^.*\.', '')
+    from pg_constraint
+   where contype = 'f'
+     and confrelid = to_regclass('public.resources')
+     and conkey = array[(select attnum from pg_attribute
+                          where attrelid = to_regclass('public.resources')
+                            and attname = 'id')]::int2[]
+) s
+order by ord, rel") || return 1
+    # token|ord|rel: first row is the sentinel by order by ord.
+    local token line
+    token=$(printf '%s\n' "$rows" | head -1 | cut -d' ' -f1)
+    if [[ -z "$token" ]]; then
+        # Empty stdout: the stubbed exec arm (checkout-tests) or an
+        # empty cluster — nothing verifiable to sweep; success.
+        return 0
+    fi
+    if [[ "$token" == "NO-RESOURCES" ]]; then
+        echo "sweep: no resources table (not a Data UI database); nothing to sweep" >&2
+        return 0
+    fi
+    local -a tables=()
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        if [[ "$line" == "$token 1 "* ]]; then
+            tables+=("${line##* }")
+        fi
+    done <<<"$rows"
+    if (( ${#tables[@]} == 0 )); then
+        # A real resources table, a working psql, and zero id-FK
+        # tables: the derivation query is wrong (a Data UI database
+        # always has row tables) — a failed sweep, never a silent
+        # pass.
+        echo "ERROR: sweep derivation found no row-resourced tables on a" \
+             "live database — the derivation query is wrong; nothing" \
+             "deleted." >&2
+        return 1
+    fi
+    printf '%s\n' "${tables[@]}"
+}
+
+sweep_table_prefix() {
+    # $1 = table name -> resource prefix. The inverse of table-name
+    # (lisp/model.lisp: built-ins bare, others rt_, type-key
+    # dashes->underscores): rt_ stripped when present, underscores
+    # -> dashes. Total mapping by construction. Type-level resources
+    # (type-<type>, no colon) never match a row-table prefix, so the
+    # DELETE arms cannot touch them.
+    local p="${1#rt_}"
+    echo "${p//_/-}"
+}
+
+post_restore_sweep() {
+    # Runs after the restore's own success line (on prd: after the
+    # revive, the app serving; never inside the quiesce->disarm
+    # window — nothing here may exit while prd_restore_trap is live).
+    # Derive, report, gate, delete, post-verify. No model is read
+    # anywhere: the FK graph yields tables, the gate needs none. No
+    # backup artifacts (no zz_ tables, no TSVs): the rollback is the
+    # snapshot itself — re-restore re-imports the exact pre-sweep
+    # state and the sweep converges (idempotent). The prerestore slot
+    # holds the destination's prior state. The manual orphan-sweep
+    # skill remains the TSV-backed path for live databases.
+    # One derivation call, captured whole: stdout carries the table
+    # list (the only success shape that proceeds) or nothing; the
+    # helper's own note lines (stub / no-resources) went to stderr.
+    # A failed db_exec is a failed sweep — never a silent pass.
+    local derive
+    if ! derive=$(sweep_derive_row_tables); then
+        echo "ERROR: sweep derivation failed; nothing deleted." >&2
+        return 1
+    fi
+    local -a tables=()
+    local line tbl pfx
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        tables+=("$line")
+    done <<<"$derive"
+    if (( ${#tables[@]} == 0 )); then
+        # Derivation clean but empty: stubbed exec (empty stdout) or
+        # no resources table — the note was already printed by the
+        # helper. Success.
+        return 0
+    fi
+
+    # Report: one generated statement, a row per table with
+    # res / rows / orphans / roleless-by-id / rows-without-resource,
+    # plus (separately) the prefixes that have resources but no row
+    # table (dropped types — inert, reported, never deleted, never
+    # failed).
+    local sql="" notables_sql="" pfx_list
+    for tbl in "${tables[@]}"; do
+        pfx=$(sweep_table_prefix "$tbl")
+        sql+="select '${pfx}' as prefix, '${tbl}' as tbl,
+       (select count(*) from resources where split_part(resource_name,':',1)='${pfx}') as res,
+       (select count(*) from ${tbl}) as rows,
+       (select count(*) from resources r where split_part(r.resource_name,':',1)='${pfx}' and r.id not in (select id from ${tbl})) as orphans,
+       (select count(*) from resources r join ${tbl} t on t.id = r.id where split_part(r.resource_name,':',1)='${pfx}' and not exists (select 1 from resource_roles rr where rr.resource_id = r.id)) as roleless,
+       (select count(*) from ${tbl} t where not exists (select 1 from resources r where r.id = t.id)) as rwr
+union all
+"
+    done
+    # Drop the final union all separator.
+    sql="${sql%union all$'\n'}"
+    sql="${sql%$'\n'}"
+    # Prefixes with resources but no row table: report-only.
+    pfx_list=$(printf "%s\n" "${tables[@]}" \
+        | while read -r tbl; do sweep_table_prefix "$tbl"; done \
+        | awk '{printf "'\''%s'\'',", $0}' | sed 's/,$//')
+    notables_sql="select split_part(resource_name,':',1) as prefix, count(*) as res
+  from resources
+ where split_part(resource_name,':',1) not like 'type-%'
+   and split_part(resource_name,':',1) not in (${pfx_list})
+ group by split_part(resource_name,':',1)
+ order by 1"
+
+    echo "Post-restore orphan sweep:"
+    local report
+    report=$(db_exec psql -v ON_ERROR_STOP=1 -tA -F' ' -c "$sql") || {
+        echo "ERROR: sweep report query failed; nothing deleted." >&2
+        return 1
+    }
+    local notable_report
+    notable_report=$(db_exec psql -v ON_ERROR_STOP=1 -tA -F' ' -c "$notables_sql") || notable_report=""
+
+    local total_orphans=0 unsafe="" tbl_orphans
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        # prefix tbl res rows orphans roleless rwr
+        local p r rw o rl rwr
+        read -r p _tbl r rw o rl rwr <<<"$line"
+        printf '  %-16s %-18s res %6s  rows %6s  orphans %6s  roleless-by-id %4s  rows-wo-res %4s\n' \
+            "$p" "$_tbl" "$r" "$rw" "$o" "$rl" "$rwr"
+        total_orphans=$(( total_orphans + o ))
+        [[ "$rl" != "0" ]] && unsafe="${unsafe} ${p}(roleless-by-id:${rl})"
+        [[ "$rwr" != "0" ]] && unsafe="${unsafe} ${p}(rows-wo-res:${rwr})"
+    done <<<"$report"
+
+    if [[ -n "$notable_report" ]]; then
+        echo "  prefixes with resources but no row table (dropped types — inert, not swept):"
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            local p r
+            read -r p r <<<"$line"
+            printf '  %-16s res %6s (no table: nothing can resolve it)\n' "$p" "$r"
+        done <<<"$notable_report"
+    fi
+    echo "  TOTAL ORPHANS: ${total_orphans}"
+
+    # The safety gate, in code (the manual recipe's SAFE TO SWEEP
+    # verdict — the automatic path cannot rely on discipline).
+    # "With roles" = at least one resource_roles row; the predicate
+    # is identical to the orphan-sweep skill's because it now lives
+    # in two places — changing one requires changing the other.
+    # Why the floor is sound: every row resource is born with admin
+    # (*default-resource-roles*, rbac/rbac.lisp) and update-roles
+    # force-adds it on every edit.
+    if [[ -n "$unsafe" ]]; then
+        echo "VERDICT: NOT SAFE to sweep —${unsafe}" >&2
+        echo "  Nothing was deleted; the restore itself completed." >&2
+        echo "  NOT SAFE means the live by-id resource set is broken (a row" >&2
+        echo "  exists whose by-id resource has no roles, or a row with no" >&2
+        echo "  by-id resource at all) — the sweep cannot tell which resource" >&2
+        echo "  is the live one. Healing, by id, never through the name-based" >&2
+        echo "  rbac API (a duplicate name is the failure itself):" >&2
+        echo "    roleless-by-id — re-stamp the resource's roles from a roled" >&2
+        echo "      by-id sibling of the same type: insert into resource_roles" >&2
+        echo "      (resource_id, role_id) select <id>, role_id from" >&2
+        echo "      resource_roles where resource_id in (select one roled" >&2
+        echo "      sibling's id of that type)" >&2
+        echo "    rows-wo-res — mint one: insert into resources (id," >&2
+        echo "      resource_name) values (<row-id>, '<prefix>:<row-id>'), then" >&2
+        echo "      copy a roled sibling's resource_roles links the same way" >&2
+        echo "    no roled by-id sibling at all — there is no model-free source" >&2
+        echo "      to copy: heal with heal-model or a hand-crafted role set" >&2
+        echo "      (judgment stays human), then re-run" >&2
+        echo "  Then re-run: $SCRIPT_NAME snapshot sweep-orphans <dst-address>" >&2
+        echo "  When the source slot will be restored again (a golden), heal" >&2
+        echo "  the restored database and re-take the slot, or every later" >&2
+        echo "  restore of it stops here." >&2
+        echo "  Unsafe is never FORCE-able (same rule as a model mismatch)." >&2
+        return 1
+    fi
+
+    if (( total_orphans == 0 )); then
+        echo "VERDICT: SAFE — nothing to sweep (0 orphans; by-id set complete and roled)."
+        return 0
+    fi
+
+    # SAFE + orphans > 0: one DELETE, post-verify, summary. OR'd
+    # arms — prefix-scoped per row table (never a bare id NOT IN
+    # union); type-* and other non-row resources are untouched by
+    # construction. The (1=0) anchor keeps every arm an "or" — one
+    # homogeneous list. The returned id rows are the count (the
+    # command tag prints even on -tA, so count uuid-shaped lines
+    # only). resource_roles links cascade on the FK.
+    local arms=""
+    for tbl in "${tables[@]}"; do
+        pfx=$(sweep_table_prefix "$tbl")
+        arms+="or (split_part(r.resource_name,':',1)='${pfx}' and r.id not in (select id from ${tbl}))"
+    done
+    local deleted
+    if ! deleted=$(db_exec psql -v ON_ERROR_STOP=1 -tA -c \
+            "delete from resources r where (1=0) ${arms} returning id" 2>/dev/null); then
+        echo "ERROR: sweep DELETE failed; nothing verified." >&2
+        return 1
+    fi
+    deleted=$(printf '%s\n' "$deleted" | grep -Ec '^[0-9a-f-]{36}$' || true)
+    echo "VERDICT: SAFE — swept ${deleted} orphan resource rows (role links cascade on the FK)."
+
+    # Post-verify: per-prefix orphan count 0 and rows-wo-res still 0.
+    # No transactions: a failure here is a nonzero verdict with the
+    # numbers; the delete count above states what landed, re-restore
+    # is the undo.
+    local verify
+    verify=$(db_exec psql -v ON_ERROR_STOP=1 -tA -F' ' -c "$sql") || {
+        echo "ERROR: sweep post-verify query failed (the DELETE of ${deleted} rows stands); re-restore is the undo." >&2
+        return 1
+    }
+    local bad=0
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        local p _tbl r rw o rl rwr
+        read -r p _tbl r rw o rl rwr <<<"$line"
+        (( o != 0 )) && { echo "  post-verify: ${p} still has ${o} orphans" >&2; bad=1; }
+        (( rwr != 0 )) && { echo "  post-verify: ${p} has ${rwr} rows without resource" >&2; bad=1; }
+    done <<<"$verify"
+    if (( bad != 0 )); then
+        echo "ERROR: sweep post-verify failed (the DELETE of ${deleted} rows stands); re-restore is the undo." >&2
+        return 1
+    fi
+    echo "  Post-verify clean: 0 orphans, by-id set complete."
+    return 0
 }
 
 function snapshot_restore_files {
@@ -6633,6 +6983,11 @@ function production_only_refuses {
                 save|restore)
                     [[ "${4:-}" == stg:* ]] && return 0
                     ;;
+                sweep-orphans)
+                    # The address is $3 (one argument, not two like
+                    # save/restore's name+address).
+                    [[ "${3:-}" == stg:* ]] && return 0
+                    ;;
             esac
             return 1
             ;;
@@ -6675,6 +7030,11 @@ function route_for_staging {
             case "${2:-}" in
                 save|restore)
                     [[ "${4:-}" == stg:* ]] || return 1
+                    ;;
+                sweep-orphans)
+                    # The address is $3 here (one argument after the
+                    # subverb, not two like save/restore).
+                    [[ "${3:-}" == stg:* ]] || return 1
                     ;;
                 *) return 1 ;;
             esac
@@ -6993,6 +7353,24 @@ case "$ACTION" in
                     || die "snapshot restore takes exactly two arguments (name, destination address)."
                 snapshot_restore "$3" "$4"
                 ;;
+            sweep-orphans)
+                # The standalone re-run / test arm: the same sweep the
+                # restore path runs, without a restore. The address
+                # resolves for the exports only — resolve never
+                # quiesces (a verb that scaled prod down to run a
+                # SELECT would be a regression; on prd: the app stays
+                # at 1 replica throughout). No model check: the
+                # database's own FK graph is the truth.
+                [[ -n "${3:-}" ]] \
+                    || die "snapshot sweep-orphans needs a destination address: '$SCRIPT_NAME snapshot sweep-orphans <dst-address>' (e.g. prd:todos)." \
+                           "Legal address shapes: ${LEGAL_ADDRESSES}."
+                [[ -z "${4:-}" ]] \
+                    || die "snapshot sweep-orphans takes exactly one argument (the destination address)."
+                resolve_snapshot_address "$3" "target"
+                require_postgres_running
+                post_restore_sweep
+                exit $?
+                ;;
             list)
                 [[ -z "${3:-}" ]] \
                     || die "snapshot list takes no arguments."
@@ -7019,12 +7397,17 @@ case "$ACTION" in
                 ;;
             *)
                 cat >&2 <<SNAPUSAGE
-Usage: $SCRIPT_NAME snapshot {save|restore|list|copy|drop|migrate} ...
+Usage: $SCRIPT_NAME snapshot {save|restore|sweep-orphans|list|copy|drop|migrate} ...
 
 Save or restore a snapshot between explicit environments.
 
     save <name> <src-address>      e.g. books-1 dev:books
     restore <name> <dst-address>   e.g. books-1 stg:books
+    sweep-orphans <dst-address>    re-run the post-restore orphan
+                                   sweep (read resources, report,
+                                   gate, delete, verify); e.g.
+                                   prd:todos. Runs without a
+                                   restore, never quiesces the app.
     list                           shared pool; names + provenance + timestamp
     copy <src> <dst> [<model>]     copy the triple; <model> retargets .meta
                                    (e.g. stg-todos-golden hannah-todos-seed
@@ -7042,10 +7425,20 @@ verb scales the app to 0 for a restore, see docs/snapshots.md).
 The one-arg muscle-memory forms are hard errors; the message
 names the legal shapes.
 
+Every restore runs an automatic post-restore orphan sweep after
+its success line (on prd: after the revive, app serving). Exit
+status: 0 swept clean (or nothing to sweep), 1 = the sweep
+refused — NOT SAFE (the by-id resource set is broken) or a failed
+sweep query; the restore itself completed either way, nothing
+was deleted on a refusal, and the report above says how to heal
+then re-run 'sweep-orphans'. Only a rebirth recovery sequence
+warns instead of exiting 1 on non-final restores.
+
 FORCE=1 meanings: skip the delete/profile confirmations, let
 'copy' overwrite an existing destination, and the one escape on
 'save' when dev:'s /api/info is unreachable. It
-NEVER overrides a model mismatch, and the restore-unreachable skip
+NEVER overrides a model mismatch, an unsafe sweep verdict, or
+anything about 'sweep-orphans'; the restore-unreachable skip
 needs no FORCE at all.
 SNAPUSAGE
                 exit 1
