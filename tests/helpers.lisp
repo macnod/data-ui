@@ -1421,6 +1421,26 @@ already loaded) so in-image runs see the suite."
     (explain! results)
     (when collect results)))
 
+(defun run-request-serialization-tests (&optional collect)
+  "Interim request-serialization gate tests (todo \"Interim request
+serialization\" in the Data UI Backlog): at most one dispatched
+request at a time per process, the exact /health script name exempt,
+abort-request-handler releasing the mutex, and the queue signal
+being the gate's own entered-dispatch counter (never
+acceptor-requests-in-progress, which counts pre-dispatch states).
+request-serialization-tests.lisp is loaded first (harmless when
+already loaded) — for the focused in-image run after an edit, not a
+compile-order requirement: run-tests runs after the system has
+compiled and loaded every test file, and the new suite only calls
+with-model at runtime."
+  (load (u:join-paths *package-root* "tests"
+           "request-serialization-tests.lisp"))
+  (let ((results
+          (with-model "test-model" nil
+            (run 'request-serialization-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-tests ()
   "Run all test suites and print a consolidated summary at the end.
 Each run-* helper is called with collect t so its result objects
@@ -1497,7 +1517,9 @@ groups."
                    ("wire-null"     . run-wire-null-tests)
                    ("render-cost"   . run-render-cost-tests)
                    ("rest"          . run-rest-tests)
-                   ("reset-tables"  . run-reset-tables-tests))
+                   ("reset-tables"  . run-reset-tables-tests)
+                   ("request-serialization"
+                                     . run-request-serialization-tests))
                  for t0 = (get-internal-real-time)
                  for results = (funcall fn t)
                  for elapsed = (/ (- (get-internal-real-time) t0)

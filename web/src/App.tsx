@@ -27,7 +27,7 @@ import { MarkdownWithToc } from './MarkdownWithToc'
 import { PageDescription } from './PageDescription'
 import { FieldHelp } from './FieldHelp'
 import { composeReply, normalizeRoles, lastOffset,
-         regionPayloadData, insertOutcome, separateQuotes }
+         regionFilePayload, insertOutcome, separateQuotes }
   from './region'
 import type { InsertOutcome } from './region'
 
@@ -121,18 +121,47 @@ interface Field {
   target?: string
 }
 
-// The shared Add/Reply field renderer for the committed v1
-// region alphabet (plan 03): hidden (nothing), read-only, and
-// markdown/textarea, falling back to renderFormField (stars and
-// textbox/default). Both the region's panel map and any future
-// shared consumer call this; the parent's own form map keeps
-// its select/code/etc. branches (the region alphabet does not
-// widen without a plan). A field outside the alphabet renders
-// nothing — *widgets* is untouched and the fallback logs.
+// What a region field's render needs beyond the field itself:
+// the add-form (the file-path branch's sibling :widget :file
+// lookup), the field's allowed-values palette, the panel values
+// (the sibling file's File object), the panel's value setter, and
+// the password-confirm state (Region-owned, parallel to the
+// values).
+interface RegionFieldCtx {
+  form: Record<string, Field>
+  allowed: string[]
+  values: Record<string, any>
+  onChange: (key: string, v: any) => void
+  pwConfirm: Record<string, string>
+  onConfirmChange: (key: string, v: string) => void
+}
+
+// The Add/Reply panel's field renderer — the region's single
+// dispatch, in widget parity with the main Add form (plan 03's v1
+// alphabet widened by "Child region widget parity"). Every
+// widget fe-fields can emit on an add-form has a branch here:
+// hidden (nothing), read-only, markdown/textarea, select,
+// search-select, checkbox, checkbox-list, code, file, file-path,
+// password-new (with its confirm companion), and password-read;
+// stars and textbox/default fall back to renderFormField. The
+// branches live here and not in renderFormField because the
+// panel's onChange carries JSON values — null from a
+// search-select clear, a checkbox boolean, a checkbox-list array,
+// a File object — while renderFormField's is (v: string) => void,
+// the string-only boundary the main form's inline map also works
+// around. Each branch mirrors its main-form twin's markup and
+// semantics. image / image-list arrive :read-only t
+// (compiler-injected) and take the read-only branch, heading is
+// page-only, and buttons never ride an add-form — so anything
+// else reaching the fallback is vocabulary drift: *widgets* is
+// untouched and the fallback logs and says so.
 function renderRegionField(
-  field: Field, value: any,
-  onChange: (v: string) => void
+  fieldKey: string, field: Field, ctx: RegionFieldCtx
 ): React.ReactNode {
+  const { form, allowed, values, pwConfirm, onConfirmChange } = ctx
+  const value = values[fieldKey]
+  // The panel's value setter, bound to this field.
+  const onChange = (v: any) => ctx.onChange(fieldKey, v)
   const widget = field['widget'] || ''
   if (widget === 'hidden') return null
   if (field['read-only'] === true) {
@@ -145,6 +174,169 @@ function renderRegionField(
         onChange={e => onChange(e.target.value)}
         rows={8}
         style={{ width: '100%', resize: 'vertical' }}
+      />
+    )
+  }
+  if (widget === 'code') {
+    return (
+      <textarea
+        value={value || ''}
+        onChange={e => onChange(e.target.value)}
+        rows={12}
+        style={{
+          width: '100%',
+          resize: 'vertical',
+          fontFamily: 'monospace',
+          fontSize: '0.95em'
+        }}
+      />
+    )
+  }
+  if (widget === 'select') {
+    // Relation and static options both arrive on the allowed
+    // palette (be-list's allowed-values carries :options too).
+    return (
+      <select
+        value={typeof value === 'string' || typeof value === 'number'
+          ? String(value) : ''}
+        onChange={e => onChange(e.target.value)}
+      >
+        <option value="" disabled>Select...</option>
+        {allowed.map((val: string) => (
+          <option key={val} value={val}>{val}</option>
+        ))}
+      </select>
+    )
+  }
+  if (widget === 'search-select') {
+    // ✕ (clear to null) only on a nullable field — the wire
+    // :not-null flag; absent means clearable. null rides the
+    // panel's onChange (never the string-only fallback).
+    return (
+      <SearchSelect
+        options={allowed}
+        value={value ?? null}
+        clearable={field['not-null'] !== true}
+        onChange={onChange}
+      />
+    )
+  }
+  if (widget === 'checkbox') {
+    // Strict: a NULL boolean (null, or [] from an older backend)
+    // is unchecked, matching the main form, the list cell, and
+    // View mode.
+    const checked = value === true || value === 'true'
+    return (
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={e => onChange(e.target.checked)}
+      />
+    )
+  }
+  if (widget === 'checkbox-list') {
+    const selected: string[] = Array.isArray(value) ? value : []
+    return (
+      <CheckboxList
+        options={allowed}
+        selected={selected}
+        onToggle={(val, checked) => {
+          const next = checked
+            ? [...selected, val]
+            : selected.filter(v => v !== val)
+          onChange(next)
+        }}
+      />
+    )
+  }
+  if (widget === 'file') {
+    // Stores the File object in the panel values; submitPanel's
+    // two-phase branch lifts it out (regionFilePayload) and
+    // sends it through /api/upload.
+    return (
+      <input
+        type="file"
+        onChange={e => onChange(e.target.files?.[0] || null)}
+      />
+    )
+  }
+  if (widget === 'file-path') {
+    // The suggested filename comes from the sibling :widget
+    // :file field's File object — the same formFieldKeys find
+    // the main form uses (at most one file field exists today).
+    const fileFieldKey = formFieldKeys(form)
+      .find(k => form[k]?.['widget'] === 'file')
+    const siblingFile = fileFieldKey
+      ? values[fileFieldKey] : null
+    const suggested = siblingFile instanceof File
+      // File.name is a basename per spec; strip any path anyway
+      // (defenses for browsers that include one)
+      ? siblingFile.name.split('/').pop() || siblingFile.name
+      : ''
+    return (
+      <FilePath
+        directoryType={field['directory-type'] || ''}
+        value={typeof value === 'string' ? value : ''}
+        onChange={onChange}
+        suggestedName={suggested}
+      />
+    )
+  }
+  if (widget === 'password-new') {
+    // The value lives in the panel values; the confirmation box
+    // in the Region's pwConfirm state. Non-strings read as blank
+    // (the [] a JSON nil arrives as is truthy and !== '').
+    const pw = typeof value === 'string' ? value : ''
+    const confirm = pwConfirm[fieldKey] || ''
+    const touched = pw !== '' || confirm !== ''
+    const mismatched = touched && pw !== confirm
+    const matchHint = !touched ? '' : mismatched
+      ? ' — entries do not match' : ' — entries match'
+    return (
+      <>
+        <input
+          type="password"
+          autoComplete="new-password"
+          value={pw}
+          onChange={e => onChange(e.target.value)}
+        /><br />
+        <input
+          type="password"
+          autoComplete="new-password"
+          placeholder="Confirm password"
+          style={{
+            marginTop: '0.25rem',
+            ...(touched
+              ? { borderColor: mismatched
+                  ? 'var(--error, red)'
+                  : 'var(--success, green)' }
+              : {})
+          }}
+          value={confirm}
+          onChange={e => onConfirmChange(fieldKey, e.target.value)}
+        />
+        <span style={{
+          marginLeft: '0.5rem',
+          fontSize: '0.85em',
+          color: mismatched
+            ? 'var(--error, red)'
+            : 'var(--muted, gray)'
+        }}>
+          {matchHint}
+        </span>
+      </>
+    )
+  }
+  if (widget === 'password-read') {
+    // An existing secret (e.g. a settings Current Password): one
+    // masked box, no confirm, autoComplete="current-password" so
+    // browsers offer saved credentials, not generation.
+    return (
+      <input
+        type="password"
+        autoComplete="current-password"
+        value={typeof value === 'string' ? value : ''}
+        onChange={e => onChange(e.target.value)}
       />
     )
   }
@@ -194,8 +386,26 @@ function Region({ spec, parentId, onShowAll }: {
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelValues, setPanelValues] =
     useState<Record<string, any>>({})
+  // The confirmation-box state for the panel's :widget
+  // :password-new fields — the main form's passwordConfirm,
+  // region-owned (the stateful owner is the Region; App-level
+  // state is never touched). Keyed by field key, beside the
+  // values each entry confirms, and cleared with them — every
+  // clear of panelValues walks clearPanelValues, and openPanel
+  // clears it beside its presets — so a confirm entry can never
+  // outlive the value it confirms.
+  const [panelPwConfirm, setPanelPwConfirm] =
+    useState<Record<string, string>>({})
   const [panelError, setPanelError] = useState('')
   const [pending, setPending] = useState(false)
+  // Clear the panel's input state: values and confirm entries
+  // together, from one place. Every panel close (pager, collapse,
+  // cancel, a Reload that vanishes the expanded row) and every
+  // submit success walks through here.
+  const clearPanelValues = () => {
+    setPanelValues({})
+    setPanelPwConfirm({})
+  }
   // Request fencing: one counter advancing on invalidation and
   // request allocation; a response commits only when its
   // captured sequence is still the latest AND the component is
@@ -350,7 +560,7 @@ function Region({ spec, parentId, onShowAll }: {
           && !records.some((r: any) => r.id === expandedId)) {
         setExpandedId(null)
         setPanelOpen(false)
-        setPanelValues({})
+        clearPanelValues()
       }
     } catch (err: any) {
       if (!isCurrentList((err as any).__seq ?? -1)) return
@@ -368,14 +578,14 @@ function Region({ spec, parentId, onShowAll }: {
     ++seqRef.current
     setExpandedId(null)
     setPanelOpen(false)
-    setPanelValues({})
+    clearPanelValues()
     setOffset(Math.max(0, offset - PAGE_SIZE))
   }
   const pageNext = () => {
     ++seqRef.current
     setExpandedId(null)
     setPanelOpen(false)
-    setPanelValues({})
+    clearPanelValues()
     setOffset(offset + PAGE_SIZE)
   }
 
@@ -392,6 +602,14 @@ function Region({ spec, parentId, onShowAll }: {
   // tab shape). Rides the same response (fe-fields emits every
   // declared form), so honoring it costs no second fetch.
   const listForm = region?.result?.['list-form']
+  // The child's allowed-values palette — the options source for
+  // the panel's select / search-select / checkbox-list fields.
+  // It rides the region's own /api/list envelope (be-list emits
+  // it; rest-list never asks it to skip), so honoring it costs
+  // no second fetch. At most one pagination beat stale: the
+  // region refetches on offset / reload changes — the same
+  // envelope discipline the main form accepts.
+  const allowedValues = region?.result?.['allowed-values']
   const records = region?.result?.records || []
   const total = region?.result?.total ?? 0
   const roles = normalizeRoles(
@@ -410,6 +628,10 @@ function Region({ spec, parentId, onShowAll }: {
     const values: Record<string, any> = { [spec.via]: parentId }
     if (presetBody !== undefined) values.body = presetBody
     setPanelValues(values)
+    // A freshly opened panel starts with no confirmation text
+    // (the values are replaced wholesale above; the confirm
+    // state has no presets, so it clears).
+    setPanelPwConfirm({})
     setPanelError('')
     setPanelOpen(true)
   }
@@ -424,22 +646,129 @@ function Region({ spec, parentId, onShowAll }: {
   // final rows commit). inserted:false is the idempotent no-op:
   // close, clear pending, same-page Reload. A failed insert
   // keeps the panel, the body, and the page.
+  //
+  // A picked File rides the two-phase path first (the main
+  // Add form's submitForm orchestration, ported inline for the
+  // same never-submitForm reason): POST 1 /api/upload hands
+  // back a file-token, POST 2 /api/insert carries it beside
+  // type. No transactions (the standing MVP caveat): a POST 2
+  // failure leaves the uploaded bytes on disk with no row —
+  // the main form already accepts this; the panel inherits it,
+  // and its failure path preserves the panel and body exactly
+  // as the JSON path's does.
   const submitPanel = async () => {
     if (pending) return
     if (!addForm) return
+    // Password confirmation gate (submitForm's loop): every
+    // :widget :password-new field must match its confirmation
+    // box before anything is sent. A non-string reads as blank
+    // (the [] a JSON nil arrives as is truthy and !== '');
+    // blank-both means nothing to confirm. A mismatch lands on
+    // the panel's error line — the panel has its own error
+    // surface, not alert — and nothing is sent.
+    for (const f of formFieldKeys(addForm)) {
+      if (addForm[f]['widget'] !== 'password-new') continue
+      const pw = typeof panelValues[f] === 'string'
+        ? panelValues[f] : ''
+      const confirm = panelPwConfirm[f] || ''
+      if (pw === '' && confirm === '') continue
+      if (pw !== confirm) {
+        setPanelError(
+          `Password entries for "${addForm[f].label}" do not match`)
+        return
+      }
+    }
     setPending(true)
     setPanelError('')
-    const payload: any = {
-      type: spec.type,
-      data: regionPayloadData(
-        formFieldKeys(addForm), spec.via,
-        panelValues.body !== undefined
-          ? { ...panelValues,
-              body: separateQuotes(String(panelValues.body)) }
-          : panelValues)
-    }
-    if (roles.length > 0) payload.roles = roles
+    // The insert body's `data`: membership is the add-form keys
+    // ∪ the preset FK, minus roles (regionPayloadData's rule).
+    // A File picked at the add-form's file-widget key is lifted
+    // out before assembly (regionFilePayload) — it rides the
+    // multipart upload, never the JSON.
+    const file = regionFilePayload(addForm, spec.via,
+      panelValues.body !== undefined
+        ? { ...panelValues,
+            body: separateQuotes(String(panelValues.body)) }
+        : panelValues)
     try {
+      // POST 1 (file children with a picked File only):
+      // multipart /api/upload carrying what rest-upload reads —
+      // `type`; the File under the file field's name; the path
+      // string under the :path field's name (appended
+      // explicitly by name: no path, no upload — the main form
+      // gets its path only because it appends every form
+      // field); and `roles` when the child has type-roles. The
+      // browser sets the multipart boundary (apiFetch skips
+      // Content-Type for a FormData body).
+      let fileToken: string | null = null
+      if (file.fileField && file.fileValue) {
+        const formData = new FormData()
+        formData.append('type', spec.type)
+        formData.append(file.fileField, file.fileValue)
+        if (file.pathField) {
+          const path = file.data[file.pathField]
+          formData.append(file.pathField,
+            typeof path === 'string' ? path : '')
+        }
+        // The roles part is present-as-a-string on purpose.
+        // rest-upload reads the first value only and treats a
+        // string as "inherit the parent directory's roles",
+        // while an absent part reads as (NIL) and fails the
+        // parent-roles check (valid-file-meta). The parser is
+        // backend behavior and is not second-guessed here; the
+        // requested roles are still not what that check
+        // compares — create on the parent directory and on the
+        // child's type resource is what gates the upload.
+        if (roles.length > 0) {
+          roles.forEach(r => formData.append('roles', r))
+        }
+        const uploadRes = await apiFetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        })
+        if (!uploadRes.ok) {
+          // submitForm's live error parse, on the panel's error
+          // surface instead of alert: the backend's spelled
+          // variants in precedence order, else the raw text,
+          // else the status line. (errorMessage() reads
+          // body.error alone and would drop the other
+          // spellings.)
+          let detail =
+            `${uploadRes.status} ${uploadRes.statusText}`.trim()
+          const errText =
+            await uploadRes.text().catch(() => '')
+          if (errText) {
+            try {
+              const errJson = JSON.parse(errText)
+              detail = errJson?.result?.message
+                || errJson?.message || errJson?.error || detail
+            } catch {
+              // Body wasn't JSON; use the raw text.
+              detail = errText
+            }
+          }
+          setPanelError(`File upload failed: ${detail}`)
+          setPending(false)
+          return
+        }
+        // The token rides result["file-token"] — render-output
+        // wraps it there; no top-level spelling exists.
+        let uploadJson: any = null
+        try { uploadJson = await uploadRes.json() }
+        catch { /* invalid */ }
+        const token = uploadJson?.result?.['file-token']
+        if (typeof token !== 'string' || token === '') {
+          setPanelError('File upload did not return a file-token')
+          setPending(false)
+          return
+        }
+        fileToken = token
+      }
+      // POST 2 (every submit): the JSON insert — byte-identical
+      // to the pre-file body whenever no token was issued.
+      const payload: any = { type: spec.type, data: file.data }
+      if (fileToken !== null) payload['file-token'] = fileToken
+      if (roles.length > 0) payload.roles = roles
       const res = await apiFetch('/api/insert', {
         method: 'POST',
         body: JSON.stringify(payload)
@@ -458,7 +787,7 @@ function Region({ spec, parentId, onShowAll }: {
       // Close the panel and clear expansion/Reply on every
       // successful outcome (new insertion and no-op alike).
       setPanelOpen(false)
-      setPanelValues({})
+      clearPanelValues()
       setExpandedId(null)
       setPending(false)
       if (outcome === 'noop') {
@@ -547,12 +876,16 @@ function Region({ spec, parentId, onShowAll }: {
               values={panelValues}
               error={panelError}
               pending={pending}
+              allowedValues={allowedValues}
+              pwConfirm={panelPwConfirm}
               onChange={(k, v) => setPanelValues(
                 { ...panelValues, [k]: v })}
+              onConfirmChange={(k, v) => setPanelPwConfirm(
+                { ...panelPwConfirm, [k]: v })}
               onSubmit={submitPanel}
               onCancel={() => {
                 setPanelOpen(false)
-                setPanelValues({})
+                clearPanelValues()
                 setPanelError('')
               }}
             />
@@ -625,7 +958,7 @@ function Region({ spec, parentId, onShowAll }: {
                     // Collapsing a row also closes its Reply.
                     setExpandedId(null)
                     setPanelOpen(false)
-                    setPanelValues({})
+                    clearPanelValues()
                   } else {
                     setExpandedId(rec.id)
                   }
@@ -638,7 +971,7 @@ function Region({ spec, parentId, onShowAll }: {
                   if (expandedId === rec.id) {
                     setExpandedId(null)
                     setPanelOpen(false)
-                    setPanelValues({})
+                    clearPanelValues()
                   } else {
                     setExpandedId(rec.id)
                   }
@@ -780,12 +1113,16 @@ function Region({ spec, parentId, onShowAll }: {
             values={panelValues}
             error={panelError}
             pending={pending}
+            allowedValues={allowedValues}
+            pwConfirm={panelPwConfirm}
             onChange={(k, v) =>
               setPanelValues({ ...panelValues, [k]: v })}
+            onConfirmChange={(k, v) =>
+              setPanelPwConfirm({ ...panelPwConfirm, [k]: v })}
             onSubmit={submitPanel}
             onCancel={() => {
               setPanelOpen(false)
-              setPanelValues({})
+              clearPanelValues()
               setPanelError('')
             }}
           />
@@ -801,17 +1138,25 @@ function Region({ spec, parentId, onShowAll }: {
 // view form's implicit submission). Skips the preset via field
 // (the FK) and the synthetic :roles field in the visible map;
 // the preset itself rides the payload unconditionally
-// (regionPayloadData).
+// (regionPayloadData, through regionFilePayload).
 function RegionPanel({
-  addForm, spec, values, error, pending,
-  onChange, onSubmit, onCancel
+  addForm, spec, values, error, pending, allowedValues,
+  pwConfirm, onChange, onConfirmChange, onSubmit, onCancel
 }: {
   addForm: Record<string, Field>
   spec: ChildSpec
   values: Record<string, any>
   error: string
   pending: boolean
+  // The child's allowed-values palette (the region's /api/list
+  // envelope): the options source for select / search-select /
+  // checkbox-list fields.
+  allowedValues?: Record<string, string[]>
+  // Confirmation-box state for :widget :password-new fields —
+  // Region-owned, parallel to `values`.
+  pwConfirm: Record<string, string>
   onChange: (key: string, value: any) => void
+  onConfirmChange: (key: string, value: string) => void
   onSubmit: () => void
   onCancel: () => void
 }) {
@@ -860,10 +1205,14 @@ function RegionPanel({
           const fieldMeta = addForm[f]
           return (
             <FieldRow key={f} field={fieldMeta}>
-              {renderRegionField(
-                fieldMeta, values[f],
-                v => onChange(f, v)
-              )}
+              {renderRegionField(f, fieldMeta, {
+                form: addForm,
+                allowed: allowedValues?.[f] || [],
+                values,
+                onChange,
+                pwConfirm,
+                onConfirmChange
+              })}
             </FieldRow>
           )
         })}

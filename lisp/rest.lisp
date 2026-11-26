@@ -58,6 +58,63 @@
                          (t :debug)))
           (message (apply #'format (append (list nil format-string) format-arguments))))
     (pl:plog log-severity (list :in "acceptor-log-message" :text message))))
+
+;;
+;; BEGIN Interim request serialization
+;; (todo "Interim request serialization" in the Data UI Backlog)
+;; Run at most one dispatched request at a time per process; only the
+;; exact /health script name bypasses the gate, so liveness probes
+;; keep answering while a real request holds the lock. Async workers,
+;; REPL activity, and other processes are not covered. Remove when
+;; the real fix ("Deadlock under concurrent requests") lands. Keep
+;; the mutex in a defvar so a reload cannot replace a lock an
+;; in-flight request still holds.
+;;
+(defvar *request-serialization-mutex*
+  (sb-thread:make-mutex :name "data-ui-request-serialization"))
+
+(defvar *request-serialization-test-hook* nil
+  "Function called with the request after the serialization mutex is
+acquired and before dispatch. NIL in production; tests setf it for
+deterministic server-thread control. Global (not dynamically bound)
+because Hunchentoot handlers run on worker threads that would not see
+a client-thread let binding.")
+
+(defvar *request-serialization-entered-count* 0)
+
+(defvar *request-serialization-counter-mutex*
+  (sb-thread:make-mutex :name "data-ui-request-serialization-counter"))
+
+(defun request-serialization-entered-count ()
+  ":private: Synchronized read of the number of requests that have
+entered dispatch and not yet released the serialization gate (the
+pre-mutex queue signal the tests poll)."
+  (sb-thread:with-mutex (*request-serialization-counter-mutex*)
+    *request-serialization-entered-count*))
+
+(defun update-request-serialization-entered-count (delta)
+  ":private: Add DELTA to the entered-dispatch counter under the
+counter lock (acquired, used, released — never held across the
+serialization gate). Its only caller is the gate method below."
+  (sb-thread:with-mutex (*request-serialization-counter-mutex*)
+    (incf *request-serialization-entered-count* delta)))
+
+(defmethod h:acceptor-dispatch-request ((acceptor fs-acceptor) request)
+  (if (equal (h:script-name request) "/health")
+    (call-next-method)
+    (progn
+      (update-request-serialization-entered-count 1)
+      (unwind-protect
+          (sb-thread:with-mutex (*request-serialization-mutex*)
+            (when *request-serialization-test-hook*
+              (funcall *request-serialization-test-hook* request))
+            (call-next-method))
+        ;; Runs after the gate is released on every exit path, including
+        ;; abort-request-handler's handler-done throw.
+        (update-request-serialization-entered-count -1)))))
+;;
+;; END Interim request serialization
+;;
 ;;
 ;; END Custom Hunchentoot acceptor
 ;;
@@ -1082,8 +1139,14 @@ object will be left unchanged.
 
 The 'roles' field requires that you specify the new, complet list of roles that
 the record should have. The system will add and remove roles as necessary to
-match the list you provide. You can only specify roles that you have youself.
-If you don't specify any roles, the record will keep the same roles it had.
+match the list you provide. A newly added role must be one you hold yourself
+(an admin-role holder may add any role), with these additions allowed
+regardless: a role declared in the type's :type-roles, public, and another
+user's shareable exclusive role; admin and the current actor's exclusive role
+are force-added server-side and never an unheld user-selected add. Roles the
+row already carries may be retained or removed freely, whether or not you hold
+them. If you don't specify any roles, the record will keep the same roles it
+had.
 
 The POST must include the header 'Content-Type: application/json'.
 

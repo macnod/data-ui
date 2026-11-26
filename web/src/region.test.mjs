@@ -20,7 +20,8 @@ const mod = await import(
   'data:text/javascript;base64,'
   + Buffer.from(out).toString('base64'))
 const { composeReply, normalizeRoles, lastOffset,
-        regionPayloadData, insertOutcome, separateQuotes } = mod
+        regionPayloadData, regionFilePayload, insertOutcome,
+        separateQuotes } = mod
 
 let passed = 0
 function ok(name, fn) {
@@ -271,5 +272,78 @@ ok('outcome: empty id → invalid', () => {
 ok('outcome: unparseable body → invalid', () => {
   assert.equal(insertOutcome(true, null), 'invalid')
 })
+
+// ---- regionFilePayload ----
+// Object.create(File.prototype) is instanceof File — enough for
+// the helper's lift-out check without a real blob.
+const fakeFile = () => Object.create(File.prototype)
+const ATTACH_FORM = {
+  name: { label: 'File', widget: 'file-path', path: true },
+  file: { label: 'Select File', widget: 'file' },
+  tag: { label: 'Tag', widget: 'search-select' }
+}
+ok('filePayload: File at the file key is lifted out of data',
+  () => {
+    const file = fakeFile()
+    const out = regionFilePayload(ATTACH_FORM, 'tag',
+      { name: '/notes.txt', file, tag: 'UUID-T' })
+    assert.equal(out.fileField, 'file')
+    assert.equal(out.fileValue, file)
+    assert.equal(out.pathField, 'name')
+    assert.equal('file' in out.data, false)
+    assert.deepEqual(out.data,
+      { name: '/notes.txt', tag: 'UUID-T' })
+  })
+ok('filePayload: File object is never stringified into data',
+  () => {
+    const file = fakeFile()
+    const out = regionFilePayload(ATTACH_FORM, 'tag',
+      { name: '/a.txt', file, tag: 'UUID-T' })
+    // The trap the lift-out prevents: a File left in the object
+    // serializes as {} (no enumerable properties) — the body
+    // would name the file field yet carry no file.
+    assert.equal(JSON.stringify({ file }), '{"file":{}}')
+    assert.equal(JSON.stringify(out.data).includes('"file"'), false)
+  })
+ok('filePayload: form without a file widget → regionPayloadData',
+  () => {
+    const form = { body: { widget: 'markdown' },
+                   user: { widget: 'textbox' } }
+    const values = { body: 'hi', user: null }
+    const out = regionFilePayload(form, 'post', values)
+    assert.equal(out.fileField, null)
+    assert.equal(out.fileValue, null)
+    assert.equal(out.pathField, null)
+    assert.deepEqual(out.data,
+      regionPayloadData(['body', 'user'], 'post', values))
+  })
+ok('filePayload: nothing picked → fileField named, no upload',
+  () => {
+    const out = regionFilePayload(ATTACH_FORM, 'tag',
+      { name: '/a.txt', tag: 'UUID-T' })
+    assert.equal(out.fileField, 'file')
+    assert.equal(out.fileValue, null)
+    assert.equal('file' in out.data, false)
+    assert.deepEqual(out.data, { name: '/a.txt', tag: 'UUID-T' })
+  })
+ok('filePayload: non-File value at the file key rides data',
+  () => {
+    // A stale string (an edit-form echo) is not a File: the
+    // plain JSON path sends it exactly as regionPayloadData
+    // would today.
+    const out = regionFilePayload(ATTACH_FORM, 'tag',
+      { file: 'stale-name.txt', tag: 'UUID-T' })
+    assert.equal(out.fileValue, null)
+    assert.deepEqual(out.data,
+      { file: 'stale-name.txt', tag: 'UUID-T' })
+  })
+ok("filePayload: form-level 'hide-list' never rides data",
+  () => {
+    const form = { ...ATTACH_FORM, 'hide-list': true }
+    const out = regionFilePayload(form, 'tag',
+      { name: '/a.txt', tag: 'UUID-T', 'hide-list': true })
+    assert.equal('hide-list' in out.data, false)
+    assert.equal(out.pathField, 'name')
+  })
 
 console.log(`\n${passed} tests passed`)

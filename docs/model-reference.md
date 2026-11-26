@@ -915,6 +915,8 @@ Wire: the spec rides `be-rec`'s `:view-form` payload beside `:fields` (never `re
 
 The string pair — never a sort plist, which would serialize as `{"field":"dir"}` (the `json-sort-echo` trap) — is what 03's region fetch builds its `fk-eq` tuple and request sort from. The compiled def keeps the author spec verbatim (omitted `:sort` stays omitted); normalization happens at attach time only. Between 02 and 03 the key is inert by design: nothing consumes it until the region renderer lands.
 
+Panel widgets: the region's Add/Reply panel renders every widget `fe-fields` can emit on an add-form with the main Add form's markup and semantics — `select`, `search-select`, `checkbox`, `checkbox-list`, `code`, `file` + `file-path` (the two-phase upload: `POST /api/upload` for a `file-token`, then `POST /api/insert` carrying it), `password-new` with its confirm box, `password-read`, beside the original `hidden`, read-only, `markdown` / `textarea`, `stars`, and `textbox`. That is the panel's **widget** alphabet — a different alphabet from the region **spec** alphabet above (`:type` / `:via` / `:sort`), which it does not change.
+
 ---
 
 ## Join tables (M2M)

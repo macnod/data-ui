@@ -1,0 +1,12 @@
+{
+  "name": "data-ui-crowd",
+  "private": true,
+  "type": "module",
+  "description": "Simulated users browsing a Data UI app through real Chrome",
+  "scripts": {
+    "crowd": "node crowd.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

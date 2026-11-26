@@ -100,7 +100,7 @@ Create a new record. Validation runs before the SQL insert. Lifecycle hooks (`:p
 
 Update an existing record. Validation runs before the SQL update. Lifecycle hooks (`:pre-update` / `:post-update`) run around the write. The caller needs `update` on the target row's own resource, not on the type (base types degenerate to the type resource; `tokens` is gated on the type resource).
 
-**Body:** JSON with `type`, `id`, field values, and an optional `roles` array. Roles on the row may be grown or trimmed through this field, subject to the same hold-them-first rule as insert; the creator's exclusive role and `admin` are force re-added server-side and cannot be stripped.
+**Body:** JSON with `type`, `id`, field values, and an optional `roles` array. Roles on the row may be grown or trimmed through this field. A newly added role must be one the caller holds (an admin-role holder may add any), with three exemptions — a role declared in the type's `:type-roles`, `public`, and another user's shareable exclusive role. Roles the row already carries may be retained or removed freely, held or not. The current actor's exclusive role and `admin` are force re-added server-side and cannot be stripped.
 
 ### `POST /api/delete`
 

@@ -149,6 +149,61 @@ export function regionPayloadData(
   return out
 }
 
+// The file half of the region insert payload. Widget and path
+// identity live on the add-form's field metadata — RegionValues
+// alone cannot tell a file field from any other key that happens
+// to hold a File — so the FORM is the input: the `file`-widget key
+// and the `path: true` key (wire keys fe-fields emits) are found
+// by their form metadata. When a File instance sits at the file
+// key it is lifted out before payload assembly (a File that
+// reached JSON.stringify would go out as an empty object {} —
+// none of its properties are enumerable — an insert body that
+// names the file field yet carries no file, with no error at
+// any layer); the caller then sends it through the two-phase
+// /api/upload path and reads the path string from `data` under
+// the returned pathField name for the multipart body. Any other value at the
+// file key (nothing picked, a stale string) rides `data` exactly
+// as regionPayloadData handles it today. One four-key shape
+// everywhere: fileField / pathField name the form's fields (null
+// when the form has none); fileValue is the File to upload, or
+// null when there is none; data is always the JSON insert body's
+// `data` object.
+export interface RegionFilePayload {
+  fileField: string | null
+  fileValue: File | null
+  pathField: string | null
+  data: Record<string, unknown>
+}
+
+export function regionFilePayload(
+  addForm: Record<string, Record<string, any>>,
+  via: string,
+  values: RegionValues
+): RegionFilePayload {
+  // 'hide-list' is a form-level key riding beside the fields,
+  // never a field (App.tsx formFieldKeys filters the same key).
+  const keys = Object.keys(addForm || {})
+    .filter(k => k !== 'hide-list')
+  const fileField =
+    keys.find(k => addForm[k]?.['widget'] === 'file') ?? null
+  const pathField =
+    keys.find(k => addForm[k]?.path === true) ?? null
+  const picked = fileField !== null
+    && values[fileField] instanceof File
+  const fileValue: File | null = picked
+    ? values[fileField] as File : null
+  const rest: RegionValues = picked
+    ? Object.fromEntries(
+        Object.entries(values).filter(([k]) => k !== fileField))
+    : values
+  return {
+    fileField,
+    fileValue,
+    pathField,
+    data: regionPayloadData(keys, via, rest)
+  }
+}
+
 // The insert verdict from a POST /api/insert response: a new
 // insertion requires HTTP OK, status === 'success',
 // result.inserted === true, and a nonempty string result.id.

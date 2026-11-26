@@ -81,13 +81,31 @@ vocabulary, validation, wire emission, and the blog fixture.")
              :filter-with (:kind :reference))
            :source (:view :main :table :posts :column :title :agg :first)
            :column t :not-null t)
+         :kind
+         (:type :text
+           :ui (:label "Kind" :widget :select
+             :options ("note" "question" "review"))
+           :source (:view :main :column :kind :agg :first)
+           :column t)
+         :featured
+         (:type :boolean :default :false
+           :ui (:label "Featured" :widget :checkbox)
+           :source (:view :main :column :featured :agg :first)
+           :column t :not-null t)
+         :tags
+         (:type :list
+           :ui (:label "Tags" :widget :checkbox-list)
+           :validations (:join-items-exist)
+           :source (:view :main :table :tags :column :name :agg :distinct)
+           :source-all (:view :tags :table :tags :column :name :agg :list)
+           :join-table :post-tags)
          :created-at
          (:ui (:label "Posted" :widget :textbox :read-only t)))
        :list-form (:fields (:post :user :body :created-at)
                    :default-sort (:created-at :desc))
        :view-form (:fields (:user :body :post))
        :update-form (:fields (:user :body :post))
-       :add-form (:fields (:user :body :post)))
+       :add-form (:fields (:user :body :post :kind :featured :tags)))
      :post-tags
      (:table t :is-joiner t :internal t
        :fields
@@ -281,25 +299,14 @@ target, and a base type all fail."
                       :posts)))
     "must name a :target \\(FK\\)"
     "non-target :via not caught")
-  ;; join-table field (the M2M :tags on comments — added by the
-  ;; mutation so the field exists but is not a :target)
+  ;; join-table field (the skeleton's own M2M :tags on comments —
+  ;; a field that exists but is not a :target)
   (error-matches
     (blog-compile (blog-types
                     (list (lambda (td)
                             (setf (getf (getf td :view-form) :children)
                               '((:type :comments :via :tags))) td)
-                      :posts)
-                    (list (lambda (td)
-                            (setf (getf td :fields)
-                              (append (getf td :fields)
-                                '(:tags
-                                   (:type :list
-                                     :ui (:label "Tags"
-                                       :widget :checkbox-list)
-                                     :source (:view :main :table :tags
-                                              :column :name :agg :distinct)
-                                     :join-table :post-tags)))) td)
-                      :comments)))
+                      :posts)))
     "must name a :target \\(FK\\)"
     "join-table :via not caught")
   ;; third-type target
@@ -780,9 +787,9 @@ all (member on u:plist-keys, not getf)."
     (is-false (member :children (u:plist-keys result)))))
 
 (test children-be-rec-no-children-type-omits
-  "A :view-form fetch on :tags (no :children) emits no key."
-  (let* ((result (be-rec (getf *fixture* :tag) "admin"
-                  :form :view-form :type-key :tags)))
+  "A :view-form fetch on :comments (no :children) emits no key."
+  (let* ((result (be-rec (getf *fixture* :comment-2) "admin"
+                  :form :view-form :type-key :comments)))
     (is-false (member :children (u:plist-keys result)))))
 
 (test children-be-rec-inaccessible-returns-nil
@@ -835,6 +842,34 @@ write path uses."
   (let* ((list (be-list :comments "guest"))
          (tags (getf (getf list :allowed-values) :tags)))
     (is (find "news" tags :test #'equal))))
+
+(test children-insert-kind-and-tags-round-trip
+  "A comment the member user inserts with a static-select :kind
+and a seeded tag round-trips — :tags through the joiner, :kind as
+a plain string — pinning the fixture's add-form extension at the
+backend level. (Not evidence the region alphabet widened:
+be-insert never looks at widgets.) :kind rides no read form, so
+it is read back as its add-form column (be-list-column); the
+comment is deleted so the guest-count assertion stays
+order-independent."
+  (let ((id (be-insert :comments
+              `(:user ,(getf *fixture* :member)
+                :body "tagged note" :post "First post"
+                :kind "note" :tags ("news"))
+              (getf *fixture* :member) :roles '("public"))))
+    (is-true id "Precondition: the comment inserted")
+    (unwind-protect
+      (let ((row (find id (getf (be-list :comments "admin"
+                               :limit 100) :records)
+                        :key (lambda (r) (getf r :id))
+                        :test #'equal)))
+        (is (equal '("note")
+              (getf (be-list-column :comments :kind "admin"
+                      :form :add-form
+                      :filters `((:comments :id :eq ,id)))
+                    :values)))
+        (is (equal '("news") (getf row :tags))))
+      (when id (be-delete :comments id "admin")))))
 
 (test children-json-round-trip
   "The emitted envelope's :children serializes exactly as

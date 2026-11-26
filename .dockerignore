@@ -1,6 +1,8 @@
 .git
 web/node_modules
 web/dist
+scripts/crowd/node_modules
+scripts/crowd/runs
 Dockerfile
 *.fasl
 *.log

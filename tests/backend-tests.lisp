@@ -2008,6 +2008,225 @@ holding ai-user can still put it on a todo row."
 
 ;; FR-12: protected system accounts and base roles (D17).
 
+
+;; Row-role holder check on update (the update-roles otherwise
+;; branch): additions need a held role minus the row-specific
+;; exemptions; removals and retention stay free.
+
+(defun th-rrh-row-roles (todo-id)
+  "The current role names on TODO-ID's row resource. be-update
+renames the resource on every save (update-resource-name mints a
+fresh uuid suffix before update-roles runs — pre-existing
+ordering, not part of the gate), so row-role assertions must
+resolve through the id, never a resource name captured earlier."
+  (a:list-resource-role-names *rbac* (id-to-resource-name todo-id)))
+
+(test row-role-declared-name-normalizes-spec-shapes
+  "declared-role-name normalizes both :type-roles spec shapes: a
+string is its own name, a permission form names its car."
+  (is (equal "todo-users" (declared-role-name "todo-users")))
+  (is (equal "todo-users" (declared-role-name
+                            '("todo-users" :read :update)))))
+
+(test row-role-holder-rejects-unheld-add
+  "The source-level hole's direct regression: a non-admin who can
+update a todo but does not hold the existing role-creator role
+submits it in :roles; the update signals and role-creator is not
+attached to the row's resource. The actor's exclusive role supplies
+row-update permission."
+  (let ((actor "rrh-unheld-actor")
+        (todo-name "rrh-unheld-todo"))
+    (th-make-user actor)
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin"
+                       :roles (list "admin"
+                         (a:exclusive-role-for actor)))))
+        (is-false (a:user-has-role *rbac* actor "role-creator"))
+        (signals validation-error
+          (be-update :todos todo-id `(:name ,todo-name) actor
+            :roles '("public" "role-creator")))
+        (is-false (member "role-creator" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test row-role-holder-allows-held-add
+  "A held ordinary role (role-creator) attaches through be-update
+:roles. Not todo-users, whose type-role exemption would not isolate
+the held-role path."
+  (let ((actor "rrh-held-actor")
+        (todo-name "rrh-held-todo"))
+    (th-make-user actor :roles '("role-creator"))
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin"
+                       :roles (list "admin"
+                         (a:exclusive-role-for actor)))))
+        (is-true (a:user-has-role *rbac* actor "role-creator"))
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("public" "role-creator"))
+        (is-true (member "role-creator" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test row-role-holder-allows-unheld-type-role
+  "The declared :type-roles exemption: an actor who does not hold
+todo-users can still attach it to a todo (the edit palette offers
+it — selectable-roles — so a bare valid-user-roles gate would break
+the UI)."
+  (let ((actor "rrh-tr-actor")
+        (todo-name "rrh-tr-todo"))
+    (th-make-user actor)
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin"
+                       :roles (list "admin"
+                         (a:exclusive-role-for actor)))))
+        (is-false (a:user-has-role *rbac* actor "todo-users"))
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("public" "todo-users"))
+        (is-true (member "todo-users" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test row-role-holder-allows-unheld-public
+  "The public exemption: an actor who does not even hold public
+(each fresh user's default is removed in setup) can attach public
+to a todo. The actor's exclusive role still supplies row-update
+permission, so the explicit palette-compatible public exception is
+proven rather than relying on the default membership."
+  (let ((actor "rrh-pub-actor")
+        (todo-name "rrh-pub-todo"))
+    (th-make-user actor)
+    (a:remove-user-role *rbac* actor "public")
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin"
+                       :roles (list "admin"
+                         (a:exclusive-role-for actor)))))
+        (is-false (a:user-has-role *rbac* actor "public"))
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("public"))
+        (is-true (member "public" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test row-role-holder-allows-shareable-exclusive
+  "Another user's shareable exclusive role attaches by the actor
+(point-to-point sharing); valid-user-roles' existing exemption
+carries it through the row gate."
+  (let ((actor "rrh-sh-actor")
+        (other "rrh-sh-other")
+        (todo-name "rrh-sh-todo"))
+    (th-make-user actor)
+    (th-make-user other)
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin"
+                       :roles (list "admin"
+                         (a:exclusive-role-for actor))))
+            (other-exclusive (a:exclusive-role-for other)))
+        (is-false (a:user-has-role *rbac* actor other-exclusive))
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles (list "public" other-exclusive))
+        (is-true (member other-exclusive (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin")
+      (be-delete :users `((:users :name :eq ,other)) "admin"))))
+
+(test row-role-holder-retention-and-removal-are-free
+  "The gate reads to-add, not the full request or to-remove: an
+unheld stale grant attached directly with a:add-resource-role is
+first retained (no rejection) and then removed by omission. Both
+submissions carry a nonempty residual list."
+  (let ((actor "rrh-free-actor")
+        (todo-name "rrh-free-todo"))
+    (th-make-user actor)
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin"
+                       :roles (list "admin"
+                         (a:exclusive-role-for actor)))))
+        ;; stale-grant setup: an unheld ordinary role on the row
+        (a:add-resource-role *rbac* (id-to-resource-name todo-id)
+          "role-creator")
+        (is-false (a:user-has-role *rbac* actor "role-creator"))
+        ;; retain it: no signal, still attached
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("public" "role-creator"))
+        (is-true (member "role-creator" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        ;; omit it: removal is free
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("public"))
+        (is-false (member "role-creator" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test row-role-holder-forced-roles-do-not-trip
+  "Neither force-added role trips the gate. The actor updates
+through a held todo-users grant rather than an attached actor
+exclusive, submits a list omitting both forced roles, and admin
+plus the actor's exclusive are present afterward. The mandatory
+second pass then detaches admin from the row and repeats the
+update: the reattachment succeeds without a validation error —
+the focused proof that the forced-admin exemption is
+load-bearing (an implementation without it would pass every other
+test because admin is normally already attached)."
+  (let ((actor "rrh-forced-actor")
+        (todo-name "rrh-forced-todo"))
+    (th-make-user actor :roles '("todo-users"))
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin"
+                       :roles '("admin" "todo-users")))
+            (actor-exclusive (a:exclusive-role-for actor)))
+        ;; First pass: omit both forced roles; both reattach.
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("todo-users"))
+        (let ((roles (th-rrh-row-roles todo-id)))
+          (is-true (member "admin" roles :test 'equal))
+          (is-true (member actor-exclusive roles :test 'equal)))
+        ;; Second pass (mandatory): detach admin, repeat, verify the
+        ;; force reattach still passes the gate. The actor's held
+        ;; todo-users still supplies update permission.
+        (a:remove-resource-role *rbac* (id-to-resource-name todo-id)
+          "admin")
+        (is-false (member "admin" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("todo-users"))
+        (let ((roles (th-rrh-row-roles todo-id)))
+          (is-true (member "admin" roles :test 'equal))
+          (is-true (member actor-exclusive roles :test 'equal)))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
+(test row-role-holder-admin-bypass
+  "The admin-holder bypass mirrors fr11-admin-holder-can-grant-unheld-role
+on the row side: a second admin-role holder who does not hold
+role-creator attaches it to a todo row."
+  (let ((actor "rrh-admin-actor")
+        (todo-name "rrh-admin-todo"))
+    (th-make-user actor)
+    (a:add-user-role *rbac* actor "admin")
+    (unwind-protect
+      (let ((todo-id (be-insert :todos `(:name ,todo-name) "admin")))
+        (is-false (a:user-has-role *rbac* actor "role-creator"))
+        (be-update :todos todo-id `(:name ,todo-name) actor
+          :roles '("public" "role-creator"))
+        (is-true (member "role-creator" (th-rrh-row-roles todo-id)
+                    :test 'equal))
+        (is-true (uuid-p (be-delete :todos todo-id "admin"))))
+      (be-delete :todos `((:todos :name :eq ,todo-name)) "admin")
+      (be-delete :users `((:users :name :eq ,actor)) "admin"))))
+
 (test fr12-non-admin-cannot-delete-admin
   "Non-admin be-delete :users on admin signals; admin still exists."
   (let ((actor "fr12-actor"))

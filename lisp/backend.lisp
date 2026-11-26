@@ -1286,6 +1286,39 @@ each other — only the user named admin is pinned. Shared by update-roles
     (report-ve "valid-builtin-admin-keeps-role"
       "User ~s must keep the ~s role." ~user-name ~*admin-role*)))
 
+(defun declared-role-name (role-spec)
+  ":private: The role name of one :type-roles entry, normalizing
+both declaration shapes exactly as ensure-model-roles does: a string
+is its own name; a (role-name perm…) permission form names its car."
+  (if (stringp role-spec) role-spec (car role-spec)))
+
+(defun valid-row-role-additions (type-key user additions)
+  ":private: The holder gate for newly added roles on an ordinary
+row resource (update-roles' otherwise branch — not :users, not
+insert). ADDITIONS is the to-add delta against the resource's
+existing roles, already computed by the caller; removals and
+retained stale grants are handled outside this gate and stay free
+(the D12 strip doctrine). Subtracts the row-update exemptions —
+public and the type's declared :type-roles (the edit palette offers
+both to non-holders; selectable-roles), plus admin and the current
+actor's exclusive role (update-roles force-adds both, so they are
+never user-selected adds) — and delegates the remainder to
+valid-user-roles, which keeps the admin-holder bypass,
+role-existence validation, and the shareable-exclusive exemption in
+one place. Do not use get-type-roles here: it reads the live type
+resource, which includes admin and add-only historical grants the
+declaration (and the palette) do not offer."
+  (let* ((declared-type-roles
+           (mapcar #'declared-role-name
+             (u:tree-get *compiled-model* type-key :type-roles)))
+         (exemptions (list* "public" "admin"
+                       (a:exclusive-role-for user)
+                       declared-type-roles))
+         (to-check (remove-if
+                     (lambda (r) (member r exemptions :test 'equal))
+                     additions)))
+    (valid-user-roles user to-check)))
+
 (defun protected-users ()
   ":private: FR-12. Extra protected user names from the PROTECTED_USERS
 environment variable (comma-separated), read at call time so a test can bind
@@ -1320,7 +1353,13 @@ a:*init-permissions* on :permissions. No-op for every other type and for admin."
   ":private: Updates the RBAC roles for the resource of type TYPE-KEY with ID.
 ROLES is a list of role names. ID is a UUID string. This function returns the
 resource name of the updated record if the update is successful, or an error if
-the update fails."
+the update fails. On :users, ROLES are the target's memberships (adds need the
+actor to hold the role, admin-exempt; removals free). On any other type, ROLES
+are the row resource's roles and only the newly added ones are holder-checked
+(valid-row-role-additions): removals are free, retained stale grants stay, and
+the declared :type-roles, public, admin, and the current actor's exclusive role
+are exempt because the edit palette offers them and the branch force-adds the
+last two."
   (valid-type-key type-key)
   (valid-roles roles)
   (if (uuid-p filters)
@@ -1375,6 +1414,13 @@ the update fails."
                 (existing-roles (a:list-resource-role-names *rbac* resource-name))
                 (to-add (set-difference roles existing-roles :test 'equal))
                 (to-remove (set-difference existing-roles roles :test 'equal)))
+          ;; Holder check on additions (the FR-11 delta rule, row side):
+          ;; be-update validated only the roles the actor holds
+          ;; (remove-existing-non-user-roles), so a crafted update could
+          ;; attach any existing role. Removals and retained stale
+          ;; grants stay free; the row-specific exemptions (declared
+          ;; type roles, public, the forced pair) live in the helper.
+          (valid-row-role-additions type-key user to-add)
           (loop for role in to-add
             do (a:add-resource-role *rbac* resource-name role))
           (loop for role in to-remove

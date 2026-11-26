@@ -445,6 +445,47 @@ change nothing."
         (atr-aborted (e) (is (= 400 (atr-aborted-code e)))))
       (is (equal "secret" (th-atr-body "private"))))))
 
+
+(test atr-rest-writer-cannot-attach-unheld-row-role
+  "The row-role holder gate through the real REST path: atr-writer
+crafts /api/update on the shared note with a top-level :roles list
+naming role-creator (exists, unheld). Expect the 400 abort and the
+row resource's complete role set unchanged (sorted snapshot compare
+— nothing added or removed, admin:exclusive stays, the writer's own
+exclusive stays absent: the gate fires before both mutation loops,
+not merely between removal and addition). The body stays v1 —
+unchanged field data avoids conflating the non-transactional
+field-update caveat with the security assertion."
+  (th-atr-reset)
+  (let* ((shared (th-atr-note-id "shared"))
+         (resource (id-to-resource-name shared))
+         (before (u:safe-sort (a:list-resource-role-names *rbac* resource)
+                   :predicate #'string<)))
+    (is (equal '("admin" "admin:exclusive" "public" "row-writer") before))
+    (handler-case
+        (progn
+          (th-atr-rest-update
+            :tree `(:type "notes" :filters ,shared
+                    :data (:body "v1")
+                    :roles ("public" "row-writer" "role-creator"))
+            :token "atr-token-writer")
+          (fail "writer's unheld role-creator add should have been rejected"))
+      (atr-aborted (e) (is (= 400 (atr-aborted-code e)))))
+    ;; Re-resolve the resource name from the row id: be-update renames
+    ;; the resource (a fresh uuid suffix) before update-roles runs —
+    ;; pre-existing ordering, not part of this gate — so the snapshot
+    ;; is compared through the id, which never moves.
+    (let ((after (u:safe-sort
+                   (a:list-resource-role-names *rbac*
+                     (id-to-resource-name shared))
+                   :predicate #'string<)))
+      (is (equal before after))
+      (is-true (member "admin:exclusive" after :test 'equal))
+      (is-false (member "role-creator" after :test 'equal))
+      (is-false (member (a:exclusive-role-for "atr-writer") after
+                  :test 'equal)))
+    (is (equal "v1" (th-atr-body "shared")))))
+
 (test atr-rest-delete-boundaries
   "atr-writer deletes the shared row via /api/delete; a guest delete
 keeps be-delete's denied-nil convention (200 with a nil result, row

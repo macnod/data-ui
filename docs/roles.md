@@ -28,10 +28,11 @@ An omitted declaration compiles to `("admin")`. `"admin"` is always appended, wh
 
 ## What a row carries
 
-The caller decides, not the type. `insert-normal` attaches exactly the `roles` argument it was passed, plus the creator's exclusive role (`<user>:exclusive`). `update-roles` force-adds `"admin"`. Nothing in that path reads `:type-roles`.
+The caller decides, not the type. `insert-normal` attaches exactly the `roles` argument it was passed, plus the creator's exclusive role (`<user>:exclusive`). `update-roles` force-adds `"admin"` and the current actor's exclusive role (not necessarily the original creator's). Nothing in that path reads `:type-roles`.
 
 - Omit `roles` and the row is private to its creator and admin.
-- Name `roles` and each one must already belong to the caller (admin may attach any role; another user's shareable exclusive role may also be attached). A request naming a role the caller does not hold is rejected.
+- On **insert**, each named role must already belong to the caller (admin may attach any role; another user's shareable exclusive role may also be attached). A request naming a role the caller does not hold is rejected.
+- On **update**, only the *newly added* roles are holder-checked, with the same exemptions as insert plus two the edit palette needs: a role declared in the type's `:type-roles` and `public` may be attached by a non-holder (`selectable-roles` offers both on the Edit form), and the two force-added roles (`admin`, the current actor's exclusive) are never user-selected adds. Retained roles — an unheld role already on the row's resource — may be kept or removed freely (the D12 strip doctrine: removal is never restricted).
 - The two lists are independent from the first moment. A later edit of the row's roles does not change who may create a row of the type, and tightening `:type-roles` does not touch roles already on rows.
 
 The built-in UI pre-checks the type's roles on the Add form — it reads the `type-roles` array of the `/api/list` response and fills the checkboxes — and the user may uncheck any of them before submit. That pre-check is a convenience. It is not a copy, and it is not what the row ends up with unless the user leaves the boxes checked.
@@ -82,7 +83,7 @@ The recurring ask, in the exact shape it arrives: let a trusted non-admin manage
 - **Control tab visibility** → read permission on the type resource. A plist role without `"read"` (e.g. `("r" :create)`) hides the tab from holders while API inserts still work.
 - **Let holders read or edit the rows** → the declaration plus one of the three attach paths above. There is no fourth path; without one, the empty-list trap.
 - **Narrow a role's powers** → the plist form in `:type-roles` (`("r" :read :update :create)`), or `:new-roles` for a badge role that gates membership without touching any type.
-- **Propagate a grant** → an admin (any holder of the `admin` role) can grant any role to any user, `admin`, `ai-user` and `deployer` included; a non-admin can grant on `:users` only roles it holds, never the admin-only ones; the built-in `admin` user always keeps `admin` and cannot be deleted; a user editing a row can attach roles they hold to that row's resource — plus what the palette deliberately offers (`public`, the type's `:type-roles`, shareable exclusives) — and until the row-role holder-check item lands the write path itself is not holder-checked, so a crafted update can attach any existing role.
+- **Propagate a grant** → an admin (any holder of the `admin` role) can grant any role to any user, `admin`, `ai-user` and `deployer` included; a non-admin can grant on `:users` only roles it holds, never the admin-only ones; the built-in `admin` user always keeps `admin` and cannot be deleted; a user editing a row can attach roles they hold to that row's resource — plus what the palette deliberately offers (`public`, the type's declared `:type-roles`, shareable exclusives) — and the write path enforces exactly that: a crafted `POST /api/update` naming an unheld role beyond the exemptions is rejected, while removing or retaining roles the row already carries stays free.
 - **Tighten a type on a live database** → `add-type-roles` is add-only; old grants survive a redeploy. Removal is explicit (`be-remove-type-roles`, admin edit) or a clean slate.
 
 ## Tab visibility is a reuse

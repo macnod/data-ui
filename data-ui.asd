@@ -98,4 +98,5 @@
                 (:file "fk-dedup-tests")
                 (:file "wire-null-tests")
                 (:file "render-cost-tests")
-                (:file "reset-tables-tests")))))
+                (:file "reset-tables-tests")
+                (:file "request-serialization-tests")))))

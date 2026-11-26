@@ -1,6 +1,6 @@
 # The Data UI CLI
 
-Reference for the shell scripts in `scripts/`: `data-ui`, the primary entry point for development, testing, deployment, and database management, and `publish-data-ui` for publishing to the public repo.
+Reference for the scripts in `scripts/`: `data-ui`, the primary entry point for development, testing, deployment, and database management; `publish-data-ui` for publishing to the public repo; and `crowd/crowd.mjs`, a few simulated users browsing a Data UI app in real Chrome.
 
 For the surrounding machinery — environments, HAProxy, TLS — see [deployment.md](deployment.md); for snapshot concepts beyond the verb reference, [snapshots.md](snapshots.md).
 
@@ -474,3 +474,75 @@ Squashes private work into a clean commit and pushes to the public remote, then 
     scripts/publish-data-ui "Fix RBAC role assignment"
 
 If no argument is given, the commit message defaults to `Update`.
+
+---
+
+## `crowd.mjs`
+
+A few simulated people ("wanderers") browsing one Data UI app in real Chrome while you browse it too. It was written to exercise the interim request-serialization gate by hand (see [deployment.md](deployment.md) → The Kubernetes Manifests): real clicks on the real frontend produce the frontend's real traffic pattern, which is what the gate has to serve. It is not part of `scripts/data-ui tests` — it needs a live app, a desktop Chrome, and minutes rather than seconds.
+
+### Synopsis
+
+    npm ci --prefix scripts/crowd          # once
+    scripts/crowd/crowd.mjs --user NAME [--creds FILE] [options]
+
+### Prerequisites
+
+- An app to browse: `--base URL` (default `http://localhost:8081`, the dev image). Any other host also needs `--allow-remote`, because `--updates` rewrites titles wherever the crowd is aimed.
+- Google Chrome on the machine the crowd runs on. The script drives that installation through `playwright-core` (pinned in `scripts/crowd/package.json`) and downloads no browser of its own.
+- An account, always named: `--user NAME` has no default. `guest` signs in without a password (when the model allows the guest). Every other account needs one — the `NAME:password` line of `--creds FILE`, or the `CROWD_PASSWORD` environment variable in place of the file — and with neither the script stops before any browser opens. The password is typed at the login form and never logged.
+- For `--updates`, an account with update rights on the type being browsed.
+
+### What It Does
+
+1. Opens one Chrome and gives every wanderer its own browser context (its own profile and session).
+2. Signs in once, through the app's own login form, and hands the stored session to the other wanderers — the way a returning visitor arrives with one. The whole crowd shares the one account, because the server keeps one refresh token per account and a second login retires the first. Browse under your own account, never the crowd's.
+3. Lets each wanderer walk the real UI at human pace, with lognormal pauses between actions: type tabs, paging, column sorts, opening rows and the notes beneath them, a search term typed character by character and then cleared, chip filters, Home, Back / Forward, the odd reload. With `--updates` it also opens an item, clicks Edit, and replaces any leading `[NNNN]` in the title with a fresh one.
+4. Records every request with its status and latency, probes `/health` every 5 seconds, and notes every anomaly.
+5. Ends with a report, printed and saved: the traffic and outcome histogram, how many requests began while another was in flight, latency per endpoint, per-wanderer action counts, updates made, anomalies, and a verdict.
+
+Every run writes `scripts/crowd/runs/<timestamp>-u<users>-s<seed>/` (ignored by git and by the Docker build): `report.txt`, `requests.jsonl` (one line per request: wanderer, method, path, type, start and end in ms, status, how many requests were already in flight when it began), `anomalies.jsonl`, `updates.jsonl` (the before and after of every title change), and up to eight screenshots taken on a hang, a failed update, or an action error.
+
+### Options
+
+`--help` prints the same list.
+
+- `--user NAME` — the account every wanderer shares (required; `guest` needs no password)
+- `--creds FILE` — a file with a `NAME:password` line for that account (required for every account but guest); the `CROWD_PASSWORD` environment variable stands in for the file
+- `--base URL` — the app to browse (default: `http://localhost:8081`); `--allow-remote` is required before it may leave loopback
+- `--users N` — wanderers (default: 1)
+- `--minutes M` — run length; `0` means until Ctrl-C (default: 5)
+- `--speed K` — divides every pause: 1 is human, 5 is hurried (default: 1)
+- `--together` — everyone arrives at once (default: a staggered start)
+- `--updates` — include title-prefix updates; `--update-pct P` is the chance an action is one (default: 15)
+- `--headed` — show the Chrome windows (default: headless)
+- `--seed N` — repeat a run (default: random, printed)
+- `--out DIR` — where `runs/` go (default: beside the script)
+- `--slow-ms MS` — the latency that counts as slow (default: 3000)
+- `--timeout MS` — how long an action waits for its requests before it is a hang (default: 30000)
+- `--hold-on-hang S` — on a hang, the wanderer sits still for S seconds before it reloads, so the server can be inspected while its requests are still open (default: 0)
+- `--quiet` — no per-action lines
+
+### Examples
+
+    # one visible wanderer, reading only
+    scripts/crowd/crowd.mjs --user guest --minutes 3 --headed
+    # five headless wanderers while you browse the same app
+    scripts/crowd/crowd.mjs --user guest --users 5 --minutes 10
+    # title updates, alone first: one wanderer, every action an update
+    scripts/crowd/crowd.mjs --user myaccount --creds /path/to/creds --updates --update-pct 100 --minutes 2 --headed
+    # then among the crowd, at the default 15 percent
+    scripts/crowd/crowd.mjs --user myaccount --creds /path/to/creds --users 5 --minutes 10 --updates
+
+### Exit Status and Verdict
+
+Exit status is 0 for a clean run, 1 when something went wrong, and 2 for a setup error, which leaves no run directory. The verdict is PROBLEMS when the run recorded a hang, an HTTP error, a network failure, a dialog, a failed update, an action error, or a fatal stop. Slow requests, browser console and page errors, and a lost session are reported but not counted.
+
+Read a verdict with two things in mind. First, `/health` stays outside the serialization gate, so its probes passing says the image is alive, not that the app is serving; the verdict rests on the pages' own requests. Second, no run has yet met a real hang or HTTP error: those detectors have so far been exercised only by false alarms raised by the harness itself (since fixed).
+
+### Notes
+
+- While a crowd runs, keep database-touching REPL forms out of the image it browses: the gate covers dispatched requests, not the REPL or background threads.
+- Keep a run under about 55 minutes. The shared session's access token lives an hour; past that, wanderers sign in again one after another, and each login retires the refresh token the others hold.
+- A crowd leaves usage-log rows on the app, and with `--updates` prefixed titles. The titles have no undo: restore a snapshot, or put them back from `updates.jsonl`.
+- Ctrl-C ends the run with its report; a second Ctrl-C abandons it.
