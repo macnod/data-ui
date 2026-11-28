@@ -145,6 +145,13 @@ aborted test cannot break the next one's unique constraint."
        (progn (th-sty-clear) ,@body)
      (th-sty-clear)))
 
+(defmacro th-sty-err (expr)
+  "Evaluate EXPR, return the validation-error message it signals (or
+:no-error). Any other error propagates."
+  `(handler-case
+       (progn ,expr :no-error)
+     (validation-error (e) (format nil "~a" e))))
+
 (defparameter *sty-test-cases*
   (list
     "<b>x</b>"
@@ -529,6 +536,34 @@ and can insert; admin sees it under :category :system."
       (is (eq :system (getf admin-entry :category)))
       (is (equal *styling-page-description*
             (getf admin-entry :page-description))))))
+
+(test sty-update-row-checked
+  "be-update checks a :styling row on the row's own resource, not the
+type's: a styling holder updates a row that carries the role (and is
+therefore readable), while a full-plist update on a row admin inserted
+with no roles — unreadable to the holder — signals the permission error
+and leaves the value as admin wrote it."
+  (th-sty-with-rows
+    (let ((holder (th-make-user "sty-row-holder" :roles '("styling")))
+          (other (th-make-user "sty-row-other" :roles '("styling"))))
+      (let ((shared (be-insert :styling
+                      '(:name "banner" :value "h")
+                      holder :roles '("styling"))))
+        (is-true (uuid-p shared))
+        (is (equal shared (be-update :styling shared
+                          '(:value "<em>h</em>") other))))
+      (let ((footer (be-insert :styling
+                      '(:name "footer" :value "<em>f</em>") "admin")))
+        (is-true (uuid-p footer))
+        (let ((e (th-sty-err (be-update :styling footer
+                          '(:name "footer" :value "hijacked") other))))
+          (is (and (stringp e)
+                (search "does not have update permission" e))
+            "got: ~a" e))
+        (is (equal "<em>f</em>"
+              (getf (getf (be-rec footer "admin" :type-key :styling)
+                         :record)
+                :value)))))))
 
 (test sty-wire-info-settings
   "info-settings carries :banner / :footer / :heading only when

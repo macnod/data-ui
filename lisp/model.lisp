@@ -316,6 +316,17 @@ one rule, no per-slot branch."
       (list :value (sanitize-styling-html value))
       nil)))
 
+(defun stamp-saved-view-owner (type-key data user &key id roles record)
+  ":private: :pre-create / :pre-update hook on the built-in
+:saved-views type. A saved view belongs to one user: on create
+the owner is the acting user, on update it is the record's
+existing owner, whoever acts (admin repairing a row does not
+take it over). A client-supplied :user is overwritten either
+way: full-data keeps a :user key present in DATA, and
+:autofill :user fills only an absent one."
+  (declare (ignore type-key data id roles))
+  (list :user (if record (getf record :user) user)))
+
 ;; ---------------------------------------------------------------------------
 ;; Hook Registry
 ;;
@@ -2163,6 +2174,51 @@ validator there, and a frontend renderer.")
                                           :column :description :agg :first)
                                 :column t))
        :list-form (:fields (:user :name :description))
+       :update-form (:fields t)
+       :view-form (:fields t)
+       :add-form (:fields t))
+
+     :saved-views
+     (:table t :built-in t
+       :base nil
+       :create :auto :update :auto :delete :auto :display nil
+       :type-roles ("settings")
+       :suppress-roles t
+       :pre-create ,#'stamp-saved-view-owner
+       :pre-update ,#'stamp-saved-view-owner
+       :views (:main (:tables (:saved-views :users) :scope :user)
+                :users (:tables (:users)))
+       :fields (:user (:type :text :identity t
+                        :ui (:label "Login" :widget :textbox
+                              :read-only t)
+                        :target :users
+                        :autofill :user
+                        :source (:view :users :table :users
+                                  :column :name :agg :first)
+                        :column t :not-null t)
+                 :list-type (:type :text :identity t
+                              :ui (:label "List" :widget :textbox
+                                    :read-only t)
+                              :validations (:required
+                                             (:max-length :max 80))
+                              :source (:view :main :column :list-type
+                                        :agg :first)
+                              :column t :not-null t)
+                 :name (:type :text :identity t
+                         :ui (:label "Name" :widget :textbox)
+                         :validations (:required
+                                        (:max-length :max 80))
+                         :source (:view :main :column :name
+                                   :agg :first)
+                         :column t :not-null t)
+                 :query (:type :text
+                          :ui (:label "Query" :widget :textarea)
+                          :validations (:required
+                                         (:max-length :max 8000))
+                          :source (:view :main :column :query
+                                    :agg :first)
+                          :column t :not-null t))
+       :list-form (:fields (:list-type :name :query))
        :update-form (:fields t)
        :view-form (:fields t)
        :add-form (:fields t))

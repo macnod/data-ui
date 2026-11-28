@@ -633,6 +633,17 @@ The hook registers at model.lisp load; the :settings type change is in
     (explain! results)
     (when collect results)))
 
+(defun run-saved-views-tests (&optional collect)
+  "Saved list views tests: the hidden built-in :saved-views store and
+the be-update row check on the non-base built-ins. The type and its
+owner-stamping hook are on *base-model*, present in every model
+context."
+  (let ((results
+          (with-model "test-model" nil
+            (run 'saved-views-suite))))
+    (explain! results)
+    (when collect results)))
+
 (defun run-widget-tests (&optional collect)
   "Widget allow-list and UI emission tests. action-tests.lisp is
 loaded first so the test-model fixture's :button actions resolve
@@ -1458,6 +1469,7 @@ groups."
                    ("action"         . run-action-tests)
                    ("change-password" . run-change-password-tests)
                    ("secrets"        . run-secrets-tests)
+                   ("saved-views"    . run-saved-views-tests)
                    ("widget"         . run-widget-tests)
                    ("m2m"            . run-m2m-tests)
                    ("bi-m2m"         . run-bi-m2m-tests)

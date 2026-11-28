@@ -16,10 +16,14 @@ import { columnsStorageKey, deleteColumnStorageKey,
          supportsColumnVisibility } from './columns'
 import FilePath from './FilePath'
 import SearchSelect from './SearchSelect'
-import { parseHash, canonicalize, buildUrlState,
-         urlStatesEqual, writeUrl, parseScope, scopeToParam,
-         SCOPE_NONE } from './urlState'
-import type { RecordMode, ScopeState } from './urlState'
+import { parseHash, parseQueryString, canonicalize,
+         buildUrlState, urlStatesEqual, writeUrl,
+         serializeUrlState, hashFor, viewQueryOf, parseScope,
+         scopeToParam, SCOPE_NONE } from './urlState'
+import type { RecordMode, ScopeState, UrlState } from './urlState'
+import { SavedViewsRow, SaveViewControl } from './SavedViewsBar'
+import { viewFromRecord, viewsForType, planSave } from './savedViews'
+import type { SavedView } from './savedViews'
 import { hashPermalink, bestLinkUrl } from './publicLink'
 import { slotFromInfo, headingStyleFromInfo } from './stylingHtml'
 import { Markdown } from './Markdown'
@@ -2725,6 +2729,11 @@ function App() {
   // invalidation and request allocation; a response commits only
   // when its captured sequence is still the latest.
   const listSeq = useRef(0)
+  // Saved-views request freshness (the listSeq shape): the fetch
+  // effect advances it first, and a response commits only while
+  // its captured sequence is still the latest — a slow response
+  // from before a write or a logout cannot land over a newer list.
+  const savedViewsSeq = useRef(0)
   // Clipboard-operation token for Best Link: fences a pending
   // writeText so record A's in-flight copy cannot paint
   // confirmation on record B's button.
@@ -2889,6 +2898,19 @@ function App() {
   // chip picker, and a chip picker opening closes it.
   const [columnsPickerOpen, setColumnsPickerOpen] =
     useState(false)
+  // Saved list views: the user's rows of the hidden built-in
+  // saved-views type, fetched once per session and again after
+  // every write (savedViewsRev is the write-only re-render
+  // counter that re-fires the fetch effect). Each view carries
+  // its parsed state and its hash link, computed once when the
+  // fetch lands and never per render (parseQueryString's guards
+  // warn on a malformed param). The Save view popover joins the
+  // one-popover-at-a-time contract with the chip pickers and the
+  // Columns control.
+  const [savedViews, setSavedViews] = useState<
+    (SavedView & { state: UrlState, href: string })[]>([])
+  const [savedViewsRev, bumpSavedViews] = useState(0)
+  const [saveViewOpen, setSaveViewOpen] = useState(false)
   // Write-only re-render invalidator for the hidden-column
   // sets (the setTokenVersion shape): the store IS the state
   // — localStorage is read at render, beside listFields — so
@@ -5742,6 +5764,48 @@ function App() {
   }, [data, viewMode, type, types, recordId, recordMode,
       isEditMode])
 
+  // Saved list views: one fetch per session, and one more after
+  // every write (savedViewsRev). An unconditional hook — it sits
+  // above the early returns. Guests get no request: the server
+  // gate is the type role, and this check only spares a request
+  // that would be refused. A non-OK response or a thrown fetch
+  // keeps the previous list and warns — never an alert on load;
+  // against an older backend the request 404s and the bar simply
+  // shows no names. Each row's query is parsed here, once, when
+  // the fetch lands. The spread order is the rule that the row's
+  // list type wins over a disagreeing stored type param.
+  useEffect(() => {
+    const seq = ++savedViewsSeq.current
+    if (!loggedIn || loggedInUser === 'guest') {
+      setSavedViews(prev => prev.length === 0 ? prev : [])
+      return
+    }
+    apiFetch('/api/list?type=saved-views&limit=200')
+      .then(async res => {
+        if (seq !== savedViewsSeq.current) return
+        if (!res.ok) {
+          console.warn('saved-views: list failed', res.status)
+          return
+        }
+        const json = await res.json()
+        if (seq !== savedViewsSeq.current) return
+        const records = json?.result?.records
+        setSavedViews(
+          (Array.isArray(records) ? records : [])
+            .map(viewFromRecord)
+            .filter((v): v is SavedView => v != null)
+            .map(v => {
+              const state = viewQueryOf({
+                ...parseQueryString(v.query), type: v.listType
+              })
+              return { ...v, state, href: hashFor(state) }
+            }))
+      })
+      .catch(err => {
+        console.warn('saved-views: list failed', err)
+      })
+  }, [loggedIn, loggedInUser, savedViewsRev])
+
   if (!loggedIn) {
     return (
       <div style={{ maxWidth: 320, margin: '100px auto', padding: 20 }}>
@@ -6175,6 +6239,94 @@ function App() {
     || Object.keys(boolFilters).length > 0
     || scope.kind !== 'none'
 
+  // ---- Saved list views, derived per render ----
+  // Plain computations, not hooks (the chipFieldMeta posture): this
+  // site sits after the early returns. `live` is exactly the writer
+  // effect's argument, so the highlight compares the saved views
+  // against the state the URL itself carries. currentView is the
+  // view-query — the canonical state without the open record and the
+  // page, the projection every view stores; currentFull is the whole
+  // canonical state, so a view equal to it is the one already
+  // applied, hash included.
+  const viewsEnabled = loggedInUser !== 'guest'
+  const live = buildUrlState({
+    type, recordId, recordMode, scope,
+    debouncedSearch, debouncedNotTerm,
+    listFilters, boolFilters, hideExclusive,
+    sortField, sortDir, currentPage
+  })
+  const currentFull = canonicalize(live)
+  const currentView = viewQueryOf(live)
+  const typeViews = viewsForType(savedViews, type)
+  const savedViewLinks = typeViews.map(v => ({
+    id: v.id, name: v.name, href: v.href,
+    selected: urlStatesEqual(v.state, currentView),
+    current: urlStatesEqual(v.state, currentFull)
+  }))
+  // Saved list views: the two writes. Both go through apiFetch
+  // directly — never submitForm, whose Add path seeds
+  // formValues.roles from the envelope's type-roles and would
+  // attach `settings` to every row. Neither sends a roles key (the
+  // row is private by default) nor a user key (the server stamps
+  // the owner). Each bumps the revision afterwards, so the bar
+  // always shows the server's truth.
+  const saveView = async (rawName: string) => {
+    const plan = planSave(typeViews, rawName)
+    if (plan.kind === 'none') return
+    const query = serializeUrlState(currentView)
+    try {
+      const res = await apiFetch(
+        plan.kind === 'update' ? '/api/update' : '/api/insert',
+        {
+          method: 'POST',
+          body: JSON.stringify(plan.kind === 'update'
+            ? { type: 'saved-views', filters: plan.id,
+                data: { query } }
+            : { type: 'saved-views',
+                data: { name: plan.name, 'list-type': type,
+                        query } })
+        })
+      if (!res.ok) {
+        alert(await errorMessage(res, 'Failed to save view'))
+      } else {
+        // inserted:false on an OK insert (an identical double
+        // submit) is a success too.
+        setSaveViewOpen(false)
+      }
+    } catch {
+      alert('Failed to save view')
+    }
+    bumpSavedViews(n => n + 1)
+  }
+  const deleteSavedView = async (id: string) => {
+    // Destructive with no undo: confirm first (deleteSelected's
+    // precedent).
+    const view = savedViews.find(v => v.id === id)
+    if (!confirm(`Delete view "${view ? view.name : ''}"?`)) return
+    try {
+      const res = await apiFetch('/api/delete', {
+        method: 'POST',
+        body: JSON.stringify({ type: 'saved-views', filters: id })
+      })
+      if (!res.ok) {
+        alert(await errorMessage(res, 'Failed to delete view'))
+      }
+    } catch {
+      alert('Failed to delete view')
+    }
+    bumpSavedViews(n => n + 1)
+  }
+
+  // The filter bar's gate, named: the saved-views names row renders
+  // under it too, directly above the bar — no bar, no row. The bar's
+  // own comment (in the JSX below) explains the disjuncts.
+  const filterBarShown = !(showAddForm || isEditMode)
+    && recordError == null
+    && (scope.kind !== 'none' || hasSearchable
+        || hasChipFields || boolFilterFields.length > 0
+        || (supportsColumns && !hideList
+            && listFields.length > 0))
+
   return (
     <div>
       <div className="app-header">
@@ -6330,19 +6482,23 @@ function App() {
           )}
         </div>
       )}
-      {/* The filter bar. The Columns disjunct: a type with no
-          search, no chips, no boolean filters, and no scope
-          still renders a bar with exactly one control (the ▦
-          icon) — column curation is not a data filter
-          (precedent: "Hide exclusive" renders on roles
-          regardless of the other controls). hideList types
-          get nothing (no table, nothing to curate) and
-          rollups are excluded by the forms proxy. */}
-      {!(showAddForm || isEditMode) && recordError == null &&
-        (scope.kind !== 'none' || hasSearchable
-         || hasChipFields || boolFilterFields.length > 0
-         || (supportsColumns && !hideList
-             && listFields.length > 0)) && (
+      {/* The saved-views names row: directly above the filter bar,
+          under the bar's own gate, and only when the user has views
+          on this type — a user who has saved nothing sees no new
+          row. Applying a view is the browser following its link. */}
+      {filterBarShown && viewsEnabled && savedViewLinks.length > 0 && (
+        <SavedViewsRow views={savedViewLinks}
+          onDelete={deleteSavedView} />
+      )}
+      {/* The filter bar (gated by filterBarShown, named above). The
+          Columns disjunct: a type with no search, no chips, no
+          boolean filters, and no scope still renders a bar with
+          exactly one control (the ▦ icon) — column curation is not a
+          data filter (precedent: "Hide exclusive" renders on roles
+          regardless of the other controls). hideList types get
+          nothing (no table, nothing to curate) and rollups are
+          excluded by the forms proxy. */}
+      {filterBarShown && (
         <div style={{ marginBottom: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
           {hasSearchable && (
             <>
@@ -6458,9 +6614,12 @@ function App() {
                 onOpenChange={o => {
                   setChipPickerOpen(o ? f : null)
                   // One popover at a time: a chip picker
-                  // opening closes the Columns popover (the
-                  // Columns control reciprocates).
-                  if (o) setColumnsPickerOpen(false)
+                  // opening closes the Columns popover and the
+                  // Save view popover (both reciprocate).
+                  if (o) {
+                    setColumnsPickerOpen(false)
+                    setSaveViewOpen(false)
+                  }
                 }}
                 onToggle={v => toggleChipFilter(f, v)}
               />
@@ -6489,8 +6648,12 @@ function App() {
               onOpenChange={o => {
                 setColumnsPickerOpen(o)
                 // One popover at a time: Columns opening
-                // closes any open chip picker.
-                if (o) setChipPickerOpen(null)
+                // closes any open chip picker and the Save view
+                // popover (both reciprocate).
+                if (o) {
+                  setChipPickerOpen(null)
+                  setSaveViewOpen(false)
+                }
               }}
               onToggleField={toggleHiddenColumn}
               onToggleDeleteColumn={toggleDeleteColumn}
@@ -6563,6 +6726,28 @@ function App() {
             >
               Clear filters
             </button>
+          )}
+          {/* Save view: the last item in the bar, and it renders
+              whenever the bar does — the bare list is a savable cut
+              too (on a type with an authored boolean default, "Any"
+              can be exactly the cut to keep beside it). Guests get
+              no control. */}
+          {viewsEnabled && (
+            <SaveViewControl
+              views={typeViews}
+              open={saveViewOpen}
+              onOpenChange={o => {
+                setSaveViewOpen(o)
+                // One popover at a time: Save view opening
+                // closes any chip picker and the Columns popover
+                // (both reciprocate).
+                if (o) {
+                  setChipPickerOpen(null)
+                  setColumnsPickerOpen(false)
+                }
+              }}
+              onSave={saveView}
+            />
           )}
         </div>
       )}

@@ -4127,9 +4127,9 @@ This function returns the ID of the updated record, or a list of errors if the
 update fails.
 
 The update is allowed when USER holds update on the matched record's own
-resource (base types degenerate to the type resource; the opaque built-in
-:tokens type, which has no row resource, is gated on the type resource
-instead)."
+resource. Base types degenerate to the type resource, and the built-in
+:tokens type alone is gated on the type resource; every other built-in is
+checked on its row's resource."
   (valid-compiled-model)
   (valid-type-key type-key)
   (valid-non-rollup-type-key type-key)
@@ -4146,18 +4146,23 @@ instead)."
   (when (equal type-key :usage)
     (report-ve "be-update"
       "Type ~s is append-only and cannot be updated." ~type-key))
-  ;; Non-resource, non-base built-in types (e.g. :tokens) are invisible
-  ;; to uuid-exists-p / id-to-type-key / user-allowed-resource, so the
-  ;; record-level checks below would lock their callers (REST
-  ;; store-token) out of login; they get the type-level check only.
+  ;; :tokens alone gets the type-level check. Its rows do have
+  ;; resources rows (insert-normal gives them one), so the
+  ;; record-level checks below would work on them; it is kept
+  ;; apart so that nothing decided for the built-ins below
+  ;; reaches the login token store. Every other non-base
+  ;; built-in (:secrets, :styling, :saved-views) takes the
+  ;; record-level check like an author type: a type-level check
+  ;; there let any holder of the type role rewrite another
+  ;; user's row by uuid. A built-in whose rows have no resources
+  ;; row must be named here too; forgetting fails closed (the
+  ;; permission error).
   (let* ((m *compiled-model*)
-          (opaque-type-p (and (built-in-p type-key)
-                           (not (base-type-p type-key))
-                           (not (u:tree-get m type-key :internal))))
+          (opaque-type-p (equal type-key :tokens))
           (uuid (let ((uuid (id-from-filters-and-data type-key filters data)))
                   (cond
-                    ;; No row resource exists, so the type resource is
-                    ;; the only thing to check (the :tokens carve-out).
+                    ;; :tokens alone is checked at the type level
+                    ;; (the reason sits with the binding above).
                     (opaque-type-p
                       (valid-user-permissions user type-key "update")
                       (if (uuid-p uuid)

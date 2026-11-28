@@ -22,8 +22,9 @@ const out = ts.transpileModule(src, {
 const mod = await import(
   'data:text/javascript;base64,'
   + Buffer.from(out).toString('base64'))
-const { canonicalize, parseHash, buildUrlState, writeUrl,
-        urlStatesEqual, parseScope, scopeToParam } = mod
+const { canonicalize, parseHash, parseQueryString, buildUrlState,
+        writeUrl, urlStatesEqual, parseScope, scopeToParam,
+        serializeUrlState, hashFor, viewQueryOf } = mod
 
 let passed = 0
 function ok(name, fn) {
@@ -456,5 +457,187 @@ ok('writeUrl: replace also honors the equality gate', () => {
   writeUrl({ type: 'c', id: UUID }, { replace: true })
   assert.equal(replaces.length, 0)
 })
+
+// ---- saved list views: the format helpers ----
+// A canonical state carrying every key the format has.
+const FULL = {
+  type: 'roles', id: UUID, mode: 'edit', fk: 'post:' + UUID,
+  q: 'hi', notq: 'no', filters: { name: ['b', 'a'] },
+  bool: { active: 'yes' }, hideExclusive: false, sort: '-name',
+  page: 3
+}
+
+ok('parseHash: tolerates a missing "?" (kept through the extraction)',
+  () => {
+    resetDoubles(`#/apptype=c&q=hi&id=${UUID}`)
+    const p = parseHash()
+    assert.equal(p.type, 'c')
+    assert.equal(p.q, 'hi')
+    assert.equal(p.id, UUID)
+  })
+ok('parseQueryString: round-trips a canonical state carrying every key',
+  () => {
+    const c = canonicalize(FULL)
+    const p = parseQueryString(serializeUrlState(c))
+    assert.deepEqual(canonicalize(p), c)
+  })
+ok('parseQueryString: malformed params agree with parseHash', () => {
+  const bad = [
+    'type=c&filters=%7Bbroken',
+    'type=c&filters=not-json-at-all',
+    'type=c&bool=nope',
+    'type=c&bool={"active":"maybe"}',
+    'type=c&sort=bad*sort',
+    'type=c&sort=two words',
+    'type=c&sort=',
+    'type=c&fk=a:1&fk=b:2',
+    'type=c&page=0',
+    'type=c&page=x'
+  ]
+  const quiet = console.warn
+  console.warn = () => {}
+  try {
+    for (const query of bad) {
+      resetDoubles('#/app?' + query)
+      const viaHash = parseHash()
+      const viaQuery = parseQueryString(query)
+      assert.deepEqual(viaQuery, viaHash, 'query: ' + query)
+    }
+  } finally {
+    console.warn = quiet
+  }
+})
+ok('parseQueryString: the empty query is the empty state', () => {
+  assert.deepEqual(parseQueryString(''), {})
+  assert.deepEqual(parseQueryString('unknown=1'), {})
+})
+ok('serializeUrlState: no prefix, no "?", param order fixed', () => {
+  const q = serializeUrlState(canonicalize(FULL))
+  assert.equal(q.startsWith('?'), false)
+  assert.equal(q.includes('#'), false)
+  const params = new URLSearchParams(q)
+  assert.deepEqual([...params.keys()],
+    ['type', 'id', 'mode', 'fk', 'q', 'notq', 'filters', 'bool',
+     'hide-exclusive', 'sort', 'page'])
+  assert.equal(params.get('id'), UUID)
+  assert.equal(params.get('mode'), 'edit')
+  // the fk pair's colons are unescaped (the shared-link spelling)
+  assert.equal(params.get('fk'), 'post:' + UUID)
+  assert.equal(q.includes('fk=post:' + UUID), true)
+  assert.equal(params.get('filters'),
+    JSON.stringify({ name: ['a', 'b'] }))
+  assert.equal(params.get('bool'),
+    JSON.stringify({ active: 'yes' }))
+  assert.equal(params.get('hide-exclusive'), 'false')
+  assert.equal(params.get('sort'), '-name')
+  assert.equal(params.get('page'), '3')
+  assert.equal(serializeUrlState({}), '')
+  assert.equal(serializeUrlState({ type: 'c' }), 'type=c')
+})
+ok('hashFor: equals the URL writeUrl pushes', () => {
+  resetDoubles('')
+  writeUrl(FULL)
+  assert.equal(pushes[0].url, hashFor(FULL))
+  resetDoubles('')
+  writeUrl({ type: 'c' })
+  assert.equal(pushes[0].url, hashFor({ type: 'c' }))
+  resetDoubles('')
+  writeUrl({ type: 'comments', fk: 'garbage' })
+  assert.equal(pushes[0].url, hashFor({ type: 'comments', fk: 'garbage' }))
+  // raw input: hashFor canonicalizes, exactly as writeUrl does
+  // (an uppercase id and an unsorted chip order are the same state)
+  assert.equal(hashFor(FULL), hashFor(canonicalize(FULL)))
+  assert.equal(hashFor(FULL), hashFor({ ...FULL,
+    id: UUID.toUpperCase(), filters: { name: ['a', 'b'] } }))
+})
+ok('hashFor: the bare entry is the bare prefix', () => {
+  assert.equal(hashFor({}), '#/app')
+  assert.equal(hashFor({ type: '' }), '#/app')
+  assert.equal(hashFor({ page: 1 }), '#/app')
+})
+ok('hashFor: is pure — no history write, no hash write', () => {
+  resetDoubles('#/app?type=c')
+  hashFor(FULL)
+  assert.equal(pushes.length, 0)
+  assert.equal(replaces.length, 0)
+  assert.equal(liveHash, '#/app?type=c')
+})
+
+// ---- viewQueryOf ----
+ok('viewQueryOf: strips id, mode, and page', () => {
+  const v = viewQueryOf({ type: 'c', id: UUID, mode: 'edit', page: 2 })
+  assert.deepEqual(v, { type: 'c' })
+  assert.equal('id' in v, false)
+  assert.equal('mode' in v, false)
+  assert.equal('page' in v, false)
+})
+ok('viewQueryOf: keeps every list key', () => {
+  const v = viewQueryOf({
+    type: 'comments', id: UUID, mode: 'edit', fk: 'post:' + UUID,
+    q: 'x', notq: 'y', filters: { tag: ['b', 'a'] },
+    bool: { done: 'no' }, hideExclusive: true, sort: '-name', page: 3
+  })
+  assert.deepEqual(v, {
+    type: 'comments', fk: 'post:' + UUID, q: 'x', notq: 'y',
+    filters: { tag: ['a', 'b'] }, bool: { done: 'no' }, sort: '-name'
+  })
+})
+ok('viewQueryOf: a roles hide-exclusive false survives; the default does not',
+  () => {
+    assert.deepEqual(
+      viewQueryOf({ type: 'roles', hideExclusive: false }),
+      { type: 'roles', hideExclusive: false })
+    assert.deepEqual(
+      viewQueryOf({ type: 'roles', hideExclusive: true }),
+      { type: 'roles' })
+  })
+ok('viewQueryOf: never mutates its input', () => {
+  const s = { type: 'c', id: UUID, page: 2, filters: { a: ['x'] } }
+  viewQueryOf(s)
+  assert.deepEqual(s, { type: 'c', id: UUID, page: 2, filters: { a: ['x'] } })
+})
+ok('viewQueryOf: store → read → project is the same view', () => {
+  const stored = serializeUrlState(viewQueryOf(FULL))
+  const applied = viewQueryOf(parseQueryString(stored))
+  assert.deepEqual(applied, viewQueryOf(FULL))
+  assert.equal(urlStatesEqual(applied, viewQueryOf(FULL)), true)
+})
+
+// ---- urlStatesEqual on view-queries (the derived highlight) ----
+ok('view-queries: paging and an open record do not matter', () => {
+  const view = viewQueryOf({ type: 'c', q: 'x' })
+  assert.equal(urlStatesEqual(view,
+    viewQueryOf({ type: 'c', q: 'x', page: 2 })), true)
+  assert.equal(urlStatesEqual(view,
+    viewQueryOf(
+      { type: 'c', q: 'x', id: UUID, mode: 'edit', page: 3 })), true)
+})
+ok('view-queries: a changed chip breaks equality', () => {
+  const view = viewQueryOf({ type: 'c', q: 'x' })
+  assert.equal(urlStatesEqual(view, viewQueryOf({ type: 'c', q: 'y' })),
+    false)
+  assert.equal(urlStatesEqual(view, viewQueryOf({ type: 'c' })), false)
+})
+ok('view-queries: a filter key reorder keeps equality, a chip does not',
+  () => {
+    const view = viewQueryOf(
+      { type: 'c', filters: { a: ['1'], b: ['2'] } })
+    assert.equal(urlStatesEqual(view,
+      viewQueryOf({ type: 'c', filters: { b: ['2'], a: ['1'] } })), true)
+    assert.equal(urlStatesEqual(view,
+      viewQueryOf({ type: 'c', filters: { a: ['1'], b: ['2', '3'] } })),
+      false)
+    assert.equal(urlStatesEqual(view,
+      viewQueryOf({ type: 'c', filters: { b: ['2'] } })), false)
+  })
+ok('view-queries: the whole state is not the view-query (page differs)',
+  () => {
+    // selected vs current: the page-2 state selects the view but is
+    // not yet the link's target
+    const view = viewQueryOf({ type: 'c', q: 'x' })
+    const live = canonicalize({ type: 'c', q: 'x', page: 2 })
+    assert.equal(urlStatesEqual(view, viewQueryOf(live)), true)
+    assert.equal(urlStatesEqual(view, live), false)
+  })
 
 console.log(`\n${passed} tests passed`)

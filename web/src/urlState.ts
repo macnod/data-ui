@@ -11,7 +11,10 @@
 // un-trimmed input text.
 // No routing library — the frontend stays minimal and
 // schema-driven. This module is the single home of the format;
-// writeUrl is the only hash writer in the app.
+// writeUrl is the only hash writer in the app. Saved list views
+// store this same format and re-read it through
+// parseQueryString / serializeUrlState / hashFor / viewQueryOf —
+// never through a parser of their own.
 
 export type RecordMode = 'view' | 'edit'
 
@@ -252,19 +255,14 @@ const isBool = (v: any): v is Record<string, 'yes' | 'no'> =>
   && Object.values(v).every(
     x => x === 'yes' || x === 'no')
 
-// parseHash: read the live hash. Returns null for any hash that
-// is not ours (including '' and '#') — "not ours, no seed".
-// Tolerate a missing '?'. Unknown params are ignored (a future
-// reader never crashes on an old link; a new link on an old
-// build just seeds what it knows). view is deliberately not in
-// the format: both consumers derive the view mode from the
-// type's category, so old view=… links fall to the
-// unknown-param tolerance.
-export function parseHash(): UrlState | null {
-  const hash = window.location.hash
-  if (!hash.startsWith(PREFIX)) return null
-  const q = hash.slice(PREFIX.length)
-  const query = q.startsWith('?') ? q.slice(1) : q
+// parseQueryString: the parse body over one query string —
+// everything after the "#/app?" prefix (the caller strips both).
+// parseHash delegates here, and a saved list view reads its
+// stored query through it, so a corrupt or tampered row is
+// handled by the same guards as a hand-edited bookmark: unknown
+// params are ignored and a malformed param drops only itself.
+// Returns the raw state; canonicalize is the caller's job.
+export function parseQueryString(query: string): UrlState {
   const params = new URLSearchParams(query)
   const s: UrlState = {}
   const t = params.get('type')
@@ -308,6 +306,22 @@ export function parseHash(): UrlState | null {
   return s
 }
 
+// parseHash: read the live hash. Returns null for any hash that
+// is not ours (including '' and '#') — "not ours, no seed".
+// Tolerate a missing '?'. Unknown params are ignored (a future
+// reader never crashes on an old link; a new link on an old
+// build just seeds what it knows). view is deliberately not in
+// the format: both consumers derive the view mode from the
+// type's category, so old view=… links fall to the
+// unknown-param tolerance.
+export function parseHash(): UrlState | null {
+  const hash = window.location.hash
+  if (!hash.startsWith(PREFIX)) return null
+  const q = hash.slice(PREFIX.length)
+  const query = q.startsWith('?') ? q.slice(1) : q
+  return parseQueryString(query)
+}
+
 // Deep equality for two UrlStates (of any shape — the callers
 // pass canonical forms). Key order, array order, and empty-array
 // shape are canonicalized away by canonicalize; this compares
@@ -342,6 +356,69 @@ export function urlStatesEqual(a: UrlState, b: UrlState): boolean {
   return true
 }
 
+// serializeUrlState: the canonical query string of an
+// already-canonical state — what writeUrl puts after "#/app?",
+// with neither the prefix nor the '?'; '' for the bare entry.
+// Param order is the format's own. A saved list view stores
+// exactly this string, so applying one is no different from
+// following a link copied from the address bar.
+export function serializeUrlState(c: UrlState): string {
+  const params = new URLSearchParams()
+  if (c.type != null) params.set('type', c.type)
+  // Serialize id right after type, then mode=edit, before the
+  // list params (the canonical record permalink shape).
+  if (c.id != null) params.set('id', c.id)
+  if (c.mode === 'edit') params.set('mode', 'edit')
+  // Every canonical present fk serializes, including the empty
+  // invalid marker (fk=) — presence is the state.
+  if (c.fk !== undefined) params.set('fk', c.fk)
+  if (c.q != null) params.set('q', c.q)
+  if (c.notq != null) params.set('notq', c.notq)
+  if (c.filters != null) {
+    params.set('filters', JSON.stringify(c.filters))
+  }
+  if (c.bool != null) {
+    params.set('bool', JSON.stringify(c.bool))
+  }
+  if (c.hideExclusive === false) {
+    params.set('hide-exclusive', 'false')
+  }
+  if (c.sort != null) params.set('sort', c.sort)
+  if (c.page != null) params.set('page', String(c.page))
+  // Unescape the fk pair's colons after serialization: the
+  // plan's shared-link spelling is fk=post:<uuid> raw, and a
+  // hand-typed entry must look like the writer's output. Safe
+  // on URLSearchParams output — '%' itself is always encoded
+  // to %25, so a %3A in the string can only originate from a
+  // ':' in a value, and ':' is a legal query character.
+  return params.toString().replace(/%3A/g, ':')
+}
+
+// hashFor: the full hash writeUrl would push for S — "#/app?"
+// plus the canonical query, or the bare "#/app". Pure: it
+// writes nothing and reads no history. Each saved list view's
+// name is a real link to this, so applying a view is the
+// browser's own fragment navigation and the popstate /
+// hashchange listener stays the one apply path.
+export function hashFor(s: UrlState): string {
+  const qs = serializeUrlState(canonicalize(s))
+  return qs === '' ? PREFIX : PREFIX + '?' + qs
+}
+
+// viewQueryOf: a saved list view's query — the canonical state
+// minus the open record (id, mode) and the page. A projection,
+// not an allowlist: every other key the format carries is kept,
+// including ones added later. The omission lives here and not
+// in canonicalize — for everyone else the page and the open
+// record are real URL state. Never mutates S.
+export function viewQueryOf(s: UrlState): UrlState {
+  const c = canonicalize(s)
+  delete c.id
+  delete c.mode
+  delete c.page
+  return c
+}
+
 // writeUrl: the only hash writer. pushState on committed
 // changes only (search writes on the debounce commit, not per
 // keystroke). The no-op compare is canonical-to-canonical,
@@ -366,38 +443,7 @@ export function writeUrl(
   s: UrlState, options?: WriteUrlOptions
 ): void {
   const c = canonicalize(s)
-  const params = new URLSearchParams()
-  if (c.type != null) params.set('type', c.type)
-  // Serialize id right after type, then mode=edit, before the
-  // list params (the canonical record permalink shape).
-  if (c.id != null) params.set('id', c.id)
-  if (c.mode === 'edit') params.set('mode', 'edit')
-  // Every canonical present fk serializes, including the empty
-  // invalid marker (fk=) — presence is the state.
-  if (c.fk !== undefined) params.set('fk', c.fk)
-  if (c.q != null) params.set('q', c.q)
-  if (c.notq != null) params.set('notq', c.notq)
-  if (c.filters != null) {
-    params.set('filters', JSON.stringify(c.filters))
-  }
-  if (c.bool != null) {
-    params.set('bool', JSON.stringify(c.bool))
-  }
-  if (c.hideExclusive === false) {
-    params.set('hide-exclusive', 'false')
-  }
-  if (c.sort != null) params.set('sort', c.sort)
-  if (c.page != null) params.set('page', String(c.page))
-  let qs = params.toString()
-  // Unescape the fk pair's colons after serialization: the
-  // plan's shared-link spelling is fk=post:<uuid> raw, and a
-  // hand-typed entry must look like the writer's output. Safe
-  // on URLSearchParams output — '%' itself is always encoded
-  // to %25, so a %3A in the string can only originate from a
-  // ':' in a value, and ':' is a legal query character.
-  qs = qs.replace(/%3A/g, ':')
-  if (qs !== '') qs = '?' + qs
-  const next = PREFIX + qs
+  const next = hashFor(c)
   const live = parseHash()
   if (live != null
       && urlStatesEqual(canonicalize(live), c)) {

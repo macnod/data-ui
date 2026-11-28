@@ -18,7 +18,7 @@ The one question that prevents nearly every confusion below: for the request at 
 | List of a built-in type or a rollup | type resource | read (built-ins then filter rows to the readable set; rollups have no row resources) |
 | `/api/types`, `/api/info`, `/api/css-variables` | no resource — app-level | `:api-roles` membership |
 
-Base types (`:users`, `:roles`, `:permissions`, `:resources`, `:settings`, the joiners) have no row resources — every check on them degenerates to their type resource, and `:tokens` (opaque built-in, no row resource) gates on its type resource the same way. Everything else — including the non-base built-ins `:secrets`, `:usage`, and `:styling` — gives each row its own resource, and that row resource is what existing-row requests consult.
+Base types (`:users`, `:roles`, `:permissions`, `:resources`, `:settings`, the joiners) have no row resources — every check on them degenerates to their type resource, and `:tokens` is the one built-in whose updates gate on its type resource (`be-update`'s carve-out); its rows do carry `resources` rows, which decide reads and deletes like any non-base row. Everything else — including the non-base built-ins `:secrets`, `:saved-views`, `:usage`, and `:styling` — gives each row its own resource, and that row resource is what existing-row requests consult.
 
 ## Why `:type-roles` exists
 

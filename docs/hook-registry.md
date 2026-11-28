@@ -45,7 +45,7 @@ The registry holds entries of three kinds. The kind discriminant determines whic
 | pre-delete  | uuid   |          | record    |
 | post-delete | uuid   |          | record    |
 
-All six lifecycle slots are compiled at model-compile time into function lists on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks` (backend.lisp); no registry lookup occurs at runtime. Built-in types may attach base-model function hooks directly — a bare `#'fn` in the `*base-model*` backquote passes through `resolve-hook-form`'s functionp arm (`add-user-setting-rows` on `:users`; `sanitize-styling-value` on `:styling` is the pre-write sanitization precedent, one hook on both `:pre-create` and `:pre-update`).
+All six lifecycle slots are compiled at model-compile time into function lists on `*compiled-model*`. The runtime calls them via `run-lifecycle-hooks` (backend.lisp); no registry lookup occurs at runtime. Built-in types may attach base-model function hooks directly — a bare `#'fn` in the `*base-model*` backquote passes through `resolve-hook-form`'s functionp arm (`add-user-setting-rows` on `:users`; `sanitize-styling-value` on `:styling` is the pre-write sanitization precedent, one hook on both `:pre-create` and `:pre-update`; `stamp-saved-view-owner` on `:saved-views` is the same one-hook-two-slots shape, forcing `:user` — the acting user on create, the record's existing owner on update).
 
 
 ### Action contract
